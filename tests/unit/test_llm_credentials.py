@@ -70,3 +70,36 @@ def test_openai_configuration_requires_endpoint(tmp_path: Path) -> None:
 
     assert llm_is_configured(incomplete, path) is False
     assert llm_is_configured(complete, path) is True
+
+
+# 功能：验证四种内置 Provider 都能使用各自独立凭据完成配置判定
+# 设计：逐个保存不同 Key 并使用官方 endpoint，覆盖新增 Provider 标识与凭据隔离
+@pytest.mark.parametrize(
+    ("provider", "api_key_env", "base_url"),
+    [
+        ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com/chat/completions"),
+        ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
+        ("anthropic", "ANTHROPIC_API_KEY", ""),
+        (
+            "siliconflow",
+            "SILICONFLOW_API_KEY",
+            "https://api.siliconflow.cn/v1/chat/completions",
+        ),
+    ],
+)
+def test_builtin_provider_configuration_is_supported(
+    tmp_path: Path,
+    provider: str,
+    api_key_env: str,
+    base_url: str,
+) -> None:
+    path = tmp_path / "credentials.json"
+    save_api_key(provider, f"{provider}-key", path)
+    config = LlmConfig(
+        provider=provider,
+        default_model="model",
+        base_url=base_url,
+        api_key_env=api_key_env,
+    )
+
+    assert llm_is_configured(config, path) is True

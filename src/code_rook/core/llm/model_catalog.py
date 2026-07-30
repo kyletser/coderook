@@ -8,13 +8,6 @@ from typing import Any
 from code_rook.core.llm.credentials import normalize_provider
 
 _DEFAULT_CATALOG_PATH = "~/.coderook/models.json"
-_ANTHROPIC_MODELS = (
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
-    "claude-haiku-4-5",
-)
-
-
 # 返回模型目录文件路径，并允许测试或高级用户通过环境变量覆盖
 def model_catalog_path() -> Path:
     value = os.environ.get("CODEROOK_MODEL_CATALOG", _DEFAULT_CATALOG_PATH)
@@ -50,8 +43,7 @@ def list_models(
             f"Invalid model catalog ({path or model_catalog_path()}): "
             f"{provider_name} must be a string array"
         )
-    defaults = _ANTHROPIC_MODELS if provider_name == "anthropic" else ()
-    candidates = (active_model, *saved, *defaults)
+    candidates = (active_model, *saved)
     return list(dict.fromkeys(item.strip() for item in candidates if item.strip()))
 
 
@@ -62,9 +54,19 @@ def add_model(
     *,
     path: Path | None = None,
 ) -> Path:
-    selected = model.strip()
-    if not selected:
-        raise ValueError("model name cannot be empty")
+    return add_models(provider, [model], path=path)
+
+
+# 将一组已探测模型批量添加到指定 provider 的目录并原子保存
+def add_models(
+    provider: str,
+    models: list[str] | tuple[str, ...],
+    *,
+    path: Path | None = None,
+) -> Path:
+    selected_models = list(dict.fromkeys(model.strip() for model in models if model.strip()))
+    if not selected_models:
+        raise ValueError("model list cannot be empty")
     target = path or model_catalog_path()
     catalog = _read_catalog(target)
     providers = catalog.setdefault("providers", {})
@@ -74,8 +76,9 @@ def add_model(
         raise ValueError(
             f"Invalid model catalog ({target}): {provider_name} must be a string array"
         )
-    if selected not in saved:
-        saved.append(selected)
+    for selected in selected_models:
+        if selected not in saved:
+            saved.append(selected)
     catalog["version"] = 1
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(f"{target.suffix}.tmp")

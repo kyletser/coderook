@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +17,14 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Label, Static, TextArea
+from textual.widgets import Input, Label, Static, TextArea
 
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.llm.provider_presets import (
+    PROVIDER_PRESETS,
+    ProviderPreset,
+    discover_models,
+)
 from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
@@ -535,8 +540,14 @@ class ModelPicker(Static):
     def _render_ui(self) -> str:
         if not self._models:
             return "[dim]No configured models. Use /model add <model-id>.[/dim]"
+        window_size = 8
+        start = max(0, min(self._cursor - window_size // 2, len(self._models) - window_size))
+        end = min(len(self._models), start + window_size)
         lines: list[str] = []
-        for index, model in enumerate(self._models):
+        if start > 0:
+            lines.append(f"[dim]  ↑ {start} more[/dim]")
+        for index in range(start, end):
+            model = self._models[index]
             safe_model = escape(model)
             current = "  [cyan]current[/cyan]" if model == self._active_model else ""
             if index == self._cursor:
@@ -546,6 +557,8 @@ class ModelPicker(Static):
                 )
             else:
                 lines.append(f"  [#c6cad0]{safe_model}[/#c6cad0]{current}")
+        if end < len(self._models):
+            lines.append(f"[dim]  ↓ {len(self._models) - end} more[/dim]")
         lines.append("[dim]Add a custom option with /model add <model-id>[/dim]")
         return "\n".join(lines)
 
@@ -563,6 +576,176 @@ class ModelPicker(Static):
             event.stop()
             self.post_message(self.Selected(self, self._models[self._cursor]))
         elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Dismissed(self))
+
+
+class ProviderPicker(Static):
+    """Keyboard-driven picker for built-in API providers."""
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    ProviderPicker {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    ProviderPicker:focus { border: solid #72c7d4; }
+    """
+
+    class Selected(Message):
+        # 初始化 Provider 选择消息
+        def __init__(self, picker: ProviderPicker, provider: str) -> None:
+            self.picker = picker
+            self.provider = provider
+            super().__init__()
+
+    class Dismissed(Message):
+        # 初始化 Provider 选择器关闭消息
+        def __init__(self, picker: ProviderPicker) -> None:
+            self.picker = picker
+            super().__init__()
+
+    # 初始化内置 Provider 列表并定位当前配置
+    def __init__(self, providers: tuple[ProviderPreset, ...], current: str) -> None:
+        super().__init__("")
+        self._providers = providers
+        self._current = current
+        self._cursor = next(
+            (
+                index
+                for index, provider in enumerate(providers)
+                if provider.id == current
+            ),
+            0,
+        )
+
+    # 挂载时设置标题和键盘焦点
+    def on_mount(self) -> None:
+        self.border_title = " API Provider "
+        self.border_subtitle = " ↑↓ move   Enter continue   Esc close "
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染四种内置 API 接入方式
+    def _render_ui(self) -> str:
+        lines: list[str] = []
+        for index, provider in enumerate(self._providers):
+            current = "  [cyan]current[/cyan]" if provider.id == self._current else ""
+            name = escape(provider.name)
+            description = escape(provider.description)
+            if index == self._cursor:
+                lines.append(
+                    f"[bold #72c7d4]❯[/bold #72c7d4] "
+                    f"[bold white]{name}[/bold white]  [dim]{description}[/dim]{current}"
+                )
+            else:
+                lines.append(
+                    f"  [#c6cad0]{name}[/#c6cad0]  [dim]{description}[/dim]{current}"
+                )
+        return "\n".join(lines)
+
+    # 处理上下移动、确认 Provider 和关闭快捷键
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k"):
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(self._providers)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j"):
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(self._providers)
+            self.update(self._render_ui())
+        elif event.key == "enter":
+            event.stop()
+            self.post_message(self.Selected(self, self._providers[self._cursor].id))
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Dismissed(self))
+
+
+class ConfigApiKeyPrompt(Static):
+    """Password input used by the inline provider configuration flow."""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    ConfigApiKeyPrompt {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+    }
+    ConfigApiKeyPrompt Input {
+        margin-top: 1;
+        border: round $surface-lighten-2;
+    }
+    ConfigApiKeyPrompt .config-error { color: red; height: auto; }
+    """
+
+    class Submitted(Message):
+        # 初始化 API Key 提交消息
+        def __init__(self, prompt: ConfigApiKeyPrompt, api_key: str) -> None:
+            self.prompt = prompt
+            self.api_key = api_key
+            super().__init__()
+
+    class Dismissed(Message):
+        # 初始化 API Key 输入框关闭消息
+        def __init__(self, prompt: ConfigApiKeyPrompt) -> None:
+            self.prompt = prompt
+            super().__init__()
+
+    # 初始化指定 Provider 的密钥输入面板
+    def __init__(self, provider: ProviderPreset) -> None:
+        super().__init__()
+        self.provider = provider
+
+    # 组合说明、密码输入框和错误提示
+    def compose(self) -> ComposeResult:
+        yield Label(
+            f"[bold]{escape(self.provider.name)}[/bold]\n"
+            "[dim]输入 API Key 后按 Enter，CodeRook 将探测该账号的可用模型。[/dim]"
+        )
+        yield Input(placeholder="API Key", password=True, id="config-api-key")
+        yield Label("", classes="config-error", id="config-key-error")
+
+    # 挂载时设置步骤提示并聚焦密码输入框
+    def on_mount(self) -> None:
+        self.border_title = " API Key "
+        self.border_subtitle = " Enter discover models   Esc back "
+        self.query_one("#config-api-key", Input).focus()
+
+    # 校验密钥非空后发布提交消息
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        api_key = event.value.strip()
+        if not api_key:
+            self.show_error("API Key 不能为空。")
+            return
+        event.input.disabled = True
+        self.border_subtitle = " discovering available models... "
+        self.post_message(self.Submitted(self, api_key))
+
+    # 显示探测错误并允许用户重新输入
+    def show_error(self, message: str) -> None:
+        self.query_one("#config-key-error", Label).update(escape(message))
+        key_input = self.query_one("#config-api-key", Input)
+        key_input.disabled = False
+        key_input.focus()
+        self.border_subtitle = " Enter retry   Esc back "
+
+    # 捕获 Esc 并返回 Provider 选择页
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
             event.stop()
             self.post_message(self.Dismissed(self))
 
@@ -740,7 +923,16 @@ class ModelSwitch:
     session_id: str | None
 
 
-class CodeRookTuiApp(App[str | ModelSwitch | None]):
+@dataclass(frozen=True)
+class ConfigSwitch:
+    provider: str
+    api_key: str = field(repr=False)
+    model: str
+    models: tuple[str, ...]
+    session_id: str | None
+
+
+class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     """CodeRook TUI：终端滚屏风格，实时展示 agent 执行过程。"""
 
     TITLE = "CodeRook"
@@ -793,6 +985,7 @@ class CodeRookTuiApp(App[str | ModelSwitch | None]):
         replay_run_id: str | None = None,
         resume_session_id: str | None = None,
         auth_token: str | None = None,
+        provider: str = "",
         model: str = "",
         models: list[str] | None = None,
     ) -> None:
@@ -802,8 +995,12 @@ class CodeRookTuiApp(App[str | ModelSwitch | None]):
         self._replay_run_id = replay_run_id
         self._resume_session_id = resume_session_id
         self._auth_token = auth_token
+        self._provider = provider
         self._model = model
         self._models = models or ([model] if model else [])
+        self._config_provider: ProviderPreset | None = None
+        self._pending_config_key: str | None = None
+        self._discovered_config_models: tuple[str, ...] = ()
         self._history_loaded = False
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
@@ -1006,7 +1203,12 @@ class CodeRookTuiApp(App[str | ModelSwitch | None]):
                     )
                 )
                 return
-            self.exit("configure")
+            event.text_area.disabled = True
+            event.text_area.border_title = "select an API provider..."
+            self.mount(
+                ProviderPicker(PROVIDER_PRESETS, self._provider),
+                before="#prompt",
+            )
             return
         # 检测 /compact 指令
         if content == "/compact":
@@ -1105,15 +1307,83 @@ class CodeRookTuiApp(App[str | ModelSwitch | None]):
     # 关闭模型选择器并恢复聊天输入框
     async def on_model_picker_dismissed(self, message: ModelPicker.Dismissed) -> None:
         message.picker.remove()
+        self._config_provider = None
+        self._pending_config_key = None
+        self._discovered_config_models = ()
         self._restore_ready_prompt()
 
     # 选择模型后退出 TUI，由入口保存配置、重启 Core 并恢复会话
     async def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
         message.picker.remove()
+        if self._config_provider is not None and self._pending_config_key is not None:
+            self.exit(
+                ConfigSwitch(
+                    provider=self._config_provider.id,
+                    api_key=self._pending_config_key,
+                    model=message.model,
+                    models=self._discovered_config_models,
+                    session_id=self._session_id,
+                )
+            )
+            return
         if message.model == self._model:
             self._restore_ready_prompt()
             return
         self.exit(ModelSwitch(model=message.model, session_id=self._session_id))
+
+    # 关闭 Provider 选择器并恢复聊天输入
+    async def on_provider_picker_dismissed(self, message: ProviderPicker.Dismissed) -> None:
+        message.picker.remove()
+        self._restore_ready_prompt()
+
+    # 选择 Provider 后显示密码输入框
+    async def on_provider_picker_selected(self, message: ProviderPicker.Selected) -> None:
+        message.picker.remove()
+        self._config_provider = next(
+            provider for provider in PROVIDER_PRESETS if provider.id == message.provider
+        )
+        self.mount(ConfigApiKeyPrompt(self._config_provider), before="#prompt")
+
+    # API Key 提交后异步探测该账号可用模型
+    async def on_config_api_key_prompt_submitted(
+        self,
+        message: ConfigApiKeyPrompt.Submitted,
+    ) -> None:
+        self.run_worker(
+            self._discover_config_models(message.prompt, message.api_key),
+            name="config_models",
+            exclusive=False,
+        )
+
+    # 取消 API Key 输入时返回 Provider 选择页
+    async def on_config_api_key_prompt_dismissed(
+        self,
+        message: ConfigApiKeyPrompt.Dismissed,
+    ) -> None:
+        message.prompt.remove()
+        self._config_provider = None
+        self._discovered_config_models = ()
+        self.mount(ProviderPicker(PROVIDER_PRESETS, self._provider), before="#prompt")
+
+    # 调用 Models API 并在成功后挂载模型选择器
+    async def _discover_config_models(
+        self,
+        prompt: ConfigApiKeyPrompt,
+        api_key: str,
+    ) -> None:
+        provider = self._config_provider
+        if provider is None:
+            return
+        try:
+            models = await discover_models(provider, api_key)
+        except ValueError as exc:
+            prompt.show_error(str(exc))
+            return
+        self._pending_config_key = api_key
+        self._discovered_config_models = tuple(models)
+        prompt.remove()
+        active = self._model if provider.id == self._provider else ""
+        self.mount(ModelPicker(models, active), before="#prompt")
 
     async def _create_and_switch_session(self) -> None:
         if self._client is None:

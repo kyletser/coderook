@@ -155,3 +155,41 @@ def test_switch_llm_model_preserves_provider_settings(
     assert 'provider = "openai_compatible"' in content
     assert 'base_url = "https://example.test/v1/chat/completions"' in content
     assert 'api_key_env = "CUSTOM_API_KEY"' in content
+
+
+# 功能：验证内置 Provider 配置会保存固定 endpoint、模型和独立凭据
+# 设计：选择 DeepSeek 并使用临时 TOML/凭据文件，排除用户 .env 和真实密钥影响
+def test_save_provider_config_uses_builtin_preset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = CodeRookConfig(
+        llm=LlmConfig(
+            provider="deepseek",
+            default_model="deepseek-v4-pro",
+            base_url="https://api.deepseek.com/chat/completions",
+            api_key_env="DEEPSEEK_API_KEY",
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(configure_module, "get_config", lambda: expected)
+    config_path = tmp_path / "config.toml"
+    credential_path = tmp_path / "credentials.json"
+
+    result = configure_module.save_provider_config(
+        CodeRookConfig(),
+        "deepseek",
+        "deepseek-secret",
+        "deepseek-v4-pro",
+        config_path=config_path,
+        credential_file=credential_path,
+    )
+    credentials = json.loads(credential_path.read_text(encoding="utf-8"))
+    content = config_path.read_text(encoding="utf-8")
+
+    assert result is expected
+    assert credentials["api_keys"]["deepseek"] == "deepseek-secret"
+    assert 'provider = "deepseek"' in content
+    assert 'default_model = "deepseek-v4-pro"' in content
+    assert 'base_url = "https://api.deepseek.com/chat/completions"' in content
+    assert "deepseek-secret" not in content

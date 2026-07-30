@@ -12,8 +12,7 @@ _DEFAULT_CREDENTIALS_PATH = "~/.coderook/credentials.json"
 
 # 将 provider 别名归一化为凭据文件使用的稳定键名
 def normalize_provider(provider: str) -> str:
-    normalized = provider.lower().replace("-", "_")
-    return "openai_compatible" if normalized == "openai" else normalized
+    return provider.lower().replace("-", "_")
 
 
 # 返回凭据文件路径，允许环境变量覆盖以便测试和高级部署
@@ -70,8 +69,15 @@ def resolve_api_key(config: LlmConfig, path: Path | None = None) -> str | None:
 # 判断当前 LLM 配置是否具备启动所需的模型、端点和密钥
 def llm_is_configured(config: LlmConfig, path: Path | None = None) -> bool:
     provider = normalize_provider(config.provider)
-    if provider not in {"anthropic", "openai_compatible"}:
+    supported = {
+        "anthropic",
+        "deepseek",
+        "openai",
+        "openai_compatible",
+        "siliconflow",
+    }
+    if provider not in supported:
         return False
     if not config.default_model.strip() or resolve_api_key(config, path) is None:
         return False
-    return provider != "openai_compatible" or bool(config.base_url.strip())
+    return provider == "anthropic" or bool(config.base_url.strip())

@@ -107,8 +107,9 @@ uv run coderook
 ```
 
 无参数 `coderook` 会进入 TUI，并自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
-首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以随时修改
-协议、地址、模型或 API key，完成后自动回到界面。
+首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以直接选择
+DeepSeek、OpenAI、Anthropic 或硅基流动，输入 API Key 后会探测该账号真实可用的模型；
+选择完成后自动重启 Core 并恢复当前会话。
 
 `coderook-tui` 入口继续保留。排障或需要手动管理生命周期时，可使用：
 
@@ -133,6 +134,7 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 | `/model` | 打开模型选择器，选择后保存默认模型、重启 Core 并恢复当前会话 |
 | `/model <模型 ID>` | 直接新增并切换到该模型 |
 | `/model add <模型 ID>` | 新增自定义模型并立即切换 |
+| `/config` | 在当前页面选择 API 平台、填写 API Key 并探测可用模型 |
 | `/compact` | 手动执行结构化上下文压缩 |
 | `/skill_name` | 调用已安装 Skill |
 | `Ctrl+Q` | 退出 TUI |

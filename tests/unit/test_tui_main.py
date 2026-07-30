@@ -8,7 +8,7 @@ import pytest
 
 from code_rook.core.config import CodeRookConfig
 from code_rook.tui import __main__ as tui_main
-from code_rook.tui.app import ModelSwitch
+from code_rook.tui.app import ConfigSwitch, ModelSwitch
 
 
 # 功能：默认启动 TUI 时先确保 Core 就绪，再读取 token 并运行界面
@@ -121,5 +121,53 @@ def test_tui_main_switches_model_and_resumes_session(
     assert calls == [
         ("anthropic", "claude-opus-4-6"),
         ("switch", "claude-opus-4-6"),
+        ("core", "stop"),
+    ]
+
+
+# 功能：验证内联配置结果会保存全部已探测模型、Provider 配置并恢复会话
+# 设计：构造 ConfigSwitch 驱动入口循环，检查持久化顺序且不启动真实 Core
+def test_tui_main_saves_discovered_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from code_rook.cli.commands import core as core_commands
+
+    config = CodeRookConfig()
+    action = ConfigSwitch(
+        provider="deepseek",
+        api_key="api-test",
+        model="deepseek-v4-pro",
+        models=("deepseek-v4-pro", "deepseek-v4-flash"),
+        session_id="session-2",
+    )
+    actions = iter([action, None])
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sys, "argv", ["coderook-tui"])
+    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(
+        tui_main,
+        "add_models",
+        lambda provider, models: calls.append(("models", provider, *models)),
+    )
+    monkeypatch.setattr(
+        tui_main,
+        "save_provider_config",
+        lambda _current, provider, _key, model: calls.append(
+            ("config", provider, model)
+        ),
+    )
+    monkeypatch.setattr(
+        core_commands,
+        "stop_core",
+        lambda: calls.append(("core", "stop")),
+    )
+
+    tui_main.main()
+
+    assert calls == [
+        ("models", "deepseek", "deepseek-v4-pro", "deepseek-v4-flash"),
+        ("config", "deepseek", "deepseek-v4-pro"),
         ("core", "stop"),
     ]

@@ -268,3 +268,38 @@ async def test_openai_model_override_uses_resolved_context_window(
     assert seen_models == ["override-model"]
     assert result.usage is not None
     assert result.usage.context_pct == pytest.approx(0.5)
+
+
+# 功能：验证 OpenAI 官方推理模型使用 max_completion_tokens 请求字段
+# 设计：注入 MockTransport 捕获请求体，确保官方 preset 不发送不兼容的 max_tokens
+async def test_openai_official_uses_max_completion_tokens() -> None:
+    captured: list[dict[str, object]] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "gpt-5.6-terra",
+            base_url="https://api.openai.com/v1/chat/completions",
+            api_key_env="OPENAI_API_KEY",
+            api_key="test-key",
+            use_max_completion_tokens=True,
+            client=client,
+        )
+        await provider.chat(
+            messages=[],
+            tool_schemas=[],
+            bus=EventBus(),
+            run_id="r-openai-official",
+        )
+
+    assert captured[0]["max_completion_tokens"] == 8192
+    assert "max_tokens" not in captured[0]

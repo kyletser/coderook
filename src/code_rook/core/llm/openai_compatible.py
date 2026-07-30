@@ -22,6 +22,9 @@ _SYSTEM_PROMPT = (
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-v4-pro": 128_000,
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
 }
 
 
@@ -41,6 +44,7 @@ class OpenAICompatibleProvider:
         base_url: str,
         api_key_env: str,
         api_key: str | None = None,
+        use_max_completion_tokens: bool = False,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -51,6 +55,7 @@ class OpenAICompatibleProvider:
         self._model = model
         self._base_url = base_url
         self._api_key = resolved_key
+        self._use_max_completion_tokens = use_max_completion_tokens
         self._client = client
 
     async def chat(
@@ -77,8 +82,11 @@ class OpenAICompatibleProvider:
         payload: dict[str, object] = {
             "model": resolved_model,
             "messages": _to_openai_messages(messages, system or _SYSTEM_PROMPT),
-            "max_tokens": 8192,
         }
+        max_tokens_field = (
+            "max_completion_tokens" if self._use_max_completion_tokens else "max_tokens"
+        )
+        payload[max_tokens_field] = 8192
         tools = _to_openai_tools(tool_schemas)
         if tools:
             payload["tools"] = tools

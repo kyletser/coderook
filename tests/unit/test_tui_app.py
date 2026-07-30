@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import pytest
 from rich.markdown import Markdown
 from rich.markup import render
 from textual.app import App, ComposeResult
 from textual.widget import Widget
+from textual.widgets import Input
 
+from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
+from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
+    ChatTextArea,
     CodeRookTuiApp,
+    ConfigApiKeyPrompt,
+    ConfigSwitch,
     LLMStreamBlock,
     ModelPicker,
     PermissionBlock,
     PermissionSelect,
+    ProviderPicker,
     SessionPicker,
     ToolCallBlock,
     _param_summary,
@@ -180,6 +188,154 @@ async def test_model_picker_renders_and_selects_model() -> None:
         await pilot.press("down", "enter")
         await pilot.pause()
         assert app.selected == ["claude-opus-4-6"]
+
+
+# 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
+# 设计：直接移动内部光标后检查纯文本，确保真实 API 返回大量模型时选中项始终可见
+def test_model_picker_keeps_cursor_visible_in_long_list() -> None:
+    models = [f"model-{index}" for index in range(20)]
+    picker = ModelPicker(models, "model-0")
+    picker._cursor = 15
+
+    plain = render(picker._render_ui()).plain
+
+    assert "model-15" in plain
+    assert "more" in plain
+    assert "model-0" not in plain
+
+
+# 功能：验证 /config Provider 选择器显示四种内置接入方式并支持键盘选择
+# 设计：在最小 Textual App 中选择第二项，覆盖中文名称渲染和 Selected 消息
+async def test_provider_picker_shows_four_builtin_options() -> None:
+    class PickerHarness(App[None]):
+        # 初始化测试宿主并收集 Provider 结果
+        def __init__(self) -> None:
+            super().__init__()
+            self.selected: list[str] = []
+
+        # 挂载 Provider 选择器
+        def compose(self) -> ComposeResult:
+            yield ProviderPicker(PROVIDER_PRESETS, "deepseek")
+
+        # 接收 Provider 选择消息
+        def on_provider_picker_selected(self, message: ProviderPicker.Selected) -> None:
+            self.selected.append(message.provider)
+
+    app = PickerHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        picker = app.query_one(ProviderPicker)
+        plain = render(picker._render_ui()).plain
+        assert "DeepSeek API" in plain
+        assert "OpenAI" in plain
+        assert "Anthropic" in plain
+        assert "硅基流动" in plain
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app.selected == ["openai"]
+
+
+# 功能：验证 API Key 在当前页面以密码输入方式提交
+# 设计：设置 Input 值后触发 Enter，断言 password 属性和消息值且渲染文本不含密钥
+async def test_config_api_key_prompt_masks_and_submits_key() -> None:
+    provider = PROVIDER_PRESETS[0]
+
+    class PromptHarness(App[None]):
+        # 初始化测试宿主并收集密钥消息
+        def __init__(self) -> None:
+            super().__init__()
+            self.keys: list[str] = []
+
+        # 挂载密码输入面板
+        def compose(self) -> ComposeResult:
+            yield ConfigApiKeyPrompt(provider)
+
+        # 接收 API Key 提交消息
+        def on_config_api_key_prompt_submitted(
+            self,
+            message: ConfigApiKeyPrompt.Submitted,
+        ) -> None:
+            self.keys.append(message.api_key)
+
+    app = PromptHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        key_input = app.query_one("#config-api-key", Input)
+        assert key_input.password is True
+        key_input.value = "secret-test-key"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.keys == ["secret-test-key"]
+        assert "secret-test-key" not in str(app.screen.render())
+
+
+# 功能：验证跨 TUI 重启传递配置时 dataclass 表示不会暴露 API Key
+# 设计：直接检查 ConfigSwitch 的 repr，覆盖异常日志或调试输出中的密钥泄漏风险
+def test_config_switch_repr_hides_api_key() -> None:
+    action = ConfigSwitch(
+        provider="openai",
+        api_key="secret-test-key",
+        model="gpt-5.6-terra",
+        models=("gpt-5.6-terra",),
+        session_id="session-1",
+    )
+
+    assert "secret-test-key" not in repr(action)
+
+
+# 功能：验证 /config 在当前页面完成 Provider、Key 探测和模型选择全流程
+# 设计：禁用真实 socket 并替换 Models API，使用真实按键驱动三个界面后检查 ConfigSwitch
+async def test_inline_config_flow_returns_verified_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_discover(provider: object, api_key: str) -> list[str]:
+        assert api_key == "verified-key"
+        return ["gpt-5.6-sol", "gpt-5.6-terra"]
+
+    monkeypatch.setattr(tui_app_module, "discover_models", fake_discover)
+
+    class ConfigHarness(CodeRookTuiApp):
+        # 挂载测试界面但不启动真实 socket worker
+        def on_mount(self) -> None:
+            self._slash_items = self._build_slash_items()
+            self._session_id = "session-inline"
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = ConfigHarness(
+        "127.0.0.1",
+        9999,
+        provider="openai",
+        model="gpt-5.6-sol",
+    )
+    async with app.run_test(size=(110, 26)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+        prompt.text = "/config"
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        await pilot.pause()
+        assert app.query_one(ProviderPicker)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        key_input = app.query_one("#config-api-key", Input)
+        key_input.value = "verified-key"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one(ModelPicker)
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+    assert app.return_value == ConfigSwitch(
+        provider="openai",
+        api_key="verified-key",
+        model="gpt-5.6-terra",
+        models=("gpt-5.6-sol", "gpt-5.6-terra"),
+        session_id="session-inline",
+    )
 
 
 # 功能：验证 TUI 内建命令包含模型选择入口

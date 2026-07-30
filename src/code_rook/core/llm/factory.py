@@ -22,11 +22,12 @@ def create_llm_provider(config: LlmConfig) -> LLMProvider:
             api_key=api_key,
             base_url=config.base_url,
         )
-    if provider == "openai_compatible":
+    if provider in {"deepseek", "openai", "openai_compatible", "siliconflow"}:
         return OpenAICompatibleProvider(
             config.default_model,
             base_url=config.base_url,
             api_key_env=config.api_key_env,
             api_key=api_key,
+            use_max_completion_tokens=provider == "openai",
         )
     raise SystemExit(f"Unsupported LLM provider: {config.provider}")

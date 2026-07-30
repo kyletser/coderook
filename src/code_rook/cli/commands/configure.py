@@ -21,6 +21,7 @@ from code_rook.core.llm.credentials import (
     resolve_api_key,
     save_api_key,
 )
+from code_rook.core.llm.provider_presets import get_provider_preset
 
 _DEFAULT_CONFIG_PATH = Path("~/.coderook/config.toml").expanduser()
 _SECTION_PATTERN = re.compile(r"(?m)^\s*\[\[?[^\]\r\n]+\]\]?\s*(?:#.*)?$")
@@ -96,6 +97,36 @@ def switch_llm_model(
     return get_config()
 
 
+# 保存内置 Provider、API Key 和所选模型，并保留其余运行参数
+def save_provider_config(
+    current: CodeRookConfig,
+    provider: str,
+    api_key: str,
+    model: str,
+    *,
+    config_path: Path | None = None,
+    credential_file: Path | None = None,
+) -> CodeRookConfig:
+    preset = get_provider_preset(provider)
+    selected_model = model.strip()
+    selected_key = api_key.strip()
+    if not selected_key:
+        raise ValueError("API key cannot be empty")
+    if not selected_model:
+        raise ValueError("model name cannot be empty")
+    updated = LlmConfig(
+        provider=preset.id,
+        default_model=selected_model,
+        router=current.llm.router,
+        base_url=preset.chat_url,
+        api_key_env=preset.api_key_env,
+    )
+    save_api_key(preset.id, selected_key, credential_file)
+    write_llm_config(updated, config_path)
+    _sync_project_dotenv(updated, current.llm.api_key_env)
+    return get_config()
+
+
 # 若项目使用 .env，则同步非敏感 LLM 设置并把旧明文 key 迁出该文件
 def _sync_project_dotenv(config: LlmConfig, previous_key_env: str) -> None:
     dotenv_path = Path(".env")
@@ -113,7 +144,9 @@ def _sync_project_dotenv(config: LlmConfig, previous_key_env: str) -> None:
         os.environ[name] = value
     secret_names = {
         "ANTHROPIC_API_KEY",
+        "DEEPSEEK_API_KEY",
         "OPENAI_API_KEY",
+        "SILICONFLOW_API_KEY",
         "CODEROOK_LLM_API_KEY",
         previous_key_env,
         config.api_key_env,

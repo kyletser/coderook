@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.llm.model_catalog import add_model, list_models
+from code_rook.core.llm.model_catalog import add_model, add_models, list_models
 
 
-# 功能：验证 Anthropic 模型目录包含活动模型、内置选项和新增模型且不重复
-# 设计：使用临时目录隔离用户状态，连续添加同一模型以覆盖持久化去重边界
-def test_anthropic_model_catalog_merges_active_defaults_and_custom(
+# 功能：验证模型目录只包含活动模型和已探测或手动新增的模型且不重复
+# 设计：使用临时目录隔离用户状态，连续添加同一模型以排除未验证的硬编码模型
+def test_model_catalog_merges_active_and_verified_models(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "models.json"
@@ -19,9 +19,7 @@ def test_anthropic_model_catalog_merges_active_defaults_and_custom(
     add_model("anthropic", "claude-custom", path=path)
     models = list_models("anthropic", "claude-active", path=path)
 
-    assert models[0] == "claude-active"
-    assert "claude-sonnet-4-6" in models
-    assert models.count("claude-custom") == 1
+    assert models == ["claude-active", "claude-custom"]
 
 
 # 功能：验证不同 Provider 的自定义模型目录相互隔离
@@ -61,3 +59,20 @@ def test_model_catalog_writes_versioned_json(tmp_path: Path) -> None:
         "version": 1,
         "providers": {"openai_compatible": ["qwen-test"]},
     }
+
+
+# 功能：验证 API 探测结果可以一次性写入模型目录并保持顺序
+# 设计：批量传入包含重复项的列表，确保只进行语义去重且不改变服务端推荐顺序
+def test_model_catalog_adds_discovered_models_in_batch(tmp_path: Path) -> None:
+    path = tmp_path / "models.json"
+
+    add_models(
+        "deepseek",
+        ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-pro"],
+        path=path,
+    )
+
+    assert list_models("deepseek", "", path=path) == [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ]
