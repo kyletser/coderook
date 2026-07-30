@@ -20,6 +20,7 @@ from code_rook.tui.app import (
     PermissionSelect,
     ProviderPicker,
     SessionPicker,
+    SlashCompleteWidget,
     ToolCallBlock,
     _param_summary,
     _preview,
@@ -336,6 +337,94 @@ async def test_inline_config_flow_returns_verified_selection(
         models=("gpt-5.6-sol", "gpt-5.6-terra"),
         session_id="session-inline",
     )
+
+
+# 功能：验证完整输入 /model 后第一次 Enter 直接执行而不是只确认补全
+# 设计：挂载真实输入框和补全弹窗，直接断言一次 Enter 发布 Submitted 而非 Selected
+async def test_exact_slash_command_runs_on_first_enter() -> None:
+    class SlashHarness(App[None]):
+        # 初始化消息收集器
+        def __init__(self) -> None:
+            super().__init__()
+            self.submitted: list[str] = []
+            self.selected: list[str] = []
+
+        # 挂载命令补全弹窗和聊天输入框
+        def compose(self) -> ComposeResult:
+            yield SlashCompleteWidget([("model", "switch model")])
+            yield ChatTextArea(id="prompt", show_line_numbers=False)
+
+        # 设置完整命令并把键盘焦点交给输入框
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/model"
+            prompt.focus()
+
+        # 收集输入框提交消息
+        def on_chat_text_area_submitted(self, message: ChatTextArea.Submitted) -> None:
+            self.submitted.append(message.value)
+
+        # 收集命令补全选择消息
+        def on_slash_complete_widget_selected(
+            self,
+            message: SlashCompleteWidget.Selected,
+        ) -> None:
+            self.selected.append(message.skill_name)
+
+    app = SlashHarness()
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.submitted == ["/model"]
+        assert app.selected == []
+
+
+# 功能：验证未完整输入的斜杠命令仍由第一次 Enter 完成补全
+# 设计：挂载真实输入框和补全弹窗，直接断言一次 Enter 发布 Selected 而非 Submitted
+async def test_partial_slash_command_enter_only_completes() -> None:
+    class SlashHarness(App[None]):
+        # 初始化消息收集器
+        def __init__(self) -> None:
+            super().__init__()
+            self.submitted: list[str] = []
+            self.selected: list[str] = []
+
+        # 挂载命令补全弹窗和聊天输入框
+        def compose(self) -> ComposeResult:
+            yield SlashCompleteWidget([("model", "switch model")])
+            yield ChatTextArea(id="prompt", show_line_numbers=False)
+
+        # 设置部分命令、筛选候选并把键盘焦点交给输入框
+        def on_mount(self) -> None:
+            popup = self.query_one(SlashCompleteWidget)
+            popup.set_query("mo")
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/mo"
+            prompt.focus()
+
+        # 收集输入框提交消息
+        def on_chat_text_area_submitted(self, message: ChatTextArea.Submitted) -> None:
+            self.submitted.append(message.value)
+
+        # 收集命令补全选择消息
+        def on_slash_complete_widget_selected(
+            self,
+            message: SlashCompleteWidget.Selected,
+        ) -> None:
+            self.selected.append(message.skill_name)
+
+    app = SlashHarness()
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.submitted == []
+        assert app.selected == ["model"]
 
 
 # 功能：验证 TUI 内建命令包含模型选择入口

@@ -808,6 +808,10 @@ class SlashCompleteWidget(Static):
     def has_selection(self) -> bool:
         return len(self._filtered) > 0
 
+    # 判断查询是否已经完整匹配一条命令，供 Enter 直接执行
+    def has_exact_match(self, query: str) -> bool:
+        return any(name == query for name, _description in self._filtered)
+
     def on_mount(self) -> None:
         self._redraw()
 
@@ -823,7 +827,7 @@ class SlashCompleteWidget(Static):
                 lines.append(f"  [bold cyan]❯ /{name}[/bold cyan]{desc_part}")
             else:
                 lines.append(f"    [cyan]/{name}[/cyan]{desc_part}")
-        lines.append("[dim]  ↑↓ navigate   tab/enter select   esc dismiss[/dim]")
+        lines.append("[dim]  ↑↓ navigate   tab complete   enter run/complete   esc dismiss[/dim]")
         self.update("\n".join(lines))
 
 
@@ -881,7 +885,12 @@ class ChatTextArea(TextArea):
         if key == "enter":
             event.stop()
             event.prevent_default()
-            if popup is not None and popup.has_selection():
+            query = self.text[1:] if self.text.startswith("/") else ""
+            if (
+                popup is not None
+                and popup.has_selection()
+                and not popup.has_exact_match(query)
+            ):
                 popup.select_current()
                 return
             if self.text.strip():
