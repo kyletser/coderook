@@ -5,7 +5,13 @@ import sys
 
 from kyle_claude.cli.commands.cancel import cmd_cancel
 from kyle_claude.cli.commands.chat import cmd_chat
-from kyle_claude.cli.commands.core import cmd_core_start, cmd_core_status, cmd_core_stop
+from kyle_claude.cli.commands.configure import cmd_configure, print_llm_status
+from kyle_claude.cli.commands.core import (
+    cmd_core_restart,
+    cmd_core_start,
+    cmd_core_status,
+    cmd_core_stop,
+)
 from kyle_claude.cli.commands.ping import cmd_ping
 from kyle_claude.cli.commands.run import cmd_run
 from kyle_claude.cli.commands.session import (
@@ -28,6 +34,8 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("ping", help="Ping the core daemon")
+    subparsers.add_parser("configure", aliases=["config"], help="Configure the LLM connection")
+    subparsers.add_parser("config-status", help="Show the active LLM configuration")
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an active agent run")
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
@@ -76,6 +84,7 @@ def main() -> None:
     core_sub = core_parser.add_subparsers(dest="core_command")
     core_sub.add_parser("start", help="Start the daemon in the background")
     core_sub.add_parser("stop", help="Stop the running daemon")
+    core_sub.add_parser("restart", help="Restart the daemon with the latest configuration")
     core_sub.add_parser("status", help="Show daemon status")
 
     trace_parser = subparsers.add_parser("trace", help="View system trace log")
@@ -94,7 +103,11 @@ def main() -> None:
     config = get_config()
     setup_logging(config)
 
-    if args.command == "ping":
+    if args.command in {"configure", "config"}:
+        cmd_configure(config)
+    elif args.command == "config-status":
+        print_llm_status(config)
+    elif args.command == "ping":
         cmd_ping(config)
     elif args.command == "cancel":
         cmd_cancel(args.run_id, config)
@@ -134,6 +147,8 @@ def main() -> None:
             cmd_core_start(config)
         elif args.core_command == "stop":
             cmd_core_stop(config)
+        elif args.core_command == "restart":
+            cmd_core_restart(config)
         elif args.core_command == "status":
             cmd_core_status(config)
         else:

@@ -11,6 +11,7 @@ from kyle_claude.core.events.bus import EventBus
 from kyle_claude.core.llm.types import LlmResponse, UsageStats
 from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
 from kyle_claude.core.subagent.tool import AgentResultTool, SpawnAgentTool
+from kyle_claude.core.task.manager import TaskManager
 
 
 def _make_provider(result_text: str = "child done") -> Any:
@@ -189,3 +190,34 @@ async def test_foreground_publishes_started_event(tmp_path: Path) -> None:
     assert len(started) == 1
     assert started[0].parent_run_id == "parent-run-01"
     assert started[0].description == "test task"
+
+
+# 功能：子 Agent 共享 TodoState 后，存在未完成任务时首次 end_turn 会被软状态机推迟
+# 设计：provider 连续返回两个不同结果，断言前台子 Agent 最终采用第二轮结果且调用两次模型
+async def test_child_loop_uses_shared_todo_state(tmp_path: Path) -> None:
+    provider = AsyncMock()
+    provider.chat = AsyncMock(
+        side_effect=[
+            LlmResponse(stop_reason="end_turn", text="too early", usage=UsageStats(1, 1)),
+            LlmResponse(stop_reason="end_turn", text="after reminder", usage=UsageStats(1, 1)),
+        ]
+    )
+    task_manager = TaskManager(tmp_path / ".tasks")
+    task_manager.create("unfinished child task")
+    registry = BackgroundTaskRegistry()
+    tool = SpawnAgentTool(
+        provider=provider,
+        parent_bus=EventBus(),
+        parent_run_id="parent-run",
+        permission_manager=None,
+        max_steps=5,
+        task_registry=registry,
+        runs_dir=tmp_path,
+        session_id="sess-test",
+        task_manager=task_manager,
+    )
+
+    result = await tool.invoke({"description": "child", "prompt": "work"})
+
+    assert result.content == "after reminder"
+    assert provider.chat.await_count == 2

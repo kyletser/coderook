@@ -8,6 +8,21 @@
 
 本报告不重复公开文档所能给出的"功能清单"对比，而是从**控制流范式、状态分布、扩展协议、执行隔离、可恢复性**五个工程维度，把 KyleClaude 与主流架构做结构性对照，并据此提出后续改造方向。
 
+## 0. 实施状态更新
+
+本文主体记录的是 2026-07-21 改造前的差距基线。提交 `bae9d75` 已完成或部分完成其中 Phase A 与 Phase B 的若干项目，阅读后文的“缺失”描述时应以当前代码和下表为准：
+
+| 原缺口 | 当前状态 |
+|---|---|
+| 工具无副作用能力模型 | 已实现 `ToolSideEffect`、`can_parallel` 和保守默认值 |
+| 多个 tool call 总是串行 | 已实现连续只读工具批量并行，副作用工具保持模型顺序 |
+| Task 未进入控制流 | 主循环已注入 Todo State，并对未完成 Todo 的 `end_turn` 做有限延迟 |
+| `profile.model` 未接线 | Anthropic 与 OpenAI-compatible provider 均支持 per-agent 模型覆盖 |
+| reviewer 依赖名字白名单 | 已支持 `restrict = "read_only"` 的能力过滤 |
+| Registry 跟随 Runner 销毁 | 已提升为 daemon 级，支持跨 turn 查询，daemon 退出时统一清理 |
+
+尚未完成的关键边界仍包括 durable run 恢复、handoff、Plan/Ask/Steering、Trace 图和 OS 级沙箱。daemon 级后台任务只保证跨 turn，不保证 daemon 重启后继续执行。
+
 ## 1. 执行摘要
 
 KyleClaude 已经具备了一个"单循环 Coding Agent + Daemon"的可运行实现：ReAct 循环、类型化工具、权限审批、上下文压缩、Subagent 派生、MCP 接入、事件总线。

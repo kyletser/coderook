@@ -30,14 +30,14 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 
 | 领域 | 当前实现 |
 |---|---|
-| Agent Loop | 异步 Plan-Act-Observe 循环、流式 token、工具结果回填、限流退避与上下文溢出恢复 |
+| Agent Loop | 异步 Plan-Act-Observe 循环、只读工具批量并行、Todo 软状态机、限流退避与上下文溢出恢复 |
 | 类型化协议 | Pydantic v2 命令/事件模型、JSON-RPC 2.0、NDJSON 流、自动生成协议文档 |
 | 本地安全 | loopback 限制、首帧 token 认证、工作区边界、参数校验、交互审批与 headless 权限模式 |
 | 代码工具 | Read、Glob、Grep、Edit、Write、Apply Patch、Git Diff、Bash、Checkpoint/Rewind |
 | 会话系统 | 多轮 thread、block 级 transcript、崩溃尾部恢复、会话恢复/分叉/导出/删除 |
 | 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
 | 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
-| 多 Agent | 子 Agent、任务创建/认领、后台任务、Git worktree 隔离和独立工作区边界 |
+| 多 Agent | 角色模型覆盖、只读 reviewer、共享任务板、跨 turn 后台任务和 Git worktree 隔离 |
 | 扩展机制 | Skills、MCP 工具接入、UserPromptSubmit/PreToolUse/PostToolUse/Stop 异步 Hooks |
 | 可观测性 | TUI 实时事件、token 水位、工具与审批状态、压缩指标、events.jsonl 和脱敏 Trace |
 
@@ -66,27 +66,31 @@ cp .env.example .env
 
 ### 2. 配置模型
 
-Anthropic：
+推荐使用交互式向导：
 
-```dotenv
-KYLE_LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-your-key
-KYLE_LLM_DEFAULT_MODEL=claude-sonnet-4-6
+```powershell
+uv run kyle configure
 ```
 
-OpenAI-compatible 接口：
+向导支持：
 
-```dotenv
-KYLE_LLM_PROVIDER=openai_compatible
-KYLE_LLM_BASE_URL=https://example.com/v1/chat/completions
-KYLE_LLM_API_KEY_ENV=KYLE_LLM_API_KEY
-KYLE_LLM_API_KEY=your-api-key
-KYLE_LLM_DEFAULT_MODEL=your-model
+- Anthropic-compatible：官方 Anthropic 或自定义兼容 `Base URL`
+- OpenAI-compatible：完整的 `/v1/chat/completions` 地址
+- 隐藏输入和更新 API key
+- 为两种协议分别保留 API key，切换时互不覆盖
+- 修改配置后自动重启由 Kyle 管理的 Core
+
+普通配置保存在 `~/.kyle/config.toml`，密钥单独保存在
+`~/.kyle/credentials.json`，不会写入仓库或日志。若项目已有 `.env`，向导会同步其中的
+非敏感 LLM 参数，并把旧明文 key 迁移到凭据文件。
+
+查看当前配置（不会显示密钥正文）：
+
+```powershell
+uv run kyle config-status
 ```
 
-`KYLE_LLM_BASE_URL` 应填写完整的 Chat Completions 地址。密钥只放在本地 `.env` 或系统环境变量中，不要提交到 Git。
-
-OpenCode Zen 示例：
+也可以继续使用 `.env` 或系统环境变量；环境变量优先级最高。OpenCode Zen 示例：
 
 ```dotenv
 KYLE_LLM_PROVIDER=openai_compatible
@@ -96,28 +100,24 @@ KYLE_LLM_API_KEY=replace-with-your-key
 KYLE_LLM_DEFAULT_MODEL=deepseek-v4-pro
 ```
 
-### 3. 启动 Core 与 TUI
-
-终端 1：
-
-```powershell
-uv run kyle-core
-```
-
-终端 2：
+### 3. 一条命令启动
 
 ```powershell
 uv run kyle-tui
 ```
 
-Core 首次启动会生成 `~/.kyle/ipc-token`。CLI/TUI 会自动读取该文件，并在发送业务命令前完成本机认证。
+`kyle-tui` 会自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
+首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以随时修改
+协议、地址、模型或 API key，完成后自动回到界面。
 
-也可以将 Core 放到后台管理：
+排障或需要手动管理生命周期时，仍可使用：
 
 ```powershell
 uv run kyle core start
 uv run kyle core status
+uv run kyle core restart
 uv run kyle core stop
+uv run kyle-tui --no-auto-core
 ```
 
 ## 使用方式

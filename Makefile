@@ -21,6 +21,7 @@ verify:
 	uv sync --frozen
 	uv run ruff check .
 	uv run mypy src
+	uv run mypy --platform linux src
 	uv run pytest -q
 	uv run python scripts/gen_protocol_doc.py --check
 	uv build

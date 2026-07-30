@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
 from kyle_claude.core.events.bus import EventBus
+from kyle_claude.core.llm import openai_compatible as openai_module
+from kyle_claude.core.llm import provider as provider_module
+from kyle_claude.core.llm.openai_compatible import OpenAICompatibleProvider
 from kyle_claude.core.llm.provider import AnthropicProvider
 from kyle_claude.core.llm.types import LlmResponse
 
@@ -201,3 +206,65 @@ async def test_no_tokens_when_response_is_empty() -> None:
     tokens = [e for e in events if e.type == "llm.token"]  # type: ignore[attr-defined]
     assert tokens == []
     assert result.text == ""
+
+
+# 功能：per-agent 模型覆盖后使用覆盖模型的 context window 计算占用比例
+# 设计：为默认模型和覆盖模型注入不同窗口，固定 input tokens 后断言结果采用覆盖模型分母
+async def test_model_override_uses_resolved_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _ = _make_provider(input_tokens=100)
+    monkeypatch.setitem(provider_module._MODEL_CONTEXT_WINDOWS, "test-model", 2_000)
+    monkeypatch.setitem(provider_module._MODEL_CONTEXT_WINDOWS, "override-model", 1_000)
+
+    result = await provider.chat(
+        messages=[],
+        tool_schemas=[],
+        bus=EventBus(),
+        run_id="r-model",
+        model="override-model",
+    )
+
+    assert result.usage is not None
+    assert result.usage.context_pct == pytest.approx(0.1)
+
+
+# 功能：OpenAI-compatible provider 同样按覆盖模型发送请求并计算 context 水位
+# 设计：MockTransport 捕获请求 model，并为两个模型设置不同窗口以验证请求与 usage 使用同一模型
+async def test_openai_model_override_uses_resolved_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_models: list[str] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen_models.append(str(payload["model"]))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 64, "completion_tokens": 4},
+            },
+        )
+
+    monkeypatch.setenv("TEST_OPENAI_KEY", "test-key")
+    monkeypatch.setitem(openai_module._MODEL_CONTEXT_WINDOWS, "default-model", 256)
+    monkeypatch.setitem(openai_module._MODEL_CONTEXT_WINDOWS, "override-model", 128)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "default-model",
+            base_url="https://example.test/v1/chat/completions",
+            api_key_env="TEST_OPENAI_KEY",
+            client=client,
+        )
+        result = await provider.chat(
+            messages=[],
+            tool_schemas=[],
+            bus=EventBus(),
+            run_id="r-openai-model",
+            model="override-model",
+        )
+
+    assert seen_models == ["override-model"]
+    assert result.usage is not None
+    assert result.usage.context_pct == pytest.approx(0.5)

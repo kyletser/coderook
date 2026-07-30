@@ -68,6 +68,8 @@ def _now() -> str:
 class TranscriptSink(Protocol):
     def append_assistant(self, step: int, blocks: list[dict[str, object]]) -> None: ...
 
+    def append_user(self, step: int, content: str) -> None: ...
+
     def append_tool_result(
         self,
         step: int,
@@ -350,13 +352,9 @@ class AgentLoop:
                         {"role": "user", "content": _TODO_END_TURN_REMINDER}
                     )
                     if self._transcript is not None:
-                        self._transcript.append_tool_result(
+                        self._transcript.append_user(
                             context.step,
-                            "todo_end_turn_reminder",
                             _TODO_END_TURN_REMINDER,
-                            is_error=False,
-                            block_index=0,
-                            block_count=1,
                         )
                     self._last_todo_snapshot = snapshot
                 else:

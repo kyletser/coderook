@@ -584,6 +584,16 @@ class SessionTranscriptSink:
                 block_count=len(blocks),
             )
 
+    # 持久化循环主动注入的普通用户消息，避免伪装成无对应 tool_use 的 tool_result
+    def append_user(self, step: int, content: str) -> None:
+        self._store.append_message(
+            self._session_id,
+            role="user",
+            content=content,
+            run_id=self._run_id,
+            message_id=f"{self._run_id}:user:{step}",
+        )
+
     def append_tool_result(
         self,
         step: int,

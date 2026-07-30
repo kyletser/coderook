@@ -212,6 +212,7 @@ class SpawnAgentTool(BaseTool):
             child_bus,
             permission_manager=self._permission_manager,
             session_id=self._session_id,
+            todo_state=task_manager,
         )
 
         await self._parent_bus.publish(

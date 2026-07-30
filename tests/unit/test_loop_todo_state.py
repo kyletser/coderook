@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kyle_claude.core.compact.protocol import validate_tool_protocol
 from kyle_claude.core.context import ExecutionContext
 from kyle_claude.core.events.bus import EventBus
 from kyle_claude.core.llm.types import LlmResponse, UsageStats
 from kyle_claude.core.loop import AgentLoop
+from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
 from kyle_claude.core.task.manager import TaskManager
 from kyle_claude.core.tools.base import BaseTool, ToolResult
 from kyle_claude.core.tools.registry import ToolRegistry
@@ -271,3 +273,38 @@ def test_task_manager_implements_todo_state_view(tmp_path: Path) -> None:
     tm.update(1, status="completed")
     assert tm.has_incomplete() is False  # 全 complete
     assert tm.active_summary()  # 仍非空，但完整列表展示在 loop 里无阻拦
+
+
+# 功能：Todo end_turn 提醒持久化为普通 user 消息且不会产生孤立 tool_result
+# 设计：使用真实 SessionStore 和 transcript sink 跑两轮 end_turn，再用协议校验器检查恢复消息
+async def test_todo_reminder_persists_as_plain_user_message(tmp_path: Path) -> None:
+    tm = _tm(tmp_path)
+    tm.create(subject="task_a", description="")
+    provider = _ScriptedProvider(
+        [
+            LlmResponse(stop_reason="end_turn", text="first", usage=_usage()),
+            LlmResponse(stop_reason="end_turn", text="second", usage=_usage()),
+        ]
+    )
+    store = SessionStore(tmp_path / "sessions")
+    session_id = "sess-todo"
+    store.session_dir(session_id).mkdir(parents=True)
+    store.append_message(session_id, "user", "start", run_id="r-todo")
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        EventBus(),
+        todo_state=tm,
+        transcript=SessionTranscriptSink(store, session_id, "r-todo"),
+    )
+
+    await loop.run(_ctx())
+
+    messages = store.read_messages(session_id)
+    valid, errors = validate_tool_protocol(messages)
+    assert valid, errors
+    assert any(message.get("content") == (
+        "You ended the turn, but the Todo State above still has incomplete items. "
+        "Either continue working on the next pending/in_progress todo, or call "
+        "task_update(status='completed') for any items that are truly done, then end."
+    ) for message in messages)

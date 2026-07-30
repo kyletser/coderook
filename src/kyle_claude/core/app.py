@@ -368,6 +368,7 @@ class CoreApp:
             ),
             bus=self._bus,
             provider=compact_provider,
+            subagent_registry=self._subagent_registry,
         )
 
         server = SocketServer(

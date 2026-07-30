@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from kyle_claude.core.bus.envelope import HandlerError
+from kyle_claude.core.context import ExecutionContext
 from kyle_claude.core.events.bus import EventBus
 from kyle_claude.core.runner import RunOutcome
 from kyle_claude.core.session.manager import (
@@ -18,6 +19,7 @@ from kyle_claude.core.session.manager import (
 )
 from kyle_claude.core.session.model import Session
 from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
+from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
 
 
 class _Runner:
@@ -240,6 +242,46 @@ async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: 
 
     await manager.send_message(session.id, "continue")
     assert store.read_meta(session.id).status == "waiting_for_input"
+
+
+# 功能：用户显式取消父 run 时同步取消其后台子 Agent，但不影响无关任务
+# 设计：给 SessionManager 注入 daemon registry，注册直属 child 与 unrelated 后取消真实阻塞 run
+async def test_cancel_run_cascades_to_background_descendants(tmp_path: Path) -> None:
+    started = asyncio.Event()
+
+    class _BlockingRunner(_Runner):
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    registry = BackgroundTaskRegistry()
+    store = SessionStore(tmp_path)
+    manager = SessionManager(
+        store,
+        lambda: _BlockingRunner(),
+        EventBus(),
+        subagent_registry=registry,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    send_task = asyncio.create_task(manager.send_message(session.id, "long task"))
+    await started.wait()
+    run_id = store.read_meta(session.id).run_ids[-1]
+
+    child_context = ExecutionContext("child", "child", 1)
+    unrelated_context = ExecutionContext("unrelated", "unrelated", 1)
+    child_task = asyncio.create_task(asyncio.Event().wait())
+    unrelated_task = asyncio.create_task(asyncio.Event().wait())
+    registry.register("child", child_task, child_context, parent_run_id=run_id)
+    registry.register("unrelated", unrelated_task, unrelated_context, parent_run_id="other")
+
+    await manager.cancel_run(run_id)
+    await send_task
+
+    assert child_task.cancelled()
+    assert child_context.reason == "cancelled"
+    assert not unrelated_task.done()
+    await registry.cancel_all()
 
 
 async def test_cancel_unknown_or_finished_run_is_rejected(tmp_path: Path) -> None:

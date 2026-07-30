@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from kyle_claude.core.config import KyleConfig
@@ -12,6 +13,58 @@ from kyle_claude.core.transport.auth import IpcTokenError
 from kyle_claude.core.transport.socket_client import IpcError, SocketClient
 
 _PID_FILE = Path.home() / ".kyle" / "kyle-core.pid"
+
+
+class CoreLaunchError(RuntimeError):
+    pass
+
+
+# 判断 Core 是否已完成认证并能响应 ping；未启动或 token 尚未生成时返回 False
+def _core_ready(config: KyleConfig) -> bool:
+    try:
+        asyncio.run(_ping_check(config))
+        return True
+    except (ConnectionRefusedError, OSError, IpcTokenError):
+        return False
+    except IpcError as exc:
+        raise CoreLaunchError(f"Core authentication failed: {exc}") from exc
+
+
+# 启动后台 Core 并记录 PID，返回进程对象供就绪等待与失败检测
+def _spawn_core() -> subprocess.Popen[bytes]:
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "kyle_claude.core"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+    return proc
+
+
+# 确保 Core 可用；已有实例直接复用，否则后台启动并等待认证就绪
+def ensure_core_running(config: KyleConfig, timeout_s: float = 10.0) -> bool:
+    if _core_ready(config):
+        return False
+
+    port_open = asyncio.run(_port_open(config))
+    proc = None if port_open else _spawn_core()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            _PID_FILE.unlink(missing_ok=True)
+            raise CoreLaunchError(
+                f"Core exited during startup with code {proc.returncode}; "
+                "check .env or run `uv run kyle-core` for details"
+            )
+        if _core_ready(config):
+            return proc is not None
+        time.sleep(0.05)
+
+    raise CoreLaunchError(
+        f"Core did not become ready at {config.host}:{config.port} within {timeout_s:g}s"
+    )
 
 
 def _pid_exists(pid: int) -> bool:
@@ -83,6 +136,19 @@ def _running_pid() -> int | None:
         return None
 
 
+# 停止由 Kyle 启动并记录 PID 的 Core，等待进程退出后返回是否执行了停止
+def stop_core(timeout_s: float = 5.0) -> bool:
+    pid = _running_pid()
+    if pid is None:
+        return False
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout_s
+    while _pid_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    _PID_FILE.unlink(missing_ok=True)
+    return True
+
+
 # 打印 daemon 当前状态（running / not running）
 def cmd_core_status(config: KyleConfig) -> None:
     try:
@@ -100,28 +166,16 @@ def cmd_core_status(config: KyleConfig) -> None:
 # 在后台启动 daemon，若已在运行则提示并退出
 def cmd_core_start(config: KyleConfig) -> None:
     try:
-        asyncio.run(_ping_check(config))
-        print(f"already running  ({config.host}:{config.port})")
-        return
-    except (ConnectionRefusedError, OSError):
-        pass
-    except IpcTokenError as exc:
-        if asyncio.run(_port_open(config)):
-            print(f"error: core port is in use but {exc}", file=sys.stderr)
-            return
-    except IpcError as exc:
-        print(f"error: core is running but authentication failed: {exc}", file=sys.stderr)
+        started = ensure_core_running(config)
+    except CoreLaunchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return
 
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "kyle_claude.core"],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PID_FILE.write_text(str(proc.pid))
-    print(f"started  pid={proc.pid}  ({config.host}:{config.port})")
+    if started:
+        pid = _running_pid()
+        print(f"started  pid={pid}  ({config.host}:{config.port})")
+    else:
+        print(f"already running  ({config.host}:{config.port})")
 
 
 # 向 daemon 发送 SIGTERM 停止进程，若未运行则提示
@@ -130,6 +184,17 @@ def cmd_core_stop(config: KyleConfig) -> None:
     if pid is None:
         print("not running")
         return
-    os.kill(pid, signal.SIGTERM)
-    _PID_FILE.unlink(missing_ok=True)
+    stop_core()
     print(f"stopped  pid={pid}")
+
+
+# 重启后台 Core，使磁盘上的最新配置立即生效
+def cmd_core_restart(config: KyleConfig) -> None:
+    stopped = stop_core()
+    try:
+        started = ensure_core_running(config)
+    except CoreLaunchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return
+    action = "restarted" if stopped else ("started" if started else "already running")
+    print(f"{action}  pid={_running_pid()}  ({config.host}:{config.port})")

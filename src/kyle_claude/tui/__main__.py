@@ -4,9 +4,13 @@ import argparse
 import logging
 import logging.handlers
 import os
+import sys
 from pathlib import Path
 
+from kyle_claude.cli.commands.configure import configure_llm
+from kyle_claude.cli.commands.core import CoreLaunchError, ensure_core_running
 from kyle_claude.core.config import get_config
+from kyle_claude.core.llm.credentials import llm_is_configured
 from kyle_claude.core.transport.auth import IpcTokenError, read_ipc_token
 from kyle_claude.tui.app import KyleTuiApp
 
@@ -32,7 +36,41 @@ def _setup_logging(level: str) -> None:
     root.addHandler(handler)
 
 
-# kyle-tui 入口：可回放 run 或恢复历史 session
+# 在交互终端中完成首次 LLM 配置，非交互环境给出明确命令提示
+def _ensure_llm_configured() -> None:
+    config = get_config()
+    if llm_is_configured(config.llm):
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit("LLM is not configured; run `uv run kyle configure` first.")
+    print("首次启动需要配置 LLM API。密钥将隐藏输入并保存在 ~/.kyle/credentials.json。\n")
+    configure_llm(config)
+
+
+# 创建并运行 TUI；用户输入 /config 时返回该动作供入口重配后重启
+def _run_tui(args: argparse.Namespace) -> str | None:
+    config = get_config()
+    _setup_logging(config.logging.level)
+    if not args.no_auto_core:
+        try:
+            ensure_core_running(config)
+        except CoreLaunchError as exc:
+            raise SystemExit(f"Core startup error: {exc}") from exc
+    try:
+        auth_token = read_ipc_token(Path(config.ipc_token_file))
+    except IpcTokenError as exc:
+        raise SystemExit(f"IPC authentication error: {exc}") from exc
+    app = KyleTuiApp(
+        config.host,
+        config.port,
+        replay_run_id=args.replay,
+        resume_session_id=args.resume,
+        auth_token=auth_token,
+    )
+    return app.run()
+
+
+# kyle-tui 入口：首次引导配置并支持从 /config 返回后重新加载
 def main() -> None:
     parser = argparse.ArgumentParser(prog="kyle-tui", description="KyleClaude TUI")
     source = parser.add_mutually_exclusive_group()
@@ -46,22 +84,20 @@ def main() -> None:
         metavar="SESSION_ID",
         help="Resume a saved chat session",
     )
+    parser.add_argument(
+        "--no-auto-core",
+        action="store_true",
+        help="Do not automatically start the local Core daemon",
+    )
     args = parser.parse_args()
 
-    config = get_config()
-    _setup_logging(config.logging.level)
-    try:
-        auth_token = read_ipc_token(Path(config.ipc_token_file))
-    except IpcTokenError as exc:
-        raise SystemExit(f"IPC authentication error: {exc}") from exc
-    app = KyleTuiApp(
-        config.host,
-        config.port,
-        replay_run_id=args.replay,
-        resume_session_id=args.resume,
-        auth_token=auth_token,
-    )
-    app.run()
+    _ensure_llm_configured()
+    while _run_tui(args) == "configure":
+        config = get_config()
+        configure_llm(config)
+        from kyle_claude.cli.commands.core import stop_core
+
+        stop_core()
 
 
 if __name__ == "__main__":

@@ -650,7 +650,7 @@ class ChatTextArea(TextArea):
         await super()._on_key(event)
 
 
-class KyleTuiApp(App[None]):
+class KyleTuiApp(App[str | None]):
     """KyleClaude TUI：终端滚屏风格，实时展示 agent 执行过程。"""
 
     TITLE = "KyleClaude"
@@ -742,6 +742,7 @@ class KyleTuiApp(App[None]):
         items: list[tuple[str, str]] = [
             ("sessions", "open saved session picker"),
             ("new", "start a new chat session"),
+            ("config", "change LLM API, model, or key"),
             ("compact", "compress context window"),
         ]
         try:
@@ -862,6 +863,18 @@ class KyleTuiApp(App[None]):
                     name="new_session",
                     exclusive=False,
                 )
+            return
+        if content == "/config":
+            event.text_area.text = ""
+            if self._busy:
+                self._append(
+                    Static(
+                        "[yellow]请先等待或取消当前任务再修改 LLM 配置[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            self.exit("configure")
             return
         # 检测 /compact 指令
         if content == "/compact":

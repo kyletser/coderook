@@ -31,6 +31,7 @@ from kyle_claude.core.skills.loader import SkillLoader
 if TYPE_CHECKING:
     from kyle_claude.core.llm.base import LLMProvider
     from kyle_claude.core.runner import AgentRunner
+    from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
 
 SESSION_NOT_FOUND = -32010
 SESSION_CLOSED = -32011
@@ -59,11 +60,13 @@ class SessionManager:
         runner_factory: Callable[[], AgentRunner],
         bus: EventBus,
         provider: LLMProvider | None = None,
+        subagent_registry: BackgroundTaskRegistry | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
         self._provider = provider
+        self._subagent_registry = subagent_registry
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
@@ -221,6 +224,8 @@ class SessionManager:
             await active.task
         except asyncio.CancelledError:
             pass
+        if self._subagent_registry is not None:
+            await self._subagent_registry.cancel_descendants(run_id)
         await active.finished.wait()
         return active.session_id
 

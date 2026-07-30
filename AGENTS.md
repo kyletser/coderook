@@ -26,6 +26,15 @@ uv run python scripts/gen_protocol_doc.py
 # Verify WIRE_PROTOCOL.md is in sync (used in CI equivalent)
 uv run python scripts/gen_protocol_doc.py --check
 
+# Reproduce the complete CI gate before every push
+uv run ruff check .
+uv run mypy src
+uv run mypy --platform linux src
+uv run pytest -q
+uv run python scripts/gen_protocol_doc.py --check
+uv build
+uv run python scripts/smoke_wheel.py dist
+
 # Run daemon manually
 uv run kyle-core                        # foreground; Ctrl+C to stop
 KYLE_PORT=8000 uv run kyle-core        # override port
@@ -77,6 +86,17 @@ Relevant env vars: `KYLE_CONFIG`, `KYLE_HOST`, `KYLE_PORT`, `KYLE_LOG_LEVEL`, `K
 ### Testing
 
 Integration tests in `tests/conftest.py` spawn a real daemon subprocess using a random free port (via `free_port` fixture). The fixture finds a free port, releases it, passes it to the daemon via `KYLE_PORT`, then polls `asyncio.open_connection` until the daemon is ready.
+
+### Pre-push CI discipline
+
+Never push changes until the complete CI gate listed in **Commands** passes locally.
+
+- On Windows, run both normal Mypy and `mypy --platform linux`; Windows-only `ctypes` attributes can pass locally but fail on Ubuntu.
+- Integration fixtures must be self-contained. They must not depend on a developer `.env`, a real API key, or a GitHub Secret unless the test is explicitly marked and skipped when the secret is absent.
+- After any change under `src/kyle_claude/core/bus/` or `scripts/gen_protocol_doc.py`, regenerate `WIRE_PROTOCOL.md`, commit the generated file, and run `--check`.
+- Generated text must use explicit UTF-8 and deterministic LF comparison. Prefer ASCII punctuation in generated protocol text when typography has no semantic value.
+- Before pushing, inspect `git status --short` and the staged diff so generated files and test fixes are included in the same commit.
+- A failed command blocks the push. Fix the failure and rerun the complete gate from the beginning.
 
 ### Code style
 

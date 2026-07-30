@@ -40,16 +40,17 @@ class OpenAICompatibleProvider:
         *,
         base_url: str,
         api_key_env: str,
+        api_key: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
             raise SystemExit("KYLE_LLM_BASE_URL not set")
-        api_key = os.environ.get(api_key_env)
-        if not api_key:
+        resolved_key = api_key or os.environ.get(api_key_env)
+        if not resolved_key:
             raise SystemExit(f"{api_key_env} not set")
         self._model = model
         self._base_url = base_url
-        self._api_key = api_key
+        self._api_key = resolved_key
         self._client = client
 
     async def chat(
@@ -105,7 +106,7 @@ class OpenAICompatibleProvider:
         output_tokens = int(
             usage_raw.get("completion_tokens") or usage_raw.get("output_tokens") or 0
         )
-        context_pct = input_tokens / _context_window(self._model)
+        context_pct = input_tokens / _context_window(resolved_model)
         await bus.publish(
             LlmUsageEvent(
                 run_id=run_id,
