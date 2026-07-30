@@ -6,9 +6,9 @@ import sys
 
 from pydantic import BaseModel
 
-from kyle_claude.core.background import BackgroundJobRegistry
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.tools.builtin.background import (
+from code_rook.core.background import BackgroundJobRegistry
+from code_rook.core.events.bus import EventBus
+from code_rook.core.tools.builtin.background import (
     BackgroundCancelTool,
     BackgroundListTool,
     BackgroundResultTool,

@@ -1,10 +1,10 @@
 # learn-claude-code 机制移植说明
 
-本轮没有复制参考仓库的教学代码，而是提炼其高价值运行时机制，并按 Kyle 现有的类型化、异步、双进程边界重新实现。
+本轮没有复制参考仓库的教学代码，而是提炼其高价值运行时机制，并按 CodeRook 现有的类型化、异步、双进程边界重新实现。
 
 ## 已移植能力
 
-| 机制 | Kyle 实现 | 工程约束 |
+| 机制 | CodeRook 实现 | 工程约束 |
 |---|---|---|
 | 生命周期 Hooks | `core/hooks/` | 四个异步阶段，回调异常隔离，阻断结果类型化 |
 | 项目长期记忆 | `core/memory/`、`memory_*` 工具 | JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏、确定性检索 |
@@ -37,10 +37,10 @@ uv run python scripts\gen_protocol_doc.py --check
 
 ```powershell
 # 终端 1
-uv run kyle-core
+uv run coderook-core
 
 # 终端 2
-uv run kyle-tui
+uv run coderook-tui
 ```
 
 可以依次让 Agent“记住本项目使用 uv”“在后台运行一个短命令并查询结果”“创建一个 worktree 后让子代理在其中工作”，观察权限审批、工具事件和结果回填。
@@ -48,7 +48,7 @@ uv run kyle-tui
 ## 有意保留的边界
 
 - 记忆检索采用可解释的中英文词法打分，没有引入向量数据库或 embedding 服务，避免增加部署依赖和隐式网络请求。
-- worktree 仅允许位于 `.kyle/worktrees/`，不接受任意路径，防止子代理逃逸项目边界。
+- worktree 仅允许位于 `.coderook/worktrees/`，不接受任意路径，防止子代理逃逸项目边界。
 - 后台任务属于 daemon 生命周期；daemon 退出时会清理进程树，不把失控进程留在系统中。
 - Hooks 是进程内扩展点，当前不执行任意外部脚本；后续可以在权限和配置模型完备后增加声明式 Hook 配置。
 

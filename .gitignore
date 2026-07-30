@@ -5,6 +5,7 @@ __pycache__/
 *.pyo
 runs/
 dist/
+dist-*/
 build/
 *.egg-info/
 .mypy_cache/
@@ -15,6 +16,6 @@ build/
 .DS_Store
 *.log
 workspace/
-.kyle/memory/
-.kyle/worktrees/
+.coderook/memory/
+.coderook/worktrees/
 .workbuddy/

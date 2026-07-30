@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.trace.record import TraceRecord
-from kyle_claude.core.trace.redaction import REDACTED, redact_trace_data
-from kyle_claude.core.trace.writer import TraceWriter
+from code_rook.core.trace.record import TraceRecord
+from code_rook.core.trace.redaction import REDACTED, redact_trace_data
+from code_rook.core.trace.writer import TraceWriter
 
 
 def _record(direction: str = "CORE", kind: str = "event") -> TraceRecord:

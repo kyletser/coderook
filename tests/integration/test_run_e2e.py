@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.core.runner import AgentRunner
+from code_rook.core.config import CodeRookConfig
+from code_rook.core.runner import AgentRunner
 
 # Load project .env so ANTHROPIC_API_KEY is available without going through get_config()
 load_dotenv(Path(__file__).parent.parent.parent / ".env", override=False)
@@ -55,7 +55,7 @@ async def test_run_e2e_reads_file_and_succeeds(
     )
     runs_dir = tmp_path / "runs"
 
-    config = KyleConfig()
+    config = CodeRookConfig()
     config.agent.max_steps = 5
 
     runner = AgentRunner(config, runs_dir=runs_dir)

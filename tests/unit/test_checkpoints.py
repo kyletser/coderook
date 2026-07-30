@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.checkpoints import CheckpointError, CheckpointStore
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.core.editing import FileMutation, apply_file_transaction
-from kyle_claude.core.runner import AgentRunner
-from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.builtin.apply_patch import ApplyPatchTool
-from kyle_claude.core.tools.builtin.checkpoint import (
+from code_rook.core.checkpoints import CheckpointError, CheckpointStore
+from code_rook.core.config import CodeRookConfig
+from code_rook.core.editing import FileMutation, apply_file_transaction
+from code_rook.core.runner import AgentRunner
+from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
+from code_rook.core.tools.builtin.checkpoint import (
     CheckpointListTool,
     CheckpointRewindTool,
 )
-from kyle_claude.core.tools.builtin.edit_file import EditFileTool
-from kyle_claude.core.tools.builtin.write_file import WriteFileTool
-from kyle_claude.core.workspace import WorkspaceBoundary
+from code_rook.core.tools.builtin.edit_file import EditFileTool
+from code_rook.core.tools.builtin.write_file import WriteFileTool
+from code_rook.core.workspace import WorkspaceBoundary
 
 
 def _store(tmp_path: Path) -> CheckpointStore:
@@ -206,7 +206,7 @@ def test_runner_registry_exposes_checkpoint_tools_when_store_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    runner = AgentRunner(KyleConfig(), runs_dir=tmp_path / ".runs")
+    runner = AgentRunner(CodeRookConfig(), runs_dir=tmp_path / ".runs")
     store = _store(tmp_path)
 
     registry = runner._build_registry(

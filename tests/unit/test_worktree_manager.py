@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.worktree import WorktreeError, WorktreeManager
+from code_rook.core.worktree import WorktreeError, WorktreeManager
 
 
 # 初始化包含一次提交的最小 Git 仓库
@@ -19,9 +19,9 @@ def _init_repo(path: Path) -> None:
             "-C",
             str(path),
             "-c",
-            "user.name=Kyle Test",
+            "user.name=CodeRook Test",
             "-c",
-            "user.email=kyle@example.invalid",
+            "user.email=coderook@example.invalid",
             "commit",
             "-qm",
             "initial",

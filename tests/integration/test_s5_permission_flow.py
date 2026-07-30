@@ -11,11 +11,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, ToolCallBlock
-from kyle_claude.core.permissions.manager import PermissionManager
-from kyle_claude.core.runner import AgentRunner
+from code_rook.core.config import CodeRookConfig
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.runner import AgentRunner
 
 # ── stub providers ────────────────────────────────────────────────────────────
 
@@ -80,7 +80,7 @@ def _runner(
     tmp_path: Path,
     max_steps: int = 10,
 ) -> AgentRunner:
-    config = KyleConfig()
+    config = CodeRookConfig()
     config.agent.max_steps = max_steps
     return AgentRunner(
         config,

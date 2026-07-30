@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kyle_claude.core.compact.protocol import validate_tool_protocol
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.loop import AgentLoop
-from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
-from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.base import BaseTool, ToolResult
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.compact.protocol import validate_tool_protocol
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.loop import AgentLoop
+from code_rook.core.session.store import SessionStore, SessionTranscriptSink
+from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- stubs -------------------------------------------------------------------
 
@@ -235,7 +235,7 @@ async def test_end_turn_after_tool_completes_todo_does_not_defer(tmp_path: Path)
     tool = _TodoUpdateTool(tm)
     registry = ToolRegistry()
     registry.register(tool)
-    from kyle_claude.core.llm.types import ToolCallBlock
+    from code_rook.core.llm.types import ToolCallBlock
 
     provider = _ScriptedProvider(
         [

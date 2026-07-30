@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import kyle_claude.core.tools.builtin.glob as glob_module
-import kyle_claude.core.tools.builtin.grep as grep_module
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.core.runner import AgentRunner
-from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.builtin.glob import GlobTool
-from kyle_claude.core.tools.builtin.grep import GrepTool
+import code_rook.core.tools.builtin.glob as glob_module
+import code_rook.core.tools.builtin.grep as grep_module
+from code_rook.core.config import CodeRookConfig
+from code_rook.core.runner import AgentRunner
+from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.builtin.glob import GlobTool
+from code_rook.core.tools.builtin.grep import GrepTool
 
 
 def _payload(content: str) -> dict:
@@ -191,7 +191,7 @@ def test_main_agent_registry_exposes_search_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    runner = AgentRunner(KyleConfig(), runs_dir=tmp_path / ".runs")
+    runner = AgentRunner(CodeRookConfig(), runs_dir=tmp_path / ".runs")
 
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
 

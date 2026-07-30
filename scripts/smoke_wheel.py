@@ -16,7 +16,7 @@ from pathlib import Path
 
 # 定位待验证目录中唯一的 wheel 文件
 def _find_wheel(path: Path) -> Path:
-    candidates = sorted(path.glob("*.whl")) if path.is_dir() else [path]
+    candidates = sorted(path.glob("coderook-*.whl")) if path.is_dir() else [path]
     if len(candidates) != 1 or not candidates[0].is_file():
         raise SystemExit(f"expected exactly one wheel, found: {candidates}")
     return candidates[0].resolve()
@@ -81,16 +81,16 @@ async def _wait_until_listening(port: int, process: subprocess.Popen[str]) -> No
 
 # 从解压后的 wheel 验证资源、入口、鉴权 Core 和真实 ping
 def smoke(wheel: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="kyle-wheel-smoke-") as raw_temp:
+    with tempfile.TemporaryDirectory(prefix="coderook-wheel-smoke-") as raw_temp:
         root = Path(raw_temp)
         site = root / "site"
         site.mkdir()
         _safe_extract(wheel, site)
 
         required_resources = [
-            site / "kyle_claude" / "py.typed",
-            site / "kyle_claude" / "core" / "agents" / "builtin" / "executor.toml",
-            site / "kyle_claude" / "core" / "skills" / "builtin" / "review.md",
+            site / "code_rook" / "py.typed",
+            site / "code_rook" / "core" / "agents" / "builtin" / "executor.toml",
+            site / "code_rook" / "core" / "skills" / "builtin" / "review.md",
         ]
         missing = [str(path.relative_to(site)) for path in required_resources if not path.is_file()]
         if missing:
@@ -99,7 +99,7 @@ def smoke(wheel: Path) -> None:
         env = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("KYLE_") and key not in {"PYTHONPATH", "ANTHROPIC_API_KEY"}
+            if not key.startswith("CODEROOK_") and key not in {"PYTHONPATH", "ANTHROPIC_API_KEY"}
         }
         home = root / "home"
         home.mkdir()
@@ -110,12 +110,12 @@ def smoke(wheel: Path) -> None:
                 "PYTHONPATH": str(site),
                 "PYTHONUTF8": "1",
                 "ANTHROPIC_API_KEY": "wheel-smoke-placeholder",
-                "KYLE_HOST": "127.0.0.1",
-                "KYLE_PORT": str(_free_port()),
-                "KYLE_IPC_TOKEN": secrets.token_urlsafe(32),
-                "KYLE_LOG_FILE": "",
-                "KYLE_LOG_LEVEL": "WARNING",
-                "KYLE_TRACE_ENABLED": "false",
+                "CODEROOK_HOST": "127.0.0.1",
+                "CODEROOK_PORT": str(_free_port()),
+                "CODEROOK_IPC_TOKEN": secrets.token_urlsafe(32),
+                "CODEROOK_LOG_FILE": "",
+                "CODEROOK_LOG_LEVEL": "WARNING",
+                "CODEROOK_TRACE_ENABLED": "false",
             }
         )
 
@@ -123,8 +123,8 @@ def smoke(wheel: Path) -> None:
             """
 from pathlib import Path
 import os
-import kyle_claude
-package = Path(kyle_claude.__file__).resolve()
+import code_rook
+package = Path(code_rook.__file__).resolve()
 site = Path(os.environ["PYTHONPATH"]).resolve()
 assert package.is_relative_to(site), (package, site)
 print(package)
@@ -132,18 +132,18 @@ print(package)
             env=env,
             cwd=root,
         )
-        if "kyle_claude" not in imported.stdout:
+        if "code_rook" not in imported.stdout:
             raise RuntimeError("wheel package import did not report its path")
 
         _run_python(
-            "import sys; sys.argv=['kyle', '--version']; "
-            "from kyle_claude.cli.main import main; main()",
+            "import sys; sys.argv=['coderook', '--version']; "
+            "from code_rook.cli.main import main; main()",
             env=env,
             cwd=root,
         )
         _run_python(
-            "import sys; sys.argv=['kyle-tui', '--help']; "
-            "from kyle_claude.tui.__main__ import main; main()",
+            "import sys; sys.argv=['coderook-tui', '--help']; "
+            "from code_rook.tui.__main__ import main; main()",
             env=env,
             cwd=root,
         )
@@ -152,7 +152,7 @@ print(package)
             [
                 sys.executable,
                 "-c",
-                "from kyle_claude.core.app import run; run()",
+                "from code_rook.core.app import run; run()",
             ],
             cwd=root,
             env=env,
@@ -161,10 +161,10 @@ print(package)
             text=True,
         )
         try:
-            asyncio.run(_wait_until_listening(int(env["KYLE_PORT"]), process))
+            asyncio.run(_wait_until_listening(int(env["CODEROOK_PORT"]), process))
             ping = _run_python(
-                "import sys; sys.argv=['kyle', 'ping']; "
-                "from kyle_claude.cli.main import main; main()",
+                "import sys; sys.argv=['coderook', 'ping']; "
+                "from code_rook.cli.main import main; main()",
                 env=env,
                 cwd=root,
             )
@@ -184,7 +184,7 @@ print(package)
 
 # 解析命令行参数并执行 wheel 烟测
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Smoke-test a built KyleClaude wheel")
+    parser = argparse.ArgumentParser(description="Smoke-test a built CodeRook wheel")
     parser.add_argument("wheel_or_dist", type=Path)
     args = parser.parse_args()
     smoke(_find_wheel(args.wheel_or_dist))

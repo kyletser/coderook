@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from kyle_claude.core.tools.builtin.bash import BashParams
-from kyle_claude.core.tools.builtin.list_dir import ListDirParams
-from kyle_claude.core.tools.builtin.note_save import NoteSaveParams
-from kyle_claude.core.tools.builtin.read_file import ReadFileParams
-from kyle_claude.core.tools.builtin.write_file import WriteFileParams
+from code_rook.core.tools.builtin.bash import BashParams
+from code_rook.core.tools.builtin.list_dir import ListDirParams
+from code_rook.core.tools.builtin.note_save import NoteSaveParams
+from code_rook.core.tools.builtin.read_file import ReadFileParams
+from code_rook.core.tools.builtin.write_file import WriteFileParams
 
 
 # 功能：验证 BashParams 接受合法参数，缺省 timeout 为 60

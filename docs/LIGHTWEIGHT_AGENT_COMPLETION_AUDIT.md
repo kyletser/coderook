@@ -1,10 +1,10 @@
-# KyleClaude 轻量级 Agent 完成度审计
+# CodeRook 轻量级 Agent 完成度审计
 
 更新时间：2026-07-16
 
 ## 结论
 
-KyleClaude 已达到“可本地运行、可完成真实代码修改闭环、具备安全与恢复边界”的标准轻量级
+CodeRook 已达到“可本地运行、可完成真实代码修改闭环、具备安全与恢复边界”的标准轻量级
 Coding Agent 基线，但尚未完成差距分析文档中的全部 Phase 1 增强项。
 
 - **轻量级 Agent 基线：达到。** 能完成检索、精确编辑、多文件补丁、测试、diff、checkpoint、
@@ -44,7 +44,7 @@ Ruff: all checks passed
 Mypy strict: 109 source files, 0 errors
 Pytest: 388 passed, 3 skipped
 WIRE_PROTOCOL.md: generated document is current
-Build: kyleclaude-0.0.1-py3-none-any.whl + source distribution
+Build: coderook-0.0.1-py3-none-any.whl + source distribution
 Wheel smoke: packaged resources, CLI/TUI entry points, authenticated Core and ping passed
 ```
 

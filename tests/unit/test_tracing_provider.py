@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.trace.provider import TracingProvider
-from kyle_claude.core.trace.record import TraceRecord
-from kyle_claude.core.trace.writer import TraceWriter
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.trace.provider import TracingProvider
+from code_rook.core.trace.record import TraceRecord
+from code_rook.core.trace.writer import TraceWriter
 
 
 def _make_response(stop_reason: str = "end_turn") -> LlmResponse:

@@ -23,7 +23,7 @@ def free_port() -> int:
 @pytest.fixture
 def ipc_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = secrets.token_urlsafe(32)
-    monkeypatch.setenv("KYLE_IPC_TOKEN", token)
+    monkeypatch.setenv("CODEROOK_IPC_TOKEN", token)
     return token
 
 
@@ -33,14 +33,14 @@ async def running_daemon(
     ipc_token: str,
 ) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
-    env["KYLE_PORT"] = str(free_port)
-    env["KYLE_LOG_FILE"] = ""
-    env["KYLE_LOG_LEVEL"] = "WARNING"
+    env["CODEROOK_PORT"] = str(free_port)
+    env["CODEROOK_LOG_FILE"] = ""
+    env["CODEROOK_LOG_LEVEL"] = "WARNING"
     # IPC 集成测试不调用真实模型，固定占位配置以避免依赖本机 .env 或 CI Secret
-    env["KYLE_LLM_PROVIDER"] = "anthropic"
+    env["CODEROOK_LLM_PROVIDER"] = "anthropic"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
 
-    proc = subprocess.Popen([sys.executable, "-m", "kyle_claude.core"], env=env)
+    proc = subprocess.Popen([sys.executable, "-m", "code_rook.core"], env=env)
 
     # Core startup may cross three seconds on a cold Windows filesystem or while
     # endpoint protection scans a newly spawned interpreter.

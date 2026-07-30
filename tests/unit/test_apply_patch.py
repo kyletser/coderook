@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import kyle_claude.core.editing.transaction as transaction_module
-from kyle_claude.core.tools.builtin.apply_patch import ApplyPatchTool
+import code_rook.core.editing.transaction as transaction_module
+from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
 
 
 def _payload(content: str) -> dict:

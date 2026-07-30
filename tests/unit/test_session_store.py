@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.session.model import Session
-from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
+from code_rook.core.session.model import Session
+from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 
 
 # 功能：验证 SessionStore 初始化时自动创建 sessions 根目录

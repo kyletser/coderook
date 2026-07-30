@@ -28,6 +28,7 @@ uv run python scripts/gen_protocol_doc.py --check
 
 # Reproduce the complete CI gate before every push
 uv run ruff check .
+uv run python scripts/check_brand.py
 uv run mypy src
 uv run mypy --platform linux src
 uv run pytest -q
@@ -36,28 +37,28 @@ uv build
 uv run python scripts/smoke_wheel.py dist
 
 # Run daemon manually
-uv run kyle-core                        # foreground; Ctrl+C to stop
-KYLE_PORT=8000 uv run kyle-core        # override port
+uv run coderook-core                        # foreground; Ctrl+C to stop
+CODEROOK_PORT=8000 uv run coderook-core        # override port
 
 # Send a ping
-uv run kyle ping
-uv run kyle --version
+uv run coderook ping
+uv run coderook --version
 ```
 
 ## Architecture
 
-This is a **dual-process** local AI agent system. `kyle-core` is a persistent daemon; `kyle` and `kyle-tui` are clients that connect to it over a Unix domain socket.
+This is a **dual-process** local AI agent system. `coderook-core` is a persistent daemon; `coderook` and `coderook-tui` are clients that connect to it over loopback TCP.
 
 ```
-kyle-core (daemon)
+coderook-core (daemon)
   └─ listens on 127.0.0.1:7437 (TCP)
        ↑ JSON-RPC 2.0 NDJSON
-kyle (CLI)   kyle-tui (TUI, S2+)
+coderook (CLI)   coderook-tui (TUI, S2+)
 ```
 
-**`kyle-tui` is the primary frontend.** All user-facing work on task management, observability, and interaction should be designed for and validated in the TUI first. The `kyle` CLI exists only for quick scripted testing and debugging — it is not a product surface. When implementing features that touch the user interface, invest in the TUI layout, event rendering, and keyboard interactions. Do not shortcut TUI work by pointing to the CLI as an alternative.
+**`coderook-tui` is the primary frontend.** All user-facing work on task management, observability, and interaction should be designed for and validated in the TUI first. The `coderook` CLI exists only for quick scripted testing and debugging — it is not a product surface. When implementing features that touch the user interface, invest in the TUI layout, event rendering, and keyboard interactions. Do not shortcut TUI work by pointing to the CLI as an alternative.
 
-### Protocol layer (`src/kyle_claude/core/bus/`)
+### Protocol layer (`src/code_rook/core/bus/`)
 
 All IPC messages are typed pydantic v2 models with a **discriminated union on the `type` field**. This is the contract boundary — adding a new command or event means adding a new model class to `commands.py` or `events.py` and extending the `Command`/`Event` union.
 
@@ -67,25 +68,25 @@ All IPC messages are typed pydantic v2 models with a **discriminated union on th
 
 `WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
 
-### Transport layer (`src/kyle_claude/core/transport/`)
+### Transport layer (`src/code_rook/core/transport/`)
 
 - `socket_server.py` — TCP server (`asyncio.start_server`); reads NDJSON lines, dispatches to registered `CommandHandler`s, handles JSON-RPC error cases. On `start()`, probes `host:port` first — errors if another daemon is already listening. Handlers registered via `server.register("method.name", handler_fn)`.
 
-### Config (`src/kyle_claude/core/config.py`)
+### Config (`src/code_rook/core/config.py`)
 
-Four-tier priority: **built-in defaults → `~/.kyle/config.toml` → `.env` → env vars**.
+Four-tier priority: **built-in defaults → `~/.coderook/config.toml` → `.env` → env vars**.
 
 S0 keys: `host` (default `127.0.0.1`), `port` (default `7437`), `log_level`, `log_file`. Config file is silently skipped if absent; unknown keys cause a hard exit.
 
-Relevant env vars: `KYLE_CONFIG`, `KYLE_HOST`, `KYLE_PORT`, `KYLE_LOG_LEVEL`, `KYLE_LOG_FILE`, `KYLE_LOG_FORMAT`.
+Relevant env vars: `CODEROOK_CONFIG`, `CODEROOK_HOST`, `CODEROOK_PORT`, `CODEROOK_LOG_LEVEL`, `CODEROOK_LOG_FILE`, `CODEROOK_LOG_FORMAT`.
 
-### Daemon entry (`src/kyle_claude/core/app.py`)
+### Daemon entry (`src/code_rook/core/app.py`)
 
 `CoreApp.run()` is the single async entry point: loads config → sets up logging → creates `SocketServer` → registers handlers → waits for `SIGINT`/`SIGTERM` → calls `server.stop()`. Adding new handlers: instantiate a handler method on `CoreApp` and call `server.register()`.
 
 ### Testing
 
-Integration tests in `tests/conftest.py` spawn a real daemon subprocess using a random free port (via `free_port` fixture). The fixture finds a free port, releases it, passes it to the daemon via `KYLE_PORT`, then polls `asyncio.open_connection` until the daemon is ready.
+Integration tests in `tests/conftest.py` spawn a real daemon subprocess using a random free port (via `free_port` fixture). The fixture finds a free port, releases it, passes it to the daemon via `CODEROOK_PORT`, then polls `asyncio.open_connection` until the daemon is ready.
 
 ### Pre-push CI discipline
 
@@ -93,7 +94,7 @@ Never push changes until the complete CI gate listed in **Commands** passes loca
 
 - On Windows, run both normal Mypy and `mypy --platform linux`; Windows-only `ctypes` attributes can pass locally but fail on Ubuntu.
 - Integration fixtures must be self-contained. They must not depend on a developer `.env`, a real API key, or a GitHub Secret unless the test is explicitly marked and skipped when the secret is absent.
-- After any change under `src/kyle_claude/core/bus/` or `scripts/gen_protocol_doc.py`, regenerate `WIRE_PROTOCOL.md`, commit the generated file, and run `--check`.
+- After any change under `src/code_rook/core/bus/` or `scripts/gen_protocol_doc.py`, regenerate `WIRE_PROTOCOL.md`, commit the generated file, and run `--check`.
 - Generated text must use explicit UTF-8 and deterministic LF comparison. Prefer ASCII punctuation in generated protocol text when typography has no semantic value.
 - Before pushing, inspect `git status --short` and the staged diff so generated files and test fixes are included in the same commit.
 - A failed command blocks the push. Fix the failure and rerun the complete gate from the beginning.

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from kyle_claude.core.session.exporter import export_session
-from kyle_claude.core.session.model import Session
+from code_rook.core.session.exporter import export_session
+from code_rook.core.session.model import Session
 
 
 def _session() -> Session:

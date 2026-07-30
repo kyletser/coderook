@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from dotenv import dotenv_values
 
-from kyle_claude.cli.commands import configure as configure_module
-from kyle_claude.core.config import KyleConfig, LlmConfig
+from code_rook.cli.commands import configure as configure_module
+from code_rook.core.config import CodeRookConfig, LlmConfig
 
 
 # 功能：验证写入 llm 配置时会替换旧表且保留前后其他 TOML 小节
@@ -43,27 +43,27 @@ def test_configure_migrates_dotenv_secret_to_credentials(
     monkeypatch.chdir(tmp_path)
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "KYLE_LLM_PROVIDER=openai_compatible\n"
-        "KYLE_LLM_API_KEY_ENV=KYLE_LLM_API_KEY\n"
-        "KYLE_LLM_API_KEY=old-secret\n",
+        "CODEROOK_LLM_PROVIDER=openai_compatible\n"
+        "CODEROOK_LLM_API_KEY_ENV=CODEROOK_LLM_API_KEY\n"
+        "CODEROOK_LLM_API_KEY=old-secret\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("KYLE_LLM_API_KEY", "old-secret")
+    monkeypatch.setenv("CODEROOK_LLM_API_KEY", "old-secret")
     inputs = iter(["2", "new-model", "https://example.test/v1/chat/completions"])
-    current = KyleConfig(
+    current = CodeRookConfig(
         llm=LlmConfig(
             provider="openai_compatible",
             default_model="",
             base_url="",
-            api_key_env="KYLE_LLM_API_KEY",
+            api_key_env="CODEROOK_LLM_API_KEY",
         )
     )
-    expected = KyleConfig(
+    expected = CodeRookConfig(
         llm=LlmConfig(
             provider="openai_compatible",
             default_model="new-model",
             base_url="https://example.test/v1/chat/completions",
-            api_key_env="KYLE_LLM_API_KEY",
+            api_key_env="CODEROOK_LLM_API_KEY",
         )
     )
     monkeypatch.setattr(configure_module, "get_config", lambda: expected)
@@ -81,9 +81,9 @@ def test_configure_migrates_dotenv_secret_to_credentials(
     credentials = json.loads(credential_path.read_text(encoding="utf-8"))
 
     assert result is expected
-    assert env_values["KYLE_LLM_DEFAULT_MODEL"] == "new-model"
-    assert env_values["KYLE_LLM_BASE_URL"] == "https://example.test/v1/chat/completions"
-    assert "KYLE_LLM_API_KEY" not in env_values
+    assert env_values["CODEROOK_LLM_DEFAULT_MODEL"] == "new-model"
+    assert env_values["CODEROOK_LLM_BASE_URL"] == "https://example.test/v1/chat/completions"
+    assert "CODEROOK_LLM_API_KEY" not in env_values
     assert credentials["api_keys"]["openai_compatible"] == "old-secret"
     assert "old-secret" not in config_path.read_text(encoding="utf-8")
 
@@ -96,13 +96,13 @@ def test_configure_anthropic_official_endpoint(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     inputs = iter(["1", "claude-custom", ""])
-    expected = KyleConfig()
+    expected = CodeRookConfig()
     monkeypatch.setattr(configure_module, "get_config", lambda: expected)
     config_path = tmp_path / "config.toml"
     credential_path = tmp_path / "credentials.json"
 
     configure_module.configure_llm(
-        KyleConfig(),
+        CodeRookConfig(),
         input_fn=lambda _prompt: next(inputs),
         secret_fn=lambda _prompt: "anthropic-secret",
         config_path=config_path,

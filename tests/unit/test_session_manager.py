@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.bus.envelope import HandlerError
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.runner import RunOutcome
-from kyle_claude.core.session.manager import (
+from code_rook.core.bus.envelope import HandlerError
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.runner import RunOutcome
+from code_rook.core.session.manager import (
     RUN_NOT_ACTIVE,
     SESSION_BUSY,
     SESSION_CLOSED,
@@ -17,9 +17,9 @@ from kyle_claude.core.session.manager import (
     SESSION_NOT_RESUMABLE,
     SessionManager,
 )
-from kyle_claude.core.session.model import Session
-from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
-from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.session.model import Session
+from code_rook.core.session.store import SessionStore, SessionTranscriptSink
+from code_rook.core.subagent.registry import BackgroundTaskRegistry
 
 
 class _Runner:
@@ -83,7 +83,7 @@ async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path
 
 
 # 功能：验证 one_shot session 在单次消息完成后自动 closed
-# 设计：复用 mock runner 的成功路径，聚焦 mode 对最终状态的影响，保证 kyle run 的统一路径正确
+# 设计：复用 mock runner 的成功路径，聚焦 mode 对最终状态的影响，保证 coderook run 的统一路径正确
 async def test_one_shot_auto_closes(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]

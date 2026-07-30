@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kyle_claude.core.mcp.client import McpClient, McpServerUnavailableError, McpToolDef
-from kyle_claude.core.mcp.tool import McpTool
+from code_rook.core.mcp.client import McpClient, McpServerUnavailableError, McpToolDef
+from code_rook.core.mcp.tool import McpTool
 
 
 def _make_tool(

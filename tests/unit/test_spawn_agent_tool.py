@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
-from kyle_claude.core.subagent.tool import AgentResultTool, SpawnAgentTool
-from kyle_claude.core.task.manager import TaskManager
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
+from code_rook.core.task.manager import TaskManager
 
 
 def _make_provider(result_text: str = "child done") -> Any:
@@ -172,7 +172,7 @@ async def test_agent_result_unknown_run_id(tmp_path: Path) -> None:
 # 设计：订阅父 bus 收集所有事件，断言 subagent.started 出现，且 parent_run_id 和 description 正确
 @pytest.mark.asyncio
 async def test_foreground_publishes_started_event(tmp_path: Path) -> None:
-    from kyle_claude.core.bus.events import SubagentStartedEvent
+    from code_rook.core.bus.events import SubagentStartedEvent
 
     tool, _, bus = _make_tool(tmp_path)
     events: list[Any] = []

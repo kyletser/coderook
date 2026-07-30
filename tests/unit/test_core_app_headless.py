@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from kyle_claude.core.app import CoreApp
-from kyle_claude.core.permissions.manager import PermissionManager
-from kyle_claude.core.session.model import Session
+from code_rook.core.app import CoreApp
+from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.session.model import Session
 
 
 async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:

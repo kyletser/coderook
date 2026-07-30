@@ -4,11 +4,11 @@ import asyncio
 
 from pydantic import BaseModel
 
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import ToolCallBlock
-from kyle_claude.core.tools.base import BaseTool, ToolResult
-from kyle_claude.core.tools.invocation import invoke_tool
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.invocation import invoke_tool
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- stub tools --------------------------------------------------------------
 

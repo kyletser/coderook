@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from kyle_claude.core.tools.base import BaseTool, ToolResult
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.registry import ToolRegistry
 
 
 class _FakeTool(BaseTool):

@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.core.transport.auth import IpcTokenError
-from kyle_claude.core.transport.socket_client import IpcError, SocketClient
+from code_rook.core.config import CodeRookConfig
+from code_rook.core.transport.auth import IpcTokenError
+from code_rook.core.transport.socket_client import IpcError, SocketClient
 
 
 async def _start_mock_server(
@@ -237,7 +237,7 @@ async def test_client_closes_connection_when_authentication_fails() -> None:
 def test_client_from_config_reads_token_file(tmp_path: Path) -> None:
     token_path = tmp_path / "ipc-token"
     token_path.write_text("z" * 43 + "\n", encoding="utf-8")
-    config = KyleConfig(host="127.0.0.1", port=1234, ipc_token_file=str(token_path))
+    config = CodeRookConfig(host="127.0.0.1", port=1234, ipc_token_file=str(token_path))
 
     client = SocketClient.from_config(config)
 
@@ -245,6 +245,6 @@ def test_client_from_config_reads_token_file(tmp_path: Path) -> None:
 
 
 def test_client_from_config_rejects_missing_token(tmp_path: Path) -> None:
-    config = KyleConfig(ipc_token_file=str(tmp_path / "missing"))
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "missing"))
     with pytest.raises(IpcTokenError, match="does not exist"):
         SocketClient.from_config(config)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kyle_claude.core.permissions.policy import (
+from code_rook.core.permissions.policy import (
     PermissionDecision,
     ToolPolicy,
     evaluate,

@@ -4,12 +4,12 @@ import asyncio
 import time
 from typing import Any
 
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, ToolCallBlock
-from kyle_claude.core.loop import AgentLoop
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolSideEffect
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.loop import AgentLoop
+from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- stub provider -----------------------------------------------------------
 

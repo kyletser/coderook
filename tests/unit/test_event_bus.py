@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from kyle_claude.core.events.bus import EventBus
+from code_rook.core.events.bus import EventBus
 
 
 class _FakeEvent(BaseModel):

@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from kyle_claude.core.compact.compactor import Compactor
-from kyle_claude.core.compact.protocol import SUMMARY_MARKER, validate_tool_protocol
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.session.store import SessionStore
+from code_rook.core.compact.compactor import Compactor
+from code_rook.core.compact.protocol import SUMMARY_MARKER, validate_tool_protocol
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.session.store import SessionStore
 
 
 # 构造满足结构化摘要模型的 JSON 响应文本

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from kyle_claude.core.compact.budget import distill_tool_results, truncate_tool_results
-from kyle_claude.core.llm.types import LlmResponse
+from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
+from code_rook.core.llm.types import LlmResponse
 
 
 def _make_tool_result_msg(content: str) -> dict:
@@ -90,7 +90,7 @@ async def test_huge_tool_result_is_distilled() -> None:
     result, stats = await distill_tool_results(messages, provider, threshold=20_000)
 
     content = result[0]["content"][0]["content"]
-    assert content.startswith("[Kyle distilled tool output id=id1")
+    assert content.startswith("[CodeRook distilled tool output id=id1")
     assert "42 tests passed" in content
     assert stats.distilled == 1
     assert stats.truncated == 0

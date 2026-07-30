@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.config import KyleConfig, _apply_toml, get_config
-from kyle_claude.core.transport.auth import (
+from code_rook.core.config import CodeRookConfig, _apply_toml, get_config
+from code_rook.core.transport.auth import (
     IpcTokenError,
     is_loopback_host,
     load_or_create_ipc_token,
@@ -31,7 +31,7 @@ def test_token_file_is_stable_private_and_not_a_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("KYLE_IPC_TOKEN", raising=False)
+    monkeypatch.delenv("CODEROOK_IPC_TOKEN", raising=False)
     path = tmp_path / "private" / "ipc-token"
 
     first = load_or_create_ipc_token(path)
@@ -50,7 +50,7 @@ def test_environment_token_is_used_without_writing_file(
 ) -> None:
     token = "e" * 43
     path = tmp_path / "ipc-token"
-    monkeypatch.setenv("KYLE_IPC_TOKEN", token)
+    monkeypatch.setenv("CODEROOK_IPC_TOKEN", token)
 
     assert load_or_create_ipc_token(path) == token
     assert read_ipc_token(path) == token
@@ -61,7 +61,7 @@ def test_token_reader_rejects_malformed_and_symlink_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("KYLE_IPC_TOKEN", raising=False)
+    monkeypatch.delenv("CODEROOK_IPC_TOKEN", raising=False)
     malformed = tmp_path / "malformed"
     malformed.write_text("short\n", encoding="utf-8")
     with pytest.raises(IpcTokenError, match="32-512"):
@@ -84,11 +84,11 @@ def test_ipc_token_file_config_supports_toml_and_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = KyleConfig()
+    config = CodeRookConfig()
     _apply_toml(config, {"core": {"ipc_token_file": "from-toml"}})
     assert config.ipc_token_file == "from-toml"
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("KYLE_IPC_TOKEN_FILE", "from-env")
+    monkeypatch.setenv("CODEROOK_IPC_TOKEN_FILE", "from-env")
     loaded = get_config()
     assert loaded.ipc_token_file == "from-env"

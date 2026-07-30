@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.tools.builtin.read_file import ReadFileTool
+from code_rook.core.tools.builtin.read_file import ReadFileTool
 
 
 def _read_result(content: str) -> tuple[dict, str]:

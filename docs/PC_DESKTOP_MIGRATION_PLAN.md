@@ -1,4 +1,4 @@
-# KyleClaude PC 桌面版移植计划
+# CodeRook PC 桌面版移植计划
 
 更新时间：2026-07-16
 
@@ -37,7 +37,7 @@ TUI picker、本地 IPC loopback 和随机 token 认证；Windows/Ubuntu CI 已�
 ## 3. 目标架构
 
 ```text
-┌──────────────── KyleClaude Desktop ────────────────┐
+┌──────────────── CodeRook Desktop ────────────────┐
 │ React/TypeScript UI                                │
 │ sessions · timeline · diff · tasks · permissions  │
 └──────────────────────┬─────────────────────────────┘
@@ -49,7 +49,7 @@ TUI picker、本地 IPC loopback 和随机 token 认证；Windows/Ubuntu CI 已�
 └──────────────────────┬─────────────────────────────┘
                        │ authenticated JSON-RPC
 ┌──────────────────────▼─────────────────────────────┐
-│ Python Kyle Core sidecar                           │
+│ Python CodeRook Core sidecar                           │
 │ Agent loop · tools · permission · sessions · MCP   │
 │ trace · checkpoint · provider                      │
 └──────────────────────┬─────────────────────────────┘
@@ -67,8 +67,8 @@ TUI picker、本地 IPC loopback 和随机 token 认证；Windows/Ubuntu CI 已�
 ## 4. 建议目录
 
 ```text
-kyleclaude/
-├─ src/kyle_claude/          # 现有 Python Core/CLI/TUI
+coderook/
+├─ src/code_rook/          # 现有 Python Core/CLI/TUI
 ├─ desktop/
 │  ├─ src/                   # React UI
 │  │  ├─ features/session/
@@ -121,7 +121,7 @@ kyleclaude/
 
 1. 增加 `core.hello`：protocol version、capabilities、instance ID。
 2. Core 支持 `--port 0`、`--auth-token`、`--parent-pid` 和结构化 ready 消息。
-3. 复用现有强制 loopback + 首帧 token 握手；Rust 通过 `KYLE_IPC_TOKEN` 注入临时凭据。
+3. 复用现有强制 loopback + 首帧 token 握手；Rust 通过 `CODEROOK_IPC_TOKEN` 注入临时凭据。
 4. 写 PyInstaller spec，先产出 Windows `onedir` Core。
 5. 建最小 Tauri app，由 Rust 拉起 Core、ping、停止并收集 stderr。
 

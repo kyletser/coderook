@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from kyle_claude.core.bus.envelope import AUTH_FAILED, AUTH_REQUIRED
-from kyle_claude.core.transport.socket_server import SocketServer
+from code_rook.core.bus.envelope import AUTH_FAILED, AUTH_REQUIRED
+from code_rook.core.transport.socket_server import SocketServer
 
 
 def _free_port() -> int:

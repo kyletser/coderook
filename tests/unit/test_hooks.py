@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kyle_claude.core.hooks import HookDecision, HookManager
+from code_rook.core.hooks import HookDecision, HookManager
 
 
 # 功能：验证同一生命周期的异步 hooks 按注册顺序执行

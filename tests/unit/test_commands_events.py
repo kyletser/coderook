@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from kyle_claude.core.bus.commands import (
+from code_rook.core.bus.commands import (
     AgentRunCommand,
     CoreAuthenticateCommand,
     CoreAuthenticateResult,
@@ -18,7 +18,7 @@ from kyle_claude.core.bus.commands import (
     SessionRenameCommand,
     SessionResumeCommand,
 )
-from kyle_claude.core.bus.events import CoreStartedEvent, SessionInterruptedEvent
+from code_rook.core.bus.events import CoreStartedEvent, SessionInterruptedEvent
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留

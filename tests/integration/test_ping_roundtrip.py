@@ -4,7 +4,7 @@ import asyncio
 import json
 import subprocess
 
-from kyle_claude.core.bus.envelope import AUTH_REQUIRED
+from code_rook.core.bus.envelope import AUTH_REQUIRED
 
 
 async def _send_recv(

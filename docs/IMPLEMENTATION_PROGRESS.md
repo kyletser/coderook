@@ -1,13 +1,13 @@
-# KyleClaude 功能完善进度
+# CodeRook 功能完善进度
 
 更新时间：2026-07-16
 
-本文是 `KYLECLAUDE_VS_CLAUDE_CODE_GAP_ANALYSIS.md` 的动态执行账本。差距报告负责说明目标，
+本文是 `CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md` 的动态执行账本。差距报告负责说明目标，
 本文负责记录当前代码已经证明了什么、还缺什么，以及下一轮应从哪里继续。
 
 ## 当前目标
 
-将 KyleClaude 从“可运行的 Agent Runtime 骨架”推进为标准轻量级 Coding Agent：
+将 CodeRook 从“可运行的 Agent Runtime 骨架”推进为标准轻量级 Coding Agent：
 
 1. 有可靠的工作区与权限边界。
 2. 能安全检索、精确修改、验证和回滚代码。
@@ -27,17 +27,17 @@
 | 自动 Checkpoint/Rewind | Edit/Write/ApplyPatch 写前持久化 preimage 与预期 post-hash；支持当前 run 列表、崩溃中间态恢复、冲突预检和多文件事务 rewind | `test_checkpoints.py` |
 | 可取消运行与进程树终止 | `run.cancel` 贯通 Core、CLI、chat Ctrl+C 和 TUI；取消时清理权限 Future、前后台 Subagent 和 Windows/POSIX Bash 进程树，Session 落为 `interrupted` | `test_run_cancellation.py`、`test_session_manager.py`、CLI/TUI/IPC 测试 |
 | Transcript v2 增量恢复 | assistant/tool_result 按 block 以稳定 ID、index/count 即时 flush+fsync；重复写抑制；取消/冷启动时归档半消息和孤立 tool call 后原子回退；自动 compact 摘要同步持久化 | Store/Loop/Runner/Session/Compactor 单元与取消集成测试 |
-| Headless 权限模式 | `agent.run`/`kyle run` 支持 fail-fast、deny、allow-list；默认 ASK 不挂起，allow-list 不继承交互缓存且不绕过 deny/越界规则；权限所需退出码为 3 | PermissionManager、Runner、Core handler、CLI/协议与集成测试 |
+| Headless 权限模式 | `agent.run`/`coderook run` 支持 fail-fast、deny、allow-list；默认 ASK 不挂起，allow-list 不继承交互缓存且不绕过 deny/越界规则；权限所需退出码为 3 | PermissionManager、Runner、Core handler、CLI/协议与集成测试 |
 | Trace 隐私与保留 | IPC/Event/LLM 默认元数据模式；统一递归 secret redaction；UTF-8 顺序写入、大小轮转、备份数量限制、重启超限处理和写盘失败传播 | TraceWriter/TracingProvider/Config 单元测试 |
-| 本地 IPC 认证 | Core/SocketServer 双层拒绝非 loopback；环境变量或私有 token 文件提供随机凭据；首帧同步握手、常量时间比较、失败断连，认证帧不进入 Trace；CLI/TUI 全部迁移 | Auth/Socket/Config/Protocol 单元测试、真实 daemon 未认证拒绝与双客户端 E2E、`kyle ping` smoke |
+| 本地 IPC 认证 | Core/SocketServer 双层拒绝非 loopback；环境变量或私有 token 文件提供随机凭据；首帧同步握手、常量时间比较、失败断连，认证帧不进入 Trace；CLI/TUI 全部迁移 | Auth/Socket/Config/Protocol 单元测试、真实 daemon 未认证拒绝与双客户端 E2E、`coderook ping` smoke |
 | 工具重试语义 | Tool 显式声明 `NEVER` / `RATE_LIMIT` / `IDEMPOTENT`，副作用工具默认不重试 | `test_tool_retry.py` |
 | Session 增量状态 | user message、run ID 和 `active` 状态在执行前落盘 | `test_send_message_persists_active_state_during_run` |
 | Session 冷启动恢复 | Core 扫描 `meta.json`；未完成的 `active` 会话恢复为 `interrupted` | `test_rehydrate_marks_active_session_interrupted` |
 | Session list/resume | 新增 `session.list`、`session.resume`，支持关闭后的 chat 恢复 | 单元测试与 `test_s4_session_ipc.py` |
-| CLI 历史会话 | `kyle sessions`、`kyle chat --resume SESSION_ID` | CLI help smoke test |
-| TUI 历史会话 | `kyle-tui --resume SESSION_ID`，恢复后加载历史消息 | TUI 单元测试、参数 smoke test |
+| CLI 历史会话 | `coderook sessions`、`coderook chat --resume SESSION_ID` | CLI help smoke test |
+| TUI 历史会话 | `coderook-tui --resume SESSION_ID`，恢复后加载历史消息 | TUI 单元测试、参数 smoke test |
 | Session 完整生命周期 | rename/fork/export/delete 使用类型化 IPC；fork 原子复制当前 transcript+notes 并记录 lineage，不复制 runs；delete 原子 tombstone；CLI 管理命令与 TUI `/sessions` picker、`/new` | Store/Manager/Exporter/Protocol/TUI 测试、真实 CLI 生命周期 smoke |
-| Windows Core 生命周期 | PID 探活在 Windows 使用 `OpenProcess`，`kyle core stop` 可可靠识别并停止后台 Core | `test_cli_core.py`、真实 stop/start smoke |
+| Windows Core 生命周期 | PID 探活在 Windows 使用 `OpenProcess`，`coderook core stop` 可可靠识别并停止后台 Core | `test_cli_core.py`、真实 stop/start smoke |
 | 权限审批 TUI | 紧凑聚焦面板展示动作、完整 shell 命令或目标路径；四种决策、方向键、数字键与 Esc 保持可用，永久规则明确标注跨 Session | TUI 组件测试、真实 Textual 截图、完整权限流回归 |
 | 跨平台交付门禁 | GitHub Actions 在 Windows/Ubuntu 执行 frozen sync、Ruff、Mypy、pytest、协议检查、构建和 wheel smoke；锁文件不再被忽略 | `.github/workflows/ci.yml`、`Makefile verify`、本机 wheel smoke |
 | Wheel 运行烟测 | 校验内置 agent/skill/typing 资源，从 wheel 隔离导入，验证 CLI/TUI 入口并启动鉴权 Core 执行 ping | `scripts/smoke_wheel.py`、本机真实构建结果 |
@@ -49,7 +49,7 @@
 - Pytest：388 passed，3 skipped。
 - Ruff：All checks passed。
 - Mypy：109 个 source files，0 errors。
-- Build：wheel/sdist 成功；从 wheel 启动鉴权 Core 并执行 `kyle ping` 成功。
+- Build：wheel/sdist 成功；从 wheel 启动鉴权 Core 并执行 `coderook ping` 成功。
 
 ## Phase 0 状态
 

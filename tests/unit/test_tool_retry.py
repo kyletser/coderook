@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-import kyle_claude.core.tools.invocation as inv_mod
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import ToolCallBlock
-from kyle_claude.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
-from kyle_claude.core.tools.errors import RateLimitedError
-from kyle_claude.core.tools.invocation import invoke_tool
-from kyle_claude.core.tools.registry import ToolRegistry
+import code_rook.core.tools.invocation as inv_mod
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
+from code_rook.core.tools.errors import RateLimitedError
+from code_rook.core.tools.invocation import invoke_tool
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- stub tools --------------------------------------------------------------
 

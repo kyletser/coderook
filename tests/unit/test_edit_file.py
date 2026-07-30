@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-import kyle_claude.core.editing.engine as engine_module
-import kyle_claude.core.editing.transaction as transaction_module
-from kyle_claude.core.editing import content_hash
-from kyle_claude.core.tools.builtin.edit_file import EditFileTool
-from kyle_claude.core.tools.builtin.read_file import ReadFileTool
-from kyle_claude.core.tools.builtin.write_file import WriteFileTool
+import code_rook.core.editing.engine as engine_module
+import code_rook.core.editing.transaction as transaction_module
+from code_rook.core.editing import content_hash
+from code_rook.core.tools.builtin.edit_file import EditFileTool
+from code_rook.core.tools.builtin.read_file import ReadFileTool
+from code_rook.core.tools.builtin.write_file import WriteFileTool
 
 
 def _payload(content: str) -> dict:

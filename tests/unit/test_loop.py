@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from kyle_claude.core.compact.compactor import Compactor
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, ToolCallBlock
-from kyle_claude.core.loop import AgentLoop
-from kyle_claude.core.session.store import SessionStore, SessionTranscriptSink
-from kyle_claude.core.tools.base import BaseTool, ToolResult
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.compact.compactor import Compactor
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.loop import AgentLoop
+from code_rook.core.session.store import SessionStore, SessionTranscriptSink
+from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- stubs -------------------------------------------------------------------
 

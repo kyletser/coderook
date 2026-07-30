@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
-from kyle_claude.core.tools.builtin.bash import BashTool
+from code_rook.core.context import ExecutionContext
+from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.tools.builtin.bash import BashTool
 
 
 async def test_bash_cancellation_terminates_descendant_process(tmp_path: Path) -> None:

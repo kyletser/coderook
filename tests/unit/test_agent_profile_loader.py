@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.agents.loader import AgentProfileLoader
+from code_rook.core.agents.loader import AgentProfileLoader
 
 
 # 功能：内建 planner 角色配置应能被 AgentProfileLoader 加载
@@ -90,9 +90,9 @@ model = "claude-sonnet-4-6"
 
 
 # 功能：项目本地角色配置应覆盖内建同名配置
-# 设计：在 .kyle/agents/ 中写入同名 TOML，monkeypatch cwd，断言加载到本地版本
+# 设计：在 .coderook/agents/ 中写入同名 TOML，monkeypatch cwd，断言加载到本地版本
 def test_project_overrides_builtin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    local_agents = tmp_path / ".kyle" / "agents"
+    local_agents = tmp_path / ".coderook" / "agents"
     local_agents.mkdir(parents=True)
     (local_agents / "planner.toml").write_text(
         '[agent]\ndescription = "local planner"\nsystem_prompt = "local prompt"\n'

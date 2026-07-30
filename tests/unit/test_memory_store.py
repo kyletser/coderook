@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kyle_claude.core.memory import MemoryStore
-from kyle_claude.core.tools.builtin.memory import (
+from code_rook.core.memory import MemoryStore
+from code_rook.core.tools.builtin.memory import (
     MemoryForgetTool,
     MemorySaveTool,
     MemorySearchTool,

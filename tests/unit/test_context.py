@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kyle_claude.core.context import ExecutionContext
+from code_rook.core.context import ExecutionContext
 
 
 # 功能：验证 ExecutionContext 初始化时将 goal 包装为第一条 user 消息

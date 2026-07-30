@@ -5,8 +5,8 @@ from rich.markup import render
 from textual.app import App, ComposeResult
 from textual.widget import Widget
 
-from kyle_claude.tui.app import (
-    KyleTuiApp,
+from code_rook.tui.app import (
+    CodeRookTuiApp,
     LLMStreamBlock,
     PermissionBlock,
     PermissionSelect,
@@ -30,7 +30,7 @@ def test_permission_panel_shows_request_context_and_choices() -> None:
     plain = render(panel._render_ui()).plain
 
     assert "bash" in plain
-    assert "KyleClaude wants to run a shell command" in plain
+    assert "CodeRook wants to run a shell command" in plain
     assert "COMMAND" in plain
     assert "git status --short" in plain
     assert "Allow once" in plain
@@ -149,7 +149,7 @@ async def test_session_picker_renders_and_selects_saved_session() -> None:
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     items = dict(app._build_slash_items())  # type: ignore[attr-defined]
 
     assert items["sessions"] == "open saved session picker"
@@ -175,7 +175,7 @@ def test_param_summary_prefers_key_fields() -> None:
 # 设计：monkey-patch _append 收集追加的 widgets，断言 token 追加到同一块；
 #       发送非 token 事件后新 block 被重置，下一个 token 开启新块
 def test_llm_tokens_accumulate_in_block() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -199,7 +199,7 @@ def test_llm_block_finalize_renders_markdown() -> None:
 # 功能：验证非 token 事件后 _current_llm 被重置，下一个 token 开启新块
 # 设计：插入 step.started 中断流，验证之前的 block 被 finalize，之后的 llm.token 创建新 LLMStreamBlock
 def test_llm_block_resets_after_non_token_event() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -215,7 +215,7 @@ def test_llm_block_resets_after_non_token_event() -> None:
 # 功能：验证 run.started 事件追加 Static widget 且包含 run_id 和 goal
 # 设计：monkey-patch _append，断言追加的 widget 的 renderable 包含关键字段
 def test_run_started_appends_widget_with_content() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -232,7 +232,7 @@ def test_run_started_appends_widget_with_content() -> None:
 # 功能：验证 run.finished success 追加包含 "completed" 的 widget
 # 设计：monkey-patch _append，检查 rendered 内容包含 completed 和 green
 def test_run_finished_success_shows_completed() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -248,7 +248,7 @@ def test_run_finished_success_shows_completed() -> None:
 # 功能：验证 run.finished failed 追加包含 "failed" 和 red 的 widget
 # 设计：与 success 对称，检查颜色标记差异
 def test_run_finished_failed_shows_red() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -265,7 +265,7 @@ def test_run_finished_failed_shows_red() -> None:
 # 功能：验证 tool.call_started 追加 ToolCallBlock，call_finished 更新其结果
 # 设计：直接调用 _handle_event 两次，通过 _pending_tool_blocks 验证状态流转
 def test_tool_call_started_and_finished() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -320,7 +320,7 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
         async def send_command(self, method: str, params: dict) -> dict:
             return {"run_id": "run-1"}
 
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
     app._update_header = lambda state: None  # type: ignore[method-assign]
@@ -346,7 +346,7 @@ async def test_cancel_worker_sends_active_run_id() -> None:
             calls.append((method, params))
             return {"run_id": "run-1", "status": "cancelled"}
 
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     app._client = _FakeClient()  # type: ignore[assignment]
 
     await app._do_cancel_run("run-1")  # type: ignore[attr-defined]
@@ -364,7 +364,7 @@ def test_session_interrupted_restores_prompt() -> None:
         def focus(self) -> None:
             self.focused = True
 
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     prompt = _FakePrompt()
     states: list[str] = []
     app._busy = True  # type: ignore[attr-defined]
@@ -394,7 +394,7 @@ def test_session_interrupted_restores_prompt() -> None:
 # 功能：验证未知事件类型不抛异常也不追加任何 widget
 # 设计：发送 type 为 unknown 的事件，断言 appended 为空
 def test_unknown_event_silently_ignored() -> None:
-    app = KyleTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 

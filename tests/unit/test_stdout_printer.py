@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kyle_claude.cli.commands.run import (
+from code_rook.cli.commands.run import (
     EXIT_PERMISSION_REQUIRED,
     StdoutPrinter,
     _run_finished_exit_code,

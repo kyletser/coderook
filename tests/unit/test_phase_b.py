@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kyle_claude.core.agents.loader import AgentProfile, AgentProfileLoader
-from kyle_claude.core.context import ExecutionContext
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
-from kyle_claude.core.task.manager import TaskManager
-from kyle_claude.core.tools.registry import ToolRegistry
+from code_rook.core.agents.loader import AgentProfile, AgentProfileLoader
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.registry import ToolRegistry
 
 
 def _usage() -> UsageStats:
@@ -49,8 +49,8 @@ async def test_child_provider_receives_model_from_profile(tmp_path: Path) -> Non
     task_manager.create("test task")
 
     registry = ToolRegistry()
-    from kyle_claude.core.tools.builtin.read_file import ReadFileTool
-    from kyle_claude.core.workspace import WorkspaceBoundary
+    from code_rook.core.tools.builtin.read_file import ReadFileTool
+    from code_rook.core.workspace import WorkspaceBoundary
 
     registry.register(ReadFileTool(WorkspaceBoundary(tmp_path)))
 

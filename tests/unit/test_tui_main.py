@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kyle_claude.core.config import KyleConfig
-from kyle_claude.tui import __main__ as tui_main
+from code_rook.core.config import CodeRookConfig
+from code_rook.tui import __main__ as tui_main
 
 
 # 功能：默认启动 TUI 时先确保 Core 就绪，再读取 token 并运行界面
@@ -17,8 +17,8 @@ def test_tui_main_auto_starts_core_before_reading_token(
     tmp_path: Path,
 ) -> None:
     calls: list[str] = []
-    config = KyleConfig(ipc_token_file=str(tmp_path / "ipc-token"))
-    monkeypatch.setattr(sys, "argv", ["kyle-tui"])
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.setattr(sys, "argv", ["coderook-tui"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
@@ -33,7 +33,7 @@ def test_tui_main_auto_starts_core_before_reading_token(
         lambda _path: calls.append("token") or "x" * 32,
     )
     app = MagicMock()
-    monkeypatch.setattr(tui_main, "KyleTuiApp", MagicMock(return_value=app))
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", MagicMock(return_value=app))
 
     tui_main.main()
 
@@ -47,8 +47,8 @@ def test_tui_main_can_disable_auto_core(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    config = KyleConfig(ipc_token_file=str(tmp_path / "ipc-token"))
-    monkeypatch.setattr(sys, "argv", ["kyle-tui", "--no-auto-core"])
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.setattr(sys, "argv", ["coderook-tui", "--no-auto-core"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
@@ -56,7 +56,7 @@ def test_tui_main_can_disable_auto_core(
     monkeypatch.setattr(tui_main, "ensure_core_running", ensure)
     monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
     app = MagicMock()
-    monkeypatch.setattr(tui_main, "KyleTuiApp", MagicMock(return_value=app))
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", MagicMock(return_value=app))
 
     tui_main.main()
 
@@ -69,7 +69,7 @@ def test_tui_main_can_disable_auto_core(
 def test_first_tui_start_runs_llm_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = KyleConfig()
+    config = CodeRookConfig()
     calls: list[str] = []
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "llm_is_configured", lambda _config: False)

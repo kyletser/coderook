@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.tools.builtin.bash import BashTool
-from kyle_claude.core.tools.builtin.list_dir import ListDirTool
-from kyle_claude.core.tools.builtin.write_file import WriteFileTool
+from code_rook.core.tools.builtin.bash import BashTool
+from code_rook.core.tools.builtin.list_dir import ListDirTool
+from code_rook.core.tools.builtin.write_file import WriteFileTool
 
 # ── bash ──────────────────────────────────────────────────────────────────────
 

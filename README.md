@@ -1,17 +1,17 @@
-# KyleClaude
+# CodeRook
 
-KyleClaude 是一个使用 Python 3.12 构建的本地 AI 编程 Agent 运行时。它采用 `kyle-core` 常驻守护进程与 CLI/TUI 客户端分离的双进程架构，在一条可观测、可恢复、受权限约束的执行链路中完成模型调用、工具执行、会话持久化、上下文压缩和多 Agent 协作。
+CodeRook 是一个使用 Python 3.12 构建的本地 AI 编程 Agent 运行时。它采用 `coderook-core` 常驻守护进程与 CLI/TUI 客户端分离的双进程架构，在一条可观测、可恢复、受权限约束的执行链路中完成模型调用、工具执行、会话持久化、上下文压缩和多 Agent 协作。
 
 它不是一次性调用大模型的聊天 Demo。项目重点是 Coding Agent 背后的工程系统：类型化协议、异步运行时、工具安全、上下文治理、任务隔离和故障恢复。
 
-![KyleClaude TUI](docs/images/2026-06-10_14-30-58.jpg)
+![CodeRook TUI](docs/images/coderook-tui.svg)
 
 ## 核心架构
 
 ```mermaid
 flowchart LR
-    CLI["kyle CLI"] -->|"JSON-RPC 2.0 / NDJSON"| Core["kyle-core daemon"]
-    TUI["kyle-tui"] -->|"JSON-RPC 2.0 / NDJSON"| Core
+    CLI["coderook CLI"] -->|"JSON-RPC 2.0 / NDJSON"| Core["coderook-core daemon"]
+    TUI["coderook-tui"] -->|"JSON-RPC 2.0 / NDJSON"| Core
     Core --> Runner["AgentRunner"]
     Runner --> Loop["Async AgentLoop"]
     Loop --> LLM["Anthropic / OpenAI-compatible LLM"]
@@ -52,8 +52,8 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 ### 1. 安装依赖
 
 ```powershell
-git clone https://github.com/kyletser/kyleclaude.git
-cd kyleclaude
+git clone https://github.com/kyletser/coderook.git
+cd coderook
 uv sync
 Copy-Item .env.example .env
 ```
@@ -69,7 +69,7 @@ cp .env.example .env
 推荐使用交互式向导：
 
 ```powershell
-uv run kyle configure
+uv run coderook configure
 ```
 
 向导支持：
@@ -78,46 +78,46 @@ uv run kyle configure
 - OpenAI-compatible：完整的 `/v1/chat/completions` 地址
 - 隐藏输入和更新 API key
 - 为两种协议分别保留 API key，切换时互不覆盖
-- 修改配置后自动重启由 Kyle 管理的 Core
+- 修改配置后自动重启由 CodeRook 管理的 Core
 
-普通配置保存在 `~/.kyle/config.toml`，密钥单独保存在
-`~/.kyle/credentials.json`，不会写入仓库或日志。若项目已有 `.env`，向导会同步其中的
+普通配置保存在 `~/.coderook/config.toml`，密钥单独保存在
+`~/.coderook/credentials.json`，不会写入仓库或日志。若项目已有 `.env`，向导会同步其中的
 非敏感 LLM 参数，并把旧明文 key 迁移到凭据文件。
 
 查看当前配置（不会显示密钥正文）：
 
 ```powershell
-uv run kyle config-status
+uv run coderook config-status
 ```
 
 也可以继续使用 `.env` 或系统环境变量；环境变量优先级最高。OpenCode Zen 示例：
 
 ```dotenv
-KYLE_LLM_PROVIDER=openai_compatible
-KYLE_LLM_BASE_URL=https://opencode.ai/zen/go/v1/chat/completions
-KYLE_LLM_API_KEY_ENV=KYLE_LLM_API_KEY
-KYLE_LLM_API_KEY=replace-with-your-key
-KYLE_LLM_DEFAULT_MODEL=deepseek-v4-pro
+CODEROOK_LLM_PROVIDER=openai_compatible
+CODEROOK_LLM_BASE_URL=https://opencode.ai/zen/go/v1/chat/completions
+CODEROOK_LLM_API_KEY_ENV=CODEROOK_LLM_API_KEY
+CODEROOK_LLM_API_KEY=replace-with-your-key
+CODEROOK_LLM_DEFAULT_MODEL=deepseek-v4-pro
 ```
 
 ### 3. 一条命令启动
 
 ```powershell
-uv run kyle-tui
+uv run coderook-tui
 ```
 
-`kyle-tui` 会自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
+`coderook-tui` 会自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
 首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以随时修改
 协议、地址、模型或 API key，完成后自动回到界面。
 
 排障或需要手动管理生命周期时，仍可使用：
 
 ```powershell
-uv run kyle core start
-uv run kyle core status
-uv run kyle core restart
-uv run kyle core stop
-uv run kyle-tui --no-auto-core
+uv run coderook core start
+uv run coderook core status
+uv run coderook core restart
+uv run coderook core stop
+uv run coderook-tui --no-auto-core
 ```
 
 ## 使用方式
@@ -139,17 +139,17 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 CLI 适合脚本、调试和无人值守任务：
 
 ```powershell
-uv run kyle ping
-uv run kyle chat
-uv run kyle run --goal "分析项目并运行测试"
-uv run kyle sessions --all
-uv run kyle trace --follow
+uv run coderook ping
+uv run coderook chat
+uv run coderook run --goal "分析项目并运行测试"
+uv run coderook sessions --all
+uv run coderook trace --follow
 ```
 
 Headless 任务默认采用 `fail-fast`：遇到需要人工审批的工具立即退出。明确允许自动执行的工具时使用 allow-list：
 
 ```powershell
-uv run kyle run --goal "修改并验证代码" `
+uv run coderook run --goal "修改并验证代码" `
   --permission-mode allow-list `
   --allow-tool edit_file `
   --allow-tool apply_patch `
@@ -161,17 +161,17 @@ allow-list 仍不能绕过危险命令规则和工作区边界。
 ### 会话管理
 
 ```powershell
-uv run kyle sessions --all
-uv run kyle chat --resume SESSION_ID
-uv run kyle session rename SESSION_ID "新标题"
-uv run kyle session fork SESSION_ID --title "实验分支"
-uv run kyle session export SESSION_ID --format markdown -o session.md
-uv run kyle session delete SESSION_ID --yes
+uv run coderook sessions --all
+uv run coderook chat --resume SESSION_ID
+uv run coderook session rename SESSION_ID "新标题"
+uv run coderook session fork SESSION_ID --title "实验分支"
+uv run coderook session export SESSION_ID --format markdown -o session.md
+uv run coderook session delete SESSION_ID --yes
 ```
 
 ## 上下文压缩 V2
 
-KyleClaude 不会在窗口耗尽时简单删除最早消息。默认策略是：
+CodeRook 不会在窗口耗尽时简单删除最早消息。默认策略是：
 
 1. 小型工具输出保留原文，中型输出保留头尾，超大输出优先由 LLM 蒸馏。
 2. 将 `tool_use` 与 `tool_result` 视为不可拆分的协议闭环。
@@ -192,16 +192,16 @@ tool_result_summarize_threshold = 20000
 
 ## 记忆与任务隔离
 
-长期记忆写入 `.kyle/memory/`，支持 `memory_save`、`memory_search` 和 `memory_forget`。当前检索使用确定性的中英文词法打分，没有引入向量数据库或外部 embedding 服务。
+长期记忆写入 `.coderook/memory/`，支持 `memory_save`、`memory_search` 和 `memory_forget`。当前检索使用确定性的中英文词法打分，没有引入向量数据库或外部 embedding 服务。
 
-复杂任务可以通过任务系统和子 Agent 拆分。`task_claim` 提供原子认领；worktree 工具将并行修改限制在 `.kyle/worktrees/`；子 Agent 的文件、Bash、Git 和 Checkpoint 工具都会绑定到指定 worktree。
+复杂任务可以通过任务系统和子 Agent 拆分。`task_claim` 提供原子认领；worktree 工具将并行修改限制在 `.coderook/worktrees/`；子 Agent 的文件、Bash、Git 和 Checkpoint 工具都会绑定到指定 worktree。
 
 后台命令由 daemon 级注册表持有，因此可以跨对话轮次查询和取消；daemon 退出时会清理关联进程树。
 
 ## 项目结构
 
 ```text
-src/kyle_claude/
+src/code_rook/
 ├── cli/                 # CLI 命令与 IPC 客户端
 ├── tui/                 # Textual 终端界面
 └── core/
@@ -224,6 +224,7 @@ src/kyle_claude/
 
 ```powershell
 uv run ruff check .
+uv run python scripts\check_brand.py
 uv run mypy src
 uv run pytest -q
 uv run python scripts\gen_protocol_doc.py --check
@@ -235,7 +236,7 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-当前测试基线为 `407 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、上下文压缩、会话恢复、记忆、后台任务和 worktree 管理。
+当前测试基线为 `455 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、上下文压缩、会话恢复、记忆、后台任务、品牌迁移和 worktree 管理。
 
 ## 设计文档
 
@@ -243,12 +244,12 @@ make verify
 - [Wire Protocol](WIRE_PROTOCOL.md)
 - [运行手册](RUNBOOK.md)
 - [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
-- [与 Claude Code 的差距分析](docs/KYLECLAUDE_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
+- [与 Claude Code 的差距分析](docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
 - [learn-claude-code 机制移植说明](docs/LEARN_CLAUDE_CODE_PORT.md)
 
 ## 项目定位
 
-KyleClaude 适合作为 AI Agent 工程方向的学习与求职项目，因为它能够完整讨论以下问题：
+CodeRook 适合作为 AI Agent 工程方向的学习与求职项目，因为它能够完整讨论以下问题：
 
 - 为什么采用 daemon + client，而不是单进程脚本？
 - 如何保证工具调用的类型安全、权限安全和文件事务安全？

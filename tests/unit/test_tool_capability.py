@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm.types import LlmResponse, UsageStats
-from kyle_claude.core.subagent.registry import BackgroundTaskRegistry
-from kyle_claude.core.subagent.tool import SpawnAgentTool
-from kyle_claude.core.tools.base import BaseTool, ToolSideEffect
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, UsageStats
+from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.subagent.tool import SpawnAgentTool
+from code_rook.core.tools.base import BaseTool, ToolSideEffect
 
 
 # 功能：BaseTool 默认安全保守——side_effect=EXTERNAL_WRITE、can_parallel=False、is_read_only=False
@@ -33,11 +33,11 @@ def test_base_tool_defaults_are_conservative() -> None:
 # 功能：纯读工具 is_read_only 反映 side_effect==NONE；can_parallel=True 显式声明
 # 设计：直接断言 ReadFileTool / GlobTool / GrepTool 的关键字段，避免 capability 被漂移
 def test_read_only_tools_capability() -> None:
-    from kyle_claude.core.tools.builtin.git_diff import GitDiffTool
-    from kyle_claude.core.tools.builtin.glob import GlobTool
-    from kyle_claude.core.tools.builtin.grep import GrepTool
-    from kyle_claude.core.tools.builtin.list_dir import ListDirTool
-    from kyle_claude.core.tools.builtin.read_file import ReadFileTool
+    from code_rook.core.tools.builtin.git_diff import GitDiffTool
+    from code_rook.core.tools.builtin.glob import GlobTool
+    from code_rook.core.tools.builtin.grep import GrepTool
+    from code_rook.core.tools.builtin.list_dir import ListDirTool
+    from code_rook.core.tools.builtin.read_file import ReadFileTool
 
     for cls in (ReadFileTool, GlobTool, GrepTool, ListDirTool, GitDiffTool):
         assert cls.side_effect == ToolSideEffect.NONE, cls.__name__
@@ -49,9 +49,9 @@ def test_read_only_tools_capability() -> None:
 # 功能：本地写入工具显式 side_effect=LOCAL_WRITE，is_read_only 为 False
 # 设计：这三个工具是本地文件系统原子写入，side_effect 必须区别于纯读和外部写
 def test_local_write_tools_capability() -> None:
-    from kyle_claude.core.tools.builtin.apply_patch import ApplyPatchTool
-    from kyle_claude.core.tools.builtin.edit_file import EditFileTool
-    from kyle_claude.core.tools.builtin.write_file import WriteFileTool
+    from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
+    from code_rook.core.tools.builtin.edit_file import EditFileTool
+    from code_rook.core.tools.builtin.write_file import WriteFileTool
 
     # side_effect 是 ClassVar，类层级可直接读取
     assert EditFileTool.side_effect == ToolSideEffect.LOCAL_WRITE
@@ -96,8 +96,8 @@ def _make_spawn_tool(tmp_path: Path) -> SpawnAgentTool:
 # 设计：手工构造 reviewer AgentProfile(restrict=read_only, allowed_tools=[])，
 #       调 _build_child_registry，断言命名集合与 capability 模型一致
 def test_reviewer_restrict_excludes_write_tools(tmp_path: Path) -> None:
-    from kyle_claude.core.agents.loader import AgentProfile
-    from kyle_claude.core.workspace import WorkspaceBoundary
+    from code_rook.core.agents.loader import AgentProfile
+    from code_rook.core.workspace import WorkspaceBoundary
 
     tool = _make_spawn_tool(tmp_path)
     profile = AgentProfile(
@@ -150,8 +150,8 @@ def test_reviewer_restrict_excludes_write_tools(tmp_path: Path) -> None:
 # 设计：profile 同时声明 restrict=read_only 与 allowed_tools 含 bash，
 #       断言 bash 仍被排除（restricted capability 优先），只读工具仍允许
 def test_restrict_takes_strict_subset_over_allowed_tools(tmp_path: Path) -> None:
-    from kyle_claude.core.agents.loader import AgentProfile
-    from kyle_claude.core.workspace import WorkspaceBoundary
+    from code_rook.core.agents.loader import AgentProfile
+    from code_rook.core.workspace import WorkspaceBoundary
 
     tool = _make_spawn_tool(tmp_path)
     profile = AgentProfile(
@@ -180,8 +180,8 @@ def test_restrict_takes_strict_subset_over_allowed_tools(tmp_path: Path) -> None
 # 设计：profile 无 restrict，allowed_tools=["read_file","glob"]，
 #       断言具见到 read_file+glob 但没有其它（包括 list_dir）
 def test_allowed_tools_alone_filters_by_name(tmp_path: Path) -> None:
-    from kyle_claude.core.agents.loader import AgentProfile
-    from kyle_claude.core.workspace import WorkspaceBoundary
+    from code_rook.core.agents.loader import AgentProfile
+    from code_rook.core.workspace import WorkspaceBoundary
 
     tool = _make_spawn_tool(tmp_path)
     profile = AgentProfile(
@@ -210,7 +210,7 @@ def test_allowed_tools_alone_filters_by_name(tmp_path: Path) -> None:
 # 功能：profile=None 时无任何过滤，所有可能工具注册
 # 设计：profile=None，断言 bash/edit_file/apply_patch 都进入 registry
 def test_no_profile_allows_all_tools(tmp_path: Path) -> None:
-    from kyle_claude.core.workspace import WorkspaceBoundary
+    from code_rook.core.workspace import WorkspaceBoundary
 
     tool = _make_spawn_tool(tmp_path)
     boundary = WorkspaceBoundary(tmp_path)

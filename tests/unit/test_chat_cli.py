@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from kyle_claude.cli.commands.chat import ChatPrinter, _cancel_active_run
+from code_rook.cli.commands.chat import ChatPrinter, _cancel_active_run
 
 
 async def test_chat_printer_tracks_and_clears_active_run(

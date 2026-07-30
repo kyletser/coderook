@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.config import LlmConfig
-from kyle_claude.core.llm.credentials import (
+from code_rook.core.config import LlmConfig
+from code_rook.core.llm.credentials import (
     llm_is_configured,
     resolve_api_key,
     save_api_key,

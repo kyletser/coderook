@@ -7,12 +7,12 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from kyle_claude.core.events.bus import EventBus
-from kyle_claude.core.llm import openai_compatible as openai_module
-from kyle_claude.core.llm import provider as provider_module
-from kyle_claude.core.llm.openai_compatible import OpenAICompatibleProvider
-from kyle_claude.core.llm.provider import AnthropicProvider
-from kyle_claude.core.llm.types import LlmResponse
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm import openai_compatible as openai_module
+from code_rook.core.llm import provider as provider_module
+from code_rook.core.llm.openai_compatible import OpenAICompatibleProvider
+from code_rook.core.llm.provider import AnthropicProvider
+from code_rook.core.llm.types import LlmResponse
 
 # --- helpers -----------------------------------------------------------------
 

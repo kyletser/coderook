@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kyle_claude.core.tools.builtin.git_diff import GitDiffTool
+from code_rook.core.tools.builtin.git_diff import GitDiffTool
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -25,8 +25,8 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _init_repo(root: Path) -> None:
     _git(root, "init", "-q")
-    _git(root, "config", "user.name", "Kyle Test")
-    _git(root, "config", "user.email", "kyle@example.invalid")
+    _git(root, "config", "user.name", "CodeRook Test")
+    _git(root, "config", "user.email", "coderook@example.invalid")
 
 
 def _commit_all(root: Path, message: str = "initial") -> None:

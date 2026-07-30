@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kyle_claude.cli.commands import core
-from kyle_claude.core.config import KyleConfig
+from code_rook.cli.commands import core
+from code_rook.core.config import CodeRookConfig
 
 
 # 功能：验证 PID 探测能识别当前进程并拒绝不存在的极大 PID
@@ -25,7 +25,7 @@ def test_ensure_core_running_reuses_ready_daemon(
     spawn = MagicMock(side_effect=AssertionError("must not spawn"))
     monkeypatch.setattr(core, "_spawn_core", spawn)
 
-    assert core.ensure_core_running(KyleConfig()) is False
+    assert core.ensure_core_running(CodeRookConfig()) is False
     spawn.assert_not_called()
 
 
@@ -37,7 +37,7 @@ def test_ensure_core_running_spawns_and_waits(
     readiness = iter([False, False, True])
     monkeypatch.setattr(core, "_core_ready", lambda config: next(readiness))
 
-    async def port_closed(config: KyleConfig) -> bool:
+    async def port_closed(config: CodeRookConfig) -> bool:
         return False
 
     proc = MagicMock()
@@ -46,4 +46,4 @@ def test_ensure_core_running_spawns_and_waits(
     monkeypatch.setattr(core, "_spawn_core", lambda: proc)
     monkeypatch.setattr(core.time, "sleep", lambda _seconds: None)
 
-    assert core.ensure_core_running(KyleConfig(), timeout_s=1.0) is True
+    assert core.ensure_core_running(CodeRookConfig(), timeout_s=1.0) is True
