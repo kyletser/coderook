@@ -10,8 +10,7 @@ class TaskListTool(BaseTool):
     can_parallel = True
     description = (
         "List CodeRook-internal todo tasks for the current run, including status and blocking "
-        "dependencies. This does not list installed applications, operating-system processes, "
-        "or subagents."
+        "dependencies. Its scope is only CodeRook task records, not other project or host entities."
     )
     input_schema: dict[str, object] = {
         "type": "object",

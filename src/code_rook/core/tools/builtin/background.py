@@ -102,7 +102,7 @@ class BackgroundListTool(BaseTool):
     can_parallel = True
     description = (
         "List CodeRook-internal shell jobs started by background_start in the current session. "
-        "This does not list operating-system processes or installed applications."
+        "Its scope is only jobs recorded by CodeRook."
     )
     params_model = None
     input_schema = {"type": "object", "properties": {}}

@@ -269,22 +269,43 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
     assert not (tmp_path / "runs" / "run-new").exists()
 
 
-# 功能：验证用户纠正意图时完整历史、环境能力和描述驱动路由契约同时提供给模型
-# 设计：复现“agent”范围误判后的二轮纠正，用捕获 provider 检查输入而不依赖真实模型随机性
-async def test_intent_correction_contract_is_injected(tmp_path: Path) -> None:
+# 功能：验证不同领域的意图纠正都获得同一套通用语义框架与完整历史
+# 设计：参数化软件、配置、账户三种作用域误判，防止系统契约针对单一关键词过拟合
+@pytest.mark.parametrize(
+    ("initial", "wrong_answer", "correction"),
+    [
+        (
+            "我有哪些agent",
+            "当前没有正在运行的 CodeRook 内部 agent。",
+            "我说的是我电脑上安装的 AI agent。",
+        ),
+        (
+            "我有哪些配置",
+            "项目中有一个 .coderook 配置目录。",
+            "我指的是当前用户的 Git 全局配置。",
+        ),
+        (
+            "有哪些账户",
+            "仓库贡献者包括 Alice 和 Bob。",
+            "我说的是这台电脑上的 Windows 用户账户。",
+        ),
+    ],
+)
+async def test_general_intent_correction_contract_is_injected(
+    tmp_path: Path,
+    initial: str,
+    wrong_answer: str,
+    correction: str,
+) -> None:
     from code_rook.core.session.model import Session
     from code_rook.core.session.store import SessionStore
 
     store = SessionStore(tmp_path / "sessions")
     session = Session("sess-1", "chat", "active", "", "t", "t")
     store.write_meta(session)
-    store.append_message("sess-1", "user", "我有哪些agent")
-    store.append_message(
-        "sess-1",
-        "assistant",
-        "当前没有正在运行的 CodeRook 内部 agent。",
-    )
-    store.append_message("sess-1", "user", "我说的是我电脑上有哪些agent")
+    store.append_message("sess-1", "user", initial)
+    store.append_message("sess-1", "assistant", wrong_answer)
+    store.append_message("sess-1", "user", correction)
 
     provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
     runner = AgentRunner(
@@ -295,7 +316,7 @@ async def test_intent_correction_contract_is_injected(tmp_path: Path) -> None:
     )
 
     await runner.run_and_capture(
-        "我说的是我电脑上有哪些agent",
+        correction,
         run_id="run-new",
         session=session,
         store=store,
@@ -307,9 +328,10 @@ async def test_intent_correction_contract_is_injected(tmp_path: Path) -> None:
         "user",
     ]
     assert provider.system is not None
-    assert "latest clarification or correction overrides" in provider.system
-    assert "CodeRook-internal objects" in provider.system
-    assert "host-computer objects" in provider.system
+    assert "objective, target, scope, requested operation" in provider.system
+    assert "clarifications and corrections as higher-priority evidence" in provider.system
+    assert "discard incompatible assumptions and reselect tools" in provider.system
+    assert "not from surface word overlap" in provider.system
     assert "failed, denied, or unavailable check is unknown" in provider.system
     assert "avoid redundant probes" in provider.system
     assert "## Runtime Environment" in provider.system
@@ -317,7 +339,9 @@ async def test_intent_correction_contract_is_injected(tmp_path: Path) -> None:
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
     assert "skill" in schemas
     assert "host computer's local shell" in str(schemas["bash"]["description"])
-    assert "CodeRook-internal todo tasks" in str(schemas["task_list"]["description"])
+    assert "scope is only CodeRook task records" in str(
+        schemas["task_list"]["description"]
+    )
 
 
 # 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md

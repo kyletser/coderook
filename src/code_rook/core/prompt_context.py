@@ -29,8 +29,8 @@ def build_runtime_context(workspace_root: Path) -> str:
             f"- Command shell: {shell}",
             (
                 "- File tools are confined to the working directory. The bash tool runs "
-                "host shell commands from that directory and can inspect local processes, "
-                "installed applications, package managers, and other system information."
+                "host shell commands from that directory and can use locally available "
+                "command-line programs and operating-system utilities."
             ),
             (
                 "- Some shell commands or paths may require user approval. A required "

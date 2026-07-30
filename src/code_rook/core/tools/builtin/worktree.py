@@ -53,8 +53,7 @@ class WorktreeListTool(BaseTool):
     side_effect = ToolSideEffect.NONE
     can_parallel = True
     description = (
-        "List CodeRook-managed Git worktrees under .coderook/worktrees. "
-        "This does not list agents, tasks, applications, or operating-system processes."
+        "List only CodeRook-managed Git worktrees under .coderook/worktrees."
     )
     params_model = None
     input_schema = {"type": "object", "properties": {}}

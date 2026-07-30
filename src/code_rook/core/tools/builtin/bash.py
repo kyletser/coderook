@@ -25,8 +25,8 @@ class BashTool(BaseTool):
     name = "bash"
     description = (
         "Execute a command in the host computer's local shell and return its output "
-        "(stdout + stderr combined). Use it for project commands and read-only system "
-        "inspection such as installed applications, package managers, services, and processes. "
+        "(stdout + stderr combined). Use it for project commands and host capabilities "
+        "available through local command-line programs or operating-system utilities. "
         "Non-interactive only — commands requiring user input will hang and time out. "
         "Commands may require user approval. Prefer short, focused commands. "
         "Output is truncated at 64 KB."
