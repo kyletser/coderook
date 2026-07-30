@@ -334,6 +334,9 @@ async def test_general_intent_correction_contract_is_injected(
     assert "not from surface word overlap" in provider.system
     assert "failed, denied, or unavailable check is unknown" in provider.system
     assert "avoid redundant probes" in provider.system
+    assert "Use concise English for internal reasoning" in provider.system
+    assert "natural language of the user's latest message" in provider.system
+    assert "default to Simplified Chinese" in provider.system
     assert "## Runtime Environment" in provider.system
     assert "## Available Extensions" in provider.system
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}

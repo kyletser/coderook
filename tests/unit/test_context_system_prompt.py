@@ -26,12 +26,16 @@ def test_all_layers_present() -> None:
     assert prompt.index("Global") < prompt.index("Project") < prompt.index("Session")
 
 
-# 功能：验证三层均为空时 system prompt 只含 base
-# 设计：不设置任何记忆字段，断言输出等于 base
+# 功能：验证没有记忆层时仍始终注入内部英文、用户回复跟随语言的策略
+# 设计：不设置任何可选上下文，断言 base 保留且语言策略存在
 def test_no_layers() -> None:
     ctx = _make_ctx()
     prompt = ctx.system_prompt("BASE_ONLY")
-    assert prompt == "BASE_ONLY"
+    assert prompt.startswith("BASE_ONLY")
+    assert "## Language Policy" in prompt
+    assert "Use concise English for internal reasoning" in prompt
+    assert "natural language of the user's latest message" in prompt
+    assert "default to Simplified Chinese" in prompt
 
 
 # 功能：验证只有 global_context 时只出现 Global section，其他 section 不出现
@@ -65,3 +69,16 @@ def test_runtime_and_capability_context_precede_memory() -> None:
     assert "## Available Extensions\nskill review" in prompt
     assert prompt.index("Runtime Environment") < prompt.index("Available Extensions")
     assert prompt.index("Available Extensions") < prompt.index("Global Context")
+
+
+# 功能：验证显式 Skill 或 Subagent 覆盖基础提示时仍保留统一语言策略
+# 设计：设置 system_prompt_override 并传入不同 base，断言只替换角色提示而不绕过语言约束
+def test_language_policy_survives_system_prompt_override() -> None:
+    ctx = _make_ctx(system_prompt_override="SPECIALIZED ROLE")
+
+    prompt = ctx.system_prompt("DEFAULT ROLE")
+
+    assert prompt.startswith("SPECIALIZED ROLE")
+    assert "DEFAULT ROLE" not in prompt
+    assert "## Language Policy" in prompt
+    assert "default to Simplified Chinese" in prompt

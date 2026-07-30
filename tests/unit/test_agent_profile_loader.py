@@ -25,6 +25,8 @@ def test_all_builtin_roles_found(role: str) -> None:
     loader = AgentProfileLoader()
     profile = loader.load(role)
     assert profile is not None, f"builtin role '{role}' not found"
+    assert not any("\u4e00" <= char <= "\u9fff" for char in profile.description)
+    assert not any("\u4e00" <= char <= "\u9fff" for char in profile.system_prompt)
     if role == "reviewer":
         # reviewer 以 capability restrict 过滤工具集，故 allowed_tools 可为空
         assert profile.restrict == "read_only"

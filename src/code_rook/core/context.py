@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+_LANGUAGE_POLICY = (
+    "Use concise English for internal reasoning, plans, tool inputs, subagent delegation, "
+    "memory, and other machine-facing content unless exact source or user text must be preserved. "
+    "For user-visible replies, use the natural language of the user's latest message. "
+    "If that language is unclear, default to Simplified Chinese. Keep code, commands, paths, "
+    "identifiers, and quoted text unchanged."
+)
+
 
 @dataclass
 class ExecutionContext:
@@ -33,6 +41,7 @@ class ExecutionContext:
     # 返回当前 run 的 system prompt；有 override 时跳过 base，直接注入记忆层
     def system_prompt(self, base: str) -> str:
         parts = [self.system_prompt_override if self.system_prompt_override else base]
+        parts.append("\n\n## Language Policy\n" + _LANGUAGE_POLICY)
         if self.runtime_context.strip():
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():

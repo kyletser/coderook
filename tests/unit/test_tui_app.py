@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from rich.markdown import Markdown
 from rich.markup import render
 from textual.app import App, ComposeResult
 from textual.widget import Widget
-from textual.widgets import Input
+from textual.widgets import Input, Markdown
 
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
 from code_rook.tui import app as tui_app_module
@@ -475,13 +474,81 @@ def test_llm_tokens_accumulate_in_block() -> None:
     assert appended[0]._text == "Hello world"  # type: ignore[attr-defined]
 
 
-# 功能：验证 LLMStreamBlock 结束时会把累积文本渲染为 Rich Markdown
-# 设计：直接调用 finalize_markdown，断言 renderable 类型，覆盖 Markdown polish 的核心行为
-def test_llm_block_finalize_renders_markdown() -> None:
+# 功能：验证 LLMStreamBlock 结束时切换为支持屏幕选择的 Textual Markdown
+# 设计：在真实 App 中完成流式块并重组子组件，断言最终挂载 Markdown 而非不可选 Rich renderable
+async def test_llm_block_finalize_renders_selectable_markdown() -> None:
     block = LLMStreamBlock()
     block.append_token("## Title\n\n- one\n\n```python\nprint('hi')\n```")
-    block.finalize_markdown()
-    assert isinstance(block.content, Markdown)
+
+    class MarkdownHarness(App[None]):
+        # 挂载已包含流式文本的回复块
+        def compose(self) -> ComposeResult:
+            yield block
+
+    app = MarkdownHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        block.finalize_markdown()
+        await pilot.pause()
+
+        markdown = block.query_one(Markdown)
+        assert "## Title" in markdown.source
+
+
+# 功能：验证 Ctrl+C 在存在屏幕选择时复制文本且不取消任务
+# 设计：替换屏幕选择读取并记录取消调用，直接执行绑定动作检查复制优先级
+async def test_ctrl_c_copies_selection_before_cancel() -> None:
+    class CopyHarness(CodeRookTuiApp):
+        # 初始化取消计数并跳过真实 socket 连接
+        def __init__(self) -> None:
+            super().__init__("127.0.0.1", 9999)
+            self.cancel_count = 0
+
+        # 聚焦输入框但不连接 Core
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+        # 记录取消调用，验证复制分支不会触发
+        async def action_cancel_run(self) -> None:
+            self.cancel_count += 1
+
+    app = CopyHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        app.screen.get_selected_text = lambda: "selected output"  # type: ignore[method-assign]
+
+        await app.action_copy_or_cancel()
+
+        assert app.clipboard == "selected output"
+        assert app.cancel_count == 0
+
+
+# 功能：验证 Ctrl+C 没有屏幕选择时回退到原有取消任务动作
+# 设计：替换屏幕选择为空并记录取消次数，确认复制改造不破坏运行中断语义
+async def test_ctrl_c_without_selection_cancels() -> None:
+    class CopyHarness(CodeRookTuiApp):
+        # 初始化取消计数并跳过真实 socket 连接
+        def __init__(self) -> None:
+            super().__init__("127.0.0.1", 9999)
+            self.cancel_count = 0
+
+        # 聚焦输入框但不连接 Core
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+        # 记录取消调用，验证无选择分支会触发
+        async def action_cancel_run(self) -> None:
+            self.cancel_count += 1
+
+    app = CopyHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        app.screen.get_selected_text = lambda: None  # type: ignore[method-assign]
+
+        await app.action_copy_or_cancel()
+
+        assert app.clipboard == ""
+        assert app.cancel_count == 1
 
 
 # 功能：验证非 token 事件后 _current_llm 被重置，下一个 token 开启新块

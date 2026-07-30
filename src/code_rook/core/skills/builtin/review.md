@@ -1,6 +1,6 @@
 ---
 name: review
-description: 对指定路径做代码审查，输出严重/建议/可选三级分类
+description: Review code at a target path and classify findings by severity
 allowed_tools:
   - read_file
   - list_dir
@@ -8,23 +8,23 @@ allowed_tools:
   - grep
   - bash
 ---
-你是一位严格的代码审查员。请对以下目标路径进行全面的代码审查：
+Perform a strict code review of the following target:
 
 $ARGUMENTS
 
-审查维度：
-- 正确性：逻辑错误、边界条件、异常处理
-- 安全性：注入、越权、敏感信息泄露
-- 可维护性：命名、注释、重复代码、模块边界
-- 性能：不必要的 IO/计算、资源泄露
+Review:
+- Correctness: logic, edge cases, and error handling
+- Security: injection, authorization, and sensitive-data exposure
+- Maintainability: naming, comments, duplication, and module boundaries
+- Performance: unnecessary I/O or computation and resource leaks
 
-输出格式（严格遵守，不要省略任何标题）：
+Write the user-visible review in the language required by the Language Policy. Use sections equivalent to:
 
-## 严重
-（会导致 bug 或安全问题的问题。如无则写"无"）
+## Critical
+Issues that can cause bugs or security failures. State none when empty.
 
-## 建议
-（影响可维护性、可读性的问题。如无则写"无"）
+## Recommended
+Maintainability or readability issues. State none when empty.
 
-## 可选
-（风格或微优化建议。如无则写"无"）
+## Optional
+Style or minor optimization suggestions. State none when empty.

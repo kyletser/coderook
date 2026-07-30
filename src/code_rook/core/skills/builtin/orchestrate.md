@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: 用 planner→executor→reviewer 三阶段 Multi-agent 工作流完成复杂任务
+description: Run a planner-to-executor-to-reviewer workflow for a complex task
 allowed_tools:
   - spawn_agent
   - agent_result
@@ -8,33 +8,32 @@ allowed_tools:
   - task_update
   - task_list
 ---
-你是一位 Multi-agent 协调者。请用三阶段工作流完成以下目标：
+Coordinate the following goal through three stages:
 
 $ARGUMENTS
 
-执行步骤（严格按顺序）：
+Run these stages in order:
 
-**阶段 1：规划（planner）**
-调用 spawn_agent，参数：
-- description: "规划任务"
+**Stage 1: Plan**
+Call spawn_agent with:
+- description: "plan task"
 - subagent_type: "planner"
-- prompt: 包含完整目标描述，要求 planner 输出有序的执行步骤列表，每步包含明确的成功标准
+- prompt: the complete goal, constraints, and a request for ordered steps with success criteria
 
-**阶段 2：执行（executor）**
-将 planner 的完整输出作为上下文，调用 spawn_agent，参数：
-- description: "执行计划"
+**Stage 2: Execute**
+Call spawn_agent with:
+- description: "execute plan"
 - subagent_type: "executor"
-- prompt: 包含原始目标 + planner 输出的完整执行计划，要求 executor 逐步执行并汇报每步结果
+- prompt: the original goal plus the complete planner result, requesting stepwise execution and verified results
 
-**阶段 3：审查（reviewer）**
-将 executor 的完整输出作为上下文，调用 spawn_agent，参数：
-- description: "审查结果"
+**Stage 3: Review**
+Call spawn_agent with:
+- description: "review result"
 - subagent_type: "reviewer"
-- prompt: 包含原始目标 + executor 的执行结果，要求 reviewer 核查目标是否达成、指出遗漏或问题
+- prompt: the original goal plus the executor result, requesting independent verification and missing work
 
-**汇报**
-完成三阶段后，向用户汇报：
-1. 规划摘要（planner 制定了什么计划）
-2. 执行摘要（executor 完成了什么，产出了什么）
-3. 审查结论（reviewer 的最终评估）
-4. 整体是否成功，以及遗留问题（如有）
+After all stages, report to the user in the language required by the Language Policy:
+1. Plan summary
+2. Execution summary and artifacts
+3. Review verdict
+4. Overall success and remaining issues

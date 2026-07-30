@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rich.markdown import Markdown
 from rich.markup import escape
 from textual import events
 from textual.app import App, ComposeResult
@@ -17,7 +16,7 @@ from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Input, Label, Static, TextArea
+from textual.widgets import Input, Label, Markdown, Static, TextArea
 
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.provider_presets import (
@@ -65,31 +64,46 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
     return _preview(", ".join(parts), max_len)
 
 
-class LLMStreamBlock(Static):
-    """在同一个 Static widget 中累积 LLM 流式 token。"""
+class LLMStreamBlock(Widget):
+    """流式阶段显示纯文本，结束后切换为可选择的 Textual Markdown。"""
 
-    DEFAULT_CSS = "LLMStreamBlock { padding: 0 2; color: $text; }"
+    DEFAULT_CSS = """
+    LLMStreamBlock { height: auto; color: $text; }
+    LLMStreamBlock > .stream-text { padding: 0 2; color: $text; }
+    """
 
     # 初始化为空文本块
     def __init__(self) -> None:
-        super().__init__("")
+        super().__init__()
         self._text = ""
         self._finalized = False
+
+    # 根据流式状态挂载纯文本或支持屏幕选择的 Markdown 子组件
+    def compose(self) -> ComposeResult:
+        if self._finalized:
+            if self._text.strip():
+                yield Markdown(self._text, classes="assistant-response")
+            return
+        yield Static(self._text, classes="stream-text", markup=False)
 
     # 追加一个 token 并刷新显示
     def append_token(self, token: str) -> None:
         if self._finalized:
             return
         self._text += token
-        self.update(self._text)
+        if self.is_attached:
+            try:
+                self.query_one(".stream-text", Static).update(self._text)
+            except NoMatches:
+                self.refresh(recompose=True)
 
-    # 将累积文本渲染为 Markdown，供流式块结束后显示
+    # 将累积文本切换为 Textual Markdown，使最终内容可选择和复制
     def finalize_markdown(self) -> None:
         if self._finalized:
             return
         self._finalized = True
-        if self._text.strip():
-            self.update(Markdown(self._text, code_theme="monokai"))
+        if self.is_attached:
+            self.refresh(recompose=True)
 
 
 class ToolCallBlock(Widget):
@@ -946,7 +960,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
     TITLE = "CodeRook"
     BINDINGS = [
-        Binding("ctrl+c", "cancel_run", "cancel run", show=False),
+        Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
+        Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding("ctrl+q", "quit", "quit"),
     ]
     CSS = """
@@ -971,7 +986,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     Static.usage { padding: 0 2; }
     Static.log-line { padding: 0 2; }
     Static.permission-pending { display: none; }
-    Static.history-assistant { padding: 0 2; color: $text; }
+    Markdown.history-assistant { color: $text; }
     """
 
     _BANNER = (
@@ -983,7 +998,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         "╚██████╗╚██████╔╝██████╔╝███████╗    ██║  ██║╚██████╔╝╚██████╔╝██║  ██╗\n"
         " ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝"
         "[/bold cyan]\n"
-        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  Ctrl+C 取消  ·  Ctrl+Q 退出[/dim]"
+        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  拖动选择，Ctrl+C 复制"
+        "选中内容/否则取消  ·  Ctrl+Q 退出[/dim]"
     )
 
     # 初始化连接参数和 TUI 内部状态
@@ -1132,6 +1148,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._cancel_requested = True
         self._append(Static(f"[yellow]cancelling {run_id}...[/yellow]", classes="log-line"))
         self.run_worker(self._do_cancel_run(run_id), name="cancel_run", exclusive=False)
+
+    # 复制当前屏幕选择；无有效选择时返回 False
+    def _copy_selected_text(self) -> bool:
+        selected = self.screen.get_selected_text()
+        if not selected:
+            return False
+        self.copy_to_clipboard(selected)
+        return True
+
+    # Ctrl+C 优先复制已选择文本，否则保持原有取消当前任务语义
+    async def action_copy_or_cancel(self) -> None:
+        if not self._copy_selected_text():
+            await self.action_cancel_run()
+
+    # Ctrl+Shift+C 仅复制选择，不触发任务取消
+    def action_copy_selection(self) -> None:
+        self._copy_selected_text()
 
     async def _do_cancel_run(self, run_id: str) -> None:
         if self._client is None:
@@ -1504,7 +1537,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         Static(f"[bold]>[/bold] {escape(content)}", classes="user-turn")
                     )
                 elif content.strip():
-                    self._append(Static(Markdown(content), classes="history-assistant"))
+                    self._append(Markdown(content, classes="history-assistant"))
                 continue
 
             if role != "assistant" or not isinstance(content, list):
@@ -1513,9 +1546,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text" and str(block.get("text", "")).strip():
-                    self._append(
-                        Static(Markdown(str(block["text"])), classes="history-assistant")
-                    )
+                    self._append(Markdown(str(block["text"]), classes="history-assistant"))
                 elif block.get("type") == "tool_use":
                     tool_name = escape(str(block.get("name", "tool")))
                     params_raw = block.get("input", {})

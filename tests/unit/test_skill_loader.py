@@ -25,6 +25,8 @@ def test_all_builtin_skills_found(name: str) -> None:
     loader = SkillLoader()
     skill = loader.resolve(name)
     assert skill is not None, f"builtin skill '{name}' not found"
+    assert not any("\u4e00" <= char <= "\u9fff" for char in skill.description)
+    assert not any("\u4e00" <= char <= "\u9fff" for char in skill.system_prompt_template)
 
 
 # 功能：不存在的 skill 名应返回 None
