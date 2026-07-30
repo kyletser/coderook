@@ -50,3 +50,18 @@ def test_session_notes_hint() -> None:
     ctx = _make_ctx(session_notes="some note")
     prompt = ctx.system_prompt("BASE")
     assert "note_save" in prompt
+
+
+# 功能：验证运行环境和扩展能力目录会在记忆层之前注入系统提示
+# 设计：同时设置两个新上下文字段与 global context，断言分区内容和稳定顺序
+def test_runtime_and_capability_context_precede_memory() -> None:
+    ctx = _make_ctx(
+        runtime_context="Windows workspace",
+        capability_context="skill review",
+        global_context="global rule",
+    )
+    prompt = ctx.system_prompt("BASE")
+    assert "## Runtime Environment\nWindows workspace" in prompt
+    assert "## Available Extensions\nskill review" in prompt
+    assert prompt.index("Runtime Environment") < prompt.index("Available Extensions")
+    assert prompt.index("Available Extensions") < prompt.index("Global Context")

@@ -12,6 +12,7 @@ from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
+from code_rook.core.workspace import WorkspaceBoundary
 
 
 def _make_provider(result_text: str = "child done") -> Any:
@@ -50,6 +51,7 @@ def _make_tool(
         runs_dir=tmp_path,
         session_id="sess-test",
         depth=depth,
+        workspace_boundary=WorkspaceBoundary(tmp_path),
     )
     return tool, registry, bus
 
@@ -155,6 +157,29 @@ async def test_nesting_limit(tmp_path: Path) -> None:
     assert result.is_error
     assert "nesting limit" in result.content
     provider.chat.assert_not_called()
+
+
+# 功能：验证 spawn_agent schema 暴露可用角色描述并拒绝不存在的角色名
+# 设计：检查内建 profile 元数据后调用未知角色，确保描述驱动选择与失败反馈都可见
+async def test_agent_profiles_are_discoverable_and_validated(tmp_path: Path) -> None:
+    tool, _, _ = _make_tool(tmp_path)
+
+    assert "planner:" in tool.description
+    properties = tool.input_schema["properties"]
+    assert isinstance(properties, dict)
+    subagent_schema = properties["subagent_type"]
+    assert isinstance(subagent_schema, dict)
+    assert "planner" in subagent_schema["enum"]
+
+    result = await tool.invoke(
+        {
+            "description": "unknown role",
+            "prompt": "do work",
+            "subagent_type": "does-not-exist",
+        }
+    )
+    assert result.is_error
+    assert "Unknown subagent profile" in result.content
 
 
 # 功能：agent_result 查询不存在的 run_id 应返回 is_error=True

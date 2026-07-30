@@ -105,3 +105,20 @@ def test_project_overrides_builtin(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert profile is not None
     assert profile.description == "local planner"
     assert "list_dir" in profile.allowed_tools
+
+
+# 功能：验证能力目录能列出内建角色并由项目级同名配置覆盖
+# 设计：显式传入项目根目录，避免依赖进程 cwd，并按名称检查最终合并结果
+def test_list_all_profiles_uses_project_root_and_override(tmp_path: Path) -> None:
+    local_agents = tmp_path / ".coderook" / "agents"
+    local_agents.mkdir(parents=True)
+    (local_agents / "planner.toml").write_text(
+        '[agent]\ndescription = "project planner"\nsystem_prompt = "project prompt"\n',
+        encoding="utf-8",
+    )
+
+    profiles = AgentProfileLoader(tmp_path).list_all()
+    by_name = {profile.name: profile for profile in profiles}
+
+    assert {"planner", "executor", "reviewer"} <= set(by_name)
+    assert by_name["planner"].description == "project planner"

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
 from code_rook.core.checkpoints import CheckpointStore
@@ -21,9 +22,11 @@ from code_rook.core.loop import AgentLoop
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore, load_context_file
 from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import RUNS_DIR, new_run_id
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
+from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
@@ -46,6 +49,7 @@ from code_rook.core.tools.builtin import (
     MemorySearchTool,
     NoteSaveTool,
     ReadFileTool,
+    SkillTool,
     TaskClaimTool,
     TaskCreateTool,
     TaskGetTool,
@@ -109,6 +113,8 @@ class AgentRunner:
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".coderook" / "memory")
         self._worktree_manager = WorktreeManager(self._workspace_boundary.root)
+        self._skill_loader = SkillLoader(self._workspace_boundary.root)
+        self._agent_profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
 
@@ -152,6 +158,7 @@ class AgentRunner:
                 checkpoint_store=checkpoint_store,
             ),
             ListDirTool(self._workspace_boundary),
+            SkillTool(self._skill_loader),
         ]:
             if _ok(t.name):
                 registry.register(t)
@@ -279,6 +286,11 @@ class AgentRunner:
             session_notes=notes,
             global_context=global_ctx,
             project_context=project_ctx,
+            runtime_context=build_runtime_context(self._workspace_boundary.root),
+            capability_context=build_capability_context(
+                self._skill_loader.list_all_skills(),
+                self._agent_profile_loader.list_all(),
+            ),
             system_prompt_override=system_prompt_override,
         )
         prompt_decision = await self._hooks.emit(

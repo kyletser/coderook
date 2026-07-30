@@ -57,6 +57,7 @@ DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "memory_save": ToolPolicy(default=PermissionDecision.ALLOW),
     "memory_search": ToolPolicy(default=PermissionDecision.ALLOW),
     "memory_forget": ToolPolicy(default=PermissionDecision.ASK),
+    "skill": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_create": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_claim": ToolPolicy(default=PermissionDecision.ALLOW),
     "task_get": ToolPolicy(default=PermissionDecision.ALLOW),

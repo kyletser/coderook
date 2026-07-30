@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,7 +15,9 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.events.writer import EventWriter
 from code_rook.core.loop import AgentLoop
+from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import new_run_id
+from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
@@ -30,6 +33,7 @@ from code_rook.core.tools.builtin.glob import GlobTool
 from code_rook.core.tools.builtin.grep import GrepTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.read_file import ReadFileTool
+from code_rook.core.tools.builtin.skill import SkillTool
 from code_rook.core.tools.builtin.task_claim import TaskClaimTool
 from code_rook.core.tools.builtin.task_create import TaskCreateTool
 from code_rook.core.tools.builtin.task_get import TaskGetTool
@@ -44,9 +48,6 @@ if TYPE_CHECKING:
     from code_rook.core.llm.base import LLMProvider
     from code_rook.core.permissions.manager import PermissionManager
     from code_rook.core.task.manager import TaskManager
-
-_profile_loader = AgentProfileLoader()
-
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -131,6 +132,30 @@ class SpawnAgentTool(BaseTool):
         self._depth = depth
         self._workspace_boundary = workspace_boundary or WorkspaceBoundary.current()
         self._task_manager = task_manager
+        self._profile_loader = AgentProfileLoader(self._workspace_boundary.root)
+        self._skill_loader = SkillLoader(self._workspace_boundary.root)
+        profiles = self._profile_loader.list_all()
+        profile_names = [profile.name for profile in profiles]
+        profile_descriptions = "; ".join(
+            f"{profile.name}: {' '.join(profile.description.split())}"
+            for profile in profiles
+        )
+        if profile_descriptions:
+            self.description += f" Available profiles: {profile_descriptions}"
+        subagent_schema: dict[str, object] = {
+            "type": "string",
+            "description": (
+                "Agent role profile selected by matching its description. "
+                "Leave empty for the general-purpose default."
+            ),
+        }
+        if profile_names:
+            subagent_schema["enum"] = ["", *profile_names]
+        instance_schema = copy.deepcopy(type(self).input_schema)
+        properties = instance_schema["properties"]
+        if isinstance(properties, dict):
+            properties["subagent_type"] = subagent_schema
+        self.input_schema = instance_schema
 
     # 派生子 agent，前台时阻塞直到完成并返回结果，后台时立即返回 run_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -145,13 +170,25 @@ class SpawnAgentTool(BaseTool):
 
         profile: AgentProfile | None = None
         if p.subagent_type:
-            profile = _profile_loader.load(p.subagent_type)
+            profile = self._profile_loader.load(p.subagent_type)
+            if profile is None:
+                return ToolResult(
+                    content=f"Unknown subagent profile: {p.subagent_type}",
+                    is_error=True,
+                    error_type="runtime_error",
+                )
 
         child_run_id = new_run_id()
+        child_capabilities = build_capability_context(
+            self._skill_loader.list_all_skills(),
+            self._profile_loader.list_all(),
+        )
         child_context = ExecutionContext(
             run_id=child_run_id,
             goal=p.prompt,
             max_steps=self._max_steps,
+            runtime_context=build_runtime_context(self._workspace_boundary.root),
+            capability_context=child_capabilities,
             system_prompt_override=profile.system_prompt if profile else None,
         )
 
@@ -173,6 +210,11 @@ class SpawnAgentTool(BaseTool):
             child_context.project_context = (
                 f"You are isolated in Git worktree '{p.worktree}' at {worktree_path}. "
                 "All file and shell operations must remain in this worktree."
+            )
+            child_context.runtime_context = build_runtime_context(child_boundary.root)
+            child_context.capability_context = build_capability_context(
+                SkillLoader(child_boundary.root).list_all_skills(),
+                AgentProfileLoader(child_boundary.root).list_all(),
             )
 
         child_bus = EventBus()
@@ -355,6 +397,7 @@ class SpawnAgentTool(BaseTool):
                 checkpoint_store=checkpoint_store,
             ),
             ListDirTool(boundary),
+            SkillTool(SkillLoader(boundary.root)),
         ]
         for t in _all_tools:
             if _allowed(t):

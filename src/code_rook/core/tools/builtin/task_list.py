@@ -9,8 +9,9 @@ class TaskListTool(BaseTool):
     side_effect = ToolSideEffect.NONE
     can_parallel = True
     description = (
-        "List all tasks with their current status and blocking dependencies. "
-        "Use this to check what work remains and what can be started next."
+        "List CodeRook-internal todo tasks for the current run, including status and blocking "
+        "dependencies. This does not list installed applications, operating-system processes, "
+        "or subagents."
     )
     input_schema: dict[str, object] = {
         "type": "object",

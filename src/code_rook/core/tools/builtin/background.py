@@ -100,7 +100,10 @@ class BackgroundListTool(BaseTool):
     name = "background_list"
     side_effect = ToolSideEffect.NONE
     can_parallel = True
-    description = "List background jobs created for the current session."
+    description = (
+        "List CodeRook-internal shell jobs started by background_start in the current session. "
+        "This does not list operating-system processes or installed applications."
+    )
     params_model = None
     input_schema = {"type": "object", "properties": {}}
 

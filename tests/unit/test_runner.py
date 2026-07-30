@@ -59,6 +59,7 @@ class _CapturingProvider:
     def __init__(self, response: LlmResponse) -> None:
         self.response = response
         self.messages: list[dict[str, object]] = []
+        self.tool_schemas: list[dict[str, object]] = []
         self.system: str | None = None
 
     # 捕获本次 LLM 调用的 messages 和 system prompt
@@ -73,6 +74,7 @@ class _CapturingProvider:
         system: str | None = None,
     ) -> LlmResponse:
         self.messages = [dict(m) for m in messages]
+        self.tool_schemas = [dict(schema) for schema in tool_schemas]
         self.system = system
         return self.response
 
@@ -265,6 +267,57 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
     assert "Python 3.12" in provider.system
     assert (store.runs_dir("sess-1") / "run-new" / "events.jsonl").exists()
     assert not (tmp_path / "runs" / "run-new").exists()
+
+
+# 功能：验证用户纠正意图时完整历史、环境能力和描述驱动路由契约同时提供给模型
+# 设计：复现“agent”范围误判后的二轮纠正，用捕获 provider 检查输入而不依赖真实模型随机性
+async def test_intent_correction_contract_is_injected(tmp_path: Path) -> None:
+    from code_rook.core.session.model import Session
+    from code_rook.core.session.store import SessionStore
+
+    store = SessionStore(tmp_path / "sessions")
+    session = Session("sess-1", "chat", "active", "", "t", "t")
+    store.write_meta(session)
+    store.append_message("sess-1", "user", "我有哪些agent")
+    store.append_message(
+        "sess-1",
+        "assistant",
+        "当前没有正在运行的 CodeRook 内部 agent。",
+    )
+    store.append_message("sess-1", "user", "我说的是我电脑上有哪些agent")
+
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        runs_dir=tmp_path / "runs",
+        workspace_root=tmp_path,
+    )
+
+    await runner.run_and_capture(
+        "我说的是我电脑上有哪些agent",
+        run_id="run-new",
+        session=session,
+        store=store,
+    )
+
+    assert [message["role"] for message in provider.messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert provider.system is not None
+    assert "latest clarification or correction overrides" in provider.system
+    assert "CodeRook-internal objects" in provider.system
+    assert "host-computer objects" in provider.system
+    assert "failed, denied, or unavailable check is unknown" in provider.system
+    assert "avoid redundant probes" in provider.system
+    assert "## Runtime Environment" in provider.system
+    assert "## Available Extensions" in provider.system
+    schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
+    assert "skill" in schemas
+    assert "host computer's local shell" in str(schemas["bash"]["description"])
+    assert "CodeRook-internal todo tasks" in str(schemas["task_list"]["description"])
 
 
 # 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md

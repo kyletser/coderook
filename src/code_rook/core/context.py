@@ -13,6 +13,8 @@ class ExecutionContext:
     session_notes: str = ""
     global_context: str = ""
     project_context: str = ""
+    runtime_context: str = ""
+    capability_context: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     step: int = 0
     status: str = "running"  # "running" | "success" | "failed"
@@ -31,6 +33,10 @@ class ExecutionContext:
     # 返回当前 run 的 system prompt；有 override 时跳过 base，直接注入记忆层
     def system_prompt(self, base: str) -> str:
         parts = [self.system_prompt_override if self.system_prompt_override else base]
+        if self.runtime_context.strip():
+            parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
+        if self.capability_context.strip():
+            parts.append("\n\n## Available Extensions\n" + self.capability_context.strip())
         if self.global_context.strip():
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
         if self.project_context.strip():

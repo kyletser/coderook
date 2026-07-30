@@ -22,6 +22,7 @@ from code_rook.core.tools.builtin.memory import (
 )
 from code_rook.core.tools.builtin.note_save import NoteSaveTool
 from code_rook.core.tools.builtin.read_file import ReadFileTool
+from code_rook.core.tools.builtin.skill import SkillTool
 from code_rook.core.tools.builtin.task_claim import TaskClaimTool
 from code_rook.core.tools.builtin.task_create import TaskCreateTool
 from code_rook.core.tools.builtin.task_get import TaskGetTool
@@ -53,6 +54,7 @@ __all__ = [
     "MemorySearchTool",
     "NoteSaveTool",
     "ReadFileTool",
+    "SkillTool",
     "TaskCreateTool",
     "TaskClaimTool",
     "TaskGetTool",

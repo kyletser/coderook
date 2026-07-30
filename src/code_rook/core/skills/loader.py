@@ -69,6 +69,18 @@ def _parse_skill_file(path: Path) -> Skill:
 class SkillLoader:
     _BUILTIN_DIR = Path(__file__).parent / "builtin"
 
+    # 绑定项目根目录，确保从任意进程工作目录都能发现项目级 skill
+    def __init__(self, project_root: Path | None = None) -> None:
+        self._project_root = (project_root or Path.cwd()).resolve()
+
+    # 返回按项目级、用户级、内建优先级排列的 skill 目录
+    def _skill_dirs(self) -> list[Path]:
+        return [
+            self._project_root / ".coderook" / "skills",
+            Path("~/.coderook/skills").expanduser(),
+            self._BUILTIN_DIR,
+        ]
+
     # 按优先级查找 skill 文件；未找到返回 None
     def resolve(self, name: str) -> Skill | None:
         for path in self._search_paths(name):
@@ -81,13 +93,8 @@ class SkillLoader:
 
     # 返回候选路径列表，同时支持扁平文件（name.md）和目录式（name/SKILL.md）两种格式
     def _search_paths(self, name: str) -> list[Path]:
-        dirs = [
-            Path(".coderook/skills"),
-            Path("~/.coderook/skills").expanduser(),
-            self._BUILTIN_DIR,
-        ]
         paths: list[Path] = []
-        for d in dirs:
+        for d in self._skill_dirs():
             paths.append(d / f"{name}.md")
             paths.append(d / name / "SKILL.md")
         return paths
@@ -98,7 +105,7 @@ class SkillLoader:
         for d in [
             self._BUILTIN_DIR,
             Path("~/.coderook/skills").expanduser(),
-            Path(".coderook/skills"),
+            self._project_root / ".coderook" / "skills",
         ]:
             if d.exists():
                 for f in sorted(d.glob("*.md")):
@@ -113,7 +120,7 @@ class SkillLoader:
         for d in [
             self._BUILTIN_DIR,
             Path("~/.coderook/skills").expanduser(),
-            Path(".coderook/skills"),
+            self._project_root / ".coderook" / "skills",
         ]:
             if d.exists():
                 for f in sorted(d.glob("*.md")):
