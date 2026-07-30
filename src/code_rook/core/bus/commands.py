@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field, model_validator
 
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthorityProfile, AuthoritySnapshot, RuntimeMode
 from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.session.model import SessionMode, SessionStatus
 
@@ -108,6 +108,22 @@ class SessionSendMessageCommand(BaseModel):
 
 class SessionSendMessageResult(BaseModel):
     run_id: str
+
+
+class SessionGetAuthorityCommand(BaseModel):
+    type: Literal["session.get_authority"] = "session.get_authority"
+    session_id: str
+
+
+class SessionSetAuthorityCommand(BaseModel):
+    type: Literal["session.set_authority"] = "session.set_authority"
+    session_id: str
+    mode: RuntimeMode
+    profile: AuthorityProfile
+
+
+class SessionAuthorityResult(BaseModel):
+    snapshot: AuthoritySnapshot
 
 
 class SessionGetHistoryCommand(BaseModel):
@@ -239,6 +255,8 @@ Command = Annotated[
     | EventReplayCommand
     | SessionCreateCommand
     | SessionSendMessageCommand
+    | SessionGetAuthorityCommand
+    | SessionSetAuthorityCommand
     | SessionGetHistoryCommand
     | SessionListCommand
     | SessionResumeCommand

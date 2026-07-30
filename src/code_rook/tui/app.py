@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, Static, TextArea
 
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthorityProfile, RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
@@ -455,6 +455,111 @@ class PermissionBlock(Static):
             f"{icon} [bold]{tool_name}[/bold]  [dim]{label}[/dim]{preview}"
         )
         self.post_message(self.Resolved(self, decision))
+
+
+_PERMISSION_PRESETS = (
+    (
+        "ask",
+        RuntimeMode.ACT,
+        AuthorityProfile.ASK,
+        "询问后修改",
+        "文件修改、命令和外部操作按策略确认",
+    ),
+    (
+        "accept_edits",
+        RuntimeMode.ACT,
+        AuthorityProfile.AUTO_REVIEW,
+        "自动接受修改",
+        "工作区文件修改自动执行，命令和外部操作仍确认",
+    ),
+    (
+        "plan",
+        RuntimeMode.PLAN,
+        AuthorityProfile.ASK,
+        "Plan Mode",
+        "只读分析并生成计划，批准后才实施",
+    ),
+)
+
+
+class PermissionModePicker(Static):
+    can_focus = True
+
+    DEFAULT_CSS = """
+    PermissionModePicker {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    PermissionModePicker:focus { border: solid #72c7d4; }
+    """
+
+    class Selected(Message):
+        # 初始化权限模式选择消息
+        def __init__(self, picker: PermissionModePicker, preset: str) -> None:
+            self.picker = picker
+            self.preset = preset
+            super().__init__()
+
+    class Dismissed(Message):
+        # 初始化权限模式关闭消息
+        def __init__(self, picker: PermissionModePicker) -> None:
+            self.picker = picker
+            super().__init__()
+
+    # 初始化权限模式选择器并定位当前模式
+    def __init__(self, current: str) -> None:
+        super().__init__("")
+        names = [item[0] for item in _PERMISSION_PRESETS]
+        self._current = current
+        self._cursor = names.index(current) if current in names else 0
+
+    # 挂载后显示三种常用权限模式并取得焦点
+    def on_mount(self) -> None:
+        self.border_title = " Permissions "
+        self.border_subtitle = " ↑↓ move   Enter select   Esc close "
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染当前权限模式及其安全边界
+    def _render_ui(self) -> str:
+        lines = ["[bold]选择后续消息使用的权限模式[/bold]"]
+        for index, (preset, _mode, _profile, label, detail) in enumerate(
+            _PERMISSION_PRESETS
+        ):
+            marker = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
+            current = "  [cyan]current[/cyan]" if preset == self._current else ""
+            style = "bold white" if index == self._cursor else "#c6cad0"
+            lines.append(
+                f"{marker} [{style}]{escape(label)}[/{style}]"
+                f"  [dim]{escape(detail)}[/dim]{current}"
+            )
+        lines.append("[dim]也可用 Shift+Tab 在三种模式间循环[/dim]")
+        return "\n".join(lines)
+
+    # 处理权限模式的键盘导航、选择和关闭
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k"):
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(_PERMISSION_PRESETS)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j"):
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(_PERMISSION_PRESETS)
+            self.update(self._render_ui())
+        elif event.key == "enter":
+            event.stop()
+            self.post_message(
+                self.Selected(self, _PERMISSION_PRESETS[self._cursor][0])
+            )
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Dismissed(self))
 
 
 class PlanReview(Static):
@@ -1079,6 +1184,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     BINDINGS = [
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
+        Binding(
+            "shift+tab",
+            "cycle_permission_mode",
+            "cycle permission mode",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+q", "quit", "quit"),
     ]
     CSS = """
@@ -1154,6 +1266,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._busy = False
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
+        self._authority_preset = "ask"
         self._input_runtime_mode = RuntimeMode.ACT
         self._plan_review_pending = False
         self._plan_session_id: str | None = None
@@ -1185,6 +1298,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("compact", "compress context window"),
             ("copy", "copy the latest assistant reply"),
             ("plan", "analyze read-only and review a plan before implementation"),
+            ("permissions", "review or change the permission mode"),
         ]
         try:
             loader = SkillLoader()
@@ -1256,6 +1370,20 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except Exception:
             pass
 
+    # 在询问、自动接受修改和 Plan Mode 之间循环
+    async def action_cycle_permission_mode(self) -> None:
+        if self._busy or self._plan_review_pending:
+            self._append(
+                Static(
+                    "[yellow]当前 run 或计划审阅完成后再切换权限模式[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+        names = [item[0] for item in _PERMISSION_PRESETS]
+        index = (names.index(self._authority_preset) + 1) % len(names)
+        await self._select_authority_preset(names[index])
+
     # 退出只断开界面，session 保留在 Core 中以便下次 resume
     async def action_quit(self) -> None:
         self.exit()
@@ -1318,11 +1446,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         content = event.value.strip()
         if not content:
             return
+        if content == "/permissions":
+            event.text_area.text = ""
+            event.text_area.disabled = True
+            event.text_area.border_title = "select a permission mode..."
+            try:
+                self.query_one(PermissionModePicker).remove()
+            except NoMatches:
+                pass
+            self.mount(
+                PermissionModePicker(self._authority_preset),
+                before="#prompt",
+            )
+            return
         if content == "/plan":
             event.text_area.text = ""
-            self._input_runtime_mode = RuntimeMode.PLAN
-            event.text_area.border_title = "plan mode — describe the task, then press Enter"
-            self._update_header("plan")
+            await self._select_authority_preset("plan", announce=False)
             return
         requested_mode = self._input_runtime_mode
         if content.startswith("/plan "):
@@ -1430,7 +1569,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         visible_content: str | None = None,
     ) -> None:
         self._busy = True
-        self._input_runtime_mode = RuntimeMode.ACT
         prompt.text = ""
         prompt.disabled = True
         prompt.read_only = False
@@ -1493,8 +1631,98 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if prompt is not None:
             prompt.disabled = False
             prompt.read_only = False
-            prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+            if self._input_runtime_mode == RuntimeMode.PLAN:
+                prompt.border_title = "plan mode — describe the task, then press Enter"
+            else:
+                prompt.border_title = (
+                    "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                )
             prompt.focus()
+
+    # 将 Core 返回的 authority 快照映射为 TUI 的三种常用权限模式
+    def _apply_authority_snapshot(self, snapshot: dict[str, Any]) -> None:
+        mode = RuntimeMode(str(snapshot.get("mode", RuntimeMode.ACT.value)))
+        profile = AuthorityProfile(
+            str(snapshot.get("profile", AuthorityProfile.ASK.value))
+        )
+        if mode == RuntimeMode.PLAN:
+            preset = "plan"
+        elif profile == AuthorityProfile.AUTO_REVIEW:
+            preset = "accept_edits"
+        else:
+            preset = "ask"
+        self._authority_preset = preset
+        self._input_runtime_mode = mode
+
+    # 读取当前会话的 authority，保证续接和切换会话后状态指示真实
+    async def _refresh_authority(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        result = await self._client.send_command(
+            "session.get_authority",
+            {"session_id": self._session_id},
+        )
+        self._apply_authority_snapshot(dict(result.get("snapshot", {})))
+
+    # 持久化并应用用户选择的权限预设
+    async def _select_authority_preset(
+        self,
+        preset: str,
+        *,
+        announce: bool = True,
+    ) -> None:
+        selected = next(
+            (item for item in _PERMISSION_PRESETS if item[0] == preset),
+            None,
+        )
+        if selected is None:
+            return
+        _name, mode, profile, label, _detail = selected
+        try:
+            if self._client is not None and self._session_id is not None:
+                result = await self._client.send_command(
+                    "session.set_authority",
+                    {
+                        "session_id": self._session_id,
+                        "mode": mode.value,
+                        "profile": profile.value,
+                    },
+                )
+                self._apply_authority_snapshot(dict(result.get("snapshot", {})))
+            else:
+                self._authority_preset = preset
+                self._input_runtime_mode = mode
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._append(
+                Static(f"[red]permission mode error: {escape(str(exc))}[/red]", classes="log-line")
+            )
+            self._restore_ready_prompt()
+            return
+        self._restore_ready_prompt()
+        self._update_header("plan" if mode == RuntimeMode.PLAN else "ready")
+        if announce:
+            self._append(
+                Static(
+                    f"[bold cyan]权限模式[/bold cyan]  {escape(label)}",
+                    classes="log-line",
+                )
+            )
+
+    # 关闭权限模式选择器并恢复聊天输入
+    async def on_permission_mode_picker_dismissed(
+        self,
+        message: PermissionModePicker.Dismissed,
+    ) -> None:
+        message.picker.remove()
+        self._restore_ready_prompt()
+
+    # 应用权限模式选择器中的模式并同步到 Core
+    async def on_permission_mode_picker_selected(
+        self,
+        message: PermissionModePicker.Selected,
+    ) -> None:
+        message.picker.remove()
+        await self._select_authority_preset(message.preset)
 
     async def _show_session_picker(self) -> None:
         if self._client is None:
@@ -1643,6 +1871,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._session_id = session_id
         self._resume_session_id = session_id
         self._history_loaded = True
+        await self._refresh_authority()
         label = "resumed" if resume else "new session"
         self._append(
             Static(f"[bold cyan]{label}[/bold cyan]  [dim]{session_id}[/dim]", classes="log-line")
@@ -1700,6 +1929,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             original_request = self._plan_request
             self._plan_session_id = None
             self._plan_request = ""
+            await self._select_authority_preset("ask", announce=False)
             self._begin_message(
                 prompt,
                 "Implement the approved plan from the immediately preceding planning turn. "
@@ -1713,7 +1943,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._plan_request = ""
         self._restore_ready_prompt()
         if message.decision == "revise":
-            self._input_runtime_mode = RuntimeMode.PLAN
+            await self._select_authority_preset("plan", announce=False)
             prompt = self._prompt()
             if prompt is not None:
                 prompt.text = "/plan "
@@ -1721,6 +1951,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.border_title = "plan mode — enter feedback, then press Enter"
             self._update_header("plan")
         else:
+            await self._select_authority_preset("ask", announce=False)
             self._append(Static("[dim]计划已取消，未执行改动[/dim]", classes="log-line"))
             self._update_header("ready")
 
@@ -1847,6 +2078,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         session = f"  [dim]{self._session_id}[/dim]" if self._session_id else ""
         model = f"  [cyan]{escape(self._model)}[/cyan]" if self._model else ""
+        permission_labels = {
+            "ask": "ask",
+            "accept_edits": "accept edits",
+            "plan": "plan",
+        }
+        permission = (
+            f"  [magenta]{permission_labels[self._authority_preset]}[/magenta]"
+        )
         color = {
             "ready": "green",
             "running": "yellow",
@@ -1858,7 +2097,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}{model}  [{color}]{state}[/{color}]"
+            f"{session}{model}{permission}  [{color}]{state}[/{color}]"
         )
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
@@ -1936,12 +2175,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         )
                         self._append_history(history.get("messages", []))
                         self._history_loaded = True
+                await self._refresh_authority()
                 prompt = self._prompt()
                 if prompt is not None:
                     prompt.disabled = self._plan_review_pending
                     prompt.read_only = False
                     if self._plan_review_pending:
                         prompt.border_title = "review the plan above"
+                    elif self._input_runtime_mode == RuntimeMode.PLAN:
+                        prompt.border_title = (
+                            "plan mode — describe the task, then press Enter"
+                        )
                     else:
                         prompt.border_title = (
                             "type a message — enter to send, ⌘/⇧/⌥+enter for newline"

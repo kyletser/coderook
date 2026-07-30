@@ -21,6 +21,7 @@ from code_rook.tui.app import (
     LLMStreamBlock,
     ModelPicker,
     PermissionBlock,
+    PermissionModePicker,
     PermissionSelect,
     PlanReview,
     ProviderPicker,
@@ -227,6 +228,50 @@ async def test_plan_review_keyboard_decisions() -> None:
         await pilot.pause()
 
         assert app.decisions == ["revise", "cancel"]
+
+
+# 功能：验证权限模式选择器可用键盘选择自动接受修改并用 Esc 关闭
+# 设计：在最小 Textual App 中发送真实按键，覆盖当前态标识、选择消息和关闭消息
+async def test_permission_mode_picker_keyboard_flow() -> None:
+    class PermissionHarness(App[None]):
+        # 初始化权限模式选择结果
+        def __init__(self) -> None:
+            super().__init__()
+            self.selected: list[str] = []
+            self.dismissed = 0
+
+        # 挂载权限模式选择器
+        def compose(self) -> ComposeResult:
+            yield PermissionModePicker("ask")
+
+        # 收集权限模式选择消息
+        def on_permission_mode_picker_selected(
+            self,
+            message: PermissionModePicker.Selected,
+        ) -> None:
+            self.selected.append(message.preset)
+
+        # 收集权限模式关闭消息
+        def on_permission_mode_picker_dismissed(
+            self,
+            _message: PermissionModePicker.Dismissed,
+        ) -> None:
+            self.dismissed += 1
+
+    app = PermissionHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        picker = app.query_one(PermissionModePicker)
+        assert "询问后修改" in render(picker._render_ui()).plain
+        assert "current" in render(picker._render_ui()).plain
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.selected == ["accept_edits"]
+        assert app.dismissed == 1
 
 
 # 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
@@ -474,6 +519,7 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["model"] == "show or switch the active model"
     assert items["copy"] == "copy the latest assistant reply"
     assert items["plan"] == "analyze read-only and review a plan before implementation"
+    assert items["permissions"] == "review or change the permission mode"
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
@@ -896,6 +942,13 @@ async def test_plan_command_requires_review_before_act() -> None:
             params: dict[str, object],
         ) -> dict[str, object]:
             calls.append((method, params))
+            if method == "session.set_authority":
+                return {
+                    "snapshot": {
+                        "mode": params["mode"],
+                        "profile": params["profile"],
+                    }
+                }
             return {"run_id": "run-plan"}
 
     class PlanHarness(CodeRookTuiApp):
@@ -967,11 +1020,12 @@ async def test_plan_command_requires_review_before_act() -> None:
         await pilot.pause()
         await asyncio.gather(*scheduled)
 
-        assert calls[1][0] == "session.send_message"
-        assert calls[1][1]["runtime_mode"] == "act"
-        assert str(calls[1][1]["content"]).startswith("Implement the approved plan")
+        assert calls[1][0] == "session.set_authority"
+        assert calls[2][0] == "session.send_message"
+        assert calls[2][1]["runtime_mode"] == "act"
+        assert str(calls[2][1]["content"]).startswith("Implement the approved plan")
         assert "Original user request:\ninspect authentication" in str(
-            calls[1][1]["content"]
+            calls[2][1]["content"]
         )
 
 
@@ -996,6 +1050,84 @@ async def test_plan_command_enters_mode_on_first_submit() -> None:
         assert app._input_runtime_mode == RuntimeMode.PLAN
         assert not app._busy
         assert "plan mode" in prompt.border_title
+
+
+# 功能：验证 Shift+Tab 依次切换自动接受修改、Plan 和询问模式并同步到 Core
+# 设计：用 fake IPC 返回真实 authority 形状，直接执行绑定 action，核对循环顺序和本地输入模式
+async def test_shift_tab_cycles_and_persists_permission_modes() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 返回与设置参数一致的 authority 快照
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {
+                "snapshot": {
+                    "mode": params["mode"],
+                    "profile": params["profile"],
+                }
+            }
+
+    class PermissionHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = PermissionHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-permission"
+
+        await app.action_cycle_permission_mode()
+        assert app._authority_preset == "accept_edits"
+        assert app._input_runtime_mode == RuntimeMode.ACT
+
+        await app.action_cycle_permission_mode()
+        assert app._authority_preset == "plan"
+        assert app._input_runtime_mode == RuntimeMode.PLAN
+
+        await app.action_cycle_permission_mode()
+        assert app._authority_preset == "ask"
+        assert app._input_runtime_mode == RuntimeMode.ACT
+
+    assert [params["profile"] for _method, params in calls] == [
+        "auto_review",
+        "ask",
+        "ask",
+    ]
+    assert [params["mode"] for _method, params in calls] == [
+        "act",
+        "plan",
+        "act",
+    ]
+
+
+# 功能：验证 /permissions 第一次 Enter 直接打开选择器且不会发送 agent 消息
+# 设计：在真实 TUI 提交完整命令，检查输入禁用和选择器挂载，固定单次确认交互
+async def test_permissions_command_opens_picker_on_first_submit() -> None:
+    class PermissionHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并准备完整命令
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/permissions"
+            prompt.focus()
+
+    app = PermissionHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        await pilot.pause()
+
+        assert prompt.disabled
+        assert app.query_one(PermissionModePicker).has_focus
+        assert not app._busy
 
 
 async def test_cancel_worker_sends_active_run_id() -> None:

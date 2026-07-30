@@ -22,6 +22,7 @@ from code_rook.core.bus.commands import (
     PongResult,
     RunCancelCommand,
     RunCancelResult,
+    SessionAuthorityResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCompactCommand,
@@ -34,6 +35,7 @@ from code_rook.core.bus.commands import (
     SessionExportResult,
     SessionForkCommand,
     SessionForkResult,
+    SessionGetAuthorityCommand,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
     SessionListCommand,
@@ -44,6 +46,7 @@ from code_rook.core.bus.commands import (
     SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
+    SessionSetAuthorityCommand,
 )
 from code_rook.core.bus.envelope import EventPushEnvelope
 from code_rook.core.bus.events import (
@@ -261,6 +264,12 @@ def generate() -> str:
         _model_section("SessionSendMessageCommand", SessionSendMessageCommand, session_send_req_example),
         "\n",
         _model_section("SessionSendMessageResult", SessionSendMessageResult, session_send_resp_example),
+        "\n",
+        _model_section("SessionGetAuthorityCommand", SessionGetAuthorityCommand),
+        "\n",
+        _model_section("SessionSetAuthorityCommand", SessionSetAuthorityCommand),
+        "\n",
+        _model_section("SessionAuthorityResult", SessionAuthorityResult),
         "\n",
         _model_section("SessionGetHistoryCommand", SessionGetHistoryCommand),
         "\n",

@@ -849,6 +849,213 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### SessionGetAuthorityCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.get_authority",
+      "default": "session.get_authority",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionGetAuthorityCommand",
+  "type": "object"
+}
+```
+
+### SessionSetAuthorityCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `mode` | `object` | yes |
+| `profile` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "type": {
+      "const": "session.set_authority",
+      "default": "session.set_authority",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/RuntimeMode"
+    },
+    "profile": {
+      "$ref": "#/$defs/AuthorityProfile"
+    }
+  },
+  "required": [
+    "session_id",
+    "mode",
+    "profile"
+  ],
+  "title": "SessionSetAuthorityCommand",
+  "type": "object"
+}
+```
+
+### SessionAuthorityResult
+
+| Field | Type | Required |
+|---|---|---|
+| `snapshot` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "snapshot": {
+      "$ref": "#/$defs/AuthoritySnapshot"
+    }
+  },
+  "required": [
+    "snapshot"
+  ],
+  "title": "SessionAuthorityResult",
+  "type": "object"
+}
+```
+
 ### SessionGetHistoryCommand
 
 | Field | Type | Required |

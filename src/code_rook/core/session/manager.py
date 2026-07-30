@@ -364,6 +364,10 @@ class SessionManager:
         self._get_session(sid)
         return self._store.read_messages(sid)
 
+    # 返回已恢复的指定会话，供 Core 的会话级配置命令做存在性校验
+    def get_session(self, sid: str) -> Session:
+        return self._get_session(sid)
+
     # 返回最近更新的 session 元数据，供 CLI/TUI 选择历史会话
     async def list_sessions(
         self,

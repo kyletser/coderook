@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from code_rook.core.app import CoreApp
+from code_rook.core.authority import AuthorityProfile, RuntimeMode, ToolAction
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.session.model import Session
 
@@ -56,3 +57,40 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert decisions == [(True, "headless_allow_list")]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]
+
+
+# 功能：验证会话 authority 更新只替换 mode/profile，并可由查询命令原样读回
+# 设计：预置收窄的 action scope 后直接调用 Core handler，确保权限切换不会隐式扩大能力
+async def test_session_authority_handlers_preserve_scope() -> None:
+    manager = PermissionManager()
+    session = Session("sess-authority", "chat", "active", "", "t", "t")
+    original = manager.get_authority_snapshot(session.id).model_copy(
+        update={"allowed_actions": frozenset({ToolAction.READ, ToolAction.MUTATE})}
+    )
+    manager.set_authority_snapshot(session.id, original)
+
+    class _Sessions:
+        # 返回测试会话并固定存在性校验
+        def get_session(self, session_id: str) -> Session:
+            assert session_id == session.id
+            return session
+
+    app = CoreApp()
+    app._sessions = _Sessions()  # type: ignore[assignment]
+    app._permission_manager = manager  # type: ignore[attr-defined]
+
+    updated = await app._session_set_authority_handler(  # type: ignore[attr-defined]
+        {
+            "session_id": session.id,
+            "mode": "plan",
+            "profile": "auto_review",
+        }
+    )
+    restored = await app._session_get_authority_handler(  # type: ignore[attr-defined]
+        {"session_id": session.id}
+    )
+
+    assert updated.snapshot.mode == RuntimeMode.PLAN
+    assert updated.snapshot.profile == AuthorityProfile.AUTO_REVIEW
+    assert updated.snapshot.allowed_actions == original.allowed_actions
+    assert restored.snapshot == updated.snapshot

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthorityProfile, RuntimeMode
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     CoreAuthenticateCommand,
@@ -17,10 +17,12 @@ from code_rook.core.bus.commands import (
     SessionDeleteCommand,
     SessionExportCommand,
     SessionForkCommand,
+    SessionGetAuthorityCommand,
     SessionListCommand,
     SessionRenameCommand,
     SessionResumeCommand,
     SessionSendMessageCommand,
+    SessionSetAuthorityCommand,
 )
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
@@ -174,6 +176,26 @@ def test_session_message_runtime_mode_roundtrip() -> None:
     assert SessionSendMessageCommand.model_validate_json(
         planned.model_dump_json()
     ).runtime_mode == RuntimeMode.PLAN
+
+
+# 功能：验证会话 authority 查询与更新命令使用强类型 mode 和 profile
+# 设计：执行 JSON 往返并覆盖两种非默认值，固定 TUI 与 Core 的权限模式同步协议
+def test_session_authority_commands_roundtrip() -> None:
+    get_command = SessionGetAuthorityCommand(session_id="sess-1")
+    set_command = SessionSetAuthorityCommand(
+        session_id="sess-1",
+        mode=RuntimeMode.PLAN,
+        profile=AuthorityProfile.AUTO_REVIEW,
+    )
+
+    restored = SessionSetAuthorityCommand.model_validate_json(
+        set_command.model_dump_json()
+    )
+
+    assert get_command.type == "session.get_authority"
+    assert restored.type == "session.set_authority"
+    assert restored.mode == RuntimeMode.PLAN
+    assert restored.profile == AuthorityProfile.AUTO_REVIEW
 
 
 # 功能：验证计划完成事件携带原请求和完整计划供 TUI 审阅

@@ -27,6 +27,7 @@ from code_rook.core.bus.commands import (
     PongResult,
     RunCancelCommand,
     RunCancelResult,
+    SessionAuthorityResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCompactCommand,
@@ -39,6 +40,7 @@ from code_rook.core.bus.commands import (
     SessionExportResult,
     SessionForkCommand,
     SessionForkResult,
+    SessionGetAuthorityCommand,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
     SessionInfo,
@@ -50,6 +52,7 @@ from code_rook.core.bus.commands import (
     SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
+    SessionSetAuthorityCommand,
 )
 from code_rook.core.bus.envelope import EventPushEnvelope
 from code_rook.core.config import CodeRookConfig, get_config
@@ -185,6 +188,33 @@ class CoreApp:
             runtime_mode=cmd.runtime_mode,
         )
         return SessionSendMessageResult(run_id=run_id)
+
+    # 返回指定会话从下一轮开始使用的权限快照
+    async def _session_get_authority_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionAuthorityResult:
+        assert self._sessions is not None
+        assert self._permission_manager is not None
+        cmd = SessionGetAuthorityCommand.model_validate(params)
+        self._sessions.get_session(cmd.session_id)
+        return SessionAuthorityResult(
+            snapshot=self._permission_manager.get_authority_snapshot(cmd.session_id)
+        )
+
+    # 更新指定会话后续轮次的 mode 与 profile，同时保留 trust、sandbox 和 action scope
+    async def _session_set_authority_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionAuthorityResult:
+        assert self._sessions is not None
+        assert self._permission_manager is not None
+        cmd = SessionSetAuthorityCommand.model_validate(params)
+        self._sessions.get_session(cmd.session_id)
+        current = self._permission_manager.get_authority_snapshot(cmd.session_id)
+        updated = current.model_copy(update={"mode": cmd.mode, "profile": cmd.profile})
+        self._permission_manager.set_authority_snapshot(cmd.session_id, updated)
+        return SessionAuthorityResult(snapshot=updated)
 
     # 返回 session 的完整 Anthropic messages 历史
     async def _session_history_handler(self, params: dict[str, Any]) -> SessionGetHistoryResult:
@@ -468,6 +498,8 @@ class CoreApp:
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
         server.register("session.send_message", self._session_send_handler)
+        server.register("session.get_authority", self._session_get_authority_handler)
+        server.register("session.set_authority", self._session_set_authority_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.list", self._session_list_handler)
         server.register("session.resume", self._session_resume_handler)
