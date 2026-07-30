@@ -47,6 +47,7 @@ from code_rook.core.bus.commands import (
 )
 from code_rook.core.bus.envelope import EventPushEnvelope
 from code_rook.core.bus.events import (
+    AgentDecisionEvent,
     CoreStartedEvent,
     LlmModelSelectedEvent,
     LlmTokenEvent,
@@ -145,7 +146,7 @@ def generate() -> str:
         "id": "u-3",
         "method": "event.subscribe",
         "params": {
-            "topics": ["run.*", "step.*", "tool.*", "llm.token"],
+            "topics": ["run.*", "step.*", "agent.*", "tool.*", "llm.token"],
             "scope": "global",
             "replay_from_run": None,
             "thread_id": None,
@@ -317,6 +318,11 @@ def generate() -> str:
         "\n",
         _model_section("StepFinishedEvent", StepFinishedEvent,
             {"type": "step.finished", "run_id": run_id, "step": 1, "ts": ts}),
+        "\n",
+        _model_section("AgentDecisionEvent", AgentDecisionEvent, {
+            "type": "agent.decision", "run_id": run_id, "step": 1,
+            "intent": "inspect", "summary": "I will inspect the relevant files first.",
+            "tool_names": ["read_file"], "has_visible_text": True, "ts": ts}),
         "\n",
         _model_section("ToolCallStartedEvent", ToolCallStartedEvent,
             {"type": "tool.call_started", "run_id": run_id, "tool_use_id": "toolu_01",

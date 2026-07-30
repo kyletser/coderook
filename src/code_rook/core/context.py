@@ -8,7 +8,8 @@ _LANGUAGE_POLICY = (
     "memory, and other machine-facing content unless exact source or user text must be preserved. "
     "For user-visible replies, use the natural language of the user's latest message. "
     "If that language is unclear, default to Simplified Chinese. Keep code, commands, paths, "
-    "identifiers, and quoted text unchanged."
+    "identifiers, and quoted text unchanged. Never use emoji or decorative symbols in "
+    "user-visible prose."
 )
 
 

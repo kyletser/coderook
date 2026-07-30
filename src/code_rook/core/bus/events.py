@@ -41,6 +41,17 @@ class StepFinishedEvent(BaseModel):
     ts: str
 
 
+class AgentDecisionEvent(BaseModel):
+    type: Literal["agent.decision"] = "agent.decision"
+    run_id: str
+    step: int
+    intent: Literal["inspect", "plan", "change", "execute", "delegate", "respond"]
+    summary: str
+    tool_names: list[str]
+    has_visible_text: bool
+    ts: str
+
+
 class ToolCallStartedEvent(BaseModel):
     type: Literal["tool.call_started"] = "tool.call_started"
     run_id: str
@@ -273,6 +284,7 @@ Event = Annotated[
     | RunFinishedEvent
     | StepStartedEvent
     | StepFinishedEvent
+    | AgentDecisionEvent
     | ToolCallStartedEvent
     | ToolCallFinishedEvent
     | ToolCallFailedEvent

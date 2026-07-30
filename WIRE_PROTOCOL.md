@@ -426,6 +426,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "topics": [
       "run.*",
       "step.*",
+      "agent.*",
       "tool.*",
       "llm.token"
     ],
@@ -2152,6 +2153,99 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "type": "step.finished",
   "run_id": "20260516-100000-abc123",
   "step": 1,
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### AgentDecisionEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `intent` | `string` | yes |
+| `summary` | `string` | yes |
+| `tool_names` | `array` | yes |
+| `has_visible_text` | `boolean` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.decision",
+      "default": "agent.decision",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "intent": {
+      "enum": [
+        "inspect",
+        "plan",
+        "change",
+        "execute",
+        "delegate",
+        "respond"
+      ],
+      "title": "Intent",
+      "type": "string"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    },
+    "tool_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tool Names",
+      "type": "array"
+    },
+    "has_visible_text": {
+      "title": "Has Visible Text",
+      "type": "boolean"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "intent",
+    "summary",
+    "tool_names",
+    "has_visible_text",
+    "ts"
+  ],
+  "title": "AgentDecisionEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "agent.decision",
+  "run_id": "20260516-100000-abc123",
+  "step": 1,
+  "intent": "inspect",
+  "summary": "I will inspect the relevant files first.",
+  "tool_names": [
+    "read_file"
+  ],
+  "has_visible_text": true,
   "ts": "2026-05-16T10:00:00.001Z"
 }
 ```

@@ -41,6 +41,18 @@ def _params_str(params: dict[str, Any]) -> str:
     return json.dumps(params, ensure_ascii=False, indent=2)
 
 
+# 生成默认可见的工具结果预览，完整内容仍可点击展开
+def _output_preview(output: str, *, max_lines: int = 3, max_chars: int = 360) -> str:
+    lines = [line.rstrip() for line in output.strip().splitlines() if line.strip()]
+    preview = "\n".join(lines[:max_lines])
+    truncated = len(lines) > max_lines or len(preview) > max_chars
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip()
+    if not preview:
+        return "(no output)"
+    return preview + ("\n..." if truncated else "")
+
+
 # 从工具参数中提取最适合摘要展示的关键字段
 def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) -> str:
     keys_by_tool = {
@@ -56,6 +68,9 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
         "grep": ("pattern", "path", "glob"),
         "bash": ("command",),
         "note_save": ("content",),
+        "task_claim": ("task_id", "owner"),
+        "task_create": ("subject",),
+        "task_update": ("task_id", "status"),
     }
     keys = keys_by_tool.get(tool_name, ())
     parts = [f"{key}={params[key]!r}" for key in keys if key in params]
@@ -69,6 +84,7 @@ class LLMStreamBlock(Widget):
 
     DEFAULT_CSS = """
     LLMStreamBlock { height: auto; color: $text; }
+    LLMStreamBlock > .message-kind { padding: 0 2; color: $text-muted; }
     LLMStreamBlock > .stream-text { padding: 0 2; color: $text; }
     """
 
@@ -77,9 +93,11 @@ class LLMStreamBlock(Widget):
         super().__init__()
         self._text = ""
         self._finalized = False
+        self._kind = "working"
 
     # 根据流式状态挂载纯文本或支持屏幕选择的 Markdown 子组件
     def compose(self) -> ComposeResult:
+        yield Static(f"[dim]{self._kind}[/dim]", classes="message-kind")
         if self._finalized:
             if self._text.strip():
                 yield Markdown(self._text, classes="assistant-response")
@@ -94,6 +112,15 @@ class LLMStreamBlock(Widget):
         if self.is_attached:
             try:
                 self.query_one(".stream-text", Static).update(self._text)
+            except NoMatches:
+                self.refresh(recompose=True)
+
+    # 将当前可见模型消息标记为意图说明或最终回答
+    def set_kind(self, kind: str) -> None:
+        self._kind = kind
+        if self.is_attached:
+            try:
+                self.query_one(".message-kind", Static).update(f"[dim]{kind}[/dim]")
             except NoMatches:
                 self.refresh(recompose=True)
 
@@ -112,6 +139,9 @@ class ToolCallBlock(Widget):
     DEFAULT_CSS = """
     ToolCallBlock { height: auto; padding: 0 2; color: $text-muted; }
     ToolCallBlock > .summary { color: $text-muted; }
+    ToolCallBlock > .preview { display: none; padding: 0 2 0 4; color: $text-muted; }
+    ToolCallBlock.finished > .preview { display: block; }
+    ToolCallBlock.expanded > .preview { display: none; }
     ToolCallBlock > .detail { display: none; padding: 0 2 0 4; color: $text-muted; }
     ToolCallBlock.expanded > .detail { display: block; }
     """
@@ -129,22 +159,27 @@ class ToolCallBlock(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(self._summary(), classes="summary")
-        yield Static("", classes="detail")
+        yield Static("", classes="preview", markup=False)
+        yield Static("", classes="detail", markup=False)
 
     # 生成摘要行文本
     def _summary(self) -> str:
         if self._tool_name == "note_save" and self._finished and not self._is_error:
             return f"  [green]remembered[/green]  [dim]{self._elapsed_ms}ms[/dim]"
 
-        params_pre = _param_summary(self._tool_name, self._params)
-        line = f"  [dim]tool[/dim] [bold]{self._tool_name}[/bold]"
+        params_pre = escape(_param_summary(self._tool_name, self._params))
+        planning_tools = {"task_claim", "task_create", "task_update"}
+        label = "plan" if self._tool_name in planning_tools else "tool"
+        line = f"  [dim]{label}[/dim] [bold]{escape(self._tool_name)}[/bold]"
         if params_pre:
             line += f"  [dim]{params_pre}[/dim]"
         if self._finished:
             color = "red" if self._is_error else "green"
             status = "failed" if self._is_error else "done"
-            hint = "  [dim](click to expand)[/dim]" if self._output else ""
+            hint = "  [dim](click for full output)[/dim]" if self._output else ""
             line += f"  [{color}]{status}[/{color}]  [dim]{self._elapsed_ms}ms[/dim]{hint}"
+        else:
+            line += "  [yellow]running[/yellow]"
         return line
 
     # 工具调用完成时更新结果并刷新摘要（widget 未挂载时跳过 DOM 更新）
@@ -155,6 +190,8 @@ class ToolCallBlock(Widget):
         self._finished = True
         if self.children:
             self.query_one(".summary", Static).update(self._summary())
+            self.query_one(".preview", Static).update(_output_preview(output))
+            self.add_class("finished")
 
     # 点击时切换展开/折叠状态
     def on_click(self) -> None:
@@ -165,9 +202,9 @@ class ToolCallBlock(Widget):
         else:
             detail = self.query_one(".detail", Static)
             detail.update(
-                f"[dim]params[/dim]\n{self._params_full}\n\n"
-                f"[dim]output[/dim]\n{self._output}\n\n"
-                f"[dim]elapsed:[/dim] {self._elapsed_ms}ms"
+                f"params\n{self._params_full}\n\n"
+                f"output\n{self._output}\n\n"
+                f"elapsed: {self._elapsed_ms}ms"
             )
             self.add_class("expanded")
 
@@ -403,7 +440,7 @@ class PermissionBlock(Static):
         self._resolved = True
         self.remove_class("permission-pending")
         allowed = decision in ("allow_once", "always_allow")
-        icon = "[bold green]✓[/bold green]" if allowed else "[bold red]✗[/bold red]"
+        icon = "[bold green]allowed[/bold green]" if allowed else "[bold red]denied[/bold red]"
         label = self._LABEL_MAP.get(decision, decision)
         tool_name = escape(self._tool_name)
         preview = f"  [dim]{escape(self._param_preview)}[/dim]" if self._param_preview else ""
@@ -1275,7 +1312,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _do_compact(self) -> None:
         if self._client is None or self._session_id is None:
             return
-        self._append(Static("[dim]⚡ compacting context...[/dim]", classes="log-line"))
+        self._append(Static("[dim]compacting context...[/dim]", classes="log-line"))
         try:
             result = await self._client.send_command(
                 "session.compact",
@@ -1294,7 +1331,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else:
                 self._last_context_pct = 0.0
             self._append(Static(
-                f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                f"[bold cyan]Context compacted[/bold cyan]"
                 f"  [dim]trigger=manual  summary={summary_tokens}  "
                 f"retained={retained_messages} msgs/{retained_tokens} tokens  "
                 f"saved≈{saved_tokens}  quality={quality:.0%}[/dim]",
@@ -1649,6 +1686,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         "session.*",
                         "run.*",
                         "step.*",
+                        "agent.*",
                         "tool.*",
                         "llm.token",
                         "llm.usage",
@@ -1727,6 +1765,41 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._current_llm.append_token(token)
             return
 
+        if t == "agent.decision":
+            intent = str(event.get("intent") or "execute")
+            summary = str(event.get("summary") or "")
+            had_visible_text = (
+                self._current_llm is not None and bool(self._current_llm._text.strip())
+            )
+            if self._current_llm is not None:
+                self._current_llm.set_kind("answer" if intent == "respond" else intent)
+            self._break_llm()
+            if not had_visible_text and summary:
+                self._append(
+                    Static(
+                        f"[dim]{escape(intent)}[/dim]  {escape(summary)}",
+                        classes="log-line",
+                    )
+                )
+            return
+
+        if t == "llm.usage":
+            run_id = event.get("run_id", "")
+            if run_id in self._subagent_run_ids:
+                return
+            pct = float(event.get("context_pct") or 0.0)
+            self._last_context_pct = pct
+            ctx_bar = self._render_ctx_bar(pct)
+            self._append(Static(
+                f"[dim]  tokens  "
+                f"in={event.get('input_tokens')} "
+                f"out={event.get('output_tokens')} "
+                f"cache={event.get('cache_read_input_tokens')}[/dim]"
+                f"  {ctx_bar}",
+                classes="usage",
+            ))
+            return
+
         self._break_llm()
 
         if t == "session.waiting_for_input":
@@ -1802,12 +1875,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             desc_part = f"[cyan]{_preview(description, 72)}[/cyan]{elapsed}"
             if status == "success":
                 self._append(Static(
-                    f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
+                    f"[dim]└─[/dim] [bold green]done[/bold green] {desc_part}",
                     classes="log-line",
                 ))
             else:
                 self._append(Static(
-                    f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
+                    f"[dim]└─[/dim] [bold red]failed[/bold red] {desc_part}",
                     classes="log-line",
                 ))
 
@@ -1824,10 +1897,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         elif t == "background.finished":
             job_id = str(event.get("job_id", ""))
             status = str(event.get("status", ""))
-            marker = (
-                "[bold green]✓[/bold green]"
-                if status == "completed"
-                else "[bold red]✗[/bold red]"
+            marker = "[bold green]done[/bold green]" if status == "completed" else (
+                "[bold red]failed[/bold red]"
             )
             self._append(
                 Static(
@@ -1842,7 +1913,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 return
             step = event.get("step", "")
             self._append(Static(
-                f"[dim]step {step}[/dim]",
+                f"[dim]step {step}  analyzing[/dim]",
                 classes="step-divider",
             ))
 
@@ -1881,7 +1952,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._cancel_requested = False
             if status == "success":
                 self._append(Static(
-                    f"[bold green]✓ completed[/bold green]  [dim]{steps} steps[/dim]",
+                    f"[bold green]completed[/bold green]  [dim]{steps} steps[/dim]",
                     classes="run-ok",
                 ))
             elif reason == "cancelled":
@@ -1892,25 +1963,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else:
                 detail = f"  [dim]{reason}[/dim]" if reason else ""
                 self._append(Static(
-                    f"[bold red]✗ failed[/bold red]{detail}  [dim]{steps} steps[/dim]",
+                    f"[bold red]failed[/bold red]{detail}  [dim]{steps} steps[/dim]",
                     classes="run-err",
                 ))
-
-        elif t == "llm.usage":
-            run_id = event.get("run_id", "")
-            if run_id in self._subagent_run_ids:
-                return
-            pct = float(event.get("context_pct") or 0.0)
-            self._last_context_pct = pct
-            ctx_bar = self._render_ctx_bar(pct)
-            self._append(Static(
-                f"[dim]  tokens  "
-                f"in={event.get('input_tokens')} "
-                f"out={event.get('output_tokens')} "
-                f"cache={event.get('cache_read_input_tokens')}[/dim]"
-                f"  {ctx_bar}",
-                classes="usage",
-            ))
 
         elif t == "context.compacted":
             orig = event.get("original_tokens", 0)
@@ -1926,7 +1981,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else:
                 self._last_context_pct = 0.0
             self._append(Static(
-                f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                f"[bold cyan]Context compacted[/bold cyan]"
                 f"  [dim]trigger={trigger}  original≈{orig} → compacted≈{compacted}  "
                 f"summary={summary}  retained={retained_messages} msgs/{retained_tokens} tokens  "
                 f"quality={quality:.0%}[/dim]",

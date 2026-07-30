@@ -76,6 +76,7 @@ async def test_run_e2e_reads_file_and_succeeds(
     assert types[0] == "run.started"
     assert types[-1] == "run.finished"
     assert "step.started" in types
+    assert "agent.decision" in types
     assert "tool.call_started" in types
     assert "tool.call_finished" in types
     assert "llm.usage" in types
@@ -91,6 +92,9 @@ async def test_run_e2e_reads_file_and_succeeds(
     assert any(e["tool_name"] == "read_file" for e in tool_starts), (
         "expected at least one read_file tool call"
     )
+    first_decision = types.index("agent.decision")
+    first_tool_start = types.index("tool.call_started")
+    assert first_decision < first_tool_start
 
     # ── run_id is consistent across the event stream ─────────────────────────
     run_id = events[0]["run_id"]

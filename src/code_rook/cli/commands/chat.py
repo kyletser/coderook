@@ -35,6 +35,9 @@ class ChatPrinter:
         if t == "llm.token":
             print(event.get("token", ""), end="", flush=True)
             self._inline = True
+        elif t == "agent.decision" and not event.get("has_visible_text"):
+            self._ensure_newline()
+            print(f"[{event.get('intent', 'execute')}] {event.get('summary', '')}")
         elif t == "run.started":
             self.active_run_id = str(event.get("run_id", "")) or None
         elif t == "run.finished":
@@ -115,7 +118,14 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
         await client.send_command(
             "event.subscribe",
             {
-                "topics": ["session.*", "run.*", "tool.*", "llm.token", "permission.*"],
+                "topics": [
+                    "session.*",
+                    "run.*",
+                    "agent.*",
+                    "tool.*",
+                    "llm.token",
+                    "permission.*",
+                ],
                 "scope": "global",
             },
         )

@@ -21,6 +21,7 @@ from code_rook.tui.app import (
     SessionPicker,
     SlashCompleteWidget,
     ToolCallBlock,
+    _output_preview,
     _param_summary,
     _preview,
 )
@@ -456,6 +457,17 @@ def test_param_summary_prefers_key_fields() -> None:
     assert _param_summary("read_file", {"path": "README.md"}) == "path='README.md'"
     assert _param_summary("bash", {"command": "echo hi", "timeout": 1}) == "command='echo hi'"
     assert _param_summary("note_save", {"content": "Python 3.12"}) == "content='Python 3.12'"
+    assert _param_summary("task_create", {"subject": "Inspect events"}) == (
+        "subject='Inspect events'"
+    )
+
+
+# 功能：验证工具结果预览限制默认显示的行数和字符量
+# 设计：输入四行输出并检查只保留前三行及省略标记，完整内容由展开区负责
+def test_output_preview_is_compact_but_informative() -> None:
+    preview = _output_preview("one\ntwo\nthree\nfour")
+
+    assert preview == "one\ntwo\nthree\n..."
 
 
 # 功能：验证 llm.token 事件累积到 LLMStreamBlock，不连续 token 各自新开一块
@@ -493,6 +505,53 @@ async def test_llm_block_finalize_renders_selectable_markdown() -> None:
 
         markdown = block.query_one(Markdown)
         assert "## Title" in markdown.source
+
+
+# 功能：验证 agent.decision 将流式模型文本明确标记为实际动作意图
+# 设计：先发送 token 再发送 inspect 决策，断言同一消息块完成并获得 inspect 标签
+def test_agent_decision_labels_visible_progress_as_intent() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_event({"type": "llm.token", "token": "我先检查配置。", "run_id": "r"})
+    app._handle_event({
+        "type": "agent.decision",
+        "run_id": "r",
+        "step": 1,
+        "intent": "inspect",
+        "summary": "我先检查配置。",
+        "tool_names": ["read_file"],
+        "has_visible_text": True,
+    })
+
+    assert len(appended) == 1
+    block = appended[0]
+    assert isinstance(block, LLMStreamBlock)
+    assert block._kind == "inspect"  # type: ignore[attr-defined]
+    assert block._finalized  # type: ignore[attr-defined]
+
+
+# 功能：验证没有模型进度文本时 TUI 仍显示根据实际工具生成的意图摘要
+# 设计：直接发送无可见文本的执行决策，断言追加的静态行包含 intent 与回退说明
+def test_agent_decision_without_text_renders_fallback_summary() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_event({
+        "type": "agent.decision",
+        "run_id": "r",
+        "step": 1,
+        "intent": "execute",
+        "summary": "Using bash",
+        "tool_names": ["bash"],
+        "has_visible_text": False,
+    })
+
+    assert len(appended) == 1
+    assert "execute" in appended[0].content
+    assert "Using bash" in appended[0].content
 
 
 # 功能：验证 Ctrl+C 在存在屏幕选择时复制文本且不取消任务
@@ -646,6 +705,29 @@ def test_tool_call_started_and_finished() -> None:
     assert isinstance(block, ToolCallBlock)
     assert block._finished  # type: ignore[attr-defined]
     assert block._output == "hi"  # type: ignore[attr-defined]
+    assert "running" not in block._summary()  # type: ignore[attr-defined]
+    assert "done" in block._summary()  # type: ignore[attr-defined]
+
+
+# 功能：验证工具完成后默认显示结果预览并保留完整展开能力
+# 设计：在真实 App 中挂载工具块后设置四行结果，检查 finished 状态和三行预览内容
+async def test_tool_block_shows_result_preview_by_default() -> None:
+    block = ToolCallBlock("bash", {"command": "test"})
+
+    class ToolHarness(App[None]):
+        # 挂载待完成的工具调用块
+        def compose(self) -> ComposeResult:
+            yield block
+
+    app = ToolHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        block.set_result("one\ntwo\nthree\nfour", 12)
+        await pilot.pause()
+
+        preview = block.query_one(".preview")
+        assert "finished" in block.classes
+        assert str(preview.content) == "one\ntwo\nthree\n..."
 
 
 # 功能：验证 note_save 成功完成时工具块摘要显示 remembered

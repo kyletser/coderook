@@ -20,7 +20,7 @@ from code_rook.core.bus.commands import (
     SessionRenameCommand,
     SessionResumeCommand,
 )
-from code_rook.core.bus.events import CoreStartedEvent, SessionInterruptedEvent
+from code_rook.core.bus.events import AgentDecisionEvent, CoreStartedEvent, SessionInterruptedEvent
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留
@@ -73,6 +73,26 @@ def test_core_started_event_roundtrip() -> None:
     evt2 = CoreStartedEvent.model_validate_json(evt.model_dump_json())
     assert evt2.listen_addr == "127.0.0.1:7437"
     assert evt2.type == "core.started"
+
+
+# 功能：验证 Agent 决策事件完整承载动作意图、用户可见摘要和工具列表
+# 设计：执行 JSON 往返并检查 Literal 分类，保证 Core、TUI 与事件日志共享同一协议
+def test_agent_decision_event_roundtrip() -> None:
+    event = AgentDecisionEvent(
+        run_id="run-1",
+        step=2,
+        intent="inspect",
+        summary="我先检查运行状态。",
+        tool_names=["bash"],
+        has_visible_text=True,
+        ts="2026-07-30T00:00:00Z",
+    )
+
+    restored = AgentDecisionEvent.model_validate_json(event.model_dump_json())
+
+    assert restored.type == "agent.decision"
+    assert restored.intent == "inspect"
+    assert restored.tool_names == ["bash"]
 
 
 # 功能：验证 session list/resume 的 wire command 字段和范围约束

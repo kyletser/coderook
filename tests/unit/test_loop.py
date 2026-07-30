@@ -275,6 +275,53 @@ async def test_step_started_and_finished_events_published() -> None:
     assert "step.finished" in types
 
 
+# 功能：验证每次模型决策都发布可观察的意图摘要且先于工具执行事件
+# 设计：让模型先输出用户可见进度并调用只读工具，检查 inspect 分类、摘要和事件顺序
+async def test_agent_decision_event_precedes_tool_execution() -> None:
+    bus = EventBus()
+    events = await _events(bus)
+    provider = _MockProvider([
+        LlmResponse(
+            stop_reason="tool_use",
+            text="我先检查相关文件。",
+            tool_calls=[_tc("read_file", {"path": "README.md"})],
+        ),
+        LlmResponse(stop_reason="end_turn", text="检查完成。"),
+    ])
+    loop, _ = _make_loop(provider, bus=bus)
+
+    await loop.run(_ctx())
+
+    types = [event.type for event in events]  # type: ignore[attr-defined]
+    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
+    assert decision.intent == "inspect"  # type: ignore[attr-defined]
+    assert decision.summary == "我先检查相关文件。"  # type: ignore[attr-defined]
+    assert decision.tool_names == ["read_file"]  # type: ignore[attr-defined]
+    assert decision.has_visible_text is True  # type: ignore[attr-defined]
+    assert types.index("agent.decision") < types.index("tool.call_started")
+
+
+# 功能：验证模型省略进度文本时决策事件仍根据实际工具提供稳定回退摘要
+# 设计：使用未知执行工具避免依赖具体实现，断言 execute 分类和工具名回退而非空白
+async def test_agent_decision_event_has_tool_fallback_without_text() -> None:
+    bus = EventBus()
+    events = await _events(bus)
+    provider = _MockProvider([
+        LlmResponse(stop_reason="tool_use", tool_calls=[_tc("custom_tool", {})]),
+        LlmResponse(stop_reason="end_turn"),
+    ])
+    loop, _ = _make_loop(provider, bus=bus)
+
+    context = _ctx()
+    context.goal = "请执行这个任务"
+    await loop.run(context)
+
+    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
+    assert decision.intent == "execute"  # type: ignore[attr-defined]
+    assert decision.summary == "调用工具：custom_tool"  # type: ignore[attr-defined]
+    assert decision.has_visible_text is False  # type: ignore[attr-defined]
+
+
 # 功能：验证多步执行后 step 计数器正确累积到步数总量
 # 设计：三步序列 [tool_use, tool_use, end_turn]，确认 step==3，排除计数器初始化错误或某步未递增的情况
 async def test_step_counter_increments_across_steps() -> None:

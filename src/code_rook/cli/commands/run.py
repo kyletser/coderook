@@ -50,6 +50,10 @@ class StdoutPrinter:
             print(event.get("token", ""), end="", flush=True)
             self._inline = True
 
+        elif t == "agent.decision" and not event.get("has_visible_text"):
+            self._ensure_newline()
+            print(f"[{event.get('intent', 'execute')}] {event.get('summary', '')}")
+
         elif t == "tool.call_started":
             self._ensure_newline()
             params_str = json.dumps(event.get("params", {}), ensure_ascii=False)
@@ -122,6 +126,7 @@ async def _run_async(
                 "topics": [
                     "run.*",
                     "step.*",
+                    "agent.*",
                     "tool.*",
                     "permission.*",
                     "llm.token",

@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from code_rook.core.bus.events import StepFinishedEvent, StepStartedEvent
+from code_rook.core.bus.events import AgentDecisionEvent, StepFinishedEvent, StepStartedEvent
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -32,6 +32,34 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 _TRANSIENT_ERROR_MARKERS = ("429", "529", "rate limit", "overloaded", "temporarily unavailable")
+_INSPECTION_TOOLS = {
+    "agent_result",
+    "background_list",
+    "background_result",
+    "checkpoint_list",
+    "git_diff",
+    "glob",
+    "grep",
+    "list_dir",
+    "memory_search",
+    "read_file",
+    "task_get",
+    "task_list",
+    "worktree_list",
+}
+_PLANNING_TOOLS = {"task_claim", "task_create", "task_update"}
+_CHANGE_TOOLS = {
+    "apply_patch",
+    "checkpoint_rewind",
+    "edit_file",
+    "memory_forget",
+    "memory_save",
+    "note_save",
+    "write_file",
+    "worktree_create",
+    "worktree_remove",
+}
+_DELEGATION_TOOLS = {"spawn_agent"}
 
 # 基础系统提示；提供对话纠错、能力校验和工具路由规则，todos 摘要会追加在其后
 _BASE_SYSTEM_PROMPT = (
@@ -46,6 +74,14 @@ _BASE_SYSTEM_PROMPT = (
     "When multiple interpretations remain plausible, use conversation context and safe, "
     "low-cost read-only inspection to resolve them; otherwise ask one focused clarification. "
     "Use the available tools to complete the user's actual goal. "
+    "Keep private reasoning private. Before the first tool call, write one brief user-visible "
+    "progress sentence in the user's language that states your interpretation and immediate "
+    "next action. On later tool rounds, add another progress sentence only when new evidence "
+    "changes the direction. Do not narrate obvious mechanics. "
+    "For complex work with at least three meaningful actions, use task_create and task_update "
+    "to maintain a concise, verifiable plan. Skip task tracking for simple requests. "
+    "Never use emoji, decorative symbols, filler greetings, or redundant recaps in "
+    "user-visible text. Prefer short factual prose. "
     "Before claiming that you cannot inspect or perform something, check the available tool "
     "schemas and runtime environment. If a capable tool requires approval, request or explain "
     "that approval instead of claiming the capability does not exist. Never invent tool results. "
@@ -81,6 +117,43 @@ _MAX_TODO_DEFERS = 3
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# 根据模型实际选择的工具归纳当前动作意图，不另发起分类模型请求
+def _decision_intent(tool_calls: list[ToolCallBlock]) -> str:
+    names = {call.name for call in tool_calls}
+    if not names:
+        return "respond"
+    if names & _DELEGATION_TOOLS:
+        return "delegate"
+    if names & _CHANGE_TOOLS:
+        return "change"
+    if names & _PLANNING_TOOLS:
+        return "plan"
+    if names <= _INSPECTION_TOOLS:
+        return "inspect"
+    return "execute"
+
+
+# 判断最新用户消息是否以中文为主，供无模型文本时选择本地化回退
+def _uses_chinese(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+
+# 从用户可见文本生成单行进度摘要；无文本时按实际工具和用户语言给出回退
+def _decision_summary(
+    text: str,
+    tool_calls: list[ToolCallBlock],
+    user_text: str,
+) -> str:
+    visible = " ".join(text.split())
+    if visible:
+        return visible if len(visible) <= 240 else visible[:237] + "..."
+    names = list(dict.fromkeys(call.name for call in tool_calls))
+    if names:
+        prefix = "调用工具：" if _uses_chinese(user_text) else "Using "
+        return prefix + ", ".join(names)
+    return "准备回答" if _uses_chinese(user_text) else "Preparing the response"
 
 
 class TranscriptSink(Protocol):
@@ -324,6 +397,18 @@ class AgentLoop:
                 )
                 context.mark_failed("llm_error")
                 break
+
+            await self._bus.publish(
+                AgentDecisionEvent(
+                    run_id=context.run_id,
+                    step=context.step,
+                    intent=_decision_intent(response.tool_calls),  # type: ignore[arg-type]
+                    summary=_decision_summary(response.text, response.tool_calls, context.goal),
+                    tool_names=[call.name for call in response.tool_calls],
+                    has_visible_text=bool(response.text.strip()),
+                    ts=_now(),
+                )
+            )
 
             # [observe] append assistant content blocks to context
             # thinking blocks must come first and be preserved verbatim for extended thinking mode
