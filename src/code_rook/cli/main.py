@@ -28,8 +28,14 @@ from code_rook.core.logging_setup import setup_logging
 from code_rook.core.state_migration import migrate_legacy_state
 
 
-# CLI 主入口：解析命令行参数并分发到对应子命令
+# CLI 主入口：无参数启动 TUI，其余参数分发到现有子命令
 def main() -> None:
+    if len(sys.argv) == 1:
+        from code_rook.tui.__main__ import main as tui_main
+
+        tui_main()
+        return
+
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook", description="CodeRook CLI")
     parser.add_argument("--version", action="store_true", help="Print version and exit")

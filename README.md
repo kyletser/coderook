@@ -103,14 +103,14 @@ CODEROOK_LLM_DEFAULT_MODEL=deepseek-v4-pro
 ### 3. 一条命令启动
 
 ```powershell
-uv run coderook-tui
+uv run coderook
 ```
 
-`coderook-tui` 会自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
+无参数 `coderook` 会进入 TUI，并自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
 首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以随时修改
 协议、地址、模型或 API key，完成后自动回到界面。
 
-排障或需要手动管理生命周期时，仍可使用：
+`coderook-tui` 入口继续保留。排障或需要手动管理生命周期时，可使用：
 
 ```powershell
 uv run coderook core start
