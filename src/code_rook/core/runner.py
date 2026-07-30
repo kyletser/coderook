@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfileLoader
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
 from code_rook.core.checkpoints import CheckpointStore
@@ -30,6 +31,7 @@ from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.base import BaseTool
 from code_rook.core.tools.builtin import (
     ApplyPatchTool,
     BackgroundCancelTool,
@@ -132,11 +134,19 @@ class AgentRunner:
         session_id: str = "",
         tool_whitelist: list[str] | None = None,
         checkpoint_store: CheckpointStore | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
 
-        def _ok(name: str) -> bool:
+        # 判断工具名称是否处于显式白名单内
+        def _name_allowed(name: str) -> bool:
             return allowed is None or name in allowed
+
+        # Plan Mode 只向模型暴露明确声明为纯读的工具
+        def _ok(tool: BaseTool) -> bool:
+            return _name_allowed(tool.name) and (
+                runtime_mode != RuntimeMode.PLAN or tool.is_read_only
+            )
 
         registry = ToolRegistry()
         for t in [
@@ -160,14 +170,14 @@ class AgentRunner:
             ListDirTool(self._workspace_boundary),
             SkillTool(self._skill_loader),
         ]:
-            if _ok(t.name):
+            if _ok(t):
                 registry.register(t)
         if checkpoint_store is not None:
             for checkpoint_tool in [
                 CheckpointListTool(checkpoint_store),
                 CheckpointRewindTool(checkpoint_store),
             ]:
-                if _ok(checkpoint_tool.name):
+                if _ok(checkpoint_tool):
                     registry.register(checkpoint_tool)
         for t in [
             TaskCreateTool(task_manager),
@@ -176,22 +186,22 @@ class AgentRunner:
             TaskListTool(task_manager),
             TaskGetTool(task_manager),
         ]:
-            if _ok(t.name):
+            if _ok(t):
                 registry.register(t)
         for memory_tool in [
             MemorySaveTool(self._memory_store, session_id, run_id or ""),
             MemorySearchTool(self._memory_store),
             MemoryForgetTool(self._memory_store),
         ]:
-            if _ok(memory_tool.name):
+            if _ok(memory_tool):
                 registry.register(memory_tool)
         if session is not None and store is not None and run_id is not None:
             note_tool = NoteSaveTool(store, session.id, run_id)
-            if _ok(note_tool.name):
+            if _ok(note_tool):
                 registry.register(note_tool)
         if provider is not None and bus is not None and run_id is not None:
             runs_dir = child_runs_dir or self._runs_dir
-            if _ok("spawn_agent"):
+            if runtime_mode != RuntimeMode.PLAN and _name_allowed("spawn_agent"):
                 registry.register(
                     SpawnAgentTool(
                         provider=provider,
@@ -207,11 +217,12 @@ class AgentRunner:
                         task_manager=task_manager,
                     )
                 )
-            if _ok("agent_result"):
-                registry.register(AgentResultTool(self._task_registry))
+            agent_result_tool = AgentResultTool(self._task_registry)
+            if _ok(agent_result_tool):
+                registry.register(agent_result_tool)
         if self._mcp_manager is not None:
             for mcp_tool in self._mcp_manager.get_tools():
-                if _ok(mcp_tool.name):
+                if _ok(mcp_tool):
                     registry.register(mcp_tool)
         if self._background_registry is not None:
             for background_tool in [
@@ -220,14 +231,14 @@ class AgentRunner:
                 BackgroundListTool(self._background_registry, session_id),
                 BackgroundCancelTool(self._background_registry),
             ]:
-                if _ok(background_tool.name):
+                if _ok(background_tool):
                     registry.register(background_tool)
         for worktree_tool in [
             WorktreeCreateTool(self._worktree_manager),
             WorktreeListTool(self._worktree_manager),
             WorktreeRemoveTool(self._worktree_manager),
         ]:
-            if _ok(worktree_tool.name):
+            if _ok(worktree_tool):
                 registry.register(worktree_tool)
         return registry
 
@@ -245,6 +256,7 @@ class AgentRunner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         if session is not None and store is not None:
@@ -292,6 +304,7 @@ class AgentRunner:
                 self._agent_profile_loader.list_all(),
             ),
             system_prompt_override=system_prompt_override,
+            runtime_mode=runtime_mode,
         )
         prompt_decision = await self._hooks.emit(
             "UserPromptSubmit",
@@ -339,6 +352,7 @@ class AgentRunner:
                     session_id=session_id_str,
                     tool_whitelist=tool_whitelist,
                     checkpoint_store=checkpoint_store,
+                    runtime_mode=runtime_mode,
                 )
                 session_dir = (
                     store.session_dir(session.id)
@@ -367,7 +381,23 @@ class AgentRunner:
                     ),
                     todo_state=task_manager,
                 )
-                await loop.run(context)
+                previous_authority = None
+                permission_manager = self._permission_manager
+                if permission_manager is not None and session_id_str:
+                    previous_authority = permission_manager.get_authority_snapshot(session_id_str)
+                    permission_manager.set_authority_snapshot(
+                        session_id_str,
+                        previous_authority.model_copy(update={"mode": runtime_mode}),
+                    )
+                try:
+                    await loop.run(context)
+                finally:
+                    if previous_authority is not None:
+                        assert permission_manager is not None
+                        permission_manager.set_authority_snapshot(
+                            session_id_str,
+                            previous_authority,
+                        )
                 if context.status == "success":
                     self._memory_store.remember_explicit_prompt(
                         goal,

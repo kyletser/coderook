@@ -8,11 +8,15 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.runner import AgentRunner
+from code_rook.core.session.model import Session
+from code_rook.core.session.store import SessionStore
 
 # --- mock provider -----------------------------------------------------------
 
@@ -77,6 +81,48 @@ class _CapturingProvider:
         self.tool_schemas = [dict(schema) for schema in tool_schemas]
         self.system = system
         return self.response
+
+
+class _ForcedPlanWriteProvider:
+    # 初始化强制越权 provider 并记录首轮可见工具集合
+    def __init__(self) -> None:
+        self.calls = 0
+        self.first_tool_names: set[str] = set()
+        self.system = ""
+
+    # 首轮故意请求 edit_file，次轮返回计划，验证 Core 不信任模型自律
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+    ) -> LlmResponse:
+        self.calls += 1
+        if self.calls == 1:
+            self.first_tool_names = {str(schema["name"]) for schema in tool_schemas}
+            self.system = system or ""
+            return LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[
+                    ToolCallBlock(
+                        id="write-in-plan",
+                        name="edit_file",
+                        input={
+                            "path": "target.txt",
+                            "old_text": "original",
+                            "new_text": "changed",
+                        },
+                    )
+                ],
+            )
+        return LlmResponse(
+            stop_reason="end_turn",
+            text="1. Inspect target.txt\n2. Apply the approved change\n3. Run tests",
+        )
 
 
 # --- helpers -----------------------------------------------------------------
@@ -512,3 +558,53 @@ async def test_runner_no_longer_cancels_background_descendants(
     assert not child_context.is_done()
     child_event.set()
     await child_task
+
+
+# 功能：验证 Plan Mode 不向模型暴露写工具，且强制伪造写调用也不能修改工作区
+# 设计：provider 无视 schema 主动请求 edit_file，检查文件不变、计划提示存在且 session authority 被恢复
+async def test_plan_mode_enforces_read_only_registry_and_restores_authority(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    store = SessionStore(tmp_path / "sessions")
+    session = Session(
+        id="sess-plan",
+        mode="chat",
+        status="active",
+        title="plan",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+    store.write_meta(session)
+    store.append_message(session.id, "user", "Plan a safe change")
+    permission_manager = PermissionManager()
+    original_authority = AuthoritySnapshot(mode=RuntimeMode.ACT)
+    permission_manager.set_authority_snapshot(session.id, original_authority)
+    provider = _ForcedPlanWriteProvider()
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        permission_manager=permission_manager,
+        workspace_root=workspace,
+        runs_dir=tmp_path / "runs",
+    )
+
+    outcome = await runner.run_and_capture(
+        "Plan a safe change",
+        run_id="run-plan",
+        session=session,
+        store=store,
+        runtime_mode=RuntimeMode.PLAN,
+    )
+
+    assert outcome.status == "success"
+    assert target.read_text(encoding="utf-8") == "original"
+    assert "edit_file" not in provider.first_tool_names
+    assert "write_file" not in provider.first_tool_names
+    assert "bash" not in provider.first_tool_names
+    assert {"read_file", "grep", "glob", "git_diff"} <= provider.first_tool_names
+    assert "## Plan Mode" in provider.system
+    assert permission_manager.get_authority_snapshot(session.id) == original_authority

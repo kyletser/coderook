@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
-from code_rook.core.authority import AuthoritySnapshot, detect_sandbox_capability
+from code_rook.core.authority import (
+    AuthoritySnapshot,
+    RuntimeMode,
+    detect_sandbox_capability,
+)
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
@@ -80,12 +84,16 @@ class RuntimeService:
         session: Session,
         run_id: str,
         content: str,
+        *,
+        runtime_mode: RuntimeMode | None = None,
     ) -> TurnRecord:
         authority = (
             self._authority_provider(session.id)
             if self._authority_provider is not None
             else self._default_authority
         )
+        if runtime_mode is not None:
+            authority = authority.model_copy(update={"mode": runtime_mode})
         async with self._write_lock:
             turn, event = await asyncio.to_thread(
                 self._start_turn_sync,

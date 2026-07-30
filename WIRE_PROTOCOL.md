@@ -756,9 +756,21 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
 | `content` | `string` | yes |
+| `runtime_mode` | `object` | no |
 
 ```json
 {
+  "$defs": {
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    }
+  },
   "properties": {
     "type": {
       "const": "session.send_message",
@@ -773,6 +785,10 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "content": {
       "title": "Content",
       "type": "string"
+    },
+    "runtime_mode": {
+      "$ref": "#/$defs/RuntimeMode",
+      "default": "act"
     }
   },
   "required": [
@@ -793,7 +809,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
   "method": "session.send_message",
   "params": {
     "session_id": "sess-abc123def456",
-    "content": "\u603b\u7ed3 README.md"
+    "content": "\u603b\u7ed3 README.md",
+    "runtime_mode": "act"
   }
 }
 ```
@@ -2888,6 +2905,72 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "type": "session.waiting_for_input",
   "session_id": "sess-abc123def456",
   "last_run_id": "20260516-100000-abc123",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### PlanReadyEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `request` | `string` | yes |
+| `plan` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "plan.ready",
+      "default": "plan.ready",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "request": {
+      "title": "Request",
+      "type": "string"
+    },
+    "plan": {
+      "title": "Plan",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "run_id",
+    "request",
+    "plan",
+    "ts"
+  ],
+  "title": "PlanReadyEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "plan.ready",
+  "session_id": "sess-abc123def456",
+  "run_id": "20260516-100000-abc123",
+  "request": "\u89c4\u5212 README \u91cd\u6784",
+  "plan": "1. Inspect\n2. Edit\n3. Test",
   "ts": "2026-05-16T10:00:00.001Z"
 }
 ```

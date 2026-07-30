@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from typing import Any
+
 import pytest
 from rich.markup import render
 from textual.app import App, ComposeResult
 from textual.widget import Widget
 from textual.widgets import Input, Markdown
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
 from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
@@ -17,6 +22,7 @@ from code_rook.tui.app import (
     ModelPicker,
     PermissionBlock,
     PermissionSelect,
+    PlanReview,
     ProviderPicker,
     SessionPicker,
     SlashCompleteWidget,
@@ -189,6 +195,38 @@ async def test_model_picker_renders_and_selects_model() -> None:
         await pilot.press("down", "enter")
         await pilot.pause()
         assert app.selected == ["claude-opus-4-6"]
+
+
+# 功能：验证计划审阅面板可用键盘选择继续规划并用 Esc 取消
+# 设计：在最小 Textual App 中发送真实按键，覆盖默认批准、移动选择和取消消息
+async def test_plan_review_keyboard_decisions() -> None:
+    class ReviewHarness(App[None]):
+        # 初始化决定收集器
+        def __init__(self) -> None:
+            super().__init__()
+            self.decisions: list[str] = []
+
+        # 挂载计划审阅面板
+        def compose(self) -> ComposeResult:
+            yield PlanReview("run-plan")
+
+        # 收集计划审阅决定
+        def on_plan_review_decided(self, message: PlanReview.Decided) -> None:
+            self.decisions.append(message.decision)
+
+    app = ReviewHarness()
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        review = app.query_one(PlanReview)
+        assert review.has_focus
+        assert "批准并实施" in render(review._render_ui()).plain
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.decisions == ["revise", "cancel"]
 
 
 # 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
@@ -435,6 +473,7 @@ def test_tui_builtin_commands_include_model_picker() -> None:
 
     assert items["model"] == "show or switch the active model"
     assert items["copy"] == "copy the latest assistant reply"
+    assert items["plan"] == "analyze read-only and review a plan before implementation"
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
@@ -842,6 +881,121 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
     assert area.text == ""
     assert "agent is working" in area.border_title.lower()
     assert appended[0].content == "[bold]>[/bold] hello"
+
+
+# 功能：验证 /plan 描述单次提交进入只读 run，计划完成后批准才发送 Act run
+# 设计：使用真实 TUI 消息泵和计划审阅控件、fake IPC，核对两次 session.send_message 的 mode 顺序
+async def test_plan_command_requires_review_before_act() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 记录 TUI 发出的 IPC 命令
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {"run_id": "run-plan"}
+
+    class PlanHarness(CodeRookTuiApp):
+        # 跳过 socket worker并准备输入框
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/plan inspect authentication"
+            prompt.focus()
+
+    app = PlanHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+        scheduled: list[asyncio.Task[None]] = []
+
+        # 用普通 asyncio task 执行 worker coroutine，避免等待 Textual 全局 worker 集合
+        def schedule(
+            coroutine: Coroutine[Any, Any, None],
+            **_kwargs: object,
+        ) -> asyncio.Task[None]:
+            task = asyncio.create_task(coroutine)
+            scheduled.append(task)
+            return task
+
+        app.run_worker = schedule  # type: ignore[method-assign]
+
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-plan"
+        prompt.text = "/plan inspect authentication"
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        assert app._busy
+        assert scheduled
+        await asyncio.gather(*scheduled)
+        scheduled.clear()
+
+        assert calls[0] == (
+            "session.send_message",
+            {
+                "session_id": "sess-plan",
+                "content": "inspect authentication",
+                "runtime_mode": "plan",
+            },
+        )
+        app._handle_event(
+            {
+                "type": "plan.ready",
+                "session_id": "sess-plan",
+                "run_id": "run-plan",
+                "request": "inspect authentication",
+                "plan": "1. Inspect\n2. Edit\n3. Test",
+                "ts": "t",
+            }
+        )
+        app._handle_event(
+            {
+                "type": "session.waiting_for_input",
+                "session_id": "sess-plan",
+                "last_run_id": "run-plan",
+                "ts": "t",
+            }
+        )
+        await pilot.pause()
+
+        assert prompt.disabled
+        assert app.query_one(PlanReview).has_focus
+        assert len(calls) == 1
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await asyncio.gather(*scheduled)
+
+        assert calls[1][0] == "session.send_message"
+        assert calls[1][1]["runtime_mode"] == "act"
+        assert str(calls[1][1]["content"]).startswith("Implement the approved plan")
+        assert "Original user request:\ninspect authentication" in str(
+            calls[1][1]["content"]
+        )
+
+
+# 功能：验证单独输入 /plan 会直接进入下一条消息的计划模式而不发送空 run
+# 设计：在真实 TUI 中提交完整命令一次，检查输入状态和 mode，固定无需第二次确认补全
+async def test_plan_command_enters_mode_on_first_submit() -> None:
+    class PlanHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/plan"
+            prompt.focus()
+
+    app = PlanHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+
+        assert prompt.text == ""
+        assert app._input_runtime_mode == RuntimeMode.PLAN
+        assert not app._busy
+        assert "plan mode" in prompt.border_title
 
 
 async def test_cancel_worker_sends_active_run_id() -> None:

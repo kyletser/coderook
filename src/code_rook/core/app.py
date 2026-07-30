@@ -179,7 +179,11 @@ class CoreApp:
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
         assert self._sessions is not None
         cmd = SessionSendMessageCommand.model_validate(params)
-        run_id = await self._sessions.send_message(cmd.session_id, cmd.content)
+        run_id = await self._sessions.send_message(
+            cmd.session_id,
+            cmd.content,
+            runtime_mode=cmd.runtime_mode,
+        )
         return SessionSendMessageResult(run_id=run_id)
 
     # 返回 session 的完整 Anthropic messages 历史

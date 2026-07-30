@@ -32,6 +32,7 @@ class _Runner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
     ) -> RunOutcome:
         assert run_id is not None
         assert session is not None
@@ -209,3 +210,40 @@ async def test_start_turn_freezes_authority_snapshot(tmp_path: Path) -> None:
 
     persisted = store.get_turn("run-authority")
     assert persisted.authority_snapshot == snapshot
+
+
+# 功能：验证单次 Plan 请求会覆盖 turn mode 但保留其余 session authority 字段
+# 设计：provider 返回 Full Access 快照，再用 runtime_mode=plan 启动 turn，检查只替换 mode
+async def test_start_turn_applies_per_turn_plan_mode(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.db")
+    snapshot = AuthoritySnapshot(
+        mode=RuntimeMode.ACT,
+        profile=AuthorityProfile.FULL_ACCESS,
+        workspace_trust=WorkspaceTrust.TRUSTED,
+        allowed_actions=frozenset({ToolAction.READ, ToolAction.MUTATE}),
+    )
+    service = RuntimeService(
+        store,
+        workspace=tmp_path,
+        authority_provider=lambda _session_id: snapshot,
+    )
+    session = Session(
+        id="sess-plan",
+        mode="chat",
+        status="active",
+        title="plan",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+
+    await service.start_turn(
+        session,
+        "run-plan",
+        "plan changes",
+        runtime_mode=RuntimeMode.PLAN,
+    )
+
+    persisted = store.get_turn("run-plan")
+    assert persisted.mode == RuntimeMode.PLAN
+    assert persisted.authority_profile == AuthorityProfile.FULL_ACCESS
+    assert persisted.allowed_actions == snapshot.allowed_actions

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.context import ExecutionContext, _response_language_hint
 
 
@@ -116,3 +117,21 @@ def test_response_language_hint_handles_common_scripts() -> None:
         "the language used in the original user request"
     )
     assert _response_language_hint("123 ?") == "Simplified Chinese"
+
+
+# 功能：验证 Plan Mode 系统提示明确只读边界、计划交付物和批准门槛
+# 设计：构造计划上下文并检查独立章节，确保角色 override 也不能移除运行模式约束
+def test_plan_mode_injects_read_only_and_approval_contract() -> None:
+    ctx = _make_ctx(
+        goal="plan a refactor",
+        runtime_mode=RuntimeMode.PLAN,
+        system_prompt_override="SPECIAL PLANNER",
+    )
+
+    prompt = ctx.system_prompt("DEFAULT")
+
+    assert prompt.startswith("SPECIAL PLANNER")
+    assert "## Plan Mode" in prompt
+    assert "Only read-only tools are available" in prompt
+    assert "explicitly approve" in prompt
+    assert "Do not claim implementation" in prompt

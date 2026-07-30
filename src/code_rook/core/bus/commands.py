@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field, model_validator
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.session.model import SessionMode, SessionStatus
 
@@ -102,6 +103,7 @@ class SessionSendMessageCommand(BaseModel):
     type: Literal["session.send_message"] = "session.send_message"
     session_id: str
     content: str
+    runtime_mode: RuntimeMode = RuntimeMode.ACT
 
 
 class SessionSendMessageResult(BaseModel):

@@ -140,6 +140,15 @@ class SessionWaitingForInputEvent(BaseModel):
     ts: str
 
 
+class PlanReadyEvent(BaseModel):
+    type: Literal["plan.ready"] = "plan.ready"
+    session_id: str
+    run_id: str
+    request: str
+    plan: str
+    ts: str
+
+
 class SessionResumedEvent(BaseModel):
     type: Literal["session.resumed"] = "session.resumed"
     session_id: str
@@ -295,6 +304,7 @@ Event = Annotated[
     | SessionCreatedEvent
     | SessionMessageReceivedEvent
     | SessionWaitingForInputEvent
+    | PlanReadyEvent
     | SessionResumedEvent
     | SessionRenamedEvent
     | SessionForkedEvent

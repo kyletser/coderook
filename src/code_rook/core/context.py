@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from code_rook.core.authority import RuntimeMode
+
 _LANGUAGE_POLICY = (
     "Use concise English for internal analysis, tool inputs, subagent delegation, memory, "
     "task state, and other machine-facing content unless exact source or user text must be "
@@ -46,6 +48,7 @@ class ExecutionContext:
     reason: str | None = None
     result: str = ""
     user_request: str = ""
+    runtime_mode: RuntimeMode = RuntimeMode.ACT
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
 
@@ -76,6 +79,16 @@ class ExecutionContext:
             + ". This is based on the original user request that started the run, never on "
             "tool-result messages."
         )
+        if self.runtime_mode == RuntimeMode.PLAN:
+            parts.append(
+                "\n\n## Plan Mode\n"
+                "Investigate the request without changing files, memory, tasks, processes, "
+                "external systems, or repository state. Only read-only tools are available. "
+                "Do not claim implementation or verification that did not occur. End with a "
+                "concrete, ordered implementation plan that names affected components, key "
+                "decisions, risks, and verification steps. The user must explicitly approve "
+                "before a later Act turn may implement it."
+            )
         if self.runtime_context.strip():
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():

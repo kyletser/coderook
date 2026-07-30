@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     CoreAuthenticateCommand,
@@ -19,8 +20,14 @@ from code_rook.core.bus.commands import (
     SessionListCommand,
     SessionRenameCommand,
     SessionResumeCommand,
+    SessionSendMessageCommand,
 )
-from code_rook.core.bus.events import AgentDecisionEvent, CoreStartedEvent, SessionInterruptedEvent
+from code_rook.core.bus.events import (
+    AgentDecisionEvent,
+    CoreStartedEvent,
+    PlanReadyEvent,
+    SessionInterruptedEvent,
+)
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留
@@ -151,6 +158,40 @@ def test_agent_run_headless_permission_protocol() -> None:
     assert AgentRunCommand.model_validate_json(
         allow_list.model_dump_json()
     ).allow_tools == ["edit_file", "bash"]
+
+
+# 功能：验证 session 消息可显式携带 Plan Mode 且默认仍为 Act
+# 设计：分别构造默认和计划命令并做 JSON 往返，固定客户端与 Core 的每轮模式契约
+def test_session_message_runtime_mode_roundtrip() -> None:
+    default = SessionSendMessageCommand(session_id="sess-1", content="implement")
+    planned = SessionSendMessageCommand(
+        session_id="sess-1",
+        content="inspect and plan",
+        runtime_mode=RuntimeMode.PLAN,
+    )
+
+    assert default.runtime_mode == RuntimeMode.ACT
+    assert SessionSendMessageCommand.model_validate_json(
+        planned.model_dump_json()
+    ).runtime_mode == RuntimeMode.PLAN
+
+
+# 功能：验证计划完成事件携带原请求和完整计划供 TUI 审阅
+# 设计：执行 JSON 往返并检查稳定 run/session 标识，防止计划被绑定到错误会话
+def test_plan_ready_event_roundtrip() -> None:
+    event = PlanReadyEvent(
+        session_id="sess-1",
+        run_id="run-plan",
+        request="refactor auth",
+        plan="1. inspect\n2. edit\n3. test",
+        ts="2026-07-30T00:00:00Z",
+    )
+
+    restored = PlanReadyEvent.model_validate_json(event.model_dump_json())
+
+    assert restored.type == "plan.ready"
+    assert restored.session_id == "sess-1"
+    assert restored.plan.startswith("1. inspect")
 
 
 # 功能：验证 runtime 事件回放命令的游标范围和分页上限

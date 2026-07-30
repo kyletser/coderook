@@ -53,6 +53,7 @@ from code_rook.core.bus.events import (
     LlmTokenEvent,
     LlmUsageEvent,
     LogLineEvent,
+    PlanReadyEvent,
     RunFinishedEvent,
     RunStartedEvent,
     RuntimeEventAppendedEvent,
@@ -184,7 +185,11 @@ def generate() -> str:
         "jsonrpc": "2.0",
         "id": "u-5",
         "method": "session.send_message",
-        "params": {"session_id": session_id, "content": "总结 README.md"},
+        "params": {
+            "session_id": session_id,
+            "content": "总结 README.md",
+            "runtime_mode": "act",
+        },
     }
     session_send_resp_example = {
         "jsonrpc": "2.0",
@@ -362,6 +367,11 @@ def generate() -> str:
         _model_section("SessionWaitingForInputEvent", SessionWaitingForInputEvent,
             {"type": "session.waiting_for_input", "session_id": session_id,
              "last_run_id": run_id, "ts": ts}),
+        "\n",
+        _model_section("PlanReadyEvent", PlanReadyEvent,
+            {"type": "plan.ready", "session_id": session_id, "run_id": run_id,
+             "request": "规划 README 重构", "plan": "1. Inspect\n2. Edit\n3. Test",
+             "ts": ts}),
         "\n",
         _model_section("SessionResumedEvent", SessionResumedEvent,
             {"type": "session.resumed", "session_id": session_id, "ts": ts}),

@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, Static, TextArea
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
@@ -454,6 +455,79 @@ class PermissionBlock(Static):
             f"{icon} [bold]{tool_name}[/bold]  [dim]{label}[/dim]{preview}"
         )
         self.post_message(self.Resolved(self, decision))
+
+
+class PlanReview(Static):
+    """Keyboard-driven review prompt shown after a read-only planning run."""
+
+    can_focus = True
+    _CHOICES = (
+        ("approve", "批准并实施", "退出 Plan Mode，按当前权限逐项执行"),
+        ("revise", "继续规划", "输入反馈后再次进行只读分析"),
+        ("cancel", "取消", "保留计划但不执行任何改动"),
+    )
+
+    DEFAULT_CSS = """
+    PlanReview {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    PlanReview:focus { border: solid #72c7d4; }
+    """
+
+    class Decided(Message):
+        # 初始化计划审阅决定消息
+        def __init__(self, review: PlanReview, decision: str) -> None:
+            self.review = review
+            self.decision = decision
+            super().__init__()
+
+    # 初始化计划审阅面板并默认选中批准
+    def __init__(self, run_id: str) -> None:
+        super().__init__("")
+        self.run_id = run_id
+        self._cursor = 0
+
+    # 挂载后渲染选项并取得键盘焦点
+    def on_mount(self) -> None:
+        self.border_title = " Plan ready "
+        self.border_subtitle = " ↑↓ move   Enter select   Esc cancel "
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染批准、继续规划和取消三个明确分支
+    def _render_ui(self) -> str:
+        lines = ["[bold]计划已完成，下一步？[/bold]"]
+        for index, (_decision, label, detail) in enumerate(self._CHOICES):
+            marker = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
+            style = "bold white" if index == self._cursor else "#c6cad0"
+            lines.append(
+                f"{marker} [{style}]{escape(label)}[/{style}]  [dim]{escape(detail)}[/dim]"
+            )
+        return "\n".join(lines)
+
+    # 处理计划审阅的键盘导航与确认
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k"):
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(self._CHOICES)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j"):
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(self._CHOICES)
+            self.update(self._render_ui())
+        elif event.key == "enter":
+            event.stop()
+            self.post_message(self.Decided(self, self._CHOICES[self._cursor][0]))
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Decided(self, "cancel"))
 
 
 class SessionPicker(Static):
@@ -1080,6 +1154,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._busy = False
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
+        self._input_runtime_mode = RuntimeMode.ACT
+        self._plan_review_pending = False
+        self._plan_session_id: str | None = None
+        self._plan_request = ""
         self._slash_items: list[tuple[str, str]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
@@ -1106,6 +1184,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("config", "change LLM API, model, or key"),
             ("compact", "compress context window"),
             ("copy", "copy the latest assistant reply"),
+            ("plan", "analyze read-only and review a plan before implementation"),
         ]
         try:
             loader = SkillLoader()
@@ -1239,6 +1318,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         content = event.value.strip()
         if not content:
             return
+        if content == "/plan":
+            event.text_area.text = ""
+            self._input_runtime_mode = RuntimeMode.PLAN
+            event.text_area.border_title = "plan mode — describe the task, then press Enter"
+            self._update_header("plan")
+            return
+        requested_mode = self._input_runtime_mode
+        if content.startswith("/plan "):
+            content = content.removeprefix("/plan ").strip()
+            if not content:
+                event.text_area.text = ""
+                event.text_area.border_title = "plan mode — describe the task, then press Enter"
+                self._input_runtime_mode = RuntimeMode.PLAN
+                return
+            requested_mode = RuntimeMode.PLAN
         if content == "/sessions":
             event.text_area.text = ""
             if self._client is not None and not self._busy:
@@ -1324,15 +1418,38 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None or self._session_id is None or self._busy:
             self._append(Static("[yellow]agent busy or disconnected[/yellow]", classes="log-line"))
             return
+        self._begin_message(event.text_area, content, requested_mode)
+
+    # 统一进入一次用户或计划批准触发的 run，确保输入状态与 mode 同步切换
+    def _begin_message(
+        self,
+        prompt: ChatTextArea,
+        content: str,
+        runtime_mode: RuntimeMode,
+        *,
+        visible_content: str | None = None,
+    ) -> None:
         self._busy = True
-        prompt = event.text_area
+        self._input_runtime_mode = RuntimeMode.ACT
         prompt.text = ""
         prompt.disabled = True
         prompt.read_only = False
-        prompt.border_title = "agent is working..."
-        self._append(Static(f"[bold]>[/bold] {content}", classes="user-turn"))
-        self._update_header("running")
-        self.run_worker(self._do_send_message(content), name="send_message", exclusive=False)
+        prompt.border_title = (
+            "agent is planning..." if runtime_mode == RuntimeMode.PLAN else "agent is working..."
+        )
+        shown = visible_content if visible_content is not None else content
+        prefix = (
+            "[bold cyan]plan >[/bold cyan]"
+            if runtime_mode == RuntimeMode.PLAN
+            else "[bold]>[/bold]"
+        )
+        self._append(Static(f"{prefix} {escape(shown)}", classes="user-turn"))
+        self._update_header("planning" if runtime_mode == RuntimeMode.PLAN else "running")
+        self.run_worker(
+            self._do_send_message(content, runtime_mode),
+            name="send_message",
+            exclusive=False,
+        )
 
     # 在 worker 中执行手动压缩命令，完成后显示结果横幅
     async def _do_compact(self) -> None:
@@ -1516,6 +1633,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _load_session(self, session_id: str, *, resume: bool) -> None:
         if self._client is None:
             return
+        self._clear_plan_review()
         history = await self._client.send_command(
             "session.get_history",
             {"session_id": session_id},
@@ -1534,13 +1652,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._restore_ready_prompt()
 
     # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
-    async def _do_send_message(self, content: str) -> None:
+    async def _do_send_message(
+        self,
+        content: str,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
+    ) -> None:
         if self._client is None:
             return
         try:
             await self._client.send_command(
                 "session.send_message",
-                {"session_id": self._session_id, "content": content},
+                {
+                    "session_id": self._session_id,
+                    "content": content,
+                    "runtime_mode": runtime_mode.value,
+                },
             )
         except (IpcError, RuntimeError, OSError) as e:
             self._busy = False
@@ -1551,6 +1677,52 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
             self._update_header("ready")
             self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
+
+    # 处理计划批准、反馈或取消，只有批准分支会启动 Act run
+    async def on_plan_review_decided(self, message: PlanReview.Decided) -> None:
+        message.review.remove()
+        self._plan_review_pending = False
+        if message.decision == "approve":
+            prompt = self._prompt()
+            if (
+                prompt is None
+                or self._client is None
+                or self._session_id is None
+                or self._session_id != self._plan_session_id
+            ):
+                self._append(
+                    Static("[red]计划所属会话已失效，未执行[/red]", classes="log-line")
+                )
+                self._plan_session_id = None
+                self._plan_request = ""
+                self._restore_ready_prompt()
+                return
+            original_request = self._plan_request
+            self._plan_session_id = None
+            self._plan_request = ""
+            self._begin_message(
+                prompt,
+                "Implement the approved plan from the immediately preceding planning turn. "
+                "Re-check repository state before editing and report any required deviation."
+                f"\n\nOriginal user request:\n{original_request}",
+                RuntimeMode.ACT,
+                visible_content="已批准计划，开始实施",
+            )
+            return
+        self._plan_session_id = None
+        self._plan_request = ""
+        self._restore_ready_prompt()
+        if message.decision == "revise":
+            self._input_runtime_mode = RuntimeMode.PLAN
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.text = "/plan "
+                prompt.move_cursor(prompt.document.end)
+                prompt.border_title = "plan mode — enter feedback, then press Enter"
+            self._update_header("plan")
+        else:
+            self._append(Static("[dim]计划已取消，未执行改动[/dim]", classes="log-line"))
+            self._update_header("ready")
 
     # 处理内联审批控件的用户决策：发送 IPC 响应并恢复输入框
     async def on_permission_select_decided(self, msg: PermissionSelect.Decided) -> None:
@@ -1633,6 +1805,16 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._current_llm.finalize_markdown()
         self._current_llm = None
 
+    # 清除当前计划审阅面板，防止切换会话后误批准旧计划
+    def _clear_plan_review(self) -> None:
+        self._plan_review_pending = False
+        self._plan_session_id = None
+        self._plan_request = ""
+        try:
+            self.query_one(PlanReview).remove()
+        except NoMatches:
+            pass
+
     # 将选择控件挂载到 Screen 顶层（#prompt 之前），避免 VerticalScroll 争抢焦点
     def _mount_permission_select(self, select: PermissionSelect) -> None:
         self.mount(select, before="#prompt")
@@ -1668,6 +1850,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         color = {
             "ready": "green",
             "running": "yellow",
+            "planning": "cyan",
+            "plan": "cyan",
+            "plan ready": "cyan",
             "disconnected": "red",
             "connecting": "dim",
         }.get(state, "dim")
@@ -1726,6 +1911,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         "context.*",
                         "subagent.*",
                         "skill.*",
+                        "plan.*",
                     ],
                     "scope": "global",
                 }
@@ -1752,11 +1938,16 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         self._history_loaded = True
                 prompt = self._prompt()
                 if prompt is not None:
-                    prompt.disabled = False
+                    prompt.disabled = self._plan_review_pending
                     prompt.read_only = False
-                    prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                    prompt.focus()
-                self._update_header("ready")
+                    if self._plan_review_pending:
+                        prompt.border_title = "review the plan above"
+                    else:
+                        prompt.border_title = (
+                            "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                        )
+                        prompt.focus()
+                self._update_header("plan ready" if self._plan_review_pending else "ready")
                 await loop_task
             except IpcError as e:
                 header.update(f"[bold]CodeRook[/bold]  [red]subscribe error: {e}[/red]")
@@ -1838,11 +2029,35 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._cancel_requested = False
             prompt = self._prompt()
             if prompt is not None:
-                prompt.disabled = False
+                prompt.disabled = self._plan_review_pending
                 prompt.read_only = False
-                prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                prompt.focus()
-            self._update_header("ready")
+                if self._plan_review_pending:
+                    prompt.border_title = "review the plan above"
+                else:
+                    prompt.border_title = (
+                        "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                    )
+                    prompt.focus()
+            self._update_header("plan ready" if self._plan_review_pending else "ready")
+
+        elif t == "plan.ready":
+            run_id = str(event.get("run_id", ""))
+            session_id = str(event.get("session_id", ""))
+            if session_id != self._session_id:
+                return
+            self._plan_review_pending = True
+            self._plan_session_id = session_id
+            self._plan_request = str(event.get("request", ""))
+            try:
+                self.query_one(PlanReview).remove()
+            except NoMatches:
+                pass
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = True
+                prompt.border_title = "review the plan above"
+            self.mount(PlanReview(run_id), before="#prompt")
+            self._update_header("plan ready")
 
         elif t == "session.interrupted":
             self._busy = False

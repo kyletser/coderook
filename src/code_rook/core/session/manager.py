@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
+    PlanReadyEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
     SessionDeletedEvent,
@@ -122,7 +124,14 @@ class SessionManager:
         return session
 
     # 处理用户消息，追加 thread 并启动一次 agent run
-    async def send_message(self, sid: str, content: str, *, run_id: str | None = None) -> str:
+    async def send_message(
+        self,
+        sid: str,
+        content: str,
+        *,
+        run_id: str | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
+    ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
@@ -156,7 +165,12 @@ class SessionManager:
             session.updated_at = _now()
             self._store.write_meta(session)
             if self._runtime is not None:
-                await self._runtime.start_turn(session, run_id, content)
+                await self._runtime.start_turn(
+                    session,
+                    run_id,
+                    content,
+                    runtime_mode=runtime_mode,
+                )
 
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
             goal = content
@@ -189,6 +203,7 @@ class SessionManager:
                     store=self._store,
                     system_prompt_override=system_prompt_override,
                     tool_whitelist=tool_whitelist,
+                    runtime_mode=runtime_mode,
                 ),
                 name=f"run:{run_id}",
             )
@@ -228,6 +243,20 @@ class SessionManager:
                 active.finished.set()
 
             session.updated_at = _now()
+            if (
+                runtime_mode == RuntimeMode.PLAN
+                and outcome.status == "success"
+                and outcome.result.strip()
+            ):
+                await self._bus.publish(
+                    PlanReadyEvent(
+                        session_id=sid,
+                        run_id=run_id,
+                        request=content,
+                        plan=outcome.result.strip(),
+                        ts=session.updated_at,
+                    )
+                )
             if session.mode == "one_shot":
                 session.status = "closed"
                 await self._bus.publish(SessionClosedEvent(session_id=sid, ts=session.updated_at))

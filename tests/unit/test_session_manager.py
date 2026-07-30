@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -33,6 +34,7 @@ class _Runner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
     ) -> RunOutcome:
         assert run_id is not None
         assert session is not None
@@ -366,3 +368,51 @@ async def test_session_mutations_reject_busy_session(tmp_path: Path) -> None:
 
     release.set()
     await send_task
+
+
+# 功能：验证 Plan turn 将模式传给 runner，并在成功后先发布 plan.ready 再等待输入
+# 设计：用捕获型 runner 返回固定计划，检查事件载荷与顺序，不依赖真实模型或 TUI
+async def test_plan_turn_publishes_reviewable_plan(tmp_path: Path) -> None:
+    events: list[object] = []
+    seen_modes: list[RuntimeMode] = []
+    bus = EventBus()
+
+    # 收集计划生命周期事件
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    class _PlanRunner(_Runner):
+        # 返回固定计划并记录 SessionManager 传入的运行模式
+        async def run_and_capture(
+            self,
+            goal: str,
+            **kwargs: object,
+        ) -> RunOutcome:
+            seen_modes.append(kwargs["runtime_mode"])  # type: ignore[arg-type]
+            return RunOutcome(
+                status="success",
+                result="1. Inspect\n2. Implement\n3. Test",
+                reason=None,
+            )
+
+    bus.subscribe(collect)  # type: ignore[arg-type]
+    manager = SessionManager(
+        SessionStore(tmp_path),
+        lambda: _PlanRunner(),
+        bus,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    run_id = await manager.send_message(
+        session.id,
+        "重构权限模块",
+        runtime_mode=RuntimeMode.PLAN,
+    )
+
+    assert seen_modes == [RuntimeMode.PLAN]
+    plan_event = next(event for event in events if getattr(event, "type", "") == "plan.ready")
+    assert plan_event.run_id == run_id  # type: ignore[attr-defined]
+    assert plan_event.request == "重构权限模块"  # type: ignore[attr-defined]
+    assert "Implement" in plan_event.plan  # type: ignore[attr-defined]
+    event_types = [getattr(event, "type", "") for event in events]
+    assert event_types.index("plan.ready") < event_types.index("session.waiting_for_input")
