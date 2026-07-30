@@ -19,3 +19,4 @@ workspace/
 .coderook/memory/
 .coderook/worktrees/
 .workbuddy/
+.git-credentials
