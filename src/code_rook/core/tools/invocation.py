@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from code_rook.core.authority import ToolAction
 from code_rook.core.bus.events import (
     PermissionDeniedEvent,
     PermissionGrantedEvent,
@@ -17,7 +18,7 @@ from code_rook.core.bus.events import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
-from code_rook.core.tools.base import ToolResult
+from code_rook.core.tools.base import ToolResult, ToolSideEffect
 from code_rook.core.tools.errors import RateLimitedError
 from code_rook.core.tools.registry import ToolRegistry
 
@@ -32,6 +33,17 @@ _RETRY_BASE_S: float = 2.0  # backoff base; tests can monkeypatch to 0
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# 将现有工具副作用声明映射为 authority action
+def _tool_action(tool_name: str, side_effect: ToolSideEffect) -> ToolAction:
+    if tool_name == "bash":
+        return ToolAction.SHELL
+    if side_effect == ToolSideEffect.NONE:
+        return ToolAction.READ
+    if side_effect == ToolSideEffect.LOCAL_WRITE:
+        return ToolAction.MUTATE
+    return ToolAction.EXTERNAL
 
 
 # 发布 ToolCallFailedEvent 并返回对应 ToolResult
@@ -134,6 +146,7 @@ async def invoke_tool(
             params=dict(tool_call.input),
             session_id=session_id,
             event_emitter=_emit_permission,
+            action=_tool_action(tool_name=tool.name, side_effect=tool.side_effect),
         )
         if allowed:
             if decision not in ("auto_allow",):

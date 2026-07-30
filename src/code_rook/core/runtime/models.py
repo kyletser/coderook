@@ -6,6 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from code_rook.core.authority.models import (
+    AuthorityProfile,
+    AuthoritySnapshot,
+    RuntimeMode,
+    SandboxCapability,
+    ToolAction,
+    WorkspaceTrust,
+)
+
 
 class ThreadStatus(StrEnum):
     IDLE = "idle"
@@ -24,18 +33,17 @@ class TurnStatus(StrEnum):
     INTERRUPTED = "interrupted"
 
 
-class RuntimeMode(StrEnum):
-    PLAN = "plan"
-    ACT = "act"
-    OPERATE = "operate"
-
-
 class TurnItemKind(StrEnum):
     MESSAGE = "message"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     ARTIFACT = "artifact"
     CHECKPOINT = "checkpoint"
+
+
+# 返回 turn 默认可进入 authority 评估的全部已知 action
+def _all_tool_actions() -> frozenset[ToolAction]:
+    return frozenset(ToolAction)
 
 
 class ThreadRecord(BaseModel):
@@ -58,7 +66,16 @@ class TurnRecord(BaseModel):
     thread_id: str = Field(min_length=1)
     status: TurnStatus = TurnStatus.QUEUED
     mode: RuntimeMode = RuntimeMode.ACT
-    authority_profile: str = Field(default="ask", min_length=1)
+    authority_profile: AuthorityProfile = AuthorityProfile.ASK
+    workspace_trust: WorkspaceTrust = WorkspaceTrust.UNTRUSTED
+    sandbox: SandboxCapability = SandboxCapability(
+        available=False,
+        kind="none",
+        reason="sandbox capability has not been detected",
+    )
+    allowed_actions: frozenset[ToolAction] = Field(
+        default_factory=_all_tool_actions
+    )
     route: dict[str, JsonValue] | None = None
     usage: dict[str, JsonValue] = Field(default_factory=dict)
     error: dict[str, JsonValue] | None = None
@@ -66,6 +83,17 @@ class TurnRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
     schema_version: int = Field(default=1, ge=1)
+
+    @property
+    # 返回 turn 启动时冻结的有效 authority 快照
+    def authority_snapshot(self) -> AuthoritySnapshot:
+        return AuthoritySnapshot(
+            mode=self.mode,
+            profile=self.authority_profile,
+            workspace_trust=self.workspace_trust,
+            sandbox=self.sandbox,
+            allowed_actions=self.allowed_actions,
+        )
 
 
 class TurnItemRecord(BaseModel):

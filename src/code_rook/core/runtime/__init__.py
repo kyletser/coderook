@@ -1,6 +1,6 @@
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
-    RuntimeMode,
     SessionFacadeRecord,
     ThreadRecord,
     ThreadStatus,

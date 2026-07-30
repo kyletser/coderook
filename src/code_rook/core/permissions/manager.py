@@ -10,6 +10,13 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any, Literal
 
+from code_rook.core.authority import (
+    AuthorityDecision,
+    AuthoritySnapshot,
+    ToolAction,
+    detect_sandbox_capability,
+    evaluate_action,
+)
 from code_rook.core.permissions.policy import (
     DEFAULT_POLICIES,
     PermissionDecision,
@@ -63,7 +70,28 @@ class PermissionManager:
         # 0 表示不超时
         self._timeout_s = timeout_s
         self._session_modes: dict[str, _SessionPermissionMode] = {}
+        self._default_authority = AuthoritySnapshot(
+            sandbox=detect_sandbox_capability()
+        )
+        self._session_authorities: dict[str, AuthoritySnapshot] = {}
 
+    # 设置从下一 turn 开始使用的 session authority 快照
+    def set_authority_snapshot(
+        self,
+        session_id: str,
+        snapshot: AuthoritySnapshot,
+    ) -> None:
+        self._session_authorities[session_id] = snapshot
+
+    # 返回 session 当前配置的 authority 快照
+    def get_authority_snapshot(self, session_id: str) -> AuthoritySnapshot:
+        return self._session_authorities.get(session_id, self._default_authority)
+
+    # 清除 session 的 authority 配置并恢复默认值
+    def clear_authority_snapshot(self, session_id: str) -> None:
+        self._session_authorities.pop(session_id, None)
+
+    # 设置 headless session 的兼容权限模式
     def set_session_mode(
         self,
         session_id: str,
@@ -96,6 +124,8 @@ class PermissionManager:
         params: dict[str, Any],
         session_id: str,
         event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
+        *,
+        action: ToolAction | str | None = None,
     ) -> tuple[bool, str]:
         command = str(params.get("command", "")) if tool_name == "bash" else ""
         policy = self._policies.get(tool_name)
@@ -103,6 +133,21 @@ class PermissionManager:
             session_id,
             _SessionPermissionMode("interactive"),
         )
+        authority_decision = AuthorityDecision.ASK
+        if action is not None:
+            authority = evaluate_action(
+                self.get_authority_snapshot(session_id),
+                action,
+            )
+            authority_decision = authority.decision
+            if authority.decision == AuthorityDecision.DENY:
+                logger.info(
+                    "authority: denied tool=%s action=%s reason=%s",
+                    tool_name,
+                    action,
+                    authority.reason,
+                )
+                return False, "authority_denied"
 
         # Tier 1: deny_patterns（bash only，不可被缓存绕过）
         if command and policy:
@@ -149,6 +194,8 @@ class PermissionManager:
                     return True, "auto_allow"
                 if policy.default == PermissionDecision.DENY:
                     return False, "auto_deny"
+                if authority_decision == AuthorityDecision.ALLOW:
+                    return True, "authority_allow"
             # default == ASK（bash、unknown tool）→ fall through to Future
 
         if session_mode.mode != "interactive":

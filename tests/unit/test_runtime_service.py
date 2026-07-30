@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from code_rook.core.authority import (
+    AuthorityProfile,
+    AuthoritySnapshot,
+    RuntimeMode,
+    SandboxCapability,
+    ToolAction,
+    WorkspaceTrust,
+)
 from code_rook.core.bus.events import RuntimeEventAppendedEvent
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runner import RunOutcome
@@ -161,3 +169,43 @@ async def test_runtime_service_publishes_durable_events(tmp_path: Path) -> None:
         "turn.started",
         "turn.completed",
     ]
+
+
+# 功能：验证 turn 启动时冻结 session 的 mode、authority、trust、sandbox 和 action scope
+# 设计：provider 返回非默认快照，启动后修改原变量不影响 SQLite 中已保存的 TurnRecord
+async def test_start_turn_freezes_authority_snapshot(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.db")
+    snapshot = AuthoritySnapshot(
+        mode=RuntimeMode.OPERATE,
+        profile=AuthorityProfile.AUTO_REVIEW,
+        workspace_trust=WorkspaceTrust.TRUSTED,
+        sandbox=SandboxCapability(
+            available=False,
+            kind="windows_none",
+            reason="no OS isolation backend",
+        ),
+        allowed_actions=frozenset({ToolAction.READ, ToolAction.MUTATE}),
+    )
+
+    # 返回当前 session 下一 turn 应冻结的权限快照
+    def authority_for_session(_session_id: str) -> AuthoritySnapshot:
+        return snapshot
+
+    service = RuntimeService(
+        store,
+        workspace=tmp_path,
+        authority_provider=authority_for_session,
+    )
+    session = Session(
+        id="sess-authority",
+        mode="chat",
+        status="active",
+        title="authority",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+
+    await service.start_turn(session, "run-authority", "inspect")
+
+    persisted = store.get_turn("run-authority")
+    assert persisted.authority_snapshot == snapshot

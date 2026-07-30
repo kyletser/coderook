@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import JsonValue
 
+from code_rook.core.authority import SandboxCapability, ToolAction
 from code_rook.core.runtime.migrations import (
     CURRENT_SCHEMA_VERSION,
     connect_database,
@@ -97,6 +98,14 @@ def _load_json_dict(value: str | None) -> dict[str, JsonValue] | None:
     return loaded
 
 
+# 将 JSON 数组文本解码为字符串列表
+def _load_json_list(value: str) -> list[str]:
+    loaded = json.loads(value)
+    if not isinstance(loaded, list) or not all(isinstance(item, str) for item in loaded):
+        raise RuntimeStoreError("stored JSON value is not a string array")
+    return loaded
+
+
 # 将 datetime 编码为 ISO 8601 文本
 def _dump_datetime(value: datetime) -> str:
     return value.isoformat()
@@ -129,6 +138,12 @@ def _turn_from_row(row: sqlite3.Row) -> TurnRecord:
         status=row["status"],
         mode=row["mode"],
         authority_profile=row["authority_profile"],
+        workspace_trust=row["workspace_trust"],
+        sandbox=SandboxCapability.model_validate(_load_json_dict(row["sandbox_json"])),
+        allowed_actions=frozenset(
+            ToolAction(action)
+            for action in _load_json_list(row["allowed_actions_json"])
+        ),
         route=_load_json_dict(row["route_json"]),
         usage=_load_json_dict(row["usage_json"]) or {},
         error=_load_json_dict(row["error_json"]),
@@ -312,16 +327,22 @@ class RuntimeStore:
                     """
                     INSERT INTO runtime_turns (
                         id, thread_id, status, mode, authority_profile,
+                        workspace_trust, sandbox_json, allowed_actions_json,
                         route_json, usage_json, error_json, boot_id,
                         created_at, updated_at, schema_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
                         record.thread_id,
                         record.status.value,
                         record.mode.value,
-                        record.authority_profile,
+                        record.authority_profile.value,
+                        record.workspace_trust.value,
+                        _dump_json(record.sandbox.model_dump()),
+                        _dump_json(
+                            [action.value for action in sorted(record.allowed_actions)]
+                        ),
                         _dump_json(record.route),
                         _dump_json(record.usage),
                         _dump_json(record.error),

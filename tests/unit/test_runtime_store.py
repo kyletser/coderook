@@ -1,9 +1,12 @@
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from code_rook.core.authority import AuthorityProfile, ToolAction, WorkspaceTrust
+from code_rook.core.runtime.migrations import _apply_v1, _apply_v2
 from code_rook.core.runtime.models import (
     ThreadRecord,
     TurnItemKind,
@@ -58,8 +61,8 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     first = RuntimeStore(path)
     second = RuntimeStore(path)
 
-    assert first.schema_version() == 2
-    assert second.schema_version() == 2
+    assert first.schema_version() == 3
+    assert second.schema_version() == 3
 
 
 # 功能：验证普通 store 操作结束后不会遗留阻止文件移动的 SQLite 句柄
@@ -68,11 +71,58 @@ def test_store_operations_release_database_handles(tmp_path: Path) -> None:
     path = tmp_path / "runtime.db"
     moved = tmp_path / "runtime-moved.db"
     store = RuntimeStore(path)
-    assert store.schema_version() == 2
+    assert store.schema_version() == 3
 
     path.rename(moved)
 
     assert moved.is_file()
+
+
+# 功能：验证 schema v2 数据库升级后旧 turn 获得保守且可读取的 authority 默认值
+# 设计：直接构造 v2 表和记录再打开 RuntimeStore，覆盖真实 ALTER migration 而非仅测试新库
+def test_v2_migration_adds_frozen_authority_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-v2.db"
+    now = _now().isoformat()
+    connection = sqlite3.connect(path)
+    _apply_v1(connection)
+    _apply_v2(connection)
+    connection.execute("PRAGMA user_version = 2")
+    connection.execute(
+        """
+        INSERT INTO runtime_threads (
+            id, title, workspace, status, default_route_id,
+            created_at, updated_at, schema_version
+        ) VALUES ('thread-v2', 'legacy', ?, 'idle', NULL, ?, ?, 1)
+        """,
+        (str(tmp_path), now, now),
+    )
+    connection.execute(
+        "INSERT INTO runtime_event_counters (thread_id, next_seq) VALUES ('thread-v2', 1)"
+    )
+    connection.execute(
+        """
+        INSERT INTO runtime_turns (
+            id, thread_id, status, mode, authority_profile,
+            route_json, usage_json, error_json, boot_id,
+            created_at, updated_at, schema_version
+        ) VALUES (
+            'turn-v2', 'thread-v2', 'completed', 'act', 'ask',
+            NULL, '{}', NULL, NULL, ?, ?, 1
+        )
+        """,
+        (now, now),
+    )
+    connection.commit()
+    connection.close()
+
+    store = RuntimeStore(path)
+    turn = store.get_turn("turn-v2")
+
+    assert store.schema_version() == 3
+    assert turn.authority_profile == AuthorityProfile.ASK
+    assert turn.workspace_trust == WorkspaceTrust.UNTRUSTED
+    assert turn.sandbox.available is False
+    assert turn.allowed_actions == frozenset(ToolAction)
 
 
 # 功能：验证 thread 和 turn 可无损写入并读取

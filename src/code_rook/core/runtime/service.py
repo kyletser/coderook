@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
+from code_rook.core.authority import AuthoritySnapshot, detect_sandbox_capability
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
@@ -50,11 +52,16 @@ class RuntimeService:
         *,
         bus: EventBus | None = None,
         boot_id: str | None = None,
+        authority_provider: Callable[[str], AuthoritySnapshot] | None = None,
     ) -> None:
         self._store = store
         self._workspace = str(workspace.resolve())
         self._bus = bus
         self.boot_id = boot_id or f"boot-{uuid.uuid4().hex}"
+        self._authority_provider = authority_provider
+        self._default_authority = AuthoritySnapshot(
+            sandbox=detect_sandbox_capability()
+        )
         self._write_lock = asyncio.Lock()
 
     # 幂等导入历史 session 及其 run 索引
@@ -74,12 +81,18 @@ class RuntimeService:
         run_id: str,
         content: str,
     ) -> TurnRecord:
+        authority = (
+            self._authority_provider(session.id)
+            if self._authority_provider is not None
+            else self._default_authority
+        )
         async with self._write_lock:
             turn, event = await asyncio.to_thread(
                 self._start_turn_sync,
                 session,
                 run_id,
                 content,
+                authority,
             )
             await self._publish_runtime_event(event)
         return turn
@@ -211,6 +224,7 @@ class RuntimeService:
         session: Session,
         run_id: str,
         content: str,
+        authority: AuthoritySnapshot,
     ) -> tuple[TurnRecord, RuntimeEventRecord]:
         self._sync_session_sync(session)
         now = _parse_time(session.updated_at)
@@ -218,6 +232,11 @@ class RuntimeService:
             id=run_id,
             thread_id=session.id,
             status=TurnStatus.RUNNING,
+            mode=authority.mode,
+            authority_profile=authority.profile,
+            workspace_trust=authority.workspace_trust,
+            sandbox=authority.sandbox,
+            allowed_actions=authority.allowed_actions,
             boot_id=self.boot_id,
             created_at=now,
             updated_at=now,

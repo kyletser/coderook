@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -123,6 +123,22 @@ def _apply_v2(connection: sqlite3.Connection) -> None:
     )
 
 
+# 为 turn 增加冻结的 trust、sandbox 与 action scope
+def _apply_v3(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        ALTER TABLE runtime_turns
+            ADD COLUMN workspace_trust TEXT NOT NULL DEFAULT 'untrusted';
+        ALTER TABLE runtime_turns
+            ADD COLUMN sandbox_json TEXT NOT NULL
+            DEFAULT '{"available":false,"kind":"none","reason":"legacy turn"}';
+        ALTER TABLE runtime_turns
+            ADD COLUMN allowed_actions_json TEXT NOT NULL
+            DEFAULT '["read","mutate","shell","external"]';
+        """
+    )
+
+
 # 将 runtime 数据库迁移到当前 schema 版本
 def migrate_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,3 +156,7 @@ def migrate_database(path: Path) -> None:
         if version == 1:
             _apply_v2(connection)
             connection.execute("PRAGMA user_version = 2")
+            version = 2
+        if version == 2:
+            _apply_v3(connection)
+            connection.execute("PRAGMA user_version = 3")

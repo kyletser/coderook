@@ -13,7 +13,8 @@
 | PR-01 Runtime models 与 SQLite store | 已完成 | 幂等 migration、连续 seq、原子写入和工具终态约束 |
 | PR-02 Runtime service 与 session facade | 已完成 | 历史 session 幂等导入、真实 IPC 投影、`470 passed, 3 skipped` |
 | PR-03 Event replay 与 boot recovery | 已完成 | 游标分页、回放转实时去重、boot recovery、tool pair invariant、`479 passed, 3 skipped` |
-| PR-04 权限领域模型和收窄规则 | 下一步 | 尚未开始 |
+| PR-04 权限领域模型和收窄规则 | 已完成 | 四维快照、child authority 交集、action fail-closed、Windows sandbox truth、`497 passed, 3 skipped` |
+| PR-05 权限协议与 TUI 投影 | 下一步 | 尚未开始 |
 
 ## 1. 改造结果
 

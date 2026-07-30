@@ -419,6 +419,7 @@ class CoreApp:
             RuntimeStore(sessions_root.parent / "runtime.db"),
             workspace=Path.cwd(),
             bus=self._bus,
+            authority_provider=self._permission_manager.get_authority_snapshot,
         )
         await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
         assert self._config is not None
