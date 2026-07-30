@@ -13,6 +13,7 @@ from code_rook.core.runtime.models import (
 )
 from code_rook.core.runtime.store import (
     DuplicateTerminalResultError,
+    IncompleteToolCallError,
     InvalidTurnTransitionError,
     RuntimeStore,
     ToolCallNotFoundError,
@@ -301,3 +302,115 @@ def test_concurrent_events_receive_contiguous_seq(tmp_path: Path) -> None:
 
     assert sorted(seqs) == list(range(1, 25))
     assert [event.seq for event in store.list_events("thread-1")] == list(range(1, 25))
+
+
+# 功能：验证存在未配对工具调用时 turn 不能进入终态，补写结果后可原子完成
+# 设计：先触发 transition 回滚，再用 result 与 completed 状态同事务提交，覆盖两条终态入口
+def test_terminal_turn_requires_paired_tool_results(tmp_path: Path) -> None:
+    store = _store_with_turn(tmp_path)
+    now = _now()
+    store.record_item_and_event(
+        TurnItemRecord(
+            id="call-item-1",
+            turn_id="turn-1",
+            kind=TurnItemKind.TOOL_CALL,
+            payload={"name": "File"},
+            tool_call_id="call-1",
+            created_at=now,
+        ),
+        event_type="tool.started",
+        event_payload={},
+        event_ts=now,
+    )
+
+    with pytest.raises(IncompleteToolCallError):
+        store.transition_turn_and_event(
+            "turn-1",
+            status=TurnStatus.COMPLETED,
+            event_type="turn.completed",
+            event_payload={},
+            event_ts=now + timedelta(seconds=1),
+        )
+
+    assert store.get_turn("turn-1").status == TurnStatus.RUNNING
+    result_event = store.record_item_and_event(
+        TurnItemRecord(
+            id="result-item-1",
+            turn_id="turn-1",
+            kind=TurnItemKind.TOOL_RESULT,
+            payload={"content": "ok"},
+            tool_call_id="call-1",
+            created_at=now + timedelta(seconds=2),
+        ),
+        event_type="turn.completed",
+        event_payload={"status": "completed"},
+        event_ts=now + timedelta(seconds=2),
+        turn_status=TurnStatus.COMPLETED,
+    )
+
+    assert result_event.seq == 2
+    assert store.get_turn("turn-1").status == TurnStatus.COMPLETED
+
+
+# 功能：验证 runtime 事件查询同时遵守 after_seq、up_to_seq 和 limit 游标边界
+# 设计：写入五个连续事件后组合分页参数，精确断言结果序号和当前高水位
+def test_event_cursor_honors_high_water_and_limit(tmp_path: Path) -> None:
+    store = _store_with_turn(tmp_path)
+    now = _now()
+    for index in range(5):
+        store.append_event(
+            thread_id="thread-1",
+            turn_id="turn-1",
+            event_type="test.event",
+            payload={"index": index},
+            ts=now + timedelta(seconds=index),
+        )
+
+    events = store.list_events(
+        "thread-1",
+        after_seq=1,
+        up_to_seq=4,
+        limit=2,
+    )
+
+    assert [event.seq for event in events] == [2, 3]
+    assert store.latest_event_seq("thread-1") == 5
+
+
+# 功能：验证 daemon 重启会中断旧 boot 的活动 turn 并为孤立工具调用合成错误结果
+# 设计：构造旧 boot 的 running turn，连续恢复两次，检查首次原子修复和第二次幂等空操作
+def test_recover_stale_turns_repairs_tool_pair_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = _store_with_turn(tmp_path)
+    now = _now()
+    store.record_item_and_event(
+        TurnItemRecord(
+            id="call-item-1",
+            turn_id="turn-1",
+            kind=TurnItemKind.TOOL_CALL,
+            payload={"name": "File"},
+            tool_call_id="call-1",
+            created_at=now,
+        ),
+        event_type="tool.started",
+        event_payload={},
+        event_ts=now,
+    )
+
+    recovered = store.recover_stale_turns("boot-new", now + timedelta(seconds=1))
+    repeated = store.recover_stale_turns("boot-new", now + timedelta(seconds=2))
+
+    items = store.list_items("turn-1")
+    assert [item.kind for item in items] == [
+        TurnItemKind.TOOL_CALL,
+        TurnItemKind.TOOL_RESULT,
+    ]
+    assert items[-1].payload == {
+        "status": "error",
+        "reason": "daemon_restarted",
+    }
+    assert store.get_turn("turn-1").status == TurnStatus.INTERRUPTED
+    assert store.get_thread("thread-1").status.value == "interrupted"
+    assert [event.type for event in recovered] == ["turn.interrupted"]
+    assert repeated == []

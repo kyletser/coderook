@@ -12,6 +12,8 @@ from code_rook.core.bus.commands import (
     AgentRunResult,
     CoreAuthenticateCommand,
     CoreAuthenticateResult,
+    EventReplayCommand,
+    EventReplayResult,
     EventSubscribeCommand,
     EventSubscribeResult,
     PermissionRespondCommand,
@@ -52,6 +54,7 @@ from code_rook.core.bus.events import (
     LogLineEvent,
     RunFinishedEvent,
     RunStartedEvent,
+    RuntimeEventAppendedEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
     SessionDeletedEvent,
@@ -145,12 +148,24 @@ def generate() -> str:
             "topics": ["run.*", "step.*", "tool.*", "llm.token"],
             "scope": "global",
             "replay_from_run": None,
+            "thread_id": None,
+            "after_seq": 0,
         },
     }
     subscribe_resp_example = {
         "jsonrpc": "2.0",
         "id": "u-3",
-        "result": {"subscription_id": "sub-abc123", "replayed_count": 0},
+        "result": {
+            "subscription_id": "sub-abc123",
+            "replayed_count": 0,
+            "last_seq": None,
+        },
+    }
+    replay_req_example = {
+        "jsonrpc": "2.0",
+        "id": "u-replay",
+        "method": "event.replay",
+        "params": {"thread_id": "sess-abc123def456", "after_seq": 0, "limit": 1000},
     }
     session_id = "sess-abc123def456"
     session_create_req_example = {
@@ -229,6 +244,10 @@ def generate() -> str:
         "\n",
         _model_section("EventSubscribeResult", EventSubscribeResult, subscribe_resp_example),
         "\n",
+        _model_section("EventReplayCommand", EventReplayCommand, replay_req_example),
+        "\n",
+        _model_section("EventReplayResult", EventReplayResult),
+        "\n",
         _model_section("SessionCreateCommand", SessionCreateCommand, session_create_req_example),
         "\n",
         _model_section("SessionCreateResult", SessionCreateResult, session_create_resp_example),
@@ -282,6 +301,8 @@ def generate() -> str:
         "\n## IPC Events\n\n",
         "Events sent over the IPC socket (daemon -> client).\n\n",
         _model_section("CoreStartedEvent", CoreStartedEvent),
+        "\n",
+        _model_section("RuntimeEventAppendedEvent", RuntimeEventAppendedEvent),
         "\n## Run Events\n\n",
         "Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscribed clients.\n\n",
         _model_section("RunStartedEvent", RunStartedEvent,

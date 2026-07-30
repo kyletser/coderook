@@ -12,6 +12,7 @@ from code_rook.core.runtime.models import (
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import (
     DuplicateTerminalResultError,
+    IncompleteToolCallError,
     InvalidTurnTransitionError,
     RecordAlreadyExistsError,
     RecordNotFoundError,
@@ -22,6 +23,7 @@ from code_rook.core.runtime.store import (
 
 __all__ = [
     "DuplicateTerminalResultError",
+    "IncompleteToolCallError",
     "InvalidTurnTransitionError",
     "RecordAlreadyExistsError",
     "RecordNotFoundError",

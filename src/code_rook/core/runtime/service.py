@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
+from code_rook.core.events.bus import EventBus
 from code_rook.core.runtime.models import (
+    RuntimeEventRecord,
     SessionFacadeRecord,
     ThreadRecord,
     ThreadStatus,
@@ -40,9 +43,18 @@ def _parse_time(value: str) -> datetime:
 
 class RuntimeService:
     # 初始化异步 runtime facade 并固定 workspace 投影
-    def __init__(self, store: RuntimeStore, workspace: Path) -> None:
+    def __init__(
+        self,
+        store: RuntimeStore,
+        workspace: Path,
+        *,
+        bus: EventBus | None = None,
+        boot_id: str | None = None,
+    ) -> None:
         self._store = store
         self._workspace = str(workspace.resolve())
+        self._bus = bus
+        self.boot_id = boot_id or f"boot-{uuid.uuid4().hex}"
         self._write_lock = asyncio.Lock()
 
     # 幂等导入历史 session 及其 run 索引
@@ -63,12 +75,14 @@ class RuntimeService:
         content: str,
     ) -> TurnRecord:
         async with self._write_lock:
-            return await asyncio.to_thread(
+            turn, event = await asyncio.to_thread(
                 self._start_turn_sync,
                 session,
                 run_id,
                 content,
             )
+            await self._publish_runtime_event(event)
+        return turn
 
     # 将 turn 原子转换到终态并同步 thread 投影
     async def finish_turn(
@@ -80,13 +94,15 @@ class RuntimeService:
         reason: str | None = None,
     ) -> TurnRecord:
         async with self._write_lock:
-            return await asyncio.to_thread(
+            turn, event = await asyncio.to_thread(
                 self._finish_turn_sync,
                 session,
                 run_id,
                 status,
                 reason,
             )
+            await self._publish_runtime_event(event)
+        return turn
 
     # 删除 session 对应的 runtime thread
     async def delete_session(self, session_id: str) -> None:
@@ -108,6 +124,39 @@ class RuntimeService:
     # 异步列出 thread 的全部 turn
     async def list_turns(self, thread_id: str) -> list[TurnRecord]:
         return await asyncio.to_thread(self._store.list_turns, thread_id)
+
+    # 异步查询指定游标和高水位之间的 runtime 事件
+    async def list_events(
+        self,
+        thread_id: str,
+        *,
+        after_seq: int = 0,
+        up_to_seq: int | None = None,
+        limit: int = 1000,
+    ) -> list[RuntimeEventRecord]:
+        return await asyncio.to_thread(
+            self._store.list_events,
+            thread_id,
+            after_seq=after_seq,
+            up_to_seq=up_to_seq,
+            limit=limit,
+        )
+
+    # 异步查询 thread 当前事件高水位
+    async def latest_event_seq(self, thread_id: str) -> int:
+        return await asyncio.to_thread(self._store.latest_event_seq, thread_id)
+
+    # 恢复其他 daemon boot 遗留的活动 turn 并发布持久事件
+    async def recover_stale_turns(self, ts: datetime) -> list[RuntimeEventRecord]:
+        async with self._write_lock:
+            events = await asyncio.to_thread(
+                self._store.recover_stale_turns,
+                self.boot_id,
+                ts,
+            )
+            for event in events:
+                await self._publish_runtime_event(event)
+        return events
 
     # 异步列出 thread 的 item
     async def list_items(self, turn_id: str) -> list[TurnItemRecord]:
@@ -162,18 +211,19 @@ class RuntimeService:
         session: Session,
         run_id: str,
         content: str,
-    ) -> TurnRecord:
+    ) -> tuple[TurnRecord, RuntimeEventRecord]:
         self._sync_session_sync(session)
         now = _parse_time(session.updated_at)
         turn = TurnRecord(
             id=run_id,
             thread_id=session.id,
             status=TurnStatus.RUNNING,
+            boot_id=self.boot_id,
             created_at=now,
             updated_at=now,
         )
         self._store.create_turn(turn)
-        self._store.record_item_and_event(
+        event = self._store.record_item_and_event(
             TurnItemRecord(
                 id=f"{run_id}:user",
                 turn_id=run_id,
@@ -185,7 +235,7 @@ class RuntimeService:
             event_payload={"status": TurnStatus.RUNNING.value},
             event_ts=now,
         )
-        return turn
+        return turn, event
 
     # 同步完成 turn 并刷新所属 thread 状态
     def _finish_turn_sync(
@@ -194,7 +244,7 @@ class RuntimeService:
         run_id: str,
         status: TurnStatus,
         reason: str | None,
-    ) -> TurnRecord:
+    ) -> tuple[TurnRecord, RuntimeEventRecord]:
         if status not in {
             TurnStatus.COMPLETED,
             TurnStatus.FAILED,
@@ -205,7 +255,7 @@ class RuntimeService:
         error: dict[str, JsonValue] | None = None
         if status != TurnStatus.COMPLETED:
             error = {"reason": reason or status.value}
-        self._store.transition_turn_and_event(
+        event = self._store.transition_turn_and_event(
             run_id,
             status=status,
             event_type=f"turn.{status.value}",
@@ -214,7 +264,24 @@ class RuntimeService:
             error=error,
         )
         self._sync_session_sync(session)
-        return self._store.get_turn(run_id)
+        return self._store.get_turn(run_id), event
+
+    # 将已持久化 runtime 事件投递到进程内 EventBus
+    async def _publish_runtime_event(self, event: RuntimeEventRecord) -> None:
+        if self._bus is None:
+            return
+        from code_rook.core.bus.events import RuntimeEventAppendedEvent
+
+        await self._bus.publish(
+            RuntimeEventAppendedEvent(
+                thread_id=event.thread_id,
+                turn_id=event.turn_id,
+                seq=event.seq,
+                event_type=event.type,
+                payload=event.payload,
+                ts=event.ts.isoformat(),
+            )
+        )
 
     # 查询 thread 是否已存在
     async def contains_thread(self, thread_id: str) -> bool:

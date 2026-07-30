@@ -76,6 +76,10 @@ class ToolCallNotFoundError(RuntimeStoreError):
     pass
 
 
+class IncompleteToolCallError(RuntimeStoreError):
+    pass
+
+
 # 将 JSON 值编码为稳定的紧凑文本
 def _dump_json(value: JsonValue | dict[str, JsonValue] | None) -> str | None:
     if value is None:
@@ -384,6 +388,8 @@ class RuntimeStore:
                 self._validate_transition(current_status, turn_status)
             self._validate_tool_result(connection, item)
             self._insert_item(connection, item)
+            if turn_status in _TERMINAL_TURN_STATUSES:
+                self._validate_terminal_tool_pairs(connection, item.turn_id)
             if turn_status is not None and turn_status != current_status:
                 connection.execute(
                     "UPDATE runtime_turns SET status = ?, updated_at = ? WHERE id = ?",
@@ -476,6 +482,8 @@ class RuntimeStore:
                     f"turn is already terminal: {turn_id}/{current_status.value}"
                 )
             self._validate_transition(current_status, status)
+            if status in _TERMINAL_TURN_STATUSES:
+                self._validate_terminal_tool_pairs(connection, turn_id)
             connection.execute(
                 """
                 UPDATE runtime_turns
@@ -524,23 +532,119 @@ class RuntimeStore:
         thread_id: str,
         *,
         after_seq: int = 0,
+        up_to_seq: int | None = None,
         limit: int = 1000,
     ) -> list[RuntimeEventRecord]:
         if after_seq < 0:
             raise ValueError("after_seq must be non-negative")
         if limit < 1:
             raise ValueError("limit must be positive")
+        if up_to_seq is not None and up_to_seq < after_seq:
+            return []
         with connect_database(self.path) as connection:
+            if up_to_seq is None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM runtime_events
+                    WHERE thread_id = ? AND seq > ?
+                    ORDER BY seq
+                    LIMIT ?
+                    """,
+                    (thread_id, after_seq, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM runtime_events
+                    WHERE thread_id = ? AND seq > ? AND seq <= ?
+                    ORDER BY seq
+                    LIMIT ?
+                    """,
+                    (thread_id, after_seq, up_to_seq, limit),
+                ).fetchall()
+        return [_event_from_row(row) for row in rows]
+
+    # 返回 thread 当前已提交的最大事件序号
+    def latest_event_seq(self, thread_id: str) -> int:
+        with connect_database(self.path) as connection:
+            row = connection.execute(
+                "SELECT next_seq FROM runtime_event_counters WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            raise RecordNotFoundError(f"thread not found: {thread_id}")
+        return int(row["next_seq"]) - 1
+
+    # 中断其他 boot 留下的活动 turn，并为孤立工具调用补齐错误结果
+    def recover_stale_turns(
+        self,
+        current_boot_id: str,
+        ts: datetime,
+    ) -> list[RuntimeEventRecord]:
+        connection = open_database(self.path)
+        events: list[RuntimeEventRecord] = []
+        try:
+            connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 """
-                SELECT * FROM runtime_events
-                WHERE thread_id = ? AND seq > ?
-                ORDER BY seq
-                LIMIT ?
+                SELECT * FROM runtime_turns
+                WHERE status IN ('running', 'waiting')
+                  AND (boot_id IS NULL OR boot_id != ?)
+                ORDER BY created_at, id
                 """,
-                (thread_id, after_seq, limit),
+                (current_boot_id,),
             ).fetchall()
-        return [_event_from_row(row) for row in rows]
+            for row in rows:
+                turn_id = str(row["id"])
+                for tool_call_id in self._unmatched_tool_call_ids(connection, turn_id):
+                    self._insert_item(
+                        connection,
+                        TurnItemRecord(
+                            id=f"{turn_id}:recovery:{tool_call_id}",
+                            turn_id=turn_id,
+                            kind=TurnItemKind.TOOL_RESULT,
+                            tool_call_id=tool_call_id,
+                            payload={
+                                "status": "error",
+                                "reason": "daemon_restarted",
+                            },
+                            created_at=ts,
+                        ),
+                    )
+                error: dict[str, JsonValue] = {"reason": "daemon_restarted"}
+                connection.execute(
+                    """
+                    UPDATE runtime_turns
+                    SET status = 'interrupted', error_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (_dump_json(error), _dump_datetime(ts), turn_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE runtime_threads
+                    SET status = 'interrupted', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (_dump_datetime(ts), row["thread_id"]),
+                )
+                events.append(
+                    self._insert_event(
+                        connection,
+                        thread_id=row["thread_id"],
+                        turn_id=turn_id,
+                        event_type="turn.interrupted",
+                        payload=error,
+                        ts=ts,
+                    )
+                )
+            connection.commit()
+            return events
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     # 检查 thread 是否存在
     def _thread_exists(self, thread_id: str) -> bool:
@@ -587,6 +691,41 @@ class RuntimeStore:
         if result_row is not None:
             raise DuplicateTerminalResultError(
                 f"terminal result already exists: {item.tool_call_id}"
+            )
+
+    # 返回 turn 中尚未配对终态结果的工具调用标识
+    def _unmatched_tool_call_ids(
+        self,
+        connection: sqlite3.Connection,
+        turn_id: str,
+    ) -> list[str]:
+        rows = connection.execute(
+            """
+            SELECT calls.tool_call_id
+            FROM runtime_turn_items AS calls
+            LEFT JOIN runtime_turn_items AS results
+              ON results.turn_id = calls.turn_id
+             AND results.kind = 'tool_result'
+             AND results.tool_call_id = calls.tool_call_id
+            WHERE calls.turn_id = ?
+              AND calls.kind = 'tool_call'
+              AND results.id IS NULL
+            ORDER BY calls.created_at, calls.id
+            """,
+            (turn_id,),
+        ).fetchall()
+        return [str(row["tool_call_id"]) for row in rows]
+
+    # 拒绝仍含孤立工具调用的 turn 进入终态
+    def _validate_terminal_tool_pairs(
+        self,
+        connection: sqlite3.Connection,
+        turn_id: str,
+    ) -> None:
+        unmatched = self._unmatched_tool_call_ids(connection, turn_id)
+        if unmatched:
+            raise IncompleteToolCallError(
+                f"turn {turn_id} has incomplete tool calls: {', '.join(unmatched)}"
             )
 
     # 插入 turn item

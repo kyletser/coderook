@@ -7,6 +7,8 @@ from code_rook.core.bus.commands import (
     AgentRunCommand,
     CoreAuthenticateCommand,
     CoreAuthenticateResult,
+    EventReplayCommand,
+    EventSubscribeCommand,
     PingCommand,
     PongResult,
     RunCancelCommand,
@@ -129,3 +131,35 @@ def test_agent_run_headless_permission_protocol() -> None:
     assert AgentRunCommand.model_validate_json(
         allow_list.model_dump_json()
     ).allow_tools == ["edit_file", "bash"]
+
+
+# 功能：验证 runtime 事件回放命令的游标范围和分页上限
+# 设计：分别构造合法边界与越界参数，确保 wire 层在进入存储查询前拒绝错误值
+def test_event_replay_command_validates_cursor_and_limit() -> None:
+    command = EventReplayCommand(thread_id="thread-1", after_seq=4, limit=1000)
+
+    assert command.type == "event.replay"
+    with pytest.raises(ValidationError):
+        EventReplayCommand(thread_id="thread-1", after_seq=-1)
+    with pytest.raises(ValidationError):
+        EventReplayCommand(thread_id="thread-1", limit=1001)
+
+
+# 功能：验证 thread 订阅不能混用旧 run 回放，且非 thread 订阅不能携带游标
+# 设计：覆盖两个歧义组合并保留合法 thread 游标，明确新旧订阅协议的互斥边界
+def test_event_subscribe_replay_sources_are_unambiguous() -> None:
+    command = EventSubscribeCommand(
+        topics=["turn.*"],
+        thread_id="thread-1",
+        after_seq=2,
+    )
+
+    assert command.after_seq == 2
+    with pytest.raises(ValidationError):
+        EventSubscribeCommand(
+            topics=["turn.*"],
+            thread_id="thread-1",
+            replay_from_run="run-1",
+        )
+    with pytest.raises(ValidationError):
+        EventSubscribeCommand(topics=["turn.*"], after_seq=1)

@@ -12,7 +12,8 @@
 | P0 基线与关键决策 | 进行中 | 完整 CI 已建立；ADR 待补 |
 | PR-01 Runtime models 与 SQLite store | 已完成 | 幂等 migration、连续 seq、原子写入和工具终态约束 |
 | PR-02 Runtime service 与 session facade | 已完成 | 历史 session 幂等导入、真实 IPC 投影、`470 passed, 3 skipped` |
-| PR-03 Event replay 与 boot recovery | 下一步 | 尚未开始 |
+| PR-03 Event replay 与 boot recovery | 已完成 | 游标分页、回放转实时去重、boot recovery、tool pair invariant、`479 passed, 3 skipped` |
+| PR-04 权限领域模型和收窄规则 | 下一步 | 尚未开始 |
 
 ## 1. 改造结果
 

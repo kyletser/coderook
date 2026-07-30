@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 from code_rook.core.runtime.models import ThreadStatus
@@ -148,6 +149,24 @@ async def test_session_create_history_close_over_ipc(
     assert thread.title == "renamed over IPC"
     assert thread.status == ThreadStatus.IDLE
     assert runtime.get_session_facade(session_id).mode == "chat"
+    for index in range(3):
+        runtime.append_event(
+            thread_id=session_id,
+            turn_id=None,
+            event_type="test.replay",
+            payload={"index": index},
+            ts=datetime(2026, 7, 30, 0, 0, index, tzinfo=UTC),
+        )
+    replayed = await _send_recv(
+        reader,
+        writer,
+        "event.replay",
+        {"thread_id": session_id, "after_seq": 1, "limit": 1},
+        req_id="replay",
+    )
+    assert [event["seq"] for event in replayed["result"]["events"]] == [2]
+    assert replayed["result"]["latest_seq"] == 3
+    assert replayed["result"]["has_more"] is True
 
     writer.close()
     await writer.wait_closed()

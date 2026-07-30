@@ -256,6 +256,16 @@ class SkillInvokedEvent(BaseModel):
     ts: str
 
 
+class RuntimeEventAppendedEvent(BaseModel):
+    type: Literal["runtime.event"] = "runtime.event"
+    thread_id: str
+    turn_id: str | None
+    seq: int
+    event_type: str
+    payload: dict[str, Any]
+    ts: str
+
+
 # 根据 type 字段决定事件类型的判别联合
 Event = Annotated[
     CoreStartedEvent
@@ -287,6 +297,7 @@ Event = Annotated[
     | SubagentFinishedEvent
     | BackgroundJobStartedEvent
     | BackgroundJobFinishedEvent
-    | SkillInvokedEvent,
+    | SkillInvokedEvent
+    | RuntimeEventAppendedEvent,
     Discriminator("type"),
 ]

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator, Field
+from pydantic import BaseModel, Discriminator, Field, model_validator
 
+from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.session.model import SessionMode, SessionStatus
 
 
@@ -52,13 +53,38 @@ class RunCancelResult(BaseModel):
 class EventSubscribeCommand(BaseModel):
     type: Literal["event.subscribe"] = "event.subscribe"
     topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
-    scope: str = "global"      # "global" | "run:<run_id>"
+    scope: str = "global"      # "global" | "run:<run_id>"；thread_id 设置时由服务端覆盖
     replay_from_run: str | None = None  # 设置则先从 events.jsonl 回放历史再接实时流
+    thread_id: str | None = Field(default=None, min_length=1)
+    after_seq: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    # 拒绝混用旧 run 回放与新 thread 游标语义
+    def _validate_replay_source(self) -> EventSubscribeCommand:
+        if self.thread_id is not None and self.replay_from_run is not None:
+            raise ValueError("thread_id and replay_from_run are mutually exclusive")
+        if self.thread_id is None and self.after_seq != 0:
+            raise ValueError("after_seq requires thread_id")
+        return self
 
 
 class EventSubscribeResult(BaseModel):
     subscription_id: str
     replayed_count: int = 0
+    last_seq: int | None = None
+
+
+class EventReplayCommand(BaseModel):
+    type: Literal["event.replay"] = "event.replay"
+    thread_id: str = Field(min_length=1)
+    after_seq: int = Field(default=0, ge=0)
+    limit: int = Field(default=1000, ge=1, le=1000)
+
+
+class EventReplayResult(BaseModel):
+    events: list[RuntimeEventRecord]
+    latest_seq: int
+    has_more: bool
 
 
 class SessionCreateCommand(BaseModel):
@@ -208,6 +234,7 @@ Command = Annotated[
     | AgentRunCommand
     | RunCancelCommand
     | EventSubscribeCommand
+    | EventReplayCommand
     | SessionCreateCommand
     | SessionSendMessageCommand
     | SessionGetHistoryCommand

@@ -351,6 +351,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `topics` | `array` | yes |
 | `scope` | `string` | no |
 | `replay_from_run` | `string | null` | no |
+| `thread_id` | `string | null` | no |
+| `after_seq` | `integer` | no |
 
 ```json
 {
@@ -384,6 +386,25 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Replay From Run"
+    },
+    "thread_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thread Id"
+    },
+    "after_seq": {
+      "default": 0,
+      "minimum": 0,
+      "title": "After Seq",
+      "type": "integer"
     }
   },
   "required": [
@@ -409,7 +430,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "llm.token"
     ],
     "scope": "global",
-    "replay_from_run": null
+    "replay_from_run": null,
+    "thread_id": null,
+    "after_seq": 0
   }
 }
 ```
@@ -420,6 +443,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `subscription_id` | `string` | yes |
 | `replayed_count` | `integer` | no |
+| `last_seq` | `integer | null` | no |
 
 ```json
 {
@@ -432,6 +456,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "default": 0,
       "title": "Replayed Count",
       "type": "integer"
+    },
+    "last_seq": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Seq"
     }
   },
   "required": [
@@ -450,8 +486,167 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
   "id": "u-3",
   "result": {
     "subscription_id": "sub-abc123",
-    "replayed_count": 0
+    "replayed_count": 0,
+    "last_seq": null
   }
+}
+```
+
+### EventReplayCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+| `after_seq` | `integer` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "event.replay",
+      "default": "event.replay",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    },
+    "after_seq": {
+      "default": 0,
+      "minimum": 0,
+      "title": "After Seq",
+      "type": "integer"
+    },
+    "limit": {
+      "default": 1000,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "thread_id"
+  ],
+  "title": "EventReplayCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-replay",
+  "method": "event.replay",
+  "params": {
+    "thread_id": "sess-abc123def456",
+    "after_seq": 0,
+    "limit": 1000
+  }
+}
+```
+
+### EventReplayResult
+
+| Field | Type | Required |
+|---|---|---|
+| `events` | `array` | yes |
+| `latest_seq` | `integer` | yes |
+| `has_more` | `boolean` | yes |
+
+```json
+{
+  "$defs": {
+    "JsonValue": {},
+    "RuntimeEventRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "type": {
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "ts": {
+          "format": "date-time",
+          "title": "Ts",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "thread_id",
+        "seq",
+        "type",
+        "ts"
+      ],
+      "title": "RuntimeEventRecord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "events": {
+      "items": {
+        "$ref": "#/$defs/RuntimeEventRecord"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "latest_seq": {
+      "title": "Latest Seq",
+      "type": "integer"
+    },
+    "has_more": {
+      "title": "Has More",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "events",
+    "latest_seq",
+    "has_more"
+  ],
+  "title": "EventReplayResult",
+  "type": "object"
 }
 ```
 
@@ -1657,6 +1852,73 @@ Events sent over the IPC socket (daemon -> client).
     "version"
   ],
   "title": "CoreStartedEvent",
+  "type": "object"
+}
+```
+
+### RuntimeEventAppendedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+| `turn_id` | `string | null` | yes |
+| `seq` | `integer` | yes |
+| `event_type` | `string` | yes |
+| `payload` | `object` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "runtime.event",
+      "default": "runtime.event",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "title": "Thread Id",
+      "type": "string"
+    },
+    "turn_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turn Id"
+    },
+    "seq": {
+      "title": "Seq",
+      "type": "integer"
+    },
+    "event_type": {
+      "title": "Event Type",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "thread_id",
+    "turn_id",
+    "seq",
+    "event_type",
+    "payload",
+    "ts"
+  ],
+  "title": "RuntimeEventAppendedEvent",
   "type": "object"
 }
 ```

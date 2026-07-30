@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from code_rook.core.bus.events import RunStartedEvent, StepStartedEvent
+from code_rook.core.bus.events import (
+    RunStartedEvent,
+    RuntimeEventAppendedEvent,
+    StepStartedEvent,
+)
+from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.transport.ipc_broadcaster import IpcEventBroadcaster
 
 
@@ -121,3 +127,82 @@ async def test_dead_connection_removed_after_failure() -> None:
     writer.write.reset_mock()  # type: ignore[attr-defined]
     await broadcaster.handle(event)  # no subscribers remain
     writer.write.assert_not_called()  # type: ignore[attr-defined]
+
+
+# 功能：验证 thread scope 按内部 runtime 事件类型和 thread_id 精确过滤
+# 设计：发布同类型不同 thread 的包装事件，断言仅目标 thread 写入且 topic 不依赖外层 runtime.event
+async def test_runtime_event_matches_inner_topic_and_thread_scope() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    broadcaster.subscribe(
+        writer,
+        topics=["turn.*"],
+        scope="thread:thread-1",
+    )
+
+    await broadcaster.handle(
+        RuntimeEventAppendedEvent(
+            thread_id="thread-1",
+            turn_id="turn-1",
+            seq=1,
+            event_type="turn.started",
+            payload={},
+            ts="2026-01-01T00:00:00Z",
+        )
+    )
+    await broadcaster.handle(
+        RuntimeEventAppendedEvent(
+            thread_id="thread-2",
+            turn_id="turn-2",
+            seq=1,
+            event_type="turn.started",
+            payload={},
+            ts="2026-01-01T00:00:00Z",
+        )
+    )
+
+    assert writer.write.call_count == 1  # type: ignore[attr-defined]
+
+
+# 功能：验证 runtime 回放期间实时事件被缓冲，并在历史高水位后按 seq 去重衔接
+# 设计：先缓冲重复 seq=1 和新 seq=2，再回放 seq=1，完成阶段应只追加 seq=2
+async def test_runtime_replay_buffers_and_deduplicates_live_events() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    sub_id = broadcaster.subscribe(
+        writer,
+        topics=["turn.*"],
+        scope="thread:thread-1",
+        replaying_runtime=True,
+    )
+    for seq, event_type in [(1, "turn.started"), (2, "turn.completed")]:
+        await broadcaster.handle(
+            RuntimeEventAppendedEvent(
+                thread_id="thread-1",
+                turn_id="turn-1",
+                seq=seq,
+                event_type=event_type,
+                payload={},
+                ts="2026-01-01T00:00:00Z",
+            )
+        )
+    historical = RuntimeEventRecord(
+        thread_id="thread-1",
+        turn_id="turn-1",
+        seq=1,
+        type="turn.started",
+        payload={},
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    replayed = await broadcaster.replay_runtime_batch(sub_id, [historical])
+    pending, last_seq = await broadcaster.finish_runtime_replay(sub_id, 1)
+
+    pushed = [
+        json.loads(call.args[0].rstrip(b"\n"))["event"]["seq"]
+        for call in writer.write.call_args_list  # type: ignore[attr-defined]
+    ]
+    assert replayed == 1
+    assert pending == 1
+    assert last_seq == 2
+    assert pushed == [1, 2]

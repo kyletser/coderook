@@ -18,6 +18,8 @@ from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
+    EventReplayCommand,
+    EventReplayResult,
     EventSubscribeCommand,
     EventSubscribeResult,
     PermissionRespondCommand,
@@ -149,6 +151,23 @@ class CoreApp:
         session_id = await self._sessions.cancel_run(cmd.run_id)
         return RunCancelResult(run_id=cmd.run_id, session_id=session_id)
 
+    # 按 thread 事件游标分页返回已持久化 runtime 事件
+    async def _event_replay_handler(self, params: dict[str, Any]) -> EventReplayResult:
+        assert self._runtime is not None
+        cmd = EventReplayCommand.model_validate(params)
+        events = await self._runtime.list_events(
+            cmd.thread_id,
+            after_seq=cmd.after_seq,
+            limit=cmd.limit,
+        )
+        latest_seq = await self._runtime.latest_event_seq(cmd.thread_id)
+        last_seq = events[-1].seq if events else cmd.after_seq
+        return EventReplayResult(
+            events=events,
+            latest_seq=latest_seq,
+            has_more=last_seq < latest_seq,
+        )
+
     # 创建 chat 或 one_shot session，并返回 session_id
     async def _session_create_handler(self, params: dict[str, Any]) -> SessionCreateResult:
         assert self._sessions is not None
@@ -259,20 +278,69 @@ class CoreApp:
         await self._sessions.close(cmd.session_id)
         return SessionCloseResult(status="closed")
 
-    # 注册客户端事件订阅，可选先回放 events.jsonl 历史再接收实时流
+    # 注册事件订阅，并为 runtime thread 建立无缝历史回放与实时衔接
     async def _subscribe_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         cmd = EventSubscribeCommand.model_validate(params)
         writer = get_connection_writer()
+        assert self._broadcaster is not None
 
+        if cmd.thread_id is not None:
+            return await self._subscribe_runtime_events(cmd, writer)
         replayed_count = 0
         if cmd.replay_from_run is not None:
             replayed_count = await self._replay_events(
                 cmd.replay_from_run, writer, cmd.topics
             )
 
-        assert self._broadcaster is not None
         sub_id = self._broadcaster.subscribe(writer, cmd.topics, cmd.scope)
         return EventSubscribeResult(subscription_id=sub_id, replayed_count=replayed_count)
+
+    # 先注册回放态订阅，再按高水位回放并刷新期间积压的实时事件
+    async def _subscribe_runtime_events(
+        self,
+        cmd: EventSubscribeCommand,
+        writer: asyncio.StreamWriter,
+    ) -> EventSubscribeResult:
+        assert self._runtime is not None
+        assert self._broadcaster is not None
+        assert cmd.thread_id is not None
+        sub_id = self._broadcaster.subscribe(
+            writer,
+            cmd.topics,
+            f"thread:{cmd.thread_id}",
+            replaying_runtime=True,
+        )
+        replayed_count = 0
+        cursor = cmd.after_seq
+        try:
+            high_water = await self._runtime.latest_event_seq(cmd.thread_id)
+            while cursor < high_water:
+                events = await self._runtime.list_events(
+                    cmd.thread_id,
+                    after_seq=cursor,
+                    up_to_seq=high_water,
+                    limit=1000,
+                )
+                if not events:
+                    break
+                replayed_count += await self._broadcaster.replay_runtime_batch(
+                    sub_id,
+                    events,
+                )
+                cursor = events[-1].seq
+            pending_count, cursor = await self._broadcaster.finish_runtime_replay(
+                sub_id,
+                max(cursor, high_water),
+            )
+            replayed_count += pending_count
+        except Exception:
+            self._broadcaster.unsubscribe(writer)
+            raise
+        return EventSubscribeResult(
+            subscription_id=sub_id,
+            replayed_count=replayed_count,
+            last_seq=cursor,
+        )
 
     # 从 events.jsonl 向 writer 回放匹配 topic 的历史事件，返回已回放条数
     async def _replay_events(
@@ -350,7 +418,9 @@ class CoreApp:
         self._runtime = RuntimeService(
             RuntimeStore(sessions_root.parent / "runtime.db"),
             workspace=Path.cwd(),
+            bus=self._bus,
         )
+        await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
         assert self._config is not None
         compact_provider = create_llm_provider(self._config.llm)
 
@@ -389,6 +459,7 @@ class CoreApp:
         server.register("core.ping", self._ping_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("run.cancel", self._run_cancel_handler)
+        server.register("event.replay", self._event_replay_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
         server.register("session.send_message", self._session_send_handler)
