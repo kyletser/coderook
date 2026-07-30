@@ -27,6 +27,7 @@ from code_rook.core.llm.provider_presets import (
 from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
+from code_rook.tui.clipboard import copy_to_windows_clipboard
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +124,11 @@ class LLMStreamBlock(Widget):
                 self.query_one(".message-kind", Static).update(f"[dim]{kind}[/dim]")
             except NoMatches:
                 self.refresh(recompose=True)
+
+    # 返回当前流式块已累积的原始 Markdown 文本
+    @property
+    def text(self) -> str:
+        return self._text
 
     # 将累积文本切换为 Textual Markdown，使最终内容可选择和复制
     def finalize_markdown(self) -> None:
@@ -1035,8 +1041,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         "╚██████╗╚██████╔╝██████╔╝███████╗    ██║  ██║╚██████╔╝╚██████╔╝██║  ██╗\n"
         " ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝"
         "[/bold cyan]\n"
-        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  拖动选择，Ctrl+C 复制"
-        "选中内容/否则取消  ·  Ctrl+Q 退出[/dim]"
+        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  拖选后 Ctrl+C 复制"
+        "  ·  /copy 复制上一条回复  ·  Ctrl+Q 退出[/dim]"
     )
 
     # 初始化连接参数和 TUI 内部状态
@@ -1073,6 +1079,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._cancel_requested = False
         self._busy = False
         self._last_context_pct: float = 0.0
+        self._last_assistant_text = ""
         self._slash_items: list[tuple[str, str]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
@@ -1098,6 +1105,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("model", "show or switch the active model"),
             ("config", "change LLM API, model, or key"),
             ("compact", "compress context window"),
+            ("copy", "copy the latest assistant reply"),
         ]
         try:
             loader = SkillLoader()
@@ -1186,12 +1194,25 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._append(Static(f"[yellow]cancelling {run_id}...[/yellow]", classes="log-line"))
         self.run_worker(self._do_cancel_run(run_id), name="cancel_run", exclusive=False)
 
+    # 同时写入 Textual OSC 52 和 Windows 系统剪贴板，兼容不同终端
+    def _write_clipboard(self, text: str) -> bool:
+        if not text:
+            return False
+        self.copy_to_clipboard(text)
+        if copy_to_windows_clipboard(text):
+            log.debug("copied text through native Windows clipboard")
+        return True
+
     # 复制当前屏幕选择；无有效选择时返回 False
     def _copy_selected_text(self) -> bool:
-        selected = self.screen.get_selected_text()
-        if not selected:
+        return self._write_clipboard(self.screen.get_selected_text() or "")
+
+    # 复制最近一段完整 assistant 文本并给出明确反馈
+    def _copy_last_response(self) -> bool:
+        if not self._write_clipboard(self._last_assistant_text):
+            self.notify("暂无可复制的回复", severity="warning")
             return False
-        self.copy_to_clipboard(selected)
+        self.notify("已复制上一条回复")
         return True
 
     # Ctrl+C 优先复制已选择文本，否则保持原有取消当前任务语义
@@ -1199,9 +1220,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if not self._copy_selected_text():
             await self.action_cancel_run()
 
-    # Ctrl+Shift+C 仅复制选择，不触发任务取消
+    # Ctrl+Shift+C 优先复制选择，没有选择时复制上一条完整回复
     def action_copy_selection(self) -> None:
-        self._copy_selected_text()
+        if not self._copy_selected_text():
+            self._copy_last_response()
 
     async def _do_cancel_run(self, run_id: str) -> None:
         if self._client is None:
@@ -1288,6 +1310,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 ProviderPicker(PROVIDER_PRESETS, self._provider),
                 before="#prompt",
             )
+            return
+        if content == "/copy":
+            event.text_area.text = ""
+            self._copy_last_response()
             return
         # 检测 /compact 指令
         if content == "/compact":
@@ -1574,6 +1600,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         Static(f"[bold]>[/bold] {escape(content)}", classes="user-turn")
                     )
                 elif content.strip():
+                    self._last_assistant_text = content.strip()
                     self._append(Markdown(content, classes="history-assistant"))
                 continue
 
@@ -1583,7 +1610,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "text" and str(block.get("text", "")).strip():
-                    self._append(Markdown(str(block["text"]), classes="history-assistant"))
+                    assistant_text = str(block["text"]).strip()
+                    self._last_assistant_text = assistant_text
+                    self._append(Markdown(assistant_text, classes="history-assistant"))
                 elif block.get("type") == "tool_use":
                     tool_name = escape(str(block.get("name", "tool")))
                     params_raw = block.get("input", {})
@@ -1599,6 +1628,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 结束当前 LLM 流式块（下一个 token 将开启新块）
     def _break_llm(self) -> None:
         if self._current_llm is not None:
+            if self._current_llm.text.strip():
+                self._last_assistant_text = self._current_llm.text.strip()
             self._current_llm.finalize_markdown()
         self._current_llm = None
 

@@ -434,6 +434,7 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     items = dict(app._build_slash_items())  # type: ignore[attr-defined]
 
     assert items["model"] == "show or switch the active model"
+    assert items["copy"] == "copy the latest assistant reply"
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
@@ -556,7 +557,9 @@ def test_agent_decision_without_text_renders_fallback_summary() -> None:
 
 # 功能：验证 Ctrl+C 在存在屏幕选择时复制文本且不取消任务
 # 设计：替换屏幕选择读取并记录取消调用，直接执行绑定动作检查复制优先级
-async def test_ctrl_c_copies_selection_before_cancel() -> None:
+async def test_ctrl_c_copies_selection_before_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class CopyHarness(CodeRookTuiApp):
         # 初始化取消计数并跳过真实 socket 连接
         def __init__(self) -> None:
@@ -571,6 +574,7 @@ async def test_ctrl_c_copies_selection_before_cancel() -> None:
         async def action_cancel_run(self) -> None:
             self.cancel_count += 1
 
+    monkeypatch.setattr(tui_app_module, "copy_to_windows_clipboard", lambda _text: True)
     app = CopyHarness()
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
@@ -584,7 +588,9 @@ async def test_ctrl_c_copies_selection_before_cancel() -> None:
 
 # 功能：验证 Ctrl+C 没有屏幕选择时回退到原有取消任务动作
 # 设计：替换屏幕选择为空并记录取消次数，确认复制改造不破坏运行中断语义
-async def test_ctrl_c_without_selection_cancels() -> None:
+async def test_ctrl_c_without_selection_cancels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class CopyHarness(CodeRookTuiApp):
         # 初始化取消计数并跳过真实 socket 连接
         def __init__(self) -> None:
@@ -599,6 +605,7 @@ async def test_ctrl_c_without_selection_cancels() -> None:
         async def action_cancel_run(self) -> None:
             self.cancel_count += 1
 
+    monkeypatch.setattr(tui_app_module, "copy_to_windows_clipboard", lambda _text: True)
     app = CopyHarness()
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
@@ -608,6 +615,67 @@ async def test_ctrl_c_without_selection_cancels() -> None:
 
         assert app.clipboard == ""
         assert app.cancel_count == 1
+
+
+# 功能：验证 Ctrl+Shift+C 在没有拖选文本时复制最近一条完整回复
+# 设计：挂载真实 TUI、替换系统剪贴板后端并设置最后回复，覆盖选择失败时的可靠降级路径
+async def test_copy_shortcut_falls_back_to_last_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr(
+        tui_app_module,
+        "copy_to_windows_clipboard",
+        lambda text: copied.append(text) is None,
+    )
+
+    class CopyHarness(CodeRookTuiApp):
+        # 跳过真实 Core 连接并准备可复制回复
+        def on_mount(self) -> None:
+            self._last_assistant_text = "完整回复内容"
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = CopyHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        app.screen.get_selected_text = lambda: None  # type: ignore[method-assign]
+
+        app.action_copy_selection()
+
+        assert app.clipboard == "完整回复内容"
+        assert copied == ["完整回复内容"]
+
+
+# 功能：验证 /copy 第一次提交即可复制上一条回复且不发送给 agent
+# 设计：直接触发真实输入提交事件并替换剪贴板后端，断言输入被清空且没有进入 busy 状态
+async def test_copy_command_copies_last_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr(
+        tui_app_module,
+        "copy_to_windows_clipboard",
+        lambda text: copied.append(text) is None,
+    )
+
+    class CopyHarness(CodeRookTuiApp):
+        # 跳过真实 socket 并初始化聊天输入
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/copy"
+            prompt.focus()
+            self._last_assistant_text = "last answer"
+
+    app = CopyHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+
+        assert prompt.text == ""
+        assert not app._busy
+        assert copied == ["last answer"]
 
 
 # 功能：验证非 token 事件后 _current_llm 被重置，下一个 token 开启新块
@@ -624,6 +692,7 @@ def test_llm_block_resets_after_non_token_event() -> None:
     llm_blocks = [w for w in appended if isinstance(w, LLMStreamBlock)]
     assert len(llm_blocks) == 2
     assert llm_blocks[0]._finalized  # type: ignore[attr-defined]
+    assert app._last_assistant_text == "A"
 
 
 # 功能：验证 run.started 事件追加 Static widget 且包含 run_id 和 goal

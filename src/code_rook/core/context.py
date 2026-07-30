@@ -4,13 +4,29 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _LANGUAGE_POLICY = (
-    "Use concise English for internal reasoning, plans, tool inputs, subagent delegation, "
-    "memory, and other machine-facing content unless exact source or user text must be preserved. "
-    "For user-visible replies, use the natural language of the user's latest message. "
-    "If that language is unclear, default to Simplified Chinese. Keep code, commands, paths, "
-    "identifiers, and quoted text unchanged. Never use emoji or decorative symbols in "
-    "user-visible prose."
+    "Use concise English for internal analysis, tool inputs, subagent delegation, memory, "
+    "task state, and other machine-facing content unless exact source or user text must be "
+    "preserved. For user-visible progress and the final reply, follow the response language "
+    "specified below. Keep code, commands, paths, identifiers, and quoted text unchanged. "
+    "Never use emoji or decorative symbols in user-visible prose."
 )
+
+
+# 根据原始用户消息的文字系统生成回复语言提示，未知语言默认简体中文
+def _response_language_hint(text: str) -> str:
+    if any("\u3040" <= char <= "\u30ff" for char in text):
+        return "Japanese"
+    if any("\uac00" <= char <= "\ud7af" for char in text):
+        return "Korean"
+    if any("\u4e00" <= char <= "\u9fff" for char in text):
+        return "Simplified Chinese"
+    if any("\u0600" <= char <= "\u06ff" for char in text):
+        return "Arabic"
+    if any("\u0400" <= char <= "\u04ff" for char in text):
+        return "the language used in the original user request"
+    if any(char.isalpha() and char.isascii() for char in text):
+        return "the language used in the original user request"
+    return "Simplified Chinese"
 
 
 @dataclass
@@ -29,6 +45,7 @@ class ExecutionContext:
     status: str = "running"  # "running" | "success" | "failed"
     reason: str | None = None
     result: str = ""
+    user_request: str = ""
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
 
@@ -38,11 +55,27 @@ class ExecutionContext:
             self.messages = [dict(m) for m in self.prefill_messages]
         elif not self.messages:
             self.messages.append({"role": "user", "content": self.goal})
+        if not self.user_request:
+            self.user_request = self._latest_user_text() or self.goal
+
+    # 从上下文中寻找最后一条真实用户文本，忽略协议中的 tool_result 用户消息
+    def _latest_user_text(self) -> str:
+        for message in reversed(self.messages):
+            content = message.get("content")
+            if message.get("role") == "user" and isinstance(content, str) and content.strip():
+                return content
+        return ""
 
     # 返回当前 run 的 system prompt；有 override 时跳过 base，直接注入记忆层
     def system_prompt(self, base: str) -> str:
         parts = [self.system_prompt_override if self.system_prompt_override else base]
         parts.append("\n\n## Language Policy\n" + _LANGUAGE_POLICY)
+        parts.append(
+            "\n\n## Response Language\n"
+            + _response_language_hint(self.user_request)
+            + ". This is based on the original user request that started the run, never on "
+            "tool-result messages."
+        )
         if self.runtime_context.strip():
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():

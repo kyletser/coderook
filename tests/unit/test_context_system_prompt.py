@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from code_rook.core.context import ExecutionContext
+from code_rook.core.context import ExecutionContext, _response_language_hint
 
 
 def _make_ctx(**kwargs) -> ExecutionContext:
@@ -33,9 +33,9 @@ def test_no_layers() -> None:
     prompt = ctx.system_prompt("BASE_ONLY")
     assert prompt.startswith("BASE_ONLY")
     assert "## Language Policy" in prompt
-    assert "Use concise English for internal reasoning" in prompt
-    assert "natural language of the user's latest message" in prompt
-    assert "default to Simplified Chinese" in prompt
+    assert "Use concise English for internal analysis" in prompt
+    assert "## Response Language" in prompt
+    assert "language used in the original user request" in prompt
 
 
 # 功能：验证只有 global_context 时只出现 Global section，其他 section 不出现
@@ -81,4 +81,38 @@ def test_language_policy_survives_system_prompt_override() -> None:
     assert prompt.startswith("SPECIALIZED ROLE")
     assert "DEFAULT ROLE" not in prompt
     assert "## Language Policy" in prompt
-    assert "default to Simplified Chinese" in prompt
+    assert "## Response Language" in prompt
+
+
+# 功能：验证中文原始用户消息会生成明确的简体中文回复约束
+# 设计：让末条真实用户文本后跟 tool_result，确认协议消息不会覆盖本轮语言来源
+def test_response_language_uses_original_user_text_not_tool_result() -> None:
+    ctx = _make_ctx(
+        goal="expanded English skill prompt",
+        prefill_messages=[
+            {"role": "user", "content": "请检查当前项目"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}],
+            },
+        ],
+    )
+
+    prompt = ctx.system_prompt("BASE")
+
+    assert ctx.user_request == "请检查当前项目"
+    assert "## Response Language\nSimplified Chinese." in prompt
+    assert "never on tool-result messages" in prompt
+
+
+# 功能：验证常见文字系统得到稳定回复语言提示且模糊内容默认中文
+# 设计：用中日韩、阿拉伯文、英文和纯符号样本覆盖脚本优先级及默认分支
+def test_response_language_hint_handles_common_scripts() -> None:
+    assert _response_language_hint("请继续") == "Simplified Chinese"
+    assert _response_language_hint("続きを確認してください") == "Japanese"
+    assert _response_language_hint("계속 확인하세요") == "Korean"
+    assert _response_language_hint("يرجى المتابعة") == "Arabic"
+    assert _response_language_hint("continue please") == (
+        "the language used in the original user request"
+    )
+    assert _response_language_hint("123 ?") == "Simplified Chinese"
