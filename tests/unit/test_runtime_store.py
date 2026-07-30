@@ -57,8 +57,8 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     first = RuntimeStore(path)
     second = RuntimeStore(path)
 
-    assert first.schema_version() == 1
-    assert second.schema_version() == 1
+    assert first.schema_version() == 2
+    assert second.schema_version() == 2
 
 
 # 功能：验证普通 store 操作结束后不会遗留阻止文件移动的 SQLite 句柄
@@ -67,7 +67,7 @@ def test_store_operations_release_database_handles(tmp_path: Path) -> None:
     path = tmp_path / "runtime.db"
     moved = tmp_path / "runtime-moved.db"
     store = RuntimeStore(path)
-    assert store.schema_version() == 1
+    assert store.schema_version() == 2
 
     path.rename(moved)
 
@@ -250,6 +250,32 @@ def test_terminal_turn_rejects_new_items(tmp_path: Path) -> None:
         )
 
     assert [item.id for item in store.list_items("turn-1")] == ["item-1"]
+    assert [event.seq for event in store.list_events("thread-1")] == [1]
+
+
+# 功能：验证 terminal turn 不能重复追加第二个终态事件
+# 设计：先完成 running turn，再重复执行相同 transition，检查状态和事件序号都保持不变
+def test_terminal_transition_cannot_be_repeated(tmp_path: Path) -> None:
+    store = _store_with_turn(tmp_path)
+    now = _now()
+    store.transition_turn_and_event(
+        "turn-1",
+        status=TurnStatus.COMPLETED,
+        event_type="turn.completed",
+        event_payload={},
+        event_ts=now,
+    )
+
+    with pytest.raises(InvalidTurnTransitionError):
+        store.transition_turn_and_event(
+            "turn-1",
+            status=TurnStatus.COMPLETED,
+            event_type="turn.completed",
+            event_payload={},
+            event_ts=now + timedelta(seconds=1),
+        )
+
+    assert store.get_turn("turn-1").status == TurnStatus.COMPLETED
     assert [event.seq for event in store.list_events("thread-1")] == [1]
 
 

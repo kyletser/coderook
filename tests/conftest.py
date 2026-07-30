@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 
@@ -28,14 +29,26 @@ def ipc_token(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
+# 创建隔离的 daemon 用户目录，避免集成测试读写开发机状态
+def daemon_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
+# 启动使用隔离用户目录和随机端口的真实 Core daemon
 async def running_daemon(
     free_port: int,
     ipc_token: str,
+    daemon_home: Path,
 ) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
     env["CODEROOK_PORT"] = str(free_port)
     env["CODEROOK_LOG_FILE"] = ""
     env["CODEROOK_LOG_LEVEL"] = "WARNING"
+    env["HOME"] = str(daemon_home)
+    env["USERPROFILE"] = str(daemon_home)
     # IPC 集成测试不调用真实模型，固定占位配置以避免依赖本机 .env 或 CI Secret
     env["CODEROOK_LLM_PROVIDER"] = "anthropic"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"

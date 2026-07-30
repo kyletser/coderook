@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from pathlib import Path
+
+from code_rook.core.runtime.models import ThreadStatus
+from code_rook.core.runtime.store import RuntimeStore
 
 
 # 发送一条 JSON-RPC 请求并返回响应对象
@@ -41,6 +45,7 @@ async def test_session_create_history_close_over_ipc(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
     ipc_token: str,
+    daemon_home: Path,
 ) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", free_port)
     await _authenticate(reader, writer, ipc_token)
@@ -137,6 +142,12 @@ async def test_session_create_history_close_over_ipc(
         req_id="cancel",
     )
     assert inactive_cancel["error"]["code"] == -32014
+
+    runtime = RuntimeStore(daemon_home / ".coderook" / "runtime.db")
+    thread = runtime.get_thread(session_id)
+    assert thread.title == "renamed over IPC"
+    assert thread.status == ThreadStatus.IDLE
+    assert runtime.get_session_facade(session_id).mode == "chat"
 
     writer.close()
     await writer.wait_closed()

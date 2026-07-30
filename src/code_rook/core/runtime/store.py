@@ -15,6 +15,7 @@ from code_rook.core.runtime.migrations import (
 )
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
+    SessionFacadeRecord,
     ThreadRecord,
     TurnItemKind,
     TurnItemRecord,
@@ -200,6 +201,43 @@ class RuntimeStore:
         except sqlite3.IntegrityError as exc:
             raise RecordAlreadyExistsError(f"thread already exists: {record.id}") from exc
 
+    # 新增或覆盖 thread 投影并确保事件计数器存在
+    def upsert_thread(self, record: ThreadRecord) -> None:
+        with connect_database(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO runtime_threads (
+                    id, title, workspace, status, default_route_id,
+                    created_at, updated_at, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    workspace = excluded.workspace,
+                    status = excluded.status,
+                    default_route_id = excluded.default_route_id,
+                    updated_at = excluded.updated_at,
+                    schema_version = excluded.schema_version
+                """,
+                (
+                    record.id,
+                    record.title,
+                    record.workspace,
+                    record.status.value,
+                    record.default_route_id,
+                    _dump_datetime(record.created_at),
+                    _dump_datetime(record.updated_at),
+                    record.schema_version,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO runtime_event_counters (thread_id, next_seq)
+                VALUES (?, 1)
+                ON CONFLICT(thread_id) DO NOTHING
+                """,
+                (record.id,),
+            )
+
     # 按 id 查询 thread
     def get_thread(self, thread_id: str) -> ThreadRecord:
         with connect_database(self.path) as connection:
@@ -210,6 +248,57 @@ class RuntimeStore:
         if row is None:
             raise RecordNotFoundError(f"thread not found: {thread_id}")
         return _thread_from_row(row)
+
+    # 按最近更新时间倒序列出全部 thread
+    def list_threads(self) -> list[ThreadRecord]:
+        with connect_database(self.path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM runtime_threads ORDER BY updated_at DESC, id"
+            ).fetchall()
+        return [_thread_from_row(row) for row in rows]
+
+    # 删除 thread 并级联清理 turn、item、event 与 facade
+    def delete_thread(self, thread_id: str) -> None:
+        with connect_database(self.path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM runtime_threads WHERE id = ?",
+                (thread_id,),
+            )
+        if cursor.rowcount == 0:
+            raise RecordNotFoundError(f"thread not found: {thread_id}")
+
+    # 新增或覆盖 session 兼容 facade 元数据
+    def upsert_session_facade(self, record: SessionFacadeRecord) -> None:
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO runtime_session_facades (
+                        thread_id, mode, parent_thread_id
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                        mode = excluded.mode,
+                        parent_thread_id = excluded.parent_thread_id
+                    """,
+                    (record.thread_id, record.mode, record.parent_thread_id),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise RecordNotFoundError(f"thread not found: {record.thread_id}") from exc
+
+    # 查询 session 兼容 facade 元数据
+    def get_session_facade(self, thread_id: str) -> SessionFacadeRecord:
+        with connect_database(self.path) as connection:
+            row = connection.execute(
+                "SELECT * FROM runtime_session_facades WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            raise RecordNotFoundError(f"session facade not found: {thread_id}")
+        return SessionFacadeRecord(
+            thread_id=row["thread_id"],
+            mode=row["mode"],
+            parent_thread_id=row["parent_thread_id"],
+        )
 
     # 创建属于现有 thread 的 turn
     def create_turn(self, record: TurnRecord) -> None:
@@ -253,6 +342,19 @@ class RuntimeStore:
         if row is None:
             raise RecordNotFoundError(f"turn not found: {turn_id}")
         return _turn_from_row(row)
+
+    # 按创建时间列出 thread 的全部 turn
+    def list_turns(self, thread_id: str) -> list[TurnRecord]:
+        with connect_database(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM runtime_turns
+                WHERE thread_id = ?
+                ORDER BY created_at, id
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [_turn_from_row(row) for row in rows]
 
     # 在单一事务中写入 item、可选状态变化与对应事件
     def record_item_and_event(
@@ -342,6 +444,61 @@ class RuntimeStore:
             raise RecordNotFoundError(
                 f"thread or turn not found: {thread_id}/{turn_id}"
             ) from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    # 在单一事务中改变 turn 状态并写入对应事件
+    def transition_turn_and_event(
+        self,
+        turn_id: str,
+        *,
+        status: TurnStatus,
+        event_type: str,
+        event_payload: dict[str, JsonValue],
+        event_ts: datetime,
+        error: dict[str, JsonValue] | None = None,
+    ) -> RuntimeEventRecord:
+        connection = open_database(self.path)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            turn_row = connection.execute(
+                "SELECT * FROM runtime_turns WHERE id = ?",
+                (turn_id,),
+            ).fetchone()
+            if turn_row is None:
+                raise RecordNotFoundError(f"turn not found: {turn_id}")
+            current_status = TurnStatus(turn_row["status"])
+            if current_status in _TERMINAL_TURN_STATUSES:
+                raise InvalidTurnTransitionError(
+                    f"turn is already terminal: {turn_id}/{current_status.value}"
+                )
+            self._validate_transition(current_status, status)
+            connection.execute(
+                """
+                UPDATE runtime_turns
+                SET status = ?, error_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status.value,
+                    _dump_json(error),
+                    _dump_datetime(event_ts),
+                    turn_id,
+                ),
+            )
+            event = self._insert_event(
+                connection,
+                thread_id=turn_row["thread_id"],
+                turn_id=turn_id,
+                event_type=event_type,
+                payload=event_payload,
+                ts=event_ts,
+            )
+            connection.commit()
+            return event
         except Exception:
             connection.rollback()
             raise

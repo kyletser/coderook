@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -99,3 +100,11 @@ class RuntimeEventRecord(BaseModel):
     payload: dict[str, JsonValue] = Field(default_factory=dict)
     ts: datetime
     schema_version: int = Field(default=1, ge=1)
+
+
+class SessionFacadeRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    thread_id: str = Field(min_length=1)
+    mode: Literal["one_shot", "chat"]
+    parent_thread_id: str | None = None

@@ -5,6 +5,15 @@
 > 计划目标：把 R1-R9 转换为可按 PR 实施、可独立验证、可安全回滚的工程任务  
 > 计划方式：不按日期承诺进度，以阶段门禁和验收证据推进
 
+## 实施状态
+
+| 单元 | 状态 | 验证基线 |
+|---|---|---|
+| P0 基线与关键决策 | 进行中 | 完整 CI 已建立；ADR 待补 |
+| PR-01 Runtime models 与 SQLite store | 已完成 | 幂等 migration、连续 seq、原子写入和工具终态约束 |
+| PR-02 Runtime service 与 session facade | 已完成 | 历史 session 幂等导入、真实 IPC 投影、`470 passed, 3 skipped` |
+| PR-03 Event replay 与 boot recovery | 下一步 | 尚未开始 |
+
 ## 1. 改造结果
 
 完成本计划后，CodeRook 应具备以下可验证能力：

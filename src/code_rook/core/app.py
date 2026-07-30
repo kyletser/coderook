@@ -59,6 +59,7 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
+from code_rook.core.runtime import RuntimeService, RuntimeStore
 from code_rook.core.session import Session, SessionManager, SessionStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
@@ -84,6 +85,7 @@ class CoreApp:
         self._config: CodeRookConfig | None = None
         self._running_runs: set[asyncio.Task[Any]] = set()
         self._sessions: SessionManager | None = None
+        self._runtime: RuntimeService | None = None
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
         self._background_registry = BackgroundJobRegistry(self._bus)
@@ -345,6 +347,10 @@ class CoreApp:
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = Path("~/.coderook/sessions").expanduser()
         store = SessionStore(sessions_root)
+        self._runtime = RuntimeService(
+            RuntimeStore(sessions_root.parent / "runtime.db"),
+            workspace=Path.cwd(),
+        )
         assert self._config is not None
         compact_provider = create_llm_provider(self._config.llm)
 
@@ -370,6 +376,7 @@ class CoreApp:
             bus=self._bus,
             provider=compact_provider,
             subagent_registry=self._subagent_registry,
+            runtime_service=self._runtime,
         )
 
         server = SocketServer(

@@ -23,6 +23,8 @@ from code_rook.core.bus.events import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runs import new_run_id
+from code_rook.core.runtime.models import TurnStatus
+from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
@@ -61,17 +63,31 @@ class SessionManager:
         bus: EventBus,
         provider: LLMProvider | None = None,
         subagent_registry: BackgroundTaskRegistry | None = None,
+        runtime_service: RuntimeService | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
         self._provider = provider
         self._subagent_registry = subagent_registry
+        self._runtime = runtime_service
+        self._runtime_bootstrapped = False
+        self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
         self._skill_loader = SkillLoader()
         self._rehydrate()
+
+    # 首次异步操作前将文件 session 索引幂等导入 runtime
+    async def _ensure_runtime_sessions(self) -> None:
+        if self._runtime is None or self._runtime_bootstrapped:
+            return
+        async with self._runtime_bootstrap_lock:
+            if self._runtime_bootstrapped:
+                return
+            await self._runtime.bootstrap_sessions(list(self._sessions.values()))
+            self._runtime_bootstrapped = True
 
     # 从磁盘恢复会话索引；active 表示 daemon 在一次 run 中退出，恢复为 interrupted
     def _rehydrate(self) -> None:
@@ -85,6 +101,7 @@ class SessionManager:
 
     # 创建新 session 并写入 meta.json
     async def create(self, mode: SessionMode, title: str = "") -> Session:
+        await self._ensure_runtime_sessions()
         sid = f"sess-{uuid.uuid4().hex[:12]}"
         ts = _now()
         session = Session(
@@ -99,11 +116,14 @@ class SessionManager:
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
         self._store.write_meta(session)
+        if self._runtime is not None:
+            await self._runtime.sync_session(session)
         await self._bus.publish(SessionCreatedEvent(session_id=sid, mode=mode, ts=ts))
         return session
 
     # 处理用户消息，追加 thread 并启动一次 agent run
     async def send_message(self, sid: str, content: str, *, run_id: str | None = None) -> str:
+        await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -135,6 +155,8 @@ class SessionManager:
             session.status = "active"
             session.updated_at = _now()
             self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.start_turn(session, run_id, content)
 
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
             goal = content
@@ -177,11 +199,18 @@ class SessionManager:
             )
             self._active_runs[run_id] = active
             try:
-                await runner_task
+                outcome = await runner_task
             except asyncio.CancelledError:
                 session.status = "interrupted"
                 session.updated_at = _now()
                 self._store.write_meta(session)
+                if self._runtime is not None:
+                    await self._runtime.finish_turn(
+                        session,
+                        run_id,
+                        TurnStatus.INTERRUPTED,
+                        reason="cancelled",
+                    )
                 await self._bus.publish(
                     SessionInterruptedEvent(
                         session_id=sid,
@@ -212,6 +241,18 @@ class SessionManager:
                     )
                 )
             self._store.write_meta(session)
+            if self._runtime is not None:
+                runtime_status = (
+                    TurnStatus.COMPLETED
+                    if outcome.status == "success"
+                    else TurnStatus.FAILED
+                )
+                await self._runtime.finish_turn(
+                    session,
+                    run_id,
+                    runtime_status,
+                    reason=outcome.reason,
+                )
             return run_id
 
     async def cancel_run(self, run_id: str) -> str:
@@ -240,6 +281,7 @@ class SessionManager:
 
     # 关闭指定 session 并更新 meta.json
     async def close(self, sid: str) -> None:
+        await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -248,10 +290,13 @@ class SessionManager:
             session.status = "closed"
             session.updated_at = _now()
             self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
             await self._bus.publish(SessionClosedEvent(session_id=sid, ts=session.updated_at))
 
     # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
     async def compact(self, sid: str, focus: str = "") -> Any:
+        await self._ensure_runtime_sessions()
         self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -286,6 +331,7 @@ class SessionManager:
 
     # 读取指定 session 的完整 thread 历史
     async def get_history(self, sid: str) -> list[dict[str, Any]]:
+        await self._ensure_runtime_sessions()
         self._get_session(sid)
         return self._store.read_messages(sid)
 
@@ -296,6 +342,7 @@ class SessionManager:
         include_closed: bool = False,
         limit: int = 50,
     ) -> list[Session]:
+        await self._ensure_runtime_sessions()
         sessions = sorted(
             self._sessions.values(),
             key=lambda session: session.updated_at,
@@ -307,6 +354,7 @@ class SessionManager:
 
     # 重新打开一个持久化 chat session，使后续消息沿用原 thread
     async def resume(self, sid: str) -> Session:
+        await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -318,10 +366,13 @@ class SessionManager:
             session.status = "waiting_for_input"
             session.updated_at = _now()
             self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
             await self._bus.publish(SessionResumedEvent(session_id=sid, ts=session.updated_at))
         return session
 
     async def rename(self, sid: str, title: str) -> Session:
+        await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -333,6 +384,8 @@ class SessionManager:
             session.title = normalized
             session.updated_at = _now()
             self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
             await self._bus.publish(
                 SessionRenamedEvent(
                     session_id=sid,
@@ -343,6 +396,7 @@ class SessionManager:
         return session
 
     async def fork(self, sid: str, title: str = "") -> Session:
+        await self._ensure_runtime_sessions()
         source = self._get_session(sid)
         source_lock = self._locks[sid]
         if source_lock.locked():
@@ -365,6 +419,8 @@ class SessionManager:
             self._store.create_fork(source.id, forked)
             self._sessions[fork_id] = forked
             self._locks[fork_id] = asyncio.Lock()
+            if self._runtime is not None:
+                await self._runtime.sync_session(forked)
             await self._bus.publish(
                 SessionCreatedEvent(session_id=fork_id, mode="chat", ts=ts)
             )
@@ -382,6 +438,7 @@ class SessionManager:
         sid: str,
         export_format: SessionExportFormat,
     ) -> tuple[str, str, str]:
+        await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -395,6 +452,7 @@ class SessionManager:
             )
 
     async def delete(self, sid: str) -> None:
+        await self._ensure_runtime_sessions()
         self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -403,6 +461,8 @@ class SessionManager:
             self._store.delete_session(sid)
         self._sessions.pop(sid, None)
         self._locks.pop(sid, None)
+        if self._runtime is not None:
+            await self._runtime.delete_session(sid)
         await self._bus.publish(SessionDeletedEvent(session_id=sid, ts=_now()))
 
     # 从内存索引取 session，不存在时抛 JSON-RPC 结构化错误

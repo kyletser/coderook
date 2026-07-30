@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -36,7 +36,7 @@ def connect_database(path: Path) -> Iterator[sqlite3.Connection]:
 def _apply_v1(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
-        CREATE TABLE runtime_threads (
+        CREATE TABLE IF NOT EXISTS runtime_threads (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             workspace TEXT NOT NULL,
@@ -47,13 +47,13 @@ def _apply_v1(connection: sqlite3.Connection) -> None:
             schema_version INTEGER NOT NULL
         );
 
-        CREATE TABLE runtime_event_counters (
+        CREATE TABLE IF NOT EXISTS runtime_event_counters (
             thread_id TEXT PRIMARY KEY
                 REFERENCES runtime_threads(id) ON DELETE CASCADE,
             next_seq INTEGER NOT NULL CHECK (next_seq >= 1)
         );
 
-        CREATE TABLE runtime_turns (
+        CREATE TABLE IF NOT EXISTS runtime_turns (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL
                 REFERENCES runtime_threads(id) ON DELETE CASCADE,
@@ -69,10 +69,10 @@ def _apply_v1(connection: sqlite3.Connection) -> None:
             schema_version INTEGER NOT NULL
         );
 
-        CREATE INDEX runtime_turns_thread_id
+        CREATE INDEX IF NOT EXISTS runtime_turns_thread_id
             ON runtime_turns(thread_id, created_at);
 
-        CREATE TABLE runtime_turn_items (
+        CREATE TABLE IF NOT EXISTS runtime_turn_items (
             id TEXT PRIMARY KEY,
             turn_id TEXT NOT NULL
                 REFERENCES runtime_turns(id) ON DELETE CASCADE,
@@ -83,14 +83,14 @@ def _apply_v1(connection: sqlite3.Connection) -> None:
             schema_version INTEGER NOT NULL
         );
 
-        CREATE INDEX runtime_turn_items_turn_id
+        CREATE INDEX IF NOT EXISTS runtime_turn_items_turn_id
             ON runtime_turn_items(turn_id, created_at);
 
-        CREATE UNIQUE INDEX runtime_unique_tool_result
+        CREATE UNIQUE INDEX IF NOT EXISTS runtime_unique_tool_result
             ON runtime_turn_items(turn_id, tool_call_id)
             WHERE kind = 'tool_result';
 
-        CREATE TABLE runtime_events (
+        CREATE TABLE IF NOT EXISTS runtime_events (
             thread_id TEXT NOT NULL
                 REFERENCES runtime_threads(id) ON DELETE CASCADE,
             turn_id TEXT
@@ -103,8 +103,22 @@ def _apply_v1(connection: sqlite3.Connection) -> None:
             PRIMARY KEY (thread_id, seq)
         );
 
-        CREATE INDEX runtime_events_turn_id
+        CREATE INDEX IF NOT EXISTS runtime_events_turn_id
             ON runtime_events(turn_id, seq);
+        """
+    )
+
+
+# 增加 session 兼容 facade 元数据表
+def _apply_v2(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_session_facades (
+            thread_id TEXT PRIMARY KEY
+                REFERENCES runtime_threads(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL,
+            parent_thread_id TEXT
+        )
         """
     )
 
@@ -121,4 +135,8 @@ def migrate_database(path: Path) -> None:
             )
         if version == 0:
             _apply_v1(connection)
-            connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+            connection.execute("PRAGMA user_version = 1")
+            version = 1
+        if version == 1:
+            _apply_v2(connection)
+            connection.execute("PRAGMA user_version = 2")
