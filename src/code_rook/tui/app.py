@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -483,6 +484,89 @@ class SessionPicker(Static):
             self.post_message(self.Dismissed(self))
 
 
+class ModelPicker(Static):
+    """Keyboard-driven picker for configured models."""
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    ModelPicker {
+        height: auto;
+        max-height: 16;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    ModelPicker:focus { border: solid #72c7d4; }
+    """
+
+    class Selected(Message):
+        # 初始化模型选择消息
+        def __init__(self, picker: ModelPicker, model: str) -> None:
+            self.picker = picker
+            self.model = model
+            super().__init__()
+
+    class Dismissed(Message):
+        # 初始化模型选择器关闭消息
+        def __init__(self, picker: ModelPicker) -> None:
+            self.picker = picker
+            super().__init__()
+
+    # 初始化模型列表并将光标定位到活动模型
+    def __init__(self, models: list[str], active_model: str) -> None:
+        super().__init__("")
+        self._models = models
+        self._active_model = active_model
+        self._cursor = models.index(active_model) if active_model in models else 0
+
+    # 挂载时设置标题、操作提示和键盘焦点
+    def on_mount(self) -> None:
+        self.border_title = " Models "
+        self.border_subtitle = " ↑↓ move   Enter switch   Esc close "
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染模型列表并标记当前活动模型
+    def _render_ui(self) -> str:
+        if not self._models:
+            return "[dim]No configured models. Use /model add <model-id>.[/dim]"
+        lines: list[str] = []
+        for index, model in enumerate(self._models):
+            safe_model = escape(model)
+            current = "  [cyan]current[/cyan]" if model == self._active_model else ""
+            if index == self._cursor:
+                lines.append(
+                    f"[bold #72c7d4]❯[/bold #72c7d4] "
+                    f"[bold white]{safe_model}[/bold white]{current}"
+                )
+            else:
+                lines.append(f"  [#c6cad0]{safe_model}[/#c6cad0]{current}")
+        lines.append("[dim]Add a custom option with /model add <model-id>[/dim]")
+        return "\n".join(lines)
+
+    # 处理上下移动、确认选择和关闭快捷键
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k") and self._models:
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(self._models)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j") and self._models:
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(self._models)
+            self.update(self._render_ui())
+        elif event.key == "enter" and self._models:
+            event.stop()
+            self.post_message(self.Selected(self, self._models[self._cursor]))
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Dismissed(self))
+
+
 class SlashCompleteWidget(Static):
     """斜杠命令自动补全弹出框：输入 / 时显示可用 skill 列表并支持键盘筛选与选择。"""
 
@@ -650,7 +734,13 @@ class ChatTextArea(TextArea):
         await super()._on_key(event)
 
 
-class CodeRookTuiApp(App[str | None]):
+@dataclass(frozen=True)
+class ModelSwitch:
+    model: str
+    session_id: str | None
+
+
+class CodeRookTuiApp(App[str | ModelSwitch | None]):
     """CodeRook TUI：终端滚屏风格，实时展示 agent 执行过程。"""
 
     TITLE = "CodeRook"
@@ -703,6 +793,8 @@ class CodeRookTuiApp(App[str | None]):
         replay_run_id: str | None = None,
         resume_session_id: str | None = None,
         auth_token: str | None = None,
+        model: str = "",
+        models: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._host = host
@@ -710,6 +802,8 @@ class CodeRookTuiApp(App[str | None]):
         self._replay_run_id = replay_run_id
         self._resume_session_id = resume_session_id
         self._auth_token = auth_token
+        self._model = model
+        self._models = models or ([model] if model else [])
         self._history_loaded = False
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
@@ -742,6 +836,7 @@ class CodeRookTuiApp(App[str | None]):
         items: list[tuple[str, str]] = [
             ("sessions", "open saved session picker"),
             ("new", "start a new chat session"),
+            ("model", "show or switch the active model"),
             ("config", "change LLM API, model, or key"),
             ("compact", "compress context window"),
         ]
@@ -864,6 +959,43 @@ class CodeRookTuiApp(App[str | None]):
                     exclusive=False,
                 )
             return
+        if content == "/model":
+            event.text_area.text = ""
+            if self._busy:
+                self._append(
+                    Static(
+                        "[yellow]请先等待或取消当前任务再切换模型[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            event.text_area.disabled = True
+            event.text_area.border_title = "select a model..."
+            self.mount(ModelPicker(self._models, self._model), before="#prompt")
+            return
+        if content.startswith("/model "):
+            event.text_area.text = ""
+            if self._busy:
+                self._append(
+                    Static(
+                        "[yellow]请先等待或取消当前任务再切换模型[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            selected = content.removeprefix("/model ").strip()
+            if selected.startswith("add "):
+                selected = selected.removeprefix("add ").strip()
+            if selected:
+                self.exit(ModelSwitch(model=selected, session_id=self._session_id))
+            else:
+                self._append(
+                    Static(
+                        "[yellow]用法：/model <模型 ID> 或 /model add <模型 ID>[/yellow]",
+                        classes="log-line",
+                    )
+                )
+            return
         if content == "/config":
             event.text_area.text = ""
             if self._busy:
@@ -969,6 +1101,19 @@ class CodeRookTuiApp(App[str | None]):
     async def on_session_picker_selected(self, message: SessionPicker.Selected) -> None:
         message.picker.remove()
         await self._switch_session(message.session_id)
+
+    # 关闭模型选择器并恢复聊天输入框
+    async def on_model_picker_dismissed(self, message: ModelPicker.Dismissed) -> None:
+        message.picker.remove()
+        self._restore_ready_prompt()
+
+    # 选择模型后退出 TUI，由入口保存配置、重启 Core 并恢复会话
+    async def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
+        message.picker.remove()
+        if message.model == self._model:
+            self._restore_ready_prompt()
+            return
+        self.exit(ModelSwitch(model=message.model, session_id=self._session_id))
 
     async def _create_and_switch_session(self) -> None:
         if self._client is None:
@@ -1141,6 +1286,7 @@ class CodeRookTuiApp(App[str | None]):
         except NoMatches:
             return
         session = f"  [dim]{self._session_id}[/dim]" if self._session_id else ""
+        model = f"  [cyan]{escape(self._model)}[/cyan]" if self._model else ""
         color = {
             "ready": "green",
             "running": "yellow",
@@ -1149,7 +1295,7 @@ class CodeRookTuiApp(App[str | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}  [{color}]{state}[/{color}]"
+            f"{session}{model}  [{color}]{state}[/{color}]"
         )
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连

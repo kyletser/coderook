@@ -8,6 +8,7 @@ import pytest
 
 from code_rook.core.config import CodeRookConfig
 from code_rook.tui import __main__ as tui_main
+from code_rook.tui.app import ModelSwitch
 
 
 # 功能：默认启动 TUI 时先确保 Core 就绪，再读取 token 并运行界面
@@ -83,3 +84,42 @@ def test_first_tui_start_runs_llm_setup(
     tui_main._ensure_llm_configured()
 
     assert calls == ["configure"]
+
+
+# 功能：验证模型切换会保存目录和默认模型、重启 Core 并恢复当前会话
+# 设计：用两次 TUI 返回值驱动入口循环，记录边界调用参数而不启动真实进程
+def test_tui_main_switches_model_and_resumes_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from code_rook.cli.commands import core as core_commands
+
+    config = CodeRookConfig()
+    actions = iter([ModelSwitch("claude-opus-4-6", "session-1"), None])
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "argv", ["coderook-tui"])
+    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(
+        tui_main,
+        "add_model",
+        lambda provider, model: calls.append((provider, model)),
+    )
+    monkeypatch.setattr(
+        tui_main,
+        "switch_llm_model",
+        lambda _config, model: calls.append(("switch", model)),
+    )
+    monkeypatch.setattr(
+        core_commands,
+        "stop_core",
+        lambda: calls.append(("core", "stop")),
+    )
+
+    tui_main.main()
+
+    assert calls == [
+        ("anthropic", "claude-opus-4-6"),
+        ("switch", "claude-opus-4-6"),
+        ("core", "stop"),
+    ]

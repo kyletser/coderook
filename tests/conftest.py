@@ -51,6 +51,9 @@ async def running_daemon(
     env["USERPROFILE"] = str(daemon_home)
     # IPC 集成测试不调用真实模型，固定占位配置以避免依赖本机 .env 或 CI Secret
     env["CODEROOK_LLM_PROVIDER"] = "anthropic"
+    env["CODEROOK_LLM_DEFAULT_MODEL"] = "claude-test"
+    env["CODEROOK_LLM_BASE_URL"] = ""
+    env["CODEROOK_LLM_API_KEY_ENV"] = "ANTHROPIC_API_KEY"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
 
     proc = subprocess.Popen([sys.executable, "-m", "code_rook.core"], env=env)

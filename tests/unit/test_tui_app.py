@@ -8,6 +8,7 @@ from textual.widget import Widget
 from code_rook.tui.app import (
     CodeRookTuiApp,
     LLMStreamBlock,
+    ModelPicker,
     PermissionBlock,
     PermissionSelect,
     SessionPicker,
@@ -146,6 +147,48 @@ async def test_session_picker_renders_and_selects_saved_session() -> None:
         await pilot.press("down", "enter")
         await pilot.pause()
         assert app.selected == ["sess-older"]
+
+
+# 功能：验证模型选择器标记当前模型并可用键盘切换到下一项
+# 设计：在最小 Textual App 中真实发送按键，覆盖渲染、焦点和 Selected 消息链路
+async def test_model_picker_renders_and_selects_model() -> None:
+    models = ["claude-sonnet-4-6", "claude-opus-4-6"]
+
+    class PickerHarness(App[None]):
+        # 初始化测试宿主并收集模型选择结果
+        def __init__(self) -> None:
+            super().__init__()
+            self.selected: list[str] = []
+
+        # 挂载待测模型选择器
+        def compose(self) -> ComposeResult:
+            yield ModelPicker(models, "claude-sonnet-4-6")
+
+        # 接收模型选择消息并记录模型 ID
+        def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
+            self.selected.append(message.model)
+
+    app = PickerHarness()
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        picker = app.query_one(ModelPicker)
+        plain = render(picker._render_ui()).plain
+        assert "claude-sonnet-4-6" in plain
+        assert "current" in plain
+        assert "/model add <model-id>" in plain
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app.selected == ["claude-opus-4-6"]
+
+
+# 功能：验证 TUI 内建命令包含模型选择入口
+# 设计：直接读取候选列表，避免依赖 socket 连接或完整界面挂载
+def test_tui_builtin_commands_include_model_picker() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    items = dict(app._build_slash_items())  # type: ignore[attr-defined]
+
+    assert items["model"] == "show or switch the active model"
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:

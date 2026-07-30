@@ -7,13 +7,14 @@ import os
 import sys
 from pathlib import Path
 
-from code_rook.cli.commands.configure import configure_llm
+from code_rook.cli.commands.configure import configure_llm, switch_llm_model
 from code_rook.cli.commands.core import CoreLaunchError, ensure_core_running
 from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import llm_is_configured
+from code_rook.core.llm.model_catalog import add_model, list_models
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.transport.auth import IpcTokenError, read_ipc_token
-from code_rook.tui.app import CodeRookTuiApp
+from code_rook.tui.app import CodeRookTuiApp, ModelSwitch
 
 _DEFAULT_TUI_LOG = "~/.coderook/logs/tui.log"
 
@@ -48,8 +49,8 @@ def _ensure_llm_configured() -> None:
     configure_llm(config)
 
 
-# 创建并运行 TUI；用户输入 /config 时返回该动作供入口重配后重启
-def _run_tui(args: argparse.Namespace) -> str | None:
+# 创建并运行 TUI；配置或模型切换动作返回入口处理
+def _run_tui(args: argparse.Namespace) -> str | ModelSwitch | None:
     config = get_config()
     _setup_logging(config.logging.level)
     if not args.no_auto_core:
@@ -67,6 +68,8 @@ def _run_tui(args: argparse.Namespace) -> str | None:
         replay_run_id=args.replay,
         resume_session_id=args.resume,
         auth_token=auth_token,
+        model=config.llm.default_model,
+        models=list_models(config.llm.provider, config.llm.default_model),
     )
     return app.run()
 
@@ -94,12 +97,24 @@ def main() -> None:
     args = parser.parse_args()
 
     _ensure_llm_configured()
-    while _run_tui(args) == "configure":
-        config = get_config()
-        configure_llm(config)
+    while True:
+        action = _run_tui(args)
+        if action == "configure":
+            configure_llm(get_config())
+        elif isinstance(action, ModelSwitch):
+            current = get_config()
+            add_model(current.llm.provider, action.model)
+            switch_llm_model(current, action.model)
+            args.resume = action.session_id
+        else:
+            break
         from code_rook.cli.commands.core import stop_core
 
         stop_core()
+        if args.no_auto_core:
+            raise SystemExit(
+                "配置已保存；请手动重启 Core 后再次运行 coderook-tui --no-auto-core。"
+            )
 
 
 if __name__ == "__main__":

@@ -113,3 +113,45 @@ def test_configure_anthropic_official_endpoint(
     assert 'base_url = ""' in config_path.read_text(encoding="utf-8")
     credentials = json.loads(credential_path.read_text(encoding="utf-8"))
     assert credentials["api_keys"]["anthropic"] == "anthropic-secret"
+
+
+# 功能：验证模型切换仅更新默认模型并保留当前 Provider、endpoint 和凭据引用
+# 设计：使用自定义 OpenAI-compatible 配置和临时 TOML，比较保存文本与返回配置对象
+def test_switch_llm_model_preserves_provider_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = CodeRookConfig(
+        llm=LlmConfig(
+            provider="openai_compatible",
+            default_model="old-model",
+            router="static",
+            base_url="https://example.test/v1/chat/completions",
+            api_key_env="CUSTOM_API_KEY",
+        )
+    )
+    expected = CodeRookConfig(
+        llm=LlmConfig(
+            provider="openai_compatible",
+            default_model="new-model",
+            router="static",
+            base_url="https://example.test/v1/chat/completions",
+            api_key_env="CUSTOM_API_KEY",
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(configure_module, "get_config", lambda: expected)
+    path = tmp_path / "config.toml"
+
+    result = configure_module.switch_llm_model(
+        current,
+        " new-model ",
+        config_path=path,
+    )
+    content = path.read_text(encoding="utf-8")
+
+    assert result is expected
+    assert 'default_model = "new-model"' in content
+    assert 'provider = "openai_compatible"' in content
+    assert 'base_url = "https://example.test/v1/chat/completions"' in content
+    assert 'api_key_env = "CUSTOM_API_KEY"' in content

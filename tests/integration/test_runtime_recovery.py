@@ -112,6 +112,9 @@ async def test_daemon_boot_recovers_stale_runtime(
     env["HOME"] = str(daemon_home)
     env["USERPROFILE"] = str(daemon_home)
     env["CODEROOK_LLM_PROVIDER"] = "anthropic"
+    env["CODEROOK_LLM_DEFAULT_MODEL"] = "claude-test"
+    env["CODEROOK_LLM_BASE_URL"] = ""
+    env["CODEROOK_LLM_API_KEY_ENV"] = "ANTHROPIC_API_KEY"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
     process = subprocess.Popen([sys.executable, "-m", "code_rook.core"], env=env)
     writer: asyncio.StreamWriter | None = None

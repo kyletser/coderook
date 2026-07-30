@@ -7,6 +7,7 @@ import re
 import sys
 import tomllib
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -76,6 +77,23 @@ def write_llm_config(config: LlmConfig, path: Path | None = None) -> Path:
     temporary.write_text(updated, encoding="utf-8", newline="\n")
     temporary.replace(target)
     return target
+
+
+# 仅更新默认模型，保留 provider、endpoint、router 和凭据引用
+def switch_llm_model(
+    current: CodeRookConfig,
+    model: str,
+    *,
+    config_path: Path | None = None,
+) -> CodeRookConfig:
+    selected = model.strip()
+    if not selected:
+        raise ValueError("model name cannot be empty")
+    updated = replace(current.llm, default_model=selected)
+    write_llm_config(updated, config_path)
+    _sync_project_dotenv(updated, current.llm.api_key_env)
+    os.environ["CODEROOK_LLM_DEFAULT_MODEL"] = selected
+    return get_config()
 
 
 # 若项目使用 .env，则同步非敏感 LLM 设置并把旧明文 key 迁出该文件
