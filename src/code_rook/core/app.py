@@ -27,6 +27,8 @@ from code_rook.core.bus.commands import (
     PongResult,
     RunCancelCommand,
     RunCancelResult,
+    RunSteerCommand,
+    RunSteerResult,
     SessionAuthorityResult,
     SessionCloseCommand,
     SessionCloseResult,
@@ -53,10 +55,13 @@ from code_rook.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSendMessageResult,
     SessionSetAuthorityCommand,
+    UserQuestionRespondCommand,
+    UserQuestionRespondResult,
 )
-from code_rook.core.bus.envelope import EventPushEnvelope
+from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.events.bus import EventBus
+from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.factory import create_llm_provider
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.mcp.server import McpServerManager
@@ -94,6 +99,7 @@ class CoreApp:
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
         self._background_registry = BackgroundJobRegistry(self._bus)
+        self._interaction_manager = InteractionManager(self._bus)
         # daemon 级后台 subagent 任务注册表，跨 turn 持有
         self._subagent_registry: BackgroundTaskRegistry | None = None
 
@@ -153,6 +159,13 @@ class CoreApp:
         cmd = RunCancelCommand.model_validate(params)
         session_id = await self._sessions.cancel_run(cmd.run_id)
         return RunCancelResult(run_id=cmd.run_id, session_id=session_id)
+
+    # 将新用户指令排入活动 run 的纠偏队列
+    async def _run_steer_handler(self, params: dict[str, Any]) -> RunSteerResult:
+        assert self._sessions is not None
+        cmd = RunSteerCommand.model_validate(params)
+        await self._sessions.steer_run(cmd.run_id, cmd.content)
+        return RunSteerResult(run_id=cmd.run_id)
 
     # 按 thread 事件游标分页返回已持久化 runtime 事件
     async def _event_replay_handler(self, params: dict[str, Any]) -> EventReplayResult:
@@ -297,6 +310,16 @@ class CoreApp:
             return PermissionRespondResult()
         self._permission_manager.respond(cmd.tool_use_id, cmd.decision)
         return PermissionRespondResult()
+
+    # 接收用户对结构化问题的回答并恢复挂起的工具调用
+    async def _user_question_respond_handler(
+        self,
+        params: dict[str, Any],
+    ) -> UserQuestionRespondResult:
+        cmd = UserQuestionRespondCommand.model_validate(params)
+        if not self._interaction_manager.answer(cmd.question_id, cmd.answer):
+            raise HandlerError(INVALID_PARAMS, "question is not pending")
+        return UserQuestionRespondResult()
 
     # 手动压缩 session thread，将摘要持久化写入 thread.jsonl
     async def _session_compact_handler(self, params: dict[str, Any]) -> SessionCompactResult:
@@ -477,11 +500,13 @@ class CoreApp:
                 mcp_manager=self._mcp_manager,
                 background_registry=self._background_registry,
                 subagent_registry=self._subagent_registry,
+                interaction_manager=self._interaction_manager,
             ),
             bus=self._bus,
             provider=compact_provider,
             subagent_registry=self._subagent_registry,
             runtime_service=self._runtime,
+            interaction_manager=self._interaction_manager,
         )
 
         server = SocketServer(
@@ -494,6 +519,7 @@ class CoreApp:
         server.register("core.ping", self._ping_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("run.cancel", self._run_cancel_handler)
+        server.register("run.steer", self._run_steer_handler)
         server.register("event.replay", self._event_replay_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
@@ -509,6 +535,7 @@ class CoreApp:
         server.register("session.delete", self._session_delete_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
+        server.register("user_question.respond", self._user_question_respond_handler)
         server.register("session.compact", self._session_compact_handler)
 
         addr = await server.start()

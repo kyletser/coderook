@@ -233,6 +233,26 @@ class PermissionDeniedEvent(BaseModel):
     ts: str
 
 
+class UserQuestionAskedEvent(BaseModel):
+    type: Literal["user_question.asked"] = "user_question.asked"
+    question_id: str
+    run_id: str
+    session_id: str
+    question: str
+    header: str
+    options: list[str]
+    multi_select: bool = False
+    ts: str
+
+
+class RunSteeredEvent(BaseModel):
+    type: Literal["run.steered"] = "run.steered"
+    run_id: str
+    session_id: str
+    content: str
+    ts: str
+
+
 class SubagentStartedEvent(BaseModel):
     type: Literal["subagent.started"] = "subagent.started"
     run_id: str          # 子 agent run_id
@@ -315,6 +335,8 @@ Event = Annotated[
     | PermissionRequestedEvent
     | PermissionGrantedEvent
     | PermissionDeniedEvent
+    | UserQuestionAskedEvent
+    | RunSteeredEvent
     | SubagentStartedEvent
     | SubagentFinishedEvent
     | BackgroundJobStartedEvent

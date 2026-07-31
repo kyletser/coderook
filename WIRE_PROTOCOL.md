@@ -343,6 +343,72 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### RunSteerCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `content` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "run.steer",
+      "default": "run.steer",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "content": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "content"
+  ],
+  "title": "RunSteerCommand",
+  "type": "object"
+}
+```
+
+### RunSteerResult
+
+| Field | Type | Required |
+|---|---|---|
+| `run_id` | `string` | yes |
+| `queued` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "queued": {
+      "const": true,
+      "default": true,
+      "title": "Queued",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "run_id"
+  ],
+  "title": "RunSteerResult",
+  "type": "object"
+}
+```
+
 ### EventSubscribeCommand
 
 | Field | Type | Required |
@@ -1895,6 +1961,64 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### UserQuestionRespondCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `question_id` | `string` | yes |
+| `answer` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "user_question.respond",
+      "default": "user_question.respond",
+      "title": "Type",
+      "type": "string"
+    },
+    "question_id": {
+      "title": "Question Id",
+      "type": "string"
+    },
+    "answer": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Answer",
+      "type": "string"
+    }
+  },
+  "required": [
+    "question_id",
+    "answer"
+  ],
+  "title": "UserQuestionRespondCommand",
+  "type": "object"
+}
+```
+
+### UserQuestionRespondResult
+
+| Field | Type | Required |
+|---|---|---|
+| `answered` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "answered": {
+      "const": true,
+      "default": true,
+      "title": "Answered",
+      "type": "boolean"
+    }
+  },
+  "title": "UserQuestionRespondResult",
+  "type": "object"
+}
+```
+
 ### SessionCompactCommand
 
 | Field | Type | Required |
@@ -2274,6 +2398,53 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "reason": null,
   "steps": 2,
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### RunSteeredEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `content` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "run.steered",
+      "default": "run.steered",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "content": {
+      "title": "Content",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "session_id",
+    "content",
+    "ts"
+  ],
+  "title": "RunSteeredEvent",
+  "type": "object"
 }
 ```
 
@@ -3179,6 +3350,80 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "request": "\u89c4\u5212 README \u91cd\u6784",
   "plan": "1. Inspect\n2. Edit\n3. Test",
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### UserQuestionAskedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `question_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `question` | `string` | yes |
+| `header` | `string` | yes |
+| `options` | `array` | yes |
+| `multi_select` | `boolean` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "user_question.asked",
+      "default": "user_question.asked",
+      "title": "Type",
+      "type": "string"
+    },
+    "question_id": {
+      "title": "Question Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "question": {
+      "title": "Question",
+      "type": "string"
+    },
+    "header": {
+      "title": "Header",
+      "type": "string"
+    },
+    "options": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Options",
+      "type": "array"
+    },
+    "multi_select": {
+      "default": false,
+      "title": "Multi Select",
+      "type": "boolean"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "question_id",
+    "run_id",
+    "session_id",
+    "question",
+    "header",
+    "options",
+    "ts"
+  ],
+  "title": "UserQuestionAskedEvent",
+  "type": "object"
 }
 ```
 

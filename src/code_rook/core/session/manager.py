@@ -12,6 +12,7 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
     PlanReadyEvent,
+    RunSteeredEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
     SessionDeletedEvent,
@@ -24,6 +25,7 @@ from code_rook.core.bus.events import (
     SkillInvokedEvent,
 )
 from code_rook.core.events.bus import EventBus
+from code_rook.core.interaction import InteractionManager
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import TurnStatus
 from code_rook.core.runtime.service import RuntimeService
@@ -66,6 +68,7 @@ class SessionManager:
         provider: LLMProvider | None = None,
         subagent_registry: BackgroundTaskRegistry | None = None,
         runtime_service: RuntimeService | None = None,
+        interaction_manager: InteractionManager | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
@@ -73,6 +76,7 @@ class SessionManager:
         self._provider = provider
         self._subagent_registry = subagent_registry
         self._runtime = runtime_service
+        self._interaction_manager = interaction_manager
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
@@ -297,6 +301,26 @@ class SessionManager:
         if self._subagent_registry is not None:
             await self._subagent_registry.cancel_descendants(run_id)
         await active.finished.wait()
+        return active.session_id
+
+    # 将用户新指令排入活动 run，在下一次模型决策前注入
+    async def steer_run(self, run_id: str, content: str) -> str:
+        active = self._active_runs.get(run_id)
+        if (
+            active is None
+            or active.task.done()
+            or self._interaction_manager is None
+            or not self._interaction_manager.steer(run_id, content)
+        ):
+            raise HandlerError(RUN_NOT_ACTIVE, "run is not active")
+        await self._bus.publish(
+            RunSteeredEvent(
+                run_id=run_id,
+                session_id=active.session_id,
+                content=content.strip(),
+                ts=_now(),
+            )
+        )
         return active.session_id
 
     async def cancel_all(self) -> None:

@@ -562,6 +562,124 @@ class PermissionModePicker(Static):
             self.post_message(self.Dismissed(self))
 
 
+class UserQuestionSelect(Static):
+    can_focus = True
+
+    DEFAULT_CSS = """
+    UserQuestionSelect {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #4d8994;
+        border-title-color: #72c7d4;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    UserQuestionSelect:focus { border: solid #72c7d4; }
+    """
+
+    class Answered(Message):
+        # 初始化结构化问题回答消息，answer 为 None 时改用输入框自由回答
+        def __init__(
+            self,
+            select: UserQuestionSelect,
+            answer: str | None,
+        ) -> None:
+            self.select = select
+            self.answer = answer
+            super().__init__()
+
+    # 初始化结构化问题选择器并添加自由回答入口
+    def __init__(
+        self,
+        question_id: str,
+        question: str,
+        header: str,
+        options: list[str],
+        multi_select: bool,
+    ) -> None:
+        super().__init__("")
+        self.question_id = question_id
+        self._question = question
+        self._header = header
+        self._options = options
+        self._choices = [*options, "输入自定义答案"]
+        self._multi_select = multi_select
+        self._selected: set[int] = set()
+        self._cursor = 0
+
+    # 挂载后渲染问题和可选答案并取得焦点
+    def on_mount(self) -> None:
+        self.border_title = f" {self._header} "
+        self.border_subtitle = (
+            " ↑↓ move   Space toggle   Enter confirm "
+            if self._multi_select
+            else " ↑↓ move   Enter select "
+        )
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染结构化问题、当前光标和多选状态
+    def _render_ui(self) -> str:
+        lines = [f"[bold]{escape(self._question)}[/bold]"]
+        for index, choice in enumerate(self._choices):
+            cursor = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
+            checked = (
+                "[cyan][x][/cyan]"
+                if index in self._selected
+                else ("[dim][ ][/dim]" if self._multi_select else "")
+            )
+            style = "bold white" if index == self._cursor else "#c6cad0"
+            lines.append(
+                f"{cursor} {checked} [{style}]{escape(choice)}[/{style}]"
+            )
+        return "\n".join(lines)
+
+    # 提交当前选择，多选时按原选项顺序合并答案
+    def _submit(self) -> None:
+        custom_index = len(self._choices) - 1
+        if self._cursor == custom_index:
+            self.post_message(self.Answered(self, None))
+            return
+        if self._multi_select:
+            self._selected.add(self._cursor)
+            answers = [
+                self._choices[index]
+                for index in sorted(self._selected)
+                if index < custom_index
+            ]
+            if answers:
+                self.post_message(self.Answered(self, ", ".join(answers)))
+            return
+        self.post_message(self.Answered(self, self._choices[self._cursor]))
+
+    # 处理结构化问题的键盘导航、多选和确认
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k"):
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(self._choices)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j"):
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(self._choices)
+            self.update(self._render_ui())
+        elif event.key == "space" and self._multi_select:
+            event.stop()
+            if self._cursor < len(self._choices) - 1:
+                if self._cursor in self._selected:
+                    self._selected.remove(self._cursor)
+                else:
+                    self._selected.add(self._cursor)
+                self.update(self._render_ui())
+        elif event.key == "enter":
+            event.stop()
+            self._submit()
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Answered(self, None))
+
+
 class PlanReview(Static):
     """Keyboard-driven review prompt shown after a read-only planning run."""
 
@@ -1271,6 +1389,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._plan_review_pending = False
         self._plan_session_id: str | None = None
         self._plan_request = ""
+        self._pending_question_id: str | None = None
+        self._answering_question = False
         self._slash_items: list[tuple[str, str]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
@@ -1446,6 +1566,40 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         content = event.value.strip()
         if not content:
             return
+        if self._pending_question_id is not None and self._answering_question:
+            event.text_area.text = ""
+            event.text_area.disabled = True
+            self._append(
+                Static(
+                    f"[bold cyan]answer >[/bold cyan] {escape(content)}",
+                    classes="user-turn",
+                )
+            )
+            self.run_worker(
+                self._do_answer_question(self._pending_question_id, content),
+                name="answer_question",
+                exclusive=False,
+            )
+            return
+        if self._busy:
+            event.text_area.text = ""
+            if self._client is None or self._active_run_id is None:
+                self._append(
+                    Static("[yellow]run 正在启动，请稍后再输入纠偏[/yellow]", classes="log-line")
+                )
+                return
+            self._append(
+                Static(
+                    f"[bold magenta]steer >[/bold magenta] {escape(content)}",
+                    classes="user-turn",
+                )
+            )
+            self.run_worker(
+                self._do_steer(self._active_run_id, content),
+                name="steer_run",
+                exclusive=False,
+            )
+            return
         if content == "/permissions":
             event.text_area.text = ""
             event.text_area.disabled = True
@@ -1570,10 +1724,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     ) -> None:
         self._busy = True
         prompt.text = ""
-        prompt.disabled = True
+        prompt.disabled = False
         prompt.read_only = False
         prompt.border_title = (
-            "agent is planning..." if runtime_mode == RuntimeMode.PLAN else "agent is working..."
+            "agent is planning — type to steer, Ctrl+C to cancel"
+            if runtime_mode == RuntimeMode.PLAN
+            else "agent is working — type to steer, Ctrl+C to cancel"
         )
         shown = visible_content if visible_content is not None else content
         prefix = (
@@ -1862,6 +2018,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None:
             return
         self._clear_plan_review()
+        self._clear_user_question()
         history = await self._client.send_command(
             "session.get_history",
             {"session_id": session_id},
@@ -1906,6 +2063,77 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
             self._update_header("ready")
             self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
+
+    # 将用户运行中纠偏发送给当前活动 run
+    async def _do_steer(self, run_id: str, content: str) -> None:
+        if self._client is None:
+            return
+        try:
+            await self._client.send_command(
+                "run.steer",
+                {"run_id": run_id, "content": content},
+            )
+            prompt = self._prompt()
+            if prompt is not None and self._busy:
+                prompt.border_title = "steering queued — continue typing or wait"
+                prompt.focus()
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]steering error: {exc}[/red]", classes="log-line"))
+
+    # 将选项或自由文本答案发送给挂起的结构化问题
+    async def _do_answer_question(self, question_id: str, answer: str) -> None:
+        if self._client is None:
+            return
+        try:
+            await self._client.send_command(
+                "user_question.respond",
+                {"question_id": question_id, "answer": answer},
+            )
+            self._pending_question_id = None
+            self._answering_question = False
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.border_title = "answer received — agent is continuing; type to steer"
+                prompt.focus()
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._answering_question = True
+            self._append(Static(f"[red]question answer error: {exc}[/red]", classes="log-line"))
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.border_title = "answer the question above, then press Enter"
+                prompt.focus()
+
+    # 处理结构化问题选项；自由回答分支把焦点交给主输入框
+    async def on_user_question_select_answered(
+        self,
+        message: UserQuestionSelect.Answered,
+    ) -> None:
+        message.select.remove()
+        prompt = self._prompt()
+        if message.answer is None:
+            self._answering_question = True
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.border_title = "answer the question above, then press Enter"
+                prompt.focus()
+            return
+        self._answering_question = False
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.border_title = "sending answer..."
+        self._append(
+            Static(
+                f"[bold cyan]answer >[/bold cyan] {escape(message.answer)}",
+                classes="user-turn",
+            )
+        )
+        self.run_worker(
+            self._do_answer_question(message.select.question_id, message.answer),
+            name="answer_question",
+            exclusive=False,
+        )
 
     # 处理计划批准、反馈或取消，只有批准分支会启动 Act run
     async def on_plan_review_decided(self, message: PlanReview.Decided) -> None:
@@ -2046,6 +2274,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except NoMatches:
             pass
 
+    # 清除当前结构化问题及自由回答状态
+    def _clear_user_question(self) -> None:
+        self._pending_question_id = None
+        self._answering_question = False
+        try:
+            self.query_one(UserQuestionSelect).remove()
+        except Exception:
+            pass
+
     # 将选择控件挂载到 Screen 顶层（#prompt 之前），避免 VerticalScroll 争抢焦点
     def _mount_permission_select(self, select: PermissionSelect) -> None:
         self.mount(select, before="#prompt")
@@ -2151,6 +2388,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         "subagent.*",
                         "skill.*",
                         "plan.*",
+                        "user_question.*",
                     ],
                     "scope": "global",
                 }
@@ -2271,6 +2509,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if t == "session.waiting_for_input":
             self._busy = False
             self._cancel_requested = False
+            self._clear_user_question()
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = self._plan_review_pending
@@ -2303,10 +2542,38 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self.mount(PlanReview(run_id), before="#prompt")
             self._update_header("plan ready")
 
+        elif t == "user_question.asked":
+            session_id = str(event.get("session_id", ""))
+            if session_id != self._session_id:
+                return
+            question_id = str(event.get("question_id", ""))
+            self._pending_question_id = question_id
+            self._answering_question = False
+            try:
+                self.query_one(UserQuestionSelect).remove()
+            except NoMatches:
+                pass
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = True
+                prompt.border_title = "answer required"
+            self.mount(
+                UserQuestionSelect(
+                    question_id,
+                    str(event.get("question", "")),
+                    str(event.get("header", "Question")),
+                    [str(option) for option in event.get("options", [])],
+                    bool(event.get("multi_select", False)),
+                ),
+                before="#prompt",
+            )
+            self._update_header("question")
+
         elif t == "session.interrupted":
             self._busy = False
             self._active_run_id = None
             self._cancel_requested = False
+            self._clear_user_question()
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = False
@@ -2318,6 +2585,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         elif t == "session.closed":
             self._busy = False
             self._cancel_requested = False
+            self._clear_user_question()
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True

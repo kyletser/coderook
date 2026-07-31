@@ -18,6 +18,7 @@ from code_rook.core.tools.registry import ToolRegistry
 if TYPE_CHECKING:
     from code_rook.core.compact.compactor import Compactor
     from code_rook.core.hooks import HookManager
+    from code_rook.core.interaction import InteractionManager
     from code_rook.core.permissions.manager import PermissionManager
     from code_rook.core.task.manager import TodoStateView
 
@@ -191,6 +192,7 @@ class AgentLoop:
         tool_result_keep: int = 4_000,
         tool_result_summarize_threshold: int = 20_000,
         todo_state: TodoStateView | None = None,
+        interaction_manager: InteractionManager | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -205,6 +207,7 @@ class AgentLoop:
         self._tool_result_keep = tool_result_keep
         self._tool_result_summarize_threshold = tool_result_summarize_threshold
         self._todo_state = todo_state
+        self._interaction_manager = interaction_manager
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -235,6 +238,24 @@ class AgentLoop:
     # 取当前 todos 摘要作为快照，用于判断"模型是否在两次 end_turn 间更新了 todos"
     def _todo_snapshot(self) -> str:
         return self._todo_state.active_summary() if self._todo_state else ""
+
+    # 将运行中到达的用户纠偏按顺序注入下一次模型决策上下文
+    def _inject_steering(self, context: ExecutionContext) -> bool:
+        if self._interaction_manager is None:
+            return False
+        messages = self._interaction_manager.drain_steering(context.run_id)
+        if not messages:
+            return False
+        content = (
+            "User steering update received while this run was active. "
+            "Treat the updates below as the newest instructions and revise the remaining work "
+            "accordingly:\n\n"
+            + "\n\n".join(messages)
+        )
+        context.messages.append({"role": "user", "content": content})
+        if self._transcript is not None:
+            self._transcript.append_user(context.step, content)
+        return bool(messages)
 
     # 判断是否应推迟 end_turn：todo_state 存在、有未完成 todos、且快照自上次提醒已有
     # 变化或尚未提醒过；超过 _MAX_TODO_DEFERS 次仍无变化则放弃阻拦
@@ -341,6 +362,7 @@ class AgentLoop:
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, context: ExecutionContext) -> None:
         while not context.is_done():
+            self._inject_steering(context)
             context.step += 1
             await self._bus.publish(
                 StepStartedEvent(run_id=context.run_id, step=context.step, ts=_now())
@@ -445,10 +467,14 @@ class AgentLoop:
                             block_count=len(response.tool_calls),
                         )
 
+            steering_received = self._inject_steering(context)
+
             # 软状态机：end_turn 时若有未完成 todos 且 todos 自上次提醒发生过变化，注入 reminder
             # 让模型继续；连续 _MAX_TODO_DEFERS 次提醒 todos 仍不变就放弃阻拦，避免死循环
             if response.stop_reason == "end_turn":
-                if self._should_defer_end_turn():
+                if steering_received:
+                    pass
+                elif self._should_defer_end_turn():
                     snapshot = self._todo_snapshot() if self._todo_state else ""
                     self._end_turn_defer_count += 1
                     context.messages.append(

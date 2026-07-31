@@ -22,6 +22,8 @@ from code_rook.core.bus.commands import (
     PongResult,
     RunCancelCommand,
     RunCancelResult,
+    RunSteerCommand,
+    RunSteerResult,
     SessionAuthorityResult,
     SessionCloseCommand,
     SessionCloseResult,
@@ -47,6 +49,8 @@ from code_rook.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSendMessageResult,
     SessionSetAuthorityCommand,
+    UserQuestionRespondCommand,
+    UserQuestionRespondResult,
 )
 from code_rook.core.bus.envelope import EventPushEnvelope
 from code_rook.core.bus.events import (
@@ -59,6 +63,7 @@ from code_rook.core.bus.events import (
     PlanReadyEvent,
     RunFinishedEvent,
     RunStartedEvent,
+    RunSteeredEvent,
     RuntimeEventAppendedEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
@@ -73,6 +78,7 @@ from code_rook.core.bus.events import (
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
+    UserQuestionAskedEvent,
 )
 
 _OUTPUT_PATH = Path(__file__).parent.parent / "WIRE_PROTOCOL.md"
@@ -249,6 +255,10 @@ def generate() -> str:
         "\n",
         _model_section("RunCancelResult", RunCancelResult),
         "\n",
+        _model_section("RunSteerCommand", RunSteerCommand),
+        "\n",
+        _model_section("RunSteerResult", RunSteerResult),
+        "\n",
         _model_section("EventSubscribeCommand", EventSubscribeCommand, subscribe_req_example),
         "\n",
         _model_section("EventSubscribeResult", EventSubscribeResult, subscribe_resp_example),
@@ -307,6 +317,10 @@ def generate() -> str:
         "\n",
         _model_section("PermissionRespondResult", PermissionRespondResult),
         "\n",
+        _model_section("UserQuestionRespondCommand", UserQuestionRespondCommand),
+        "\n",
+        _model_section("UserQuestionRespondResult", UserQuestionRespondResult),
+        "\n",
         _model_section("SessionCompactCommand", SessionCompactCommand),
         "\n",
         _model_section("SessionCompactResult", SessionCompactResult),
@@ -326,6 +340,8 @@ def generate() -> str:
         _model_section("RunFinishedEvent", RunFinishedEvent, {
             "type": "run.finished", "run_id": run_id,
             "status": "success", "reason": None, "steps": 2, "ts": ts}),
+        "\n",
+        _model_section("RunSteeredEvent", RunSteeredEvent),
         "\n",
         _model_section("StepStartedEvent", StepStartedEvent,
             {"type": "step.started", "run_id": run_id, "step": 1, "ts": ts}),
@@ -381,6 +397,8 @@ def generate() -> str:
             {"type": "plan.ready", "session_id": session_id, "run_id": run_id,
              "request": "规划 README 重构", "plan": "1. Inspect\n2. Edit\n3. Test",
              "ts": ts}),
+        "\n",
+        _model_section("UserQuestionAskedEvent", UserQuestionAskedEvent),
         "\n",
         _model_section("SessionResumedEvent", SessionResumedEvent,
             {"type": "session.resumed", "session_id": session_id, "ts": ts}),

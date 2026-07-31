@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.loop import AgentLoop
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
@@ -123,6 +124,54 @@ async def test_end_turn_marks_success() -> None:
     await loop.run(ctx)
     assert ctx.status == "success"
     assert ctx.step == 1
+
+
+# 功能：验证 end_turn 同时到达的用户纠偏会阻止旧答案结束，并在下一轮交给模型
+# 设计：provider 首轮排入纠偏后返回旧答案，第二轮检查上下文并返回新答案，覆盖关键竞态
+async def test_steering_arriving_during_end_turn_forces_next_decision() -> None:
+    bus = EventBus()
+    manager = InteractionManager(bus)
+    manager.register_run("r1")
+
+    class _SteeringProvider:
+        # 初始化模型调用次数和观察到的消息快照
+        def __init__(self) -> None:
+            self.calls = 0
+            self.seen_messages: list[list[dict[str, object]]] = []
+
+        # 首轮在模型响应期间模拟用户纠偏，次轮返回修正后的最终答案
+        async def chat(
+            self,
+            messages: list[dict[str, object]],
+            tool_schemas: list[dict[str, object]],
+            bus: EventBus,
+            run_id: str,
+            *,
+            step: int = 0,
+            system: str | None = None,
+        ) -> LlmResponse:
+            self.calls += 1
+            self.seen_messages.append([dict(message) for message in messages])
+            if self.calls == 1:
+                assert manager.steer(run_id, "不要删除旧接口")
+                return LlmResponse(stop_reason="end_turn", text="旧方案")
+            return LlmResponse(stop_reason="end_turn", text="已保留旧接口")
+
+    provider = _SteeringProvider()
+    loop = AgentLoop(
+        provider,  # type: ignore[arg-type]
+        ToolRegistry(),
+        bus,
+        interaction_manager=manager,
+    )
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "success"
+    assert ctx.step == 2
+    assert ctx.result == "已保留旧接口"
+    assert "不要删除旧接口" in str(provider.seen_messages[1][-1]["content"])
 
 
 # 功能：验证达到 max_steps 时 loop 以 exceeded_max_steps 原因将 context 标记为 failed

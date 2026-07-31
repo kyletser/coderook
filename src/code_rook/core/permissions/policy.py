@@ -39,6 +39,7 @@ class ToolPolicy:
 
 DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "apply_patch": ToolPolicy(default=PermissionDecision.ASK),
+    "ask_user_question": ToolPolicy(default=PermissionDecision.ALLOW),
     "bash":       ToolPolicy(default=PermissionDecision.ASK),
     "background_start": ToolPolicy(default=PermissionDecision.ASK),
     "background_result": ToolPolicy(default=PermissionDecision.ALLOW),
@@ -76,6 +77,7 @@ _UNKNOWN_TOOL_DEFAULT = PermissionDecision.ASK
 # bash 参数中展示用的关键字段映射
 _PREVIEW_KEY: dict[str, str] = {
     "apply_patch": "patch",
+    "ask_user_question": "question",
     "bash":       "command",
     "checkpoint_list": "checkpoint_id",
     "checkpoint_rewind": "checkpoint_id",

@@ -14,6 +14,7 @@ from code_rook.core.bus.commands import (
     PongResult,
     RunCancelCommand,
     RunCancelResult,
+    RunSteerCommand,
     SessionDeleteCommand,
     SessionExportCommand,
     SessionForkCommand,
@@ -23,12 +24,15 @@ from code_rook.core.bus.commands import (
     SessionResumeCommand,
     SessionSendMessageCommand,
     SessionSetAuthorityCommand,
+    UserQuestionRespondCommand,
 )
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
     CoreStartedEvent,
     PlanReadyEvent,
+    RunSteeredEvent,
     SessionInterruptedEvent,
+    UserQuestionAskedEvent,
 )
 
 
@@ -145,6 +149,54 @@ def test_run_cancel_protocol_roundtrip() -> None:
     assert result.status == "cancelled"
     assert event.type == "session.interrupted"
     assert event.reason == "cancelled"
+
+
+# 功能：验证运行中纠偏命令和事件携带稳定的 run/session 绑定
+# 设计：对命令与服务端事件分别做 JSON 往返，防止纠偏被投递到错误会话或活动 run
+def test_run_steering_protocol_roundtrip() -> None:
+    command = RunSteerCommand(run_id="run-1", content="保留旧接口")
+    event = RunSteeredEvent(
+        run_id="run-1",
+        session_id="sess-1",
+        content="保留旧接口",
+        ts="2026-07-31T00:00:00Z",
+    )
+
+    restored_command = RunSteerCommand.model_validate_json(command.model_dump_json())
+    restored_event = RunSteeredEvent.model_validate_json(event.model_dump_json())
+
+    assert restored_command.type == "run.steer"
+    assert restored_command.content == "保留旧接口"
+    assert restored_event.session_id == "sess-1"
+
+
+# 功能：验证结构化问题事件和回答命令支持选项、多选标识与自由文本答案
+# 设计：执行双向协议模型往返，固定 Agent 工具、Core 与 TUI 之间的字段契约
+def test_user_question_protocol_roundtrip() -> None:
+    event = UserQuestionAskedEvent(
+        question_id="question-1",
+        run_id="run-1",
+        session_id="sess-1",
+        question="选择数据库？",
+        header="数据库",
+        options=["SQLite", "PostgreSQL"],
+        multi_select=False,
+        ts="2026-07-31T00:00:00Z",
+    )
+    command = UserQuestionRespondCommand(
+        question_id="question-1",
+        answer="SQLite",
+    )
+
+    restored_event = UserQuestionAskedEvent.model_validate_json(event.model_dump_json())
+    restored_command = UserQuestionRespondCommand.model_validate_json(
+        command.model_dump_json()
+    )
+
+    assert restored_event.type == "user_question.asked"
+    assert restored_event.options == ["SQLite", "PostgreSQL"]
+    assert restored_command.type == "user_question.respond"
+    assert restored_command.answer == "SQLite"
 
 
 def test_agent_run_headless_permission_protocol() -> None:

@@ -28,6 +28,7 @@ from code_rook.tui.app import (
     SessionPicker,
     SlashCompleteWidget,
     ToolCallBlock,
+    UserQuestionSelect,
     _output_preview,
     _param_summary,
     _preview,
@@ -272,6 +273,46 @@ async def test_permission_mode_picker_keyboard_flow() -> None:
 
         assert app.selected == ["accept_edits"]
         assert app.dismissed == 1
+
+
+# 功能：验证结构化问题选择器支持单选、多选和自由回答入口
+# 设计：在真实 Textual 消息泵中发送键盘操作，检查答案顺序和 Esc 自由回答语义
+async def test_user_question_select_keyboard_flow() -> None:
+    class QuestionHarness(App[None]):
+        # 初始化问题回答收集器
+        def __init__(self) -> None:
+            super().__init__()
+            self.answers: list[str | None] = []
+
+        # 挂载多选问题
+        def compose(self) -> ComposeResult:
+            yield UserQuestionSelect(
+                "question-1",
+                "选择测试范围",
+                "测试",
+                ["单元测试", "集成测试"],
+                True,
+            )
+
+        # 收集结构化问题答案
+        def on_user_question_select_answered(
+            self,
+            message: UserQuestionSelect.Answered,
+        ) -> None:
+            self.answers.append(message.answer)
+
+    app = QuestionHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        select = app.query_one(UserQuestionSelect)
+        assert "选择测试范围" in render(select._render_ui()).plain
+
+        await pilot.press("space", "down", "enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.answers == ["单元测试, 集成测试", None]
 
 
 # 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
@@ -892,10 +933,9 @@ def test_note_save_tool_block_shows_remembered() -> None:
     assert "remembered" in block._summary()  # type: ignore[attr-defined]
 
 
-# 功能：验证提交用户输入时会追加 user turn，并进入 busy 状态
-# 设计：用 fake client 替代 SocketClient，直接调用 on_chat_text_area_submitted，
-#       覆盖 TextArea 清空内容 + 设置 busy 占位符的核心状态迁移
-async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
+# 功能：验证提交新消息后保留输入框可用，使用户能在 run 中继续输入纠偏
+# 设计：用轻量 fake 输入框启动真实消息路径，检查 busy、提示文字和用户消息渲染
+async def test_input_submit_appends_user_turn_and_keeps_prompt_for_steering() -> None:
     class _FakeArea:
         def __init__(self) -> None:
             self.disabled = False
@@ -923,7 +963,8 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
     await app.on_chat_text_area_submitted(event)  # type: ignore[arg-type]
 
     assert app._busy  # type: ignore[attr-defined]
-    assert area.disabled
+    assert not area.disabled
+    assert "type to steer" in area.border_title
     assert area.text == ""
     assert "agent is working" in area.border_title.lower()
     assert appended[0].content == "[bold]>[/bold] hello"
@@ -1128,6 +1169,134 @@ async def test_permissions_command_opens_picker_on_first_submit() -> None:
         assert prompt.disabled
         assert app.query_one(PermissionModePicker).has_focus
         assert not app._busy
+
+
+# 功能：验证运行中的普通输入会作为 run.steer 发送而不是误开新 turn
+# 设计：保持 TUI busy 且绑定活动 run，用 fake IPC 和真实提交事件核对命令、内容和界面前缀
+async def test_busy_input_steers_active_run() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 记录运行中纠偏命令
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {"queued": True, "run_id": params["run_id"]}
+
+    class SteeringHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = SteeringHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        scheduled: list[asyncio.Task[None]] = []
+
+        # 用 asyncio task 执行 TUI worker coroutine
+        def schedule(
+            coroutine: Coroutine[Any, Any, None],
+            **_kwargs: object,
+        ) -> asyncio.Task[None]:
+            task = asyncio.create_task(coroutine)
+            scheduled.append(task)
+            return task
+
+        app.run_worker = schedule  # type: ignore[method-assign]
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-1"
+        app._active_run_id = "run-1"
+        app._busy = True
+        prompt = app.query_one("#prompt", ChatTextArea)
+        prompt.text = "不要删除旧接口"
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        await asyncio.gather(*scheduled)
+
+        assert calls == [
+            (
+                "run.steer",
+                {"run_id": "run-1", "content": "不要删除旧接口"},
+            )
+        ]
+        assert prompt.text == ""
+        assert "steering queued" in prompt.border_title
+
+
+# 功能：验证 Agent 结构化问题在 TUI 内显示，选择答案后恢复同一活动 run
+# 设计：注入 user_question.asked 事件并按 Enter，核对 typed 回答命令和输入框恢复为纠偏状态
+async def test_user_question_event_answers_without_starting_new_turn() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 记录结构化问题回答命令
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {"answered": True}
+
+    class QuestionHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = QuestionHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        scheduled: list[asyncio.Task[None]] = []
+
+        # 用 asyncio task 执行回答 worker coroutine
+        def schedule(
+            coroutine: Coroutine[Any, Any, None],
+            **_kwargs: object,
+        ) -> asyncio.Task[None]:
+            task = asyncio.create_task(coroutine)
+            scheduled.append(task)
+            return task
+
+        app.run_worker = schedule  # type: ignore[method-assign]
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-1"
+        app._active_run_id = "run-1"
+        app._busy = True
+        app._handle_event(
+            {
+                "type": "user_question.asked",
+                "question_id": "question-1",
+                "run_id": "run-1",
+                "session_id": "sess-1",
+                "question": "选择数据库？",
+                "header": "数据库",
+                "options": ["SQLite", "PostgreSQL"],
+                "multi_select": False,
+                "ts": "t",
+            }
+        )
+        await pilot.pause()
+
+        prompt = app.query_one("#prompt", ChatTextArea)
+        assert prompt.disabled
+        assert app.query_one(UserQuestionSelect).has_focus
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await asyncio.gather(*scheduled)
+
+        assert calls == [
+            (
+                "user_question.respond",
+                {"question_id": "question-1", "answer": "SQLite"},
+            )
+        ]
+        assert app._pending_question_id is None
+        assert not prompt.disabled
+        assert "agent is continuing" in prompt.border_title
 
 
 async def test_cancel_worker_sends_active_run_id() -> None:

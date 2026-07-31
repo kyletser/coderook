@@ -1,4 +1,5 @@
 from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
+from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
 from code_rook.core.tools.builtin.background import (
     BackgroundCancelTool,
     BackgroundListTool,
@@ -37,6 +38,7 @@ from code_rook.core.tools.builtin.write_file import WriteFileTool
 
 __all__ = [
     "ApplyPatchTool",
+    "AskUserQuestionTool",
     "BashTool",
     "BackgroundCancelTool",
     "BackgroundListTool",

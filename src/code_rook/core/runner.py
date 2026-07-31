@@ -17,6 +17,7 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus, EventHandler
 from code_rook.core.events.writer import EventWriter
 from code_rook.core.hooks import HookManager
+from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_llm_provider
 from code_rook.core.loop import AgentLoop
@@ -34,6 +35,7 @@ from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.base import BaseTool
 from code_rook.core.tools.builtin import (
     ApplyPatchTool,
+    AskUserQuestionTool,
     BackgroundCancelTool,
     BackgroundListTool,
     BackgroundResultTool,
@@ -97,6 +99,7 @@ class AgentRunner:
         background_registry: BackgroundJobRegistry | None = None,
         workspace_root: Path | None = None,
         subagent_registry: BackgroundTaskRegistry | None = None,
+        interaction_manager: InteractionManager | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -119,6 +122,7 @@ class AgentRunner:
         self._agent_profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
+        self._interaction_manager = interaction_manager
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
     def _build_registry(
@@ -199,6 +203,14 @@ class AgentRunner:
             note_tool = NoteSaveTool(store, session.id, run_id)
             if _ok(note_tool):
                 registry.register(note_tool)
+        if self._interaction_manager is not None and run_id is not None:
+            question_tool = AskUserQuestionTool(
+                self._interaction_manager,
+                session_id,
+                run_id,
+            )
+            if _ok(question_tool):
+                registry.register(question_tool)
         if provider is not None and bus is not None and run_id is not None:
             runs_dir = child_runs_dir or self._runs_dir
             if runtime_mode != RuntimeMode.PLAN and _name_allowed("spawn_agent"):
@@ -380,6 +392,7 @@ class AgentRunner:
                         self._config.compaction.tool_result_summarize_threshold
                     ),
                     todo_state=task_manager,
+                    interaction_manager=self._interaction_manager,
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager
@@ -389,9 +402,13 @@ class AgentRunner:
                         session_id_str,
                         previous_authority.model_copy(update={"mode": runtime_mode}),
                     )
+                if self._interaction_manager is not None:
+                    self._interaction_manager.register_run(run_id)
                 try:
                     await loop.run(context)
                 finally:
+                    if self._interaction_manager is not None:
+                        self._interaction_manager.unregister_run(run_id)
                     if previous_authority is not None:
                         assert permission_manager is not None
                         permission_manager.set_authority_snapshot(

@@ -51,6 +51,17 @@ class RunCancelResult(BaseModel):
     status: Literal["cancelled"] = "cancelled"
 
 
+class RunSteerCommand(BaseModel):
+    type: Literal["run.steer"] = "run.steer"
+    run_id: str
+    content: str = Field(min_length=1, max_length=10_000)
+
+
+class RunSteerResult(BaseModel):
+    run_id: str
+    queued: Literal[True] = True
+
+
 class EventSubscribeCommand(BaseModel):
     type: Literal["event.subscribe"] = "event.subscribe"
     topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
@@ -228,6 +239,16 @@ class PermissionRespondResult(BaseModel):
     ok: bool = True
 
 
+class UserQuestionRespondCommand(BaseModel):
+    type: Literal["user_question.respond"] = "user_question.respond"
+    question_id: str
+    answer: str = Field(min_length=1, max_length=10_000)
+
+
+class UserQuestionRespondResult(BaseModel):
+    answered: Literal[True] = True
+
+
 class SessionCompactCommand(BaseModel):
     type: Literal["session.compact"] = "session.compact"
     session_id: str
@@ -251,6 +272,7 @@ Command = Annotated[
     | PingCommand
     | AgentRunCommand
     | RunCancelCommand
+    | RunSteerCommand
     | EventSubscribeCommand
     | EventReplayCommand
     | SessionCreateCommand
@@ -266,6 +288,7 @@ Command = Annotated[
     | SessionDeleteCommand
     | SessionCloseCommand
     | PermissionRespondCommand
+    | UserQuestionRespondCommand
     | SessionCompactCommand,
     Discriminator("type"),
 ]
