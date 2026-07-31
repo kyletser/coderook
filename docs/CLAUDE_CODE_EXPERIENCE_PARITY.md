@@ -17,8 +17,9 @@
 - [CLI 参考](https://code.claude.com/docs/en/cli-usage)
 
 分数按用户完成真实编码任务时的影响加权，不按命令数量计数。只有同时具备实现、用户入口和针对性
-测试的能力才能获得完整分；只有底层类或文档不能得分。当前工作树的保守得分为 **81/100**，
-已越过 80 分目标线，但仍需完整 CI 与真实终端验收后才能宣告完成。
+测试的能力才能获得完整分；只有底层类或文档不能得分。当前版本的保守得分为 **81/100**，
+已越过 80 分目标线，并于 2026-07-31 通过完整 CI、wheel smoke、真实 Core IPC 与 TUI
+启动路径验收。
 
 ## 当前加权结果
 
@@ -33,7 +34,7 @@
 | Subagent、后台任务与 worktree | 8 | 5 | 子 Agent；后台命令注册表；结果轮询；受管 Git worktree；父子取消 | 无用户可见任务中心；无 steering/handoff；并行结果缺少统一汇总 UI |
 | Skills、Hooks 与 MCP 扩展 | 7 | 4 | 内置/用户/项目 skills；生命周期 hooks；stdio/TCP MCP 工具接入 | 无 `/mcp`、`/hooks` 管理 UI；无插件市场与 MCP 资源/提示词入口 |
 | Headless、自动化与诊断 | 5 | 3 | one-shot run；headless 权限模式；trace、脱敏、轮转；session export；wheel smoke | 缺少结构化流式输出格式、预算/成本参数、doctor/usage 命令 |
-| **总计** | **100** | **81** |  | **超过目标线 1 分，待最终验收** |
+| **总计** | **100** | **81** |  | **超过目标线 1 分，最终验收通过** |
 
 ## Plan Mode 本轮验收合同
 
@@ -64,4 +65,6 @@ Plan Mode 不是提示词约定，而是以下三层共同成立：
 - `tests/unit/test_tui_app.py::test_high_frequency_commands_execute_on_first_submit`
 - `tests/unit/test_session_manager.py::test_session_checkpoint_view_and_rewind_latest_run`
 
-最终完成仍要求完整 CI、wheel smoke、真实 Core ping 和至少一次真实 TUI 启动共同通过。
+最终证据：`590 passed, 3 skipped`；Windows 与 Linux Mypy 均通过；协议文档同步；wheel
+构建与安装冒烟通过；Core 重启后 ping 通过；TUI 入口、真实 Textual 消息泵和新增 IPC
+命令均完成验收。
