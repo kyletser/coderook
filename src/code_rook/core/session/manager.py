@@ -24,6 +24,8 @@ from code_rook.core.bus.events import (
     SessionWaitingForInputEvent,
     SkillInvokedEvent,
 )
+from code_rook.core.checkpoints import CheckpointError, CheckpointStore
+from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.events.bus import EventBus
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.runs import new_run_id
@@ -33,6 +35,8 @@ from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.task.model import Task
+from code_rook.core.workspace import WorkspaceBoundary
 
 if TYPE_CHECKING:
     from code_rook.core.llm.base import LLMProvider
@@ -387,6 +391,81 @@ class SessionManager:
         await self._ensure_runtime_sessions()
         self._get_session(sid)
         return self._store.read_messages(sid)
+
+    # 返回最近一次 run 的任务列表，未创建任务时保持只读且返回空集合
+    def list_tasks(self, sid: str) -> tuple[str | None, list[dict[str, Any]]]:
+        session = self._get_session(sid)
+        run_id = session.run_ids[-1] if session.run_ids else None
+        if run_id is None:
+            return None, []
+        tasks_dir = self._store.runs_dir(sid) / run_id / ".tasks"
+        if not tasks_dir.is_dir():
+            return run_id, []
+        tasks: list[Task] = []
+        for path in tasks_dir.glob("task_*.json"):
+            try:
+                tasks.append(Task.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+        tasks.sort(key=lambda task: task.id)
+        return run_id, [task.to_dict() for task in tasks]
+
+    # 返回最近一次 run 的 checkpoint 元数据，不创建任何缺失目录
+    def list_checkpoints(self, sid: str) -> tuple[str | None, list[dict[str, Any]]]:
+        session = self._get_session(sid)
+        run_id = session.run_ids[-1] if session.run_ids else None
+        if run_id is None:
+            return None, []
+        root = self._store.runs_dir(sid) / run_id / ".checkpoints"
+        if not root.is_dir():
+            return run_id, []
+        store = CheckpointStore(root, WorkspaceBoundary.current(), create=False)
+        checkpoints = [
+            {
+                "checkpoint_id": item.checkpoint_id,
+                "label": item.label,
+                "created_at": item.created_at,
+                "status": item.status,
+                "paths": item.paths,
+            }
+            for item in store.list_checkpoints()
+        ]
+        return run_id, checkpoints
+
+    # 安全恢复最近一次 run 中用户明确选择的 checkpoint
+    def rewind(self, sid: str, checkpoint_id: str) -> dict[str, Any]:
+        session = self._get_session(sid)
+        if self._locks[sid].locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+        if not session.run_ids:
+            raise HandlerError(INVALID_PARAMS, "session has no run checkpoints")
+        root = self._store.runs_dir(sid) / session.run_ids[-1] / ".checkpoints"
+        try:
+            outcome = CheckpointStore(root, WorkspaceBoundary.current()).rewind(
+                checkpoint_id
+            )
+        except CheckpointError as exc:
+            raise HandlerError(
+                INVALID_PARAMS,
+                str(exc),
+                {"code": exc.code, "conflicts": exc.conflicts},
+            ) from exc
+        return {
+            "checkpoint_id": outcome.checkpoint_id,
+            "restored": outcome.restored,
+            "already_restored": outcome.already_restored,
+        }
+
+    # 返回当前 transcript 的消息数、确定性 token 估算和 run 概览
+    def context_info(self, sid: str) -> dict[str, Any]:
+        session = self._get_session(sid)
+        messages = self._store.read_messages(sid)
+        return {
+            "message_count": len(messages),
+            "estimated_tokens": estimate_messages_tokens(messages),
+            "run_count": len(session.run_ids),
+            "last_run_id": session.run_ids[-1] if session.run_ids else None,
+        }
 
     # 返回已恢复的指定会话，供 Core 的会话级配置命令做存在性校验
     def get_session(self, sid: str) -> Session:

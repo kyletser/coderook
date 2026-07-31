@@ -78,6 +78,21 @@ def test_checkpoint_conflict_aborts_every_restore(tmp_path: Path) -> None:
     assert second.read_bytes() == b"user changed\n"
 
 
+# 功能：验证只读打开不存在的 checkpoint 根目录不会产生文件系统副作用
+# 设计：使用 create=False 构造存储并立即列表，断言结果为空且根目录仍不存在
+def test_checkpoint_read_only_open_does_not_create_directories(tmp_path: Path) -> None:
+    root = tmp_path / "missing" / "checkpoints"
+
+    store = CheckpointStore(
+        root,
+        WorkspaceBoundary(tmp_path),
+        create=False,
+    )
+
+    assert store.list_checkpoints() == []
+    assert not root.exists()
+
+
 def test_checkpoint_handles_partially_applied_crash_state(tmp_path: Path) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"

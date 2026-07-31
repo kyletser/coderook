@@ -30,10 +30,14 @@ from code_rook.core.bus.commands import (
     RunSteerCommand,
     RunSteerResult,
     SessionAuthorityResult,
+    SessionCheckpointsCommand,
+    SessionCheckpointsResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCompactCommand,
     SessionCompactResult,
+    SessionContextCommand,
+    SessionContextResult,
     SessionCreateCommand,
     SessionCreateResult,
     SessionDeleteCommand,
@@ -52,11 +56,17 @@ from code_rook.core.bus.commands import (
     SessionRenameResult,
     SessionResumeCommand,
     SessionResumeResult,
+    SessionRewindCommand,
+    SessionRewindResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
     SessionSetAuthorityCommand,
+    SessionTasksCommand,
+    SessionTasksResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
+    WorkspaceDiffCommand,
+    WorkspaceDiffResult,
 )
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.config import CodeRookConfig, get_config
@@ -73,11 +83,13 @@ from code_rook.core.runtime import RuntimeService, RuntimeStore
 from code_rook.core.session import Session, SessionManager, SessionStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.tools.builtin.git_diff import GitDiffTool
 from code_rook.core.trace.record import TraceRecord
 from code_rook.core.trace.writer import TraceWriter
 from code_rook.core.transport.auth import load_or_create_ipc_token, require_loopback_host
 from code_rook.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from code_rook.core.transport.socket_server import SocketServer, get_connection_writer
+from code_rook.core.workspace import WorkspaceBoundary
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +340,53 @@ class CoreApp:
         result = await self._sessions.compact(cmd.session_id, cmd.focus)
         return result  # type: ignore[no-any-return]
 
+    # 返回当前会话最近一次 run 的任务列表
+    async def _session_tasks_handler(self, params: dict[str, Any]) -> SessionTasksResult:
+        assert self._sessions is not None
+        cmd = SessionTasksCommand.model_validate(params)
+        run_id, tasks = self._sessions.list_tasks(cmd.session_id)
+        return SessionTasksResult(run_id=run_id, tasks=tasks)
+
+    # 返回工作区结构化 Git diff，供 TUI 直接展示文件和补丁
+    async def _workspace_diff_handler(self, params: dict[str, Any]) -> WorkspaceDiffResult:
+        cmd = WorkspaceDiffCommand.model_validate(params)
+        result = await GitDiffTool(WorkspaceBoundary.current()).invoke(
+            {"scope": cmd.scope, "path": cmd.path}
+        )
+        payload = json.loads(result.content)
+        return WorkspaceDiffResult(payload=payload)
+
+    # 返回当前会话最近一次 run 的安全恢复点列表
+    async def _session_checkpoints_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionCheckpointsResult:
+        assert self._sessions is not None
+        cmd = SessionCheckpointsCommand.model_validate(params)
+        run_id, checkpoints = self._sessions.list_checkpoints(cmd.session_id)
+        return SessionCheckpointsResult(run_id=run_id, checkpoints=checkpoints)
+
+    # 恢复用户明确选择的 checkpoint 并返回受影响文件
+    async def _session_rewind_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionRewindResult:
+        assert self._sessions is not None
+        cmd = SessionRewindCommand.model_validate(params)
+        result = self._sessions.rewind(cmd.session_id, cmd.checkpoint_id)
+        return SessionRewindResult.model_validate(result)
+
+    # 返回当前会话的上下文大小和运行概览
+    async def _session_context_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionContextResult:
+        assert self._sessions is not None
+        cmd = SessionContextCommand.model_validate(params)
+        return SessionContextResult.model_validate(
+            self._sessions.context_info(cmd.session_id)
+        )
+
     # 关闭 session 并返回 closed 状态
     async def _session_close_handler(self, params: dict[str, Any]) -> SessionCloseResult:
         assert self._sessions is not None
@@ -537,6 +596,11 @@ class CoreApp:
         server.register("permission.respond", self._permission_respond_handler)
         server.register("user_question.respond", self._user_question_respond_handler)
         server.register("session.compact", self._session_compact_handler)
+        server.register("session.tasks", self._session_tasks_handler)
+        server.register("workspace.diff", self._workspace_diff_handler)
+        server.register("session.checkpoints", self._session_checkpoints_handler)
+        server.register("session.rewind", self._session_rewind_handler)
+        server.register("session.context", self._session_context_handler)
 
         addr = await server.start()
         logger.info("coderook-core %s listening addr=%s", code_rook.__version__, addr)

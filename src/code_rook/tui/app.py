@@ -680,6 +680,86 @@ class UserQuestionSelect(Static):
             self.post_message(self.Answered(self, None))
 
 
+class CheckpointPicker(Static):
+    can_focus = True
+
+    DEFAULT_CSS = """
+    CheckpointPicker {
+        height: auto;
+        margin: 1 2 0 2;
+        padding: 0 2 1 2;
+        border: solid #8c6d3f;
+        border-title-color: #d8a65b;
+        border-subtitle-color: #8b929d;
+        background: #17191d;
+        color: $text;
+    }
+    CheckpointPicker:focus { border: solid #d8a65b; }
+    """
+
+    class Selected(Message):
+        # 初始化 checkpoint 选择消息
+        def __init__(self, picker: CheckpointPicker, checkpoint_id: str) -> None:
+            self.picker = picker
+            self.checkpoint_id = checkpoint_id
+            super().__init__()
+
+    class Dismissed(Message):
+        # 初始化 checkpoint 选择器关闭消息
+        def __init__(self, picker: CheckpointPicker) -> None:
+            self.picker = picker
+            super().__init__()
+
+    # 初始化 checkpoint 选择器，仅接收可恢复状态的条目
+    def __init__(self, checkpoints: list[dict[str, Any]]) -> None:
+        super().__init__("")
+        self._checkpoints = checkpoints
+        self._cursor = 0
+
+    # 挂载后渲染安全恢复点并取得焦点
+    def on_mount(self) -> None:
+        self.border_title = " Rewind "
+        self.border_subtitle = " ↑↓ move   Enter restore   Esc close "
+        self.update(self._render_ui())
+        self.focus()
+
+    # 渲染 checkpoint 标签、文件和创建时间
+    def _render_ui(self) -> str:
+        lines = ["[bold yellow]选择要恢复的 checkpoint[/bold yellow]"]
+        for index, checkpoint in enumerate(self._checkpoints):
+            marker = "[bold #d8a65b]>[/bold #d8a65b]" if index == self._cursor else " "
+            label = escape(str(checkpoint.get("label", "checkpoint")))
+            paths = ", ".join(str(path) for path in checkpoint.get("paths", []))
+            created = escape(str(checkpoint.get("created_at", ""))[:19])
+            style = "bold white" if index == self._cursor else "#c6cad0"
+            lines.append(
+                f"{marker} [{style}]{label}[/{style}]"
+                f"  [dim]{escape(paths)}  {created}[/dim]"
+            )
+        lines.append("[dim]恢复会拒绝覆盖 checkpoint 之后再次修改的文件[/dim]")
+        return "\n".join(lines)
+
+    # 处理 checkpoint 选择器的键盘导航和确认
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("up", "k"):
+            event.stop()
+            self._cursor = (self._cursor - 1) % len(self._checkpoints)
+            self.update(self._render_ui())
+        elif event.key in ("down", "j"):
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(self._checkpoints)
+            self.update(self._render_ui())
+        elif event.key == "enter":
+            event.stop()
+            checkpoint_id = str(
+                self._checkpoints[self._cursor].get("checkpoint_id", "")
+            )
+            self.post_message(self.Selected(self, checkpoint_id))
+        elif event.key == "escape":
+            event.stop()
+            self.post_message(self.Dismissed(self))
+
+
 class PlanReview(Static):
     """Keyboard-driven review prompt shown after a read-only planning run."""
 
@@ -1419,6 +1499,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("copy", "copy the latest assistant reply"),
             ("plan", "analyze read-only and review a plan before implementation"),
             ("permissions", "review or change the permission mode"),
+            ("tasks", "show tasks from the latest run"),
+            ("diff", "show current workspace changes"),
+            ("rewind", "restore files from a safe checkpoint"),
+            ("context", "show context size and usage"),
         ]
         try:
             loader = SkillLoader()
@@ -1643,6 +1727,27 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     name="new_session",
                     exclusive=False,
                 )
+            return
+        if content in {"/tasks", "/diff", "/rewind", "/context"}:
+            event.text_area.text = ""
+            if self._client is None or self._session_id is None:
+                self._append(
+                    Static("[yellow]Core 未连接[/yellow]", classes="log-line")
+                )
+                return
+            event.text_area.disabled = True
+            event.text_area.border_title = f"loading {content}..."
+            workers = {
+                "/tasks": self._show_tasks,
+                "/diff": self._show_diff,
+                "/rewind": self._show_rewind_picker,
+                "/context": self._show_context,
+            }
+            self.run_worker(
+                workers[content](),
+                name=f"view_{content[1:]}",
+                exclusive=False,
+            )
             return
         if content == "/model":
             event.text_area.text = ""
@@ -1879,6 +1984,187 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     ) -> None:
         message.picker.remove()
         await self._select_authority_preset(message.preset)
+
+    # 加载并展示最近一次 run 的任务状态
+    async def _show_tasks(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.tasks",
+                {"session_id": self._session_id},
+            )
+            tasks = list(result.get("tasks", []))
+            if not tasks:
+                body = "[dim]当前会话最近一次 run 没有任务。[/dim]"
+            else:
+                markers = {
+                    "pending": "[ ]",
+                    "in_progress": "[>]",
+                    "completed": "[x]",
+                }
+                lines = ["[bold cyan]Tasks[/bold cyan]"]
+                for task in tasks:
+                    status = str(task.get("status", "pending"))
+                    subject = escape(str(task.get("subject", "")))
+                    task_id = task.get("id", "")
+                    blocked = task.get("blocked_by", [])
+                    blocked_text = (
+                        f"  [dim]blocked by {escape(str(blocked))}[/dim]"
+                        if blocked
+                        else ""
+                    )
+                    lines.append(
+                        f"{markers.get(status, '[?]')} #{task_id} {subject}{blocked_text}"
+                    )
+                body = "\n".join(lines)
+            self._append(Static(body, classes="log-line"))
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]tasks error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示当前工作区文件统计和统一 diff
+    async def _show_diff(self) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "workspace.diff",
+                {"scope": "all", "path": "."},
+            )
+            payload = dict(result.get("payload", {}))
+            if "error" in payload:
+                error = dict(payload["error"])
+                self._append(
+                    Static(
+                        f"[red]diff error: {escape(str(error.get('message', 'unknown')))}[/red]",
+                        classes="log-line",
+                    )
+                )
+                return
+            files = list(payload.get("files", []))
+            additions = int(payload.get("additions", 0))
+            deletions = int(payload.get("deletions", 0))
+            self._append(
+                Static(
+                    f"[bold cyan]Diff[/bold cyan]  {len(files)} files  "
+                    f"[green]+{additions}[/green] [red]-{deletions}[/red]",
+                    classes="log-line",
+                )
+            )
+            for file_info in files:
+                path = escape(str(file_info.get("path", "")))
+                index_status = escape(str(file_info.get("index_status", " ")))
+                worktree_status = escape(str(file_info.get("worktree_status", " ")))
+                self._append(
+                    Static(
+                        f"[dim]{index_status}{worktree_status}[/dim] {path}",
+                        classes="log-line",
+                    )
+                )
+            diff = str(payload.get("diff", ""))
+            if diff:
+                safe_diff = diff.replace("```", "` ` `")
+                self._append(Markdown(f"```diff\n{safe_diff}\n```"))
+            elif not files:
+                self._append(Static("[dim]工作区没有改动。[/dim]", classes="log-line"))
+        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._append(Static(f"[red]diff error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载最近一次 run 的可恢复 checkpoint 并打开选择器
+    async def _show_rewind_picker(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.checkpoints",
+                {"session_id": self._session_id},
+            )
+            checkpoints = [
+                dict(item)
+                for item in result.get("checkpoints", [])
+                if item.get("status") == "ready"
+            ]
+            if not checkpoints:
+                self._append(
+                    Static("[dim]当前会话没有可恢复的 checkpoint。[/dim]", classes="log-line")
+                )
+                self._restore_ready_prompt()
+                return
+            self.mount(CheckpointPicker(checkpoints), before="#prompt")
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]rewind error: {exc}[/red]", classes="log-line"))
+            self._restore_ready_prompt()
+
+    # 关闭 checkpoint 选择器且不修改文件
+    async def on_checkpoint_picker_dismissed(
+        self,
+        message: CheckpointPicker.Dismissed,
+    ) -> None:
+        message.picker.remove()
+        self._restore_ready_prompt()
+
+    # 恢复用户明确选中的 checkpoint 并显示实际恢复文件
+    async def on_checkpoint_picker_selected(
+        self,
+        message: CheckpointPicker.Selected,
+    ) -> None:
+        message.picker.remove()
+        if self._client is None or self._session_id is None:
+            self._restore_ready_prompt()
+            return
+        try:
+            result = await self._client.send_command(
+                "session.rewind",
+                {
+                    "session_id": self._session_id,
+                    "checkpoint_id": message.checkpoint_id,
+                },
+            )
+            restored = [str(path) for path in result.get("restored", [])]
+            unchanged = [str(path) for path in result.get("already_restored", [])]
+            self._append(
+                Static(
+                    f"[bold yellow]Rewound[/bold yellow]  "
+                    f"{escape(message.checkpoint_id)}  "
+                    f"[dim]restored={escape(str(restored))} "
+                    f"already={escape(str(unchanged))}[/dim]",
+                    classes="log-line",
+                )
+            )
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]rewind error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示当前会话上下文估算和最近一次真实模型占用率
+    async def _show_context(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.context",
+                {"session_id": self._session_id},
+            )
+            last_run = result.get("last_run_id") or "-"
+            self._append(
+                Static(
+                    "[bold cyan]Context[/bold cyan]  "
+                    f"messages={int(result.get('message_count', 0))}  "
+                    f"estimated_tokens≈{int(result.get('estimated_tokens', 0))}  "
+                    f"runs={int(result.get('run_count', 0))}\n"
+                    f"[dim]last_run={escape(str(last_run))}[/dim]  "
+                    f"{self._render_ctx_bar(self._last_context_pct)}",
+                    classes="log-line",
+                )
+            )
+        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._append(Static(f"[red]context error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
 
     async def _show_session_picker(self) -> None:
         if self._client is None:

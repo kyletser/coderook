@@ -15,6 +15,8 @@ from code_rook.core.bus.commands import (
     RunCancelCommand,
     RunCancelResult,
     RunSteerCommand,
+    SessionCheckpointsCommand,
+    SessionContextCommand,
     SessionDeleteCommand,
     SessionExportCommand,
     SessionForkCommand,
@@ -22,9 +24,12 @@ from code_rook.core.bus.commands import (
     SessionListCommand,
     SessionRenameCommand,
     SessionResumeCommand,
+    SessionRewindCommand,
     SessionSendMessageCommand,
     SessionSetAuthorityCommand,
+    SessionTasksCommand,
     UserQuestionRespondCommand,
+    WorkspaceDiffCommand,
 )
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
@@ -248,6 +253,26 @@ def test_session_authority_commands_roundtrip() -> None:
     assert restored.type == "session.set_authority"
     assert restored.mode == RuntimeMode.PLAN
     assert restored.profile == AuthorityProfile.AUTO_REVIEW
+
+
+# 功能：验证 tasks、diff、checkpoint、rewind 和 context 高频视图命令具有稳定判别类型
+# 设计：构造五个 typed command 并检查关键参数，确保 TUI 不依赖自由格式命令字符串
+def test_session_inspection_commands_validate() -> None:
+    tasks = SessionTasksCommand(session_id="sess-1")
+    diff = WorkspaceDiffCommand(scope="unstaged", path="src")
+    checkpoints = SessionCheckpointsCommand(session_id="sess-1")
+    rewind = SessionRewindCommand(
+        session_id="sess-1",
+        checkpoint_id="20260731T010203-abcdef12",
+    )
+    context = SessionContextCommand(session_id="sess-1")
+
+    assert tasks.type == "session.tasks"
+    assert diff.type == "workspace.diff"
+    assert diff.scope == "unstaged"
+    assert checkpoints.type == "session.checkpoints"
+    assert rewind.type == "session.rewind"
+    assert context.type == "session.context"
 
 
 # 功能：验证计划完成事件携带原请求和完整计划供 TUI 审阅

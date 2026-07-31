@@ -15,6 +15,7 @@ from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
 from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
     ChatTextArea,
+    CheckpointPicker,
     CodeRookTuiApp,
     ConfigApiKeyPrompt,
     ConfigSwitch,
@@ -315,6 +316,63 @@ async def test_user_question_select_keyboard_flow() -> None:
         assert app.answers == ["单元测试, 集成测试", None]
 
 
+# 功能：验证 checkpoint 选择器通过键盘选择指定恢复点并支持取消
+# 设计：挂载两个真实形状的 checkpoint，移动后确认 ID，再用 Esc 验证无修改关闭路径
+async def test_checkpoint_picker_keyboard_flow() -> None:
+    checkpoints = [
+        {
+            "checkpoint_id": "20260731T010203-aaaaaaaa",
+            "label": "edit auth",
+            "created_at": "2026-07-31T01:02:03Z",
+            "status": "ready",
+            "paths": ["src/auth.py"],
+        },
+        {
+            "checkpoint_id": "20260731T010204-bbbbbbbb",
+            "label": "edit tests",
+            "created_at": "2026-07-31T01:02:04Z",
+            "status": "ready",
+            "paths": ["tests/test_auth.py"],
+        },
+    ]
+
+    class CheckpointHarness(App[None]):
+        # 初始化 checkpoint 选择结果
+        def __init__(self) -> None:
+            super().__init__()
+            self.selected: list[str] = []
+            self.dismissed = 0
+
+        # 挂载 checkpoint 选择器
+        def compose(self) -> ComposeResult:
+            yield CheckpointPicker(checkpoints)
+
+        # 收集 checkpoint 选择消息
+        def on_checkpoint_picker_selected(
+            self,
+            message: CheckpointPicker.Selected,
+        ) -> None:
+            self.selected.append(message.checkpoint_id)
+
+        # 收集 checkpoint 取消消息
+        def on_checkpoint_picker_dismissed(
+            self,
+            _message: CheckpointPicker.Dismissed,
+        ) -> None:
+            self.dismissed += 1
+
+    app = CheckpointHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.selected == ["20260731T010204-bbbbbbbb"]
+        assert app.dismissed == 1
+
+
 # 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
 # 设计：直接移动内部光标后检查纯文本，确保真实 API 返回大量模型时选中项始终可见
 def test_model_picker_keeps_cursor_visible_in_long_list() -> None:
@@ -561,6 +619,10 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["copy"] == "copy the latest assistant reply"
     assert items["plan"] == "analyze read-only and review a plan before implementation"
     assert items["permissions"] == "review or change the permission mode"
+    assert items["tasks"] == "show tasks from the latest run"
+    assert items["diff"] == "show current workspace changes"
+    assert items["rewind"] == "restore files from a safe checkpoint"
+    assert items["context"] == "show context size and usage"
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
@@ -1169,6 +1231,120 @@ async def test_permissions_command_opens_picker_on_first_submit() -> None:
         assert prompt.disabled
         assert app.query_one(PermissionModePicker).has_focus
         assert not app._busy
+
+
+# 功能：验证 tasks、diff 和 context 视图读取 typed IPC 并产生可复制输出
+# 设计：用单个 fake client 返回三类真实载荷，直接调用视图 worker，核对命令顺序和核心展示文本
+async def test_high_frequency_views_render_core_results() -> None:
+    calls: list[str] = []
+
+    class _FakeClient:
+        # 按命令返回任务、diff 或 context 载荷
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append(method)
+            if method == "session.tasks":
+                return {
+                    "run_id": "run-1",
+                    "tasks": [
+                        {
+                            "id": 1,
+                            "subject": "修复权限",
+                            "status": "in_progress",
+                            "blocked_by": [],
+                        }
+                    ],
+                }
+            if method == "workspace.diff":
+                return {
+                    "payload": {
+                        "files": [
+                            {
+                                "path": "src/auth.py",
+                                "index_status": " ",
+                                "worktree_status": "M",
+                            }
+                        ],
+                        "additions": 3,
+                        "deletions": 1,
+                        "diff": "@@ -1 +1 @@\n-old\n+new",
+                    }
+                }
+            return {
+                "message_count": 12,
+                "estimated_tokens": 2048,
+                "run_count": 3,
+                "last_run_id": "run-1",
+            }
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+
+    await app._show_tasks()
+    await app._show_diff()
+    await app._show_context()
+
+    rendered = "\n".join(
+        str(getattr(widget, "content", "")) for widget in appended
+    )
+    assert calls == ["session.tasks", "workspace.diff", "session.context"]
+    assert "修复权限" in rendered
+    assert "src/auth.py" in rendered
+    assert "estimated_tokens" in rendered
+    assert any(isinstance(widget, Markdown) for widget in appended)
+
+
+@pytest.mark.parametrize("command", ["/tasks", "/diff", "/rewind", "/context"])
+# 功能：验证四个高频视图命令第一次 Enter 就直接执行
+# 设计：提交完整命令并截获 worker coroutine，检查输入清空、禁用和单次调度，防止回车两次回归
+async def test_high_frequency_commands_execute_on_first_submit(command: str) -> None:
+    scheduled: list[Coroutine[Any, Any, None]] = []
+
+    class _FakeClient:
+        # 提供已连接标记，本测试不实际调用 IPC
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            raise AssertionError("worker should be intercepted")
+
+    class ViewHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并准备命令
+        def on_mount(self) -> None:
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = command
+            prompt.focus()
+
+    app = ViewHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+
+        # 截获 worker coroutine 以验证调度但不执行远程命令
+        def schedule(
+            coroutine: Coroutine[Any, Any, None],
+            **_kwargs: object,
+        ) -> None:
+            scheduled.append(coroutine)
+
+        app.run_worker = schedule  # type: ignore[method-assign]
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-1"
+        prompt = app.query_one("#prompt", ChatTextArea)
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+
+        assert prompt.text == ""
+        assert prompt.disabled
+        assert len(scheduled) == 1
+        scheduled[0].close()
 
 
 # 功能：验证运行中的普通输入会作为 run.steer 发送而不是误开新 turn

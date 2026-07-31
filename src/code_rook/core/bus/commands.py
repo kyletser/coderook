@@ -266,6 +266,60 @@ class SessionCompactResult(BaseModel):
     summary_path: str = ""
 
 
+class SessionTasksCommand(BaseModel):
+    type: Literal["session.tasks"] = "session.tasks"
+    session_id: str
+
+
+class SessionTasksResult(BaseModel):
+    run_id: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkspaceDiffCommand(BaseModel):
+    type: Literal["workspace.diff"] = "workspace.diff"
+    scope: Literal["all", "staged", "unstaged"] = "all"
+    path: str = "."
+
+
+class WorkspaceDiffResult(BaseModel):
+    payload: dict[str, Any]
+
+
+class SessionCheckpointsCommand(BaseModel):
+    type: Literal["session.checkpoints"] = "session.checkpoints"
+    session_id: str
+
+
+class SessionCheckpointsResult(BaseModel):
+    run_id: str | None = None
+    checkpoints: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SessionRewindCommand(BaseModel):
+    type: Literal["session.rewind"] = "session.rewind"
+    session_id: str
+    checkpoint_id: str
+
+
+class SessionRewindResult(BaseModel):
+    checkpoint_id: str
+    restored: list[str] = Field(default_factory=list)
+    already_restored: list[str] = Field(default_factory=list)
+
+
+class SessionContextCommand(BaseModel):
+    type: Literal["session.context"] = "session.context"
+    session_id: str
+
+
+class SessionContextResult(BaseModel):
+    message_count: int
+    estimated_tokens: int
+    run_count: int
+    last_run_id: str | None = None
+
+
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     CoreAuthenticateCommand
@@ -289,6 +343,11 @@ Command = Annotated[
     | SessionCloseCommand
     | PermissionRespondCommand
     | UserQuestionRespondCommand
-    | SessionCompactCommand,
+    | SessionCompactCommand
+    | SessionTasksCommand
+    | WorkspaceDiffCommand
+    | SessionCheckpointsCommand
+    | SessionRewindCommand
+    | SessionContextCommand,
     Discriminator("type"),
 ]

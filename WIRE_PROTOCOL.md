@@ -2118,6 +2118,346 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### SessionTasksCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.tasks",
+      "default": "session.tasks",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionTasksCommand",
+  "type": "object"
+}
+```
+
+### SessionTasksResult
+
+| Field | Type | Required |
+|---|---|---|
+| `run_id` | `string | null` | no |
+| `tasks` | `array` | no |
+
+```json
+{
+  "properties": {
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "tasks": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "title": "SessionTasksResult",
+  "type": "object"
+}
+```
+
+### WorkspaceDiffCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `scope` | `string` | no |
+| `path` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "workspace.diff",
+      "default": "workspace.diff",
+      "title": "Type",
+      "type": "string"
+    },
+    "scope": {
+      "default": "all",
+      "enum": [
+        "all",
+        "staged",
+        "unstaged"
+      ],
+      "title": "Scope",
+      "type": "string"
+    },
+    "path": {
+      "default": ".",
+      "title": "Path",
+      "type": "string"
+    }
+  },
+  "title": "WorkspaceDiffCommand",
+  "type": "object"
+}
+```
+
+### WorkspaceDiffResult
+
+| Field | Type | Required |
+|---|---|---|
+| `payload` | `object` | yes |
+
+```json
+{
+  "properties": {
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "payload"
+  ],
+  "title": "WorkspaceDiffResult",
+  "type": "object"
+}
+```
+
+### SessionCheckpointsCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.checkpoints",
+      "default": "session.checkpoints",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionCheckpointsCommand",
+  "type": "object"
+}
+```
+
+### SessionCheckpointsResult
+
+| Field | Type | Required |
+|---|---|---|
+| `run_id` | `string | null` | no |
+| `checkpoints` | `array` | no |
+
+```json
+{
+  "properties": {
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "checkpoints": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Checkpoints",
+      "type": "array"
+    }
+  },
+  "title": "SessionCheckpointsResult",
+  "type": "object"
+}
+```
+
+### SessionRewindCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `checkpoint_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.rewind",
+      "default": "session.rewind",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "title": "Checkpoint Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "checkpoint_id"
+  ],
+  "title": "SessionRewindCommand",
+  "type": "object"
+}
+```
+
+### SessionRewindResult
+
+| Field | Type | Required |
+|---|---|---|
+| `checkpoint_id` | `string` | yes |
+| `restored` | `array` | no |
+| `already_restored` | `array` | no |
+
+```json
+{
+  "properties": {
+    "checkpoint_id": {
+      "title": "Checkpoint Id",
+      "type": "string"
+    },
+    "restored": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Restored",
+      "type": "array"
+    },
+    "already_restored": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Already Restored",
+      "type": "array"
+    }
+  },
+  "required": [
+    "checkpoint_id"
+  ],
+  "title": "SessionRewindResult",
+  "type": "object"
+}
+```
+
+### SessionContextCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.context",
+      "default": "session.context",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionContextCommand",
+  "type": "object"
+}
+```
+
+### SessionContextResult
+
+| Field | Type | Required |
+|---|---|---|
+| `message_count` | `integer` | yes |
+| `estimated_tokens` | `integer` | yes |
+| `run_count` | `integer` | yes |
+| `last_run_id` | `string | null` | no |
+
+```json
+{
+  "properties": {
+    "message_count": {
+      "title": "Message Count",
+      "type": "integer"
+    },
+    "estimated_tokens": {
+      "title": "Estimated Tokens",
+      "type": "integer"
+    },
+    "run_count": {
+      "title": "Run Count",
+      "type": "integer"
+    },
+    "last_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Run Id"
+    }
+  },
+  "required": [
+    "message_count",
+    "estimated_tokens",
+    "run_count"
+  ],
+  "title": "SessionContextResult",
+  "type": "object"
+}
+```
+
 ## Server Push
 
 Events pushed from daemon to subscribed clients over the same TCP connection.

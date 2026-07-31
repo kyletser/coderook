@@ -60,13 +60,21 @@ class _FileState:
 
 
 class CheckpointStore:
-    def __init__(self, root: Path, boundary: WorkspaceBoundary) -> None:
+    # 初始化 checkpoint 存储；只读查询可禁止创建缺失目录
+    def __init__(
+        self,
+        root: Path,
+        boundary: WorkspaceBoundary,
+        *,
+        create: bool = True,
+    ) -> None:
         self._root = root.resolve()
         self._boundary = boundary
         self._manifests = self._root / "manifests"
         self._blobs = self._root / "blobs"
-        self._manifests.mkdir(parents=True, exist_ok=True)
-        self._blobs.mkdir(parents=True, exist_ok=True)
+        if create:
+            self._manifests.mkdir(parents=True, exist_ok=True)
+            self._blobs.mkdir(parents=True, exist_ok=True)
 
     def create(self, mutations: list[FileMutation], *, label: str) -> str:
         if not mutations:

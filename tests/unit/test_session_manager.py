@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
+from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
+from code_rook.core.editing import FileMutation, apply_file_transaction
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runner import RunOutcome
 from code_rook.core.session.manager import (
@@ -21,6 +24,7 @@ from code_rook.core.session.manager import (
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
+from code_rook.core.workspace import WorkspaceBoundary
 
 
 class _Runner:
@@ -416,3 +420,76 @@ async def test_plan_turn_publishes_reviewable_plan(tmp_path: Path) -> None:
     assert "Implement" in plan_event.plan  # type: ignore[attr-defined]
     event_types = [getattr(event, "type", "") for event in events]
     assert event_types.index("plan.ready") < event_types.index("session.waiting_for_input")
+
+
+# 功能：验证任务与 context 查询读取最近一次 run，且空目录不会伪造数据
+# 设计：直接构造持久化任务和 transcript，检查排序、消息计数和确定性 token 估算
+async def test_session_task_and_context_views_use_latest_run(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    session.run_ids.extend(["run-old", "run-latest"])
+    store.write_meta(session)
+    tasks_dir = store.runs_dir(session.id) / "run-latest" / ".tasks"
+    tasks_dir.mkdir(parents=True)
+    for task_id, subject in [(2, "第二项"), (1, "第一项")]:
+        (tasks_dir / f"task_{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "id": task_id,
+                    "subject": subject,
+                    "description": "",
+                    "status": "pending",
+                    "blocked_by": [],
+                    "created_at": "t",
+                    "updated_at": "t",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    store.append_message(session.id, "user", "检查任务", run_id="run-latest")
+
+    run_id, tasks = manager.list_tasks(session.id)
+    context = manager.context_info(session.id)
+
+    assert run_id == "run-latest"
+    assert [task["id"] for task in tasks] == [1, 2]
+    assert context["message_count"] == 1
+    assert context["estimated_tokens"] > 0
+    assert context["run_count"] == 2
+    assert context["last_run_id"] == "run-latest"
+
+
+# 功能：验证 checkpoint 列表与 rewind 始终绑定当前会话最近一次 run
+# 设计：创建真实 checkpoint 和文件变更，替换 workspace 探测后经 SessionManager 恢复并核对文件内容
+async def test_session_checkpoint_view_and_rewind_latest_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace)
+    monkeypatch.setattr(WorkspaceBoundary, "current", classmethod(lambda cls: boundary))
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    session.run_ids.append("run-latest")
+    store.write_meta(session)
+    target = workspace / "value.txt"
+    target.write_text("before", encoding="utf-8")
+    mutation = FileMutation(target, b"before", b"after")
+    checkpoint_store = CheckpointStore(
+        store.runs_dir(session.id) / "run-latest" / ".checkpoints",
+        boundary,
+    )
+    checkpoint_id = checkpoint_store.create([mutation], label="edit value")
+    apply_file_transaction(workspace, [mutation])
+
+    run_id, checkpoints = manager.list_checkpoints(session.id)
+    result = manager.rewind(session.id, checkpoint_id)
+
+    assert run_id == "run-latest"
+    assert checkpoints[0]["checkpoint_id"] == checkpoint_id
+    assert result["restored"] == ["value.txt"]
+    assert target.read_text(encoding="utf-8") == "before"
