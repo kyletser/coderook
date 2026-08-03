@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from code_rook.core.artifacts import ArtifactError, ArtifactStore
 from code_rook.core.bus.events import (
     PermissionDeniedEvent,
     PermissionGrantedEvent,
@@ -20,7 +22,7 @@ from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.errors import RateLimitedError
 from code_rook.core.tools.registry import ToolRegistry
-from code_rook.core.tools.spec import ToolCaller, ToolCatalogError
+from code_rook.core.tools.spec import OutputPolicy, ToolCaller, ToolCatalogError
 
 if TYPE_CHECKING:
     from code_rook.core.hooks import HookManager
@@ -33,6 +35,95 @@ _RETRY_BASE_S: float = 2.0  # backoff base; tests can monkeypatch to 0
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+# 按 UTF-8 字节预算生成包含头尾的可读预览
+def _preview_bytes(content: str, limit: int) -> str:
+    raw = content.encode("utf-8")
+    if len(raw) <= limit:
+        return content
+    marker = b"\n...[output omitted]...\n"
+    if limit <= len(marker):
+        return raw[:limit].decode("utf-8", errors="ignore")
+    available = limit - len(marker)
+    head_size = available // 2
+    tail_size = available - head_size
+    head = raw[:head_size].decode("utf-8", errors="ignore")
+    tail = raw[-tail_size:].decode("utf-8", errors="ignore")
+    return f"{head}{marker.decode()}{tail}"
+
+
+# 将截断结果编码为带字节数和头尾预览的有界 typed summary
+def _summary_result(
+    result: ToolResult,
+    *,
+    size: int,
+    preview_limit: int,
+    hard_limit: int,
+    artifact: dict[str, object] | None = None,
+    artifact_error: str | None = None,
+) -> ToolResult:
+    payload: dict[str, object] = {
+        "kind": "tool_output_summary",
+        "bytes": size,
+        "preview": _preview_bytes(result.content, preview_limit),
+        "truncated": True,
+    }
+    if artifact is not None:
+        payload["artifact"] = artifact
+    if artifact_error is not None:
+        payload["artifact_error"] = artifact_error
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    if len(content.encode("utf-8")) > hard_limit:
+        content = _preview_bytes(result.content, hard_limit)
+    return ToolResult(
+        content,
+        is_error=result.is_error,
+        error_type=result.error_type,
+    )
+
+
+# 对 soft 到 hard 输出返回摘要，只有超过 hard limit 才写入 artifact
+async def _apply_output_policy(
+    result: ToolResult,
+    policy: OutputPolicy,
+    artifact_store: ArtifactStore | None,
+) -> ToolResult:
+    size = len(result.content.encode("utf-8"))
+    if size <= policy.soft_limit:
+        return result
+    preview_limit = min(policy.soft_limit, max(1, policy.hard_limit // 2))
+    if size <= policy.hard_limit:
+        return _summary_result(
+            result,
+            size=size,
+            preview_limit=preview_limit,
+            hard_limit=policy.hard_limit,
+        )
+    if artifact_store is not None and policy.spill_to_artifact:
+        try:
+            reference = await artifact_store.put(result.content)
+            return _summary_result(
+                result,
+                size=size,
+                preview_limit=preview_limit,
+                hard_limit=policy.hard_limit,
+                artifact=reference.model_dump(),
+            )
+        except (ArtifactError, OSError) as exc:
+            return _summary_result(
+                result,
+                size=size,
+                preview_limit=preview_limit,
+                hard_limit=policy.hard_limit,
+                artifact_error=str(exc),
+            )
+    return _summary_result(
+        result,
+        size=size,
+        preview_limit=preview_limit,
+        hard_limit=policy.hard_limit,
+    )
 
 
 # 发布 ToolCallFailedEvent 并返回对应 ToolResult
@@ -73,6 +164,7 @@ async def invoke_tool(
     session_id: str = "",
     hooks: HookManager | None = None,
     caller: ToolCaller | str = ToolCaller.MODEL,
+    artifact_store: ArtifactStore | None = None,
 ) -> ToolResult:
     t0 = time.monotonic()
 
@@ -193,6 +285,11 @@ async def invoke_tool(
         try:
             result = await asyncio.wait_for(
                 tool.invoke(dict(tool_call.input)), timeout=timeout
+            )
+            result = await _apply_output_policy(
+                result,
+                resolved_call.spec.output_policy,
+                artifact_store,
             )
             ms = elapsed()
 

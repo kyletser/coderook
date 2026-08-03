@@ -9,11 +9,13 @@ from code_rook.core.mcp.client import (
     McpToolError,
 )
 from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.spec import OutputPolicy, ToolSpec
 
 
 # 将 MCP 工具包装为 BaseTool，使 ToolRegistry 可透明调用
 class McpTool(BaseTool):
     params_model = None  # input_schema 来自 MCP tool_def，不使用 pydantic model
+    deferred = True
 
     # 初始化 MCP 工具包装器，工具名以 server_name__ 为前缀防止命名冲突
     def __init__(self, client: McpClient, server_name: str, tool_def: McpToolDef) -> None:
@@ -24,6 +26,19 @@ class McpTool(BaseTool):
         self.description = tool_def.description or f"MCP tool from {server_name}"
         self.input_schema: dict[str, Any] = (
             tool_def.input_schema or {"type": "object", "properties": {}}
+        )
+
+    # 把动态 MCP 工具标记为 deferred，并为不可信大输出启用 artifact spill
+    def build_spec(self) -> ToolSpec:
+        return super().build_spec().model_copy(
+            update={
+                "deferred": True,
+                "output_policy": OutputPolicy(
+                    soft_limit=8_000,
+                    hard_limit=20_000,
+                    spill_to_artifact=True,
+                ),
+            }
         )
 
     # 调用 MCP server 上的工具，连接不可用或工具执行失败时返回 is_error=True

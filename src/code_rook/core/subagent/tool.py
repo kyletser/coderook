@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from code_rook.core.agents.loader import AgentProfile, AgentProfileLoader
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import SubagentFinishedEvent, SubagentStartedEvent
 from code_rook.core.checkpoints import CheckpointStore
@@ -21,6 +22,7 @@ from code_rook.core.runs import new_run_id
 from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.artifact import ArtifactReadTool
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
 from code_rook.core.tools.builtin.bash import BashTool
@@ -41,6 +43,7 @@ from code_rook.core.tools.builtin.task_get import TaskGetTool
 from code_rook.core.tools.builtin.task_list import TaskListTool
 from code_rook.core.tools.builtin.task_update import TaskUpdateTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
+from code_rook.core.tools.discovery import ToolSearchTool
 from code_rook.core.tools.families import (
     register_bash_family,
     register_file_family,
@@ -262,6 +265,9 @@ class SpawnAgentTool(BaseTool):
             permission_manager=self._permission_manager,
             session_id=self._session_id,
             todo_state=task_manager,
+            artifact_store=ArtifactStore(
+                child_boundary.root / ".coderook" / "artifacts"
+            ),
         )
 
         await self._parent_bus.publish(
@@ -419,6 +425,11 @@ class SpawnAgentTool(BaseTool):
             file_tools,
             allowed_names=file_allowed,
         )
+        artifact_tool = ArtifactReadTool(
+            ArtifactStore(boundary.root / ".coderook" / "artifacts")
+        )
+        if _allowed(artifact_tool):
+            registry.register(artifact_tool)
         register_git_family(
             registry,
             boundary,
@@ -472,6 +483,10 @@ class SpawnAgentTool(BaseTool):
                 registry.register(nested)
             if _allowed("agent_result"):
                 registry.register(AgentResultTool(self._task_registry))
+
+        search_tool = ToolSearchTool(registry)
+        if _allowed(search_tool):
+            registry.register(search_tool)
 
         return registry
 

@@ -17,6 +17,7 @@ from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import ParallelPolicy, ResourceClaim, ToolCatalogError
 
 if TYPE_CHECKING:
+    from code_rook.core.artifacts import ArtifactStore
     from code_rook.core.compact.compactor import Compactor
     from code_rook.core.hooks import HookManager
     from code_rook.core.interaction import InteractionManager
@@ -193,6 +194,7 @@ class AgentLoop:
         tool_result_summarize_threshold: int = 20_000,
         todo_state: TodoStateView | None = None,
         interaction_manager: InteractionManager | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -208,6 +210,7 @@ class AgentLoop:
         self._tool_result_summarize_threshold = tool_result_summarize_threshold
         self._todo_state = todo_state
         self._interaction_manager = interaction_manager
+        self._artifact_store = artifact_store
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -333,6 +336,7 @@ class AgentLoop:
             permission_manager=self._permission_manager,
             session_id=self._session_id,
             hooks=self._hooks,
+            artifact_store=self._artifact_store,
         )
 
     # 把单个 ToolResult 按原顺序写回 context/transcript；返回是否命中 permission_required

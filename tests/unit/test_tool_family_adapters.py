@@ -97,6 +97,18 @@ def test_runner_exposes_file_family_and_keeps_hidden_aliases(tmp_path: Path) -> 
     }
 
 
+# 功能：验证默认根 Agent 工具面不超过显式上限，并包含 Artifact 与 deferred discovery 入口
+# 设计：通过 Runner 的独立装配器构建真实目录，检查数量边界和两个 R3 基础工具名称
+def test_runner_tool_assembly_keeps_default_surface_bounded(tmp_path: Path) -> None:
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
+    registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
+    schemas = registry.tool_schemas()
+    names = {str(schema["name"]) for schema in schemas}
+
+    assert len(schemas) <= registry.model_tool_limit
+    assert {"artifact_read", "tool_search"} <= names
+
+
 # 功能：验证默认 Runner 只暴露 Git family，并保留隐藏 git_diff replay alias
 # 设计：同时检查五个 action、模型目录和内部实现表，固定旧 transcript 的兼容边界
 def test_runner_exposes_git_family_and_hides_legacy_alias(tmp_path: Path) -> None:

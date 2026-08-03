@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfileLoader
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
@@ -30,42 +31,8 @@ from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
-from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
-from code_rook.core.tools.base import BaseTool
-from code_rook.core.tools.builtin import (
-    ApplyPatchTool,
-    AskUserQuestionTool,
-    BashTool,
-    CheckpointListTool,
-    CheckpointRewindTool,
-    EditFileTool,
-    GitDiffTool,
-    GlobTool,
-    GrepTool,
-    ListDirTool,
-    MemoryForgetTool,
-    MemorySaveTool,
-    MemorySearchTool,
-    NoteSaveTool,
-    ReadFileTool,
-    SkillTool,
-    TaskClaimTool,
-    TaskCreateTool,
-    TaskGetTool,
-    TaskListTool,
-    TaskUpdateTool,
-    WorktreeCreateTool,
-    WorktreeListTool,
-    WorktreeRemoveTool,
-    WriteFileTool,
-)
-from code_rook.core.tools.families import (
-    register_bash_family,
-    register_file_family,
-    register_git_family,
-    register_run_family,
-)
+from code_rook.core.tools.assembly import RuntimeToolAssembly
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.trace.provider import TracingProvider
 from code_rook.core.trace.writer import TraceWriter
@@ -125,6 +92,23 @@ class AgentRunner:
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
         self._interaction_manager = interaction_manager
+        self._artifact_store = ArtifactStore(
+            self._workspace_boundary.root / ".coderook" / "artifacts"
+        )
+        self._tool_assembly = RuntimeToolAssembly(
+            workspace_boundary=self._workspace_boundary,
+            artifact_store=self._artifact_store,
+            memory_store=self._memory_store,
+            worktree_manager=self._worktree_manager,
+            skill_loader=self._skill_loader,
+            task_registry=self._task_registry,
+            permission_manager=self._permission_manager,
+            max_steps=self._config.agent.max_steps,
+            runs_dir=self._runs_dir,
+            background_registry=self._background_registry,
+            interaction_manager=self._interaction_manager,
+            mcp_manager=self._mcp_manager,
+        )
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
     def _build_registry(
@@ -142,130 +126,19 @@ class AgentRunner:
         checkpoint_store: CheckpointStore | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
     ) -> ToolRegistry:
-        allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
-
-        # 判断工具名称是否处于显式白名单内
-        def _name_allowed(name: str) -> bool:
-            return allowed is None or name in allowed
-
-        # Plan Mode 只向模型暴露明确声明为纯读的工具
-        def _ok(tool: BaseTool) -> bool:
-            return _name_allowed(tool.name) and (
-                runtime_mode != RuntimeMode.PLAN or tool.is_read_only
-            )
-
-        registry = ToolRegistry(runtime_mode=runtime_mode)
-        file_tools = [
-            ReadFileTool(self._workspace_boundary),
-            GlobTool(self._workspace_boundary),
-            GrepTool(self._workspace_boundary),
-            EditFileTool(
-                self._workspace_boundary,
-                checkpoint_store=checkpoint_store,
-            ),
-            ApplyPatchTool(
-                self._workspace_boundary,
-                checkpoint_store=checkpoint_store,
-            ),
-            WriteFileTool(
-                self._workspace_boundary,
-                checkpoint_store=checkpoint_store,
-            ),
-            ListDirTool(self._workspace_boundary),
-        ]
-        register_file_family(
-            registry,
-            self._workspace_boundary,
-            file_tools,
-            allowed_names=allowed,
-        )
-        register_git_family(
-            registry,
-            self._workspace_boundary,
-            GitDiffTool(self._workspace_boundary),
-            allowed_names=allowed,
-        )
-        shell = BashTool(self._workspace_boundary.root)
-        register_run_family(registry, shell, allowed_names=allowed)
-        register_bash_family(
-            registry,
-            shell,
-            background_registry=self._background_registry,
+        return self._tool_assembly.build(
+            task_manager,
+            session=session,
+            store=store,
+            run_id=run_id,
+            provider=provider,
+            bus=bus,
+            child_runs_dir=child_runs_dir,
             session_id=session_id,
-            run_id=run_id or "",
-            allowed_names=allowed,
+            tool_whitelist=tool_whitelist,
+            checkpoint_store=checkpoint_store,
+            runtime_mode=runtime_mode,
         )
-        skill_tool = SkillTool(self._skill_loader)
-        if _ok(skill_tool):
-            registry.register(skill_tool)
-        if checkpoint_store is not None:
-            for checkpoint_tool in [
-                CheckpointListTool(checkpoint_store),
-                CheckpointRewindTool(checkpoint_store),
-            ]:
-                if _ok(checkpoint_tool):
-                    registry.register(checkpoint_tool)
-        for t in [
-            TaskCreateTool(task_manager),
-            TaskClaimTool(task_manager),
-            TaskUpdateTool(task_manager),
-            TaskListTool(task_manager),
-            TaskGetTool(task_manager),
-        ]:
-            if _ok(t):
-                registry.register(t)
-        for memory_tool in [
-            MemorySaveTool(self._memory_store, session_id, run_id or ""),
-            MemorySearchTool(self._memory_store),
-            MemoryForgetTool(self._memory_store),
-        ]:
-            if _ok(memory_tool):
-                registry.register(memory_tool)
-        if session is not None and store is not None and run_id is not None:
-            note_tool = NoteSaveTool(store, session.id, run_id)
-            if _ok(note_tool):
-                registry.register(note_tool)
-        if self._interaction_manager is not None and run_id is not None:
-            question_tool = AskUserQuestionTool(
-                self._interaction_manager,
-                session_id,
-                run_id,
-            )
-            if _ok(question_tool):
-                registry.register(question_tool)
-        if provider is not None and bus is not None and run_id is not None:
-            runs_dir = child_runs_dir or self._runs_dir
-            if runtime_mode != RuntimeMode.PLAN and _name_allowed("spawn_agent"):
-                registry.register(
-                    SpawnAgentTool(
-                        provider=provider,
-                        parent_bus=bus,
-                        parent_run_id=run_id,
-                        permission_manager=self._permission_manager,
-                        max_steps=self._config.agent.max_steps,
-                        task_registry=self._task_registry,
-                        runs_dir=runs_dir,
-                        session_id=session_id,
-                        depth=0,
-                        workspace_boundary=self._workspace_boundary,
-                        task_manager=task_manager,
-                    )
-                )
-            agent_result_tool = AgentResultTool(self._task_registry)
-            if _ok(agent_result_tool):
-                registry.register(agent_result_tool)
-        if self._mcp_manager is not None:
-            for mcp_tool in self._mcp_manager.get_tools():
-                if _ok(mcp_tool):
-                    registry.register(mcp_tool)
-        for worktree_tool in [
-            WorktreeCreateTool(self._worktree_manager),
-            WorktreeListTool(self._worktree_manager),
-            WorktreeRemoveTool(self._worktree_manager),
-        ]:
-            if _ok(worktree_tool):
-                registry.register(worktree_tool)
-        return registry
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
     async def run(self, goal: str, *, run_id: str | None = None) -> None:
@@ -406,6 +279,7 @@ class AgentRunner:
                     ),
                     todo_state=task_manager,
                     interaction_manager=self._interaction_manager,
+                    artifact_store=self._artifact_store,
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager

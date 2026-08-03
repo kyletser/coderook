@@ -71,3 +71,4 @@ def test_input_schema_from_tool_def() -> None:
     tool, _ = _make_tool()
     assert McpTool.params_model is None
     assert "path" in tool.input_schema.get("properties", {})
+    assert tool.build_spec().deferred is True
