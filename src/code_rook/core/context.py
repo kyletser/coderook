@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from code_rook.core.authority import RuntimeMode
+from code_rook.core.working_set import WorkingSet
 
 _LANGUAGE_POLICY = (
     "Always use concise English for internal analysis, reasoning content, tool inputs, "
@@ -50,6 +51,8 @@ class ExecutionContext:
     result: str = ""
     user_request: str = ""
     runtime_mode: RuntimeMode = RuntimeMode.ACT
+    working_set: WorkingSet = field(default_factory=WorkingSet)
+    transient_context: str = ""
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
 
@@ -70,8 +73,8 @@ class ExecutionContext:
                 return content
         return ""
 
-    # 返回当前 run 的 system prompt；有 override 时跳过 base，直接注入记忆层
-    def system_prompt(self, base: str) -> str:
+    # 返回稳定系统指令层，不包含记忆、工作集与一次性诊断
+    def stable_system_prompt(self, base: str) -> str:
         parts = [self.system_prompt_override if self.system_prompt_override else base]
         parts.append("\n\n## Language Policy\n" + _LANGUAGE_POLICY)
         parts.append(
@@ -96,6 +99,11 @@ class ExecutionContext:
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():
             parts.append("\n\n## Available Extensions\n" + self.capability_context.strip())
+        return "".join(parts)
+
+    # 返回当前 run 的完整 system prompt，并追加记忆与动态上下文
+    def system_prompt(self, base: str) -> str:
+        parts = [self.stable_system_prompt(base)]
         if self.global_context.strip():
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
         if self.project_context.strip():
@@ -106,7 +114,32 @@ class ExecutionContext:
                 + self.session_notes.strip()
                 + "\n\nRemember important durable facts by calling note_save."
             )
+        working_set = self.working_set.render_context()
+        if working_set:
+            parts.append("\n\n" + working_set)
+        if self.transient_context.strip():
+            parts.append("\n\n" + self.transient_context.strip())
         return "".join(parts)
+
+    # 返回用于 prefix fingerprint 的稳定记忆层，不包含用户 prompt 或 transient context
+    def stable_memory_text(self) -> str:
+        return "\n\n".join(
+            part.strip()
+            for part in (
+                self.global_context,
+                self.project_context,
+                self.session_notes,
+            )
+            if part.strip()
+        )
+
+    # 保存只在下一次有效模型响应前可见的临时诊断上下文
+    def set_transient_context(self, content: str) -> None:
+        self.transient_context = content.strip()
+
+    # 清除已经交付给模型的临时上下文，避免永久污染后续历史
+    def clear_transient_context(self) -> None:
+        self.transient_context = ""
 
     # 将 LLM 响应的 content blocks 追加为 assistant 消息
     def add_assistant_message(self, content: list[Any]) -> None:

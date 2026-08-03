@@ -3611,6 +3611,208 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+### ContextPrefixFingerprintEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `digest` | `string` | yes |
+| `source_hashes` | `object` | yes |
+| `changed_sources` | `array` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "context.prefix_fingerprint",
+      "default": "context.prefix_fingerprint",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "digest": {
+      "title": "Digest",
+      "type": "string"
+    },
+    "source_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Source Hashes",
+      "type": "object"
+    },
+    "changed_sources": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Sources",
+      "type": "array"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "digest",
+    "source_hashes",
+    "changed_sources",
+    "ts"
+  ],
+  "title": "ContextPrefixFingerprintEvent",
+  "type": "object"
+}
+```
+
+### ContextWorkingSetEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `paths` | `array` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "context.working_set",
+      "default": "context.working_set",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Paths",
+      "type": "array"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "paths",
+    "ts"
+  ],
+  "title": "ContextWorkingSetEvent",
+  "type": "object"
+}
+```
+
+### LspDiagnosticsEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `status` | `string` | yes |
+| `tool` | `string` | yes |
+| `paths` | `array` | yes |
+| `diagnostic_count` | `integer` | yes |
+| `truncated` | `boolean` | yes |
+| `error` | `string` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "lsp.diagnostics",
+      "default": "lsp.diagnostics",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "unavailable",
+        "failed",
+        "timeout",
+        "truncated"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "tool": {
+      "title": "Tool",
+      "type": "string"
+    },
+    "paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Paths",
+      "type": "array"
+    },
+    "diagnostic_count": {
+      "title": "Diagnostic Count",
+      "type": "integer"
+    },
+    "truncated": {
+      "title": "Truncated",
+      "type": "boolean"
+    },
+    "error": {
+      "default": "",
+      "title": "Error",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "status",
+    "tool",
+    "paths",
+    "diagnostic_count",
+    "truncated",
+    "ts"
+  ],
+  "title": "LspDiagnosticsEvent",
+  "type": "object"
+}
+```
+
 ### LogLineEvent
 
 | Field | Type | Required |

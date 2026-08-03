@@ -17,6 +17,7 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.events.writer import EventWriter
 from code_rook.core.loop import AgentLoop
+from code_rook.core.lsp import PythonDiagnosticsClient
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import new_run_id
 from code_rook.core.skills.loader import SkillLoader
@@ -268,6 +269,7 @@ class SpawnAgentTool(BaseTool):
             artifact_store=ArtifactStore(
                 child_boundary.root / ".coderook" / "artifacts"
             ),
+            diagnostics_client=PythonDiagnosticsClient(child_boundary),
         )
 
         await self._parent_bus.publish(

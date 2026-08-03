@@ -13,6 +13,8 @@ from code_rook.core.bus.envelope import (
 )
 from code_rook.core.bus.events import (
     AgentStuckEvent,
+    ContextPrefixFingerprintEvent,
+    ContextWorkingSetEvent,
     CoreStartedEvent,
     Event,
     LlmModelSelectedEvent,
@@ -21,6 +23,7 @@ from code_rook.core.bus.events import (
     LlmTokenEvent,
     LlmUsageEvent,
     LogLineEvent,
+    LspDiagnosticsEvent,
     PlanReadyEvent,
     RunFinishedEvent,
     RunStartedEvent,
@@ -35,6 +38,8 @@ from code_rook.core.bus.events import (
 __all__ = [
     "Command",
     "AgentStuckEvent",
+    "ContextPrefixFingerprintEvent",
+    "ContextWorkingSetEvent",
     "CoreStartedEvent",
     "Event",
     "LogLineEvent",
@@ -43,6 +48,7 @@ __all__ = [
     "LlmRetryEvent",
     "LlmTokenEvent",
     "LlmUsageEvent",
+    "LspDiagnosticsEvent",
     "PlanReadyEvent",
     "RunFinishedEvent",
     "RunStartedEvent",

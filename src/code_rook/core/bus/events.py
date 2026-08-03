@@ -231,6 +231,37 @@ class ContextCompactedEvent(BaseModel):
     ts: str
 
 
+class ContextPrefixFingerprintEvent(BaseModel):
+    type: Literal["context.prefix_fingerprint"] = "context.prefix_fingerprint"
+    run_id: str
+    step: int
+    digest: str
+    source_hashes: dict[str, str]
+    changed_sources: list[str]
+    ts: str
+
+
+class ContextWorkingSetEvent(BaseModel):
+    type: Literal["context.working_set"] = "context.working_set"
+    run_id: str
+    step: int
+    paths: list[str]
+    ts: str
+
+
+class LspDiagnosticsEvent(BaseModel):
+    type: Literal["lsp.diagnostics"] = "lsp.diagnostics"
+    run_id: str
+    step: int
+    status: Literal["ok", "unavailable", "failed", "timeout", "truncated"]
+    tool: str
+    paths: list[str]
+    diagnostic_count: int
+    truncated: bool
+    error: str = ""
+    ts: str
+
+
 class PermissionRequestedEvent(BaseModel):
     type: Literal["permission.requested"] = "permission.requested"
     run_id: str
@@ -362,6 +393,9 @@ Event = Annotated[
     | SessionInterruptedEvent
     | SessionClosedEvent
     | ContextCompactedEvent
+    | ContextPrefixFingerprintEvent
+    | ContextWorkingSetEvent
+    | LspDiagnosticsEvent
     | PermissionRequestedEvent
     | PermissionGrantedEvent
     | PermissionDeniedEvent

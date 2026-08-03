@@ -22,6 +22,7 @@ from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_llm_provider
 from code_rook.core.loop import AgentLoop
+from code_rook.core.lsp import PythonDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore, load_context_file
 from code_rook.core.permissions.manager import PermissionManager
@@ -95,6 +96,7 @@ class AgentRunner:
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
+        self._diagnostics_client = PythonDiagnosticsClient(self._workspace_boundary)
         self._tool_assembly = RuntimeToolAssembly(
             workspace_boundary=self._workspace_boundary,
             artifact_store=self._artifact_store,
@@ -280,6 +282,7 @@ class AgentRunner:
                     todo_state=task_manager,
                     interaction_manager=self._interaction_manager,
                     artifact_store=self._artifact_store,
+                    diagnostics_client=self._diagnostics_client,
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager

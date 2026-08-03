@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
     AgentStuckEvent,
+    ContextPrefixFingerprintEvent,
+    ContextWorkingSetEvent,
     LlmRetryEvent,
+    LspDiagnosticsEvent,
     StepFinishedEvent,
     StepStartedEvent,
     ToolCallFinishedEvent,
@@ -19,6 +24,8 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.lsp import PythonDiagnosticsClient
+from code_rook.core.prefix_fingerprint import PrefixFingerprintTracker
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
@@ -30,6 +37,7 @@ from code_rook.core.turn import (
     StreamWatchdogError,
     StuckGuard,
 )
+from code_rook.core.working_set import WorkingSetSource
 
 if TYPE_CHECKING:
     from code_rook.core.artifacts import ArtifactStore
@@ -132,6 +140,9 @@ _TODO_END_TURN_REMINDER = (
 _MAX_TODO_DEFERS = 3
 _MAX_TRANSIENT_RETRIES = 2
 _MAX_NO_CONTENT_RETRIES = 2
+_CONTENT_HASH_RE = re.compile(
+    r"(?:content_hash[=:]\s*|\"(?:new_hash|content_hash)\"\s*:\s*\")([^\s,\")]+)"
+)
 
 
 def _now() -> str:
@@ -216,6 +227,8 @@ class AgentLoop:
         stuck_guard: StuckGuard | None = None,
         read_guard: ReadRepeatGuard | None = None,
         retry_backoff_s: float = 0.5,
+        diagnostics_client: PythonDiagnosticsClient | None = None,
+        prefix_tracker: PrefixFingerprintTracker | None = None,
     ) -> None:
         if retry_backoff_s < 0:
             raise ValueError("retry_backoff_s must not be negative")
@@ -238,6 +251,8 @@ class AgentLoop:
         self._stuck_guard = stuck_guard or StuckGuard()
         self._read_guard = read_guard or ReadRepeatGuard()
         self._retry_backoff_s = retry_backoff_s
+        self._diagnostics_client = diagnostics_client
+        self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -273,17 +288,34 @@ class AgentLoop:
     async def _call_provider(self, context: ExecutionContext) -> LlmResponse:
         transient_retries = 0
         no_content_retries = 0
+        system_prompt = self._render_system(context)
+        tool_schemas = self._registry.tool_schemas()
+        prefix = self._prefix_tracker.observe(
+            system_prompt=context.stable_system_prompt(_BASE_SYSTEM_PROMPT),
+            tool_catalog=self._registry.canonical_catalog_json(),
+            stable_memory=context.stable_memory_text(),
+        )
+        await self._bus.publish(
+            ContextPrefixFingerprintEvent(
+                run_id=context.run_id,
+                step=context.step,
+                digest=prefix.digest,
+                source_hashes=prefix.source_hashes,
+                changed_sources=list(prefix.changed_sources),
+                ts=_now(),
+            )
+        )
 
         while True:
             # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
             async def _attempt(monitored_bus: EventBus) -> LlmResponse:
                 return await self._provider.chat(
                     messages=context.messages,
-                    tool_schemas=self._registry.tool_schemas(),
+                    tool_schemas=tool_schemas,
                     bus=monitored_bus,
                     run_id=context.run_id,
                     step=context.step,
-                    system=self._render_system(context),
+                    system=system_prompt,
                 )
 
             try:
@@ -316,6 +348,7 @@ class AgentLoop:
                 continue
 
             if not self._is_no_content(response):
+                context.clear_transient_context()
                 return response
             if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
                 raise NoContentResponseError(
@@ -471,6 +504,105 @@ class AgentLoop:
             )
         )
 
+    # 从工具参数和结构化结果中提取工作区路径，patch 支持多文件结果
+    @staticmethod
+    def _tool_paths(tc: ToolCallBlock, result: ToolResult) -> tuple[str, ...]:
+        paths: list[str] = []
+        raw_path = tc.input.get("path")
+        if isinstance(raw_path, str) and raw_path:
+            paths.append(raw_path)
+        try:
+            payload = json.loads(result.content)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            result_path = payload.get("path")
+            if isinstance(result_path, str) and result_path:
+                paths.append(result_path)
+            files = payload.get("files")
+            if isinstance(files, list):
+                for item in files:
+                    if isinstance(item, dict) and isinstance(item.get("path"), str):
+                        paths.append(str(item["path"]))
+        return tuple(dict.fromkeys(path.replace("\\", "/") for path in paths))
+
+    # 从 read/edit/write 结果中提取可选内容 hash，不保留正文
+    @staticmethod
+    def _tool_content_hash(result: ToolResult) -> str:
+        match = _CONTENT_HASH_RE.search(result.content[:4_000])
+        return match.group(1) if match is not None else ""
+
+    # 按 ToolSpec capability 判断工作集来源，非文件读写工具不纳入
+    def _working_set_source(self, tc: ToolCallBlock) -> WorkingSetSource | None:
+        if "path" not in tc.input and tc.name not in {"File", "apply_patch"}:
+            return None
+        try:
+            resolved = self._registry.resolve_call(tc.name, dict(tc.input))
+        except (ToolCatalogError, PermissionError, ValueError, OSError):
+            return None
+        return "edit" if resolved.action.is_mutating else "read"
+
+    # 更新 working set，并在成功修改 Python 文件后注入一次性有界诊断
+    async def _update_context_after_tool(
+        self,
+        tc: ToolCallBlock,
+        result: ToolResult,
+        context: ExecutionContext,
+    ) -> None:
+        if result.is_error:
+            return
+        source = self._working_set_source(tc)
+        if source is None:
+            return
+        paths = self._tool_paths(tc, result)
+        if not paths:
+            return
+        content_hash = self._tool_content_hash(result)
+        for path in paths:
+            context.working_set.touch(
+                path,
+                source,
+                step=context.step,
+                content_hash=content_hash,
+            )
+
+        if source == "edit" and self._diagnostics_client is not None:
+            report = await self._diagnostics_client.diagnose(list(paths))
+            for diagnostic in report.diagnostics:
+                context.working_set.touch(
+                    diagnostic.path,
+                    "diagnostic",
+                    step=context.step,
+                )
+            rendered = report.render_context()
+            if rendered:
+                existing = context.transient_context.strip()
+                context.set_transient_context(
+                    f"{existing}\n\n{rendered}" if existing else rendered
+                )
+            await self._bus.publish(
+                LspDiagnosticsEvent(
+                    run_id=context.run_id,
+                    step=context.step,
+                    status=report.status,
+                    tool=report.tool,
+                    paths=list(paths),
+                    diagnostic_count=len(report.diagnostics),
+                    truncated=report.truncated,
+                    error=report.error,
+                    ts=_now(),
+                )
+            )
+
+        await self._bus.publish(
+            ContextWorkingSetEvent(
+                run_id=context.run_id,
+                step=context.step,
+                paths=[entry.path for entry in context.working_set.snapshot()],
+                ts=_now(),
+            )
+        )
+
     # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
     async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
         await self._cancellation_checkpoint()
@@ -550,6 +682,7 @@ class AgentLoop:
                 block_index=idx,
                 block_count=block_count,
             )
+        await self._update_context_after_tool(tc, result, context)
         if result.error_type == "permission_required":
             context.mark_failed("permission_required")
             return True
