@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from code_rook.core.processes import terminate_process_tree
+from code_rook.core.processes import (
+    bounded_shell_output,
+    create_shell_process,
+    terminate_process_tree,
+)
 from code_rook.core.tools.base import BaseTool, ToolResult
 
-_MAX_OUTPUT_BYTES = 64 * 1024  # 64 KB
 _DEFAULT_TIMEOUT = 60
 
 
@@ -57,22 +58,7 @@ class BashTool(BaseTool):
         timeout = p.timeout
 
         try:
-            if os.name == "nt":
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    cwd=self._cwd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                )
-            else:
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    cwd=self._cwd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True,
-                )
+            proc = await create_shell_process(command, self._cwd)
             try:
                 stdout_bytes, _ = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
@@ -92,10 +78,7 @@ class BashTool(BaseTool):
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
 
-        output = stdout_bytes.decode("utf-8", errors="replace")
-        truncated = len(stdout_bytes) > _MAX_OUTPUT_BYTES
-        if truncated:
-            output = output[:_MAX_OUTPUT_BYTES] + "\n[truncated]"
+        output, _truncated = bounded_shell_output(stdout_bytes)
 
         returncode = proc.returncode or 0
         if returncode != 0:

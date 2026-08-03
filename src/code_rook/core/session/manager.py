@@ -177,8 +177,8 @@ class SessionManager:
                     session,
                     run_id,
                     content,
-                    runtime_mode=runtime_mode,
-                )
+                runtime_mode=runtime_mode,
+            )
 
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
             goal = content
@@ -291,6 +291,11 @@ class SessionManager:
                     reason=outcome.reason,
                 )
             return run_id
+
+    # 返回指定会话当前是否正持有 turn 执行锁
+    def is_busy(self, sid: str) -> bool:
+        self._get_session(sid)
+        return self._locks[sid].locked()
 
     async def cancel_run(self, run_id: str) -> str:
         active = self._active_runs.get(run_id)

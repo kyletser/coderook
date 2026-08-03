@@ -19,6 +19,16 @@ class BackgroundJobParams(BaseModel):
     job_id: str
 
 
+class BackgroundResultParams(BackgroundJobParams):
+    wait: bool = False
+    timeout: int = Field(default=1, ge=1, le=120)
+
+
+class BackgroundInteractParams(BackgroundJobParams):
+    stdin: str = ""
+    close_stdin: bool = False
+
+
 class BackgroundStartTool(BaseTool):
     name = "background_start"
     side_effect = ToolSideEffect.EXTERNAL_WRITE
@@ -68,10 +78,14 @@ class BackgroundResultTool(BaseTool):
     side_effect = ToolSideEffect.NONE
     can_parallel = True
     description = "Get status and output for a daemon background job."
-    params_model = BackgroundJobParams
+    params_model = BackgroundResultParams
     input_schema = {
         "type": "object",
-        "properties": {"job_id": {"type": "string"}},
+        "properties": {
+            "job_id": {"type": "string"},
+            "wait": {"type": "boolean"},
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 120},
+        },
         "required": ["job_id"],
     }
 
@@ -81,11 +95,15 @@ class BackgroundResultTool(BaseTool):
 
     # 查询任务状态和完整输出
     async def invoke(self, params: dict[str, object]) -> ToolResult:
-        job_id = BackgroundJobParams.model_validate(params).job_id
-        job = self._registry.get(job_id)
+        request = BackgroundResultParams.model_validate(params)
+        job = (
+            await self._registry.wait(request.job_id, request.timeout)
+            if request.wait
+            else self._registry.get(request.job_id)
+        )
         if job is None:
             return ToolResult(
-                content=f"unknown background job: {job_id}",
+                content=f"unknown background job: {request.job_id}",
                 is_error=True,
                 error_type="runtime_error",
             )
@@ -94,6 +112,41 @@ class BackgroundResultTool(BaseTool):
             is_error=job.status == "failed",
             error_type="runtime_error" if job.status == "failed" else None,
         )
+
+
+class BackgroundInteractTool(BaseTool):
+    name = "background_interact"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
+    description = "Send stdin to a running daemon background shell job."
+    params_model = BackgroundInteractParams
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string"},
+            "stdin": {"type": "string"},
+            "close_stdin": {"type": "boolean"},
+        },
+        "required": ["job_id"],
+    }
+
+    # 绑定 daemon 级任务表
+    def __init__(self, registry: BackgroundJobRegistry) -> None:
+        self._registry = registry
+
+    # 向仍在运行的后台任务写入输入并按需关闭 stdin
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        request = BackgroundInteractParams.model_validate(params)
+        if not await self._registry.interact(
+            request.job_id,
+            request.stdin,
+            close_stdin=request.close_stdin,
+        ):
+            return ToolResult(
+                content=f"background job is not interactive: {request.job_id}",
+                is_error=True,
+                error_type="runtime_error",
+            )
+        return ToolResult(content=f"sent stdin to background job: {request.job_id}")
 
 
 class BackgroundListTool(BaseTool):

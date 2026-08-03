@@ -6,10 +6,11 @@ from typing import Any
 from code_rook.core.authority import RuntimeMode
 
 _LANGUAGE_POLICY = (
-    "Use concise English for internal analysis, tool inputs, subagent delegation, memory, "
-    "task state, and other machine-facing content unless exact source or user text must be "
-    "preserved. For user-visible progress and the final reply, follow the response language "
-    "specified below. Keep code, commands, paths, identifiers, and quoted text unchanged. "
+    "Always use concise English for internal analysis, reasoning content, tool inputs, "
+    "subagent delegation, memory, task state, and other machine-facing content unless exact "
+    "source or user text must be preserved. For the final user-facing reply, follow the "
+    "response language specified below. Keep code, commands, paths, identifiers, and quoted "
+    "text unchanged. "
     "Never use emoji or decorative symbols in user-visible prose."
 )
 
@@ -75,9 +76,11 @@ class ExecutionContext:
         parts.append("\n\n## Language Policy\n" + _LANGUAGE_POLICY)
         parts.append(
             "\n\n## Response Language\n"
+            "Final answer only: "
             + _response_language_hint(self.user_request)
             + ". This is based on the original user request that started the run, never on "
-            "tool-result messages."
+            "tool-result messages. Do not use the final-answer language for analysis or "
+            "reasoning content; those must remain concise English."
         )
         if self.runtime_mode == RuntimeMode.PLAN:
             parts.append(

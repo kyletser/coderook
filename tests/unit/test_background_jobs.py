@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.events.bus import EventBus
 from code_rook.core.tools.builtin.background import (
     BackgroundCancelTool,
+    BackgroundInteractTool,
     BackgroundListTool,
     BackgroundResultTool,
     BackgroundStartTool,
@@ -65,3 +67,28 @@ async def test_background_list_and_cancel_are_session_scoped() -> None:
     assert json.loads(other.content) == []
     assert not cancelled.is_error
     assert registry.get(job_id).status == "cancelled"  # type: ignore[union-attr]
+
+
+# 功能：验证后台 shell 可接收后续 stdin，并由 wait 返回最终输出
+# 设计：启动阻塞读取一行的 Python 子进程，再通过独立 interact 调用写入并关闭 stdin
+async def test_background_job_interact_and_wait() -> None:
+    registry = BackgroundJobRegistry(EventBus())
+    command = subprocess.list2cmdline(
+        [sys.executable, "-c", "import sys; print(sys.stdin.readline().strip())"]
+    )
+    started = await BackgroundStartTool(registry, "sess-i", "run-i").invoke(
+        {"command": command, "timeout": 10}
+    )
+    job_id = started.content.split("job_id=", 1)[1].split(".", 1)[0]
+
+    interaction = await BackgroundInteractTool(registry).invoke(
+        {"job_id": job_id, "stdin": "hello-background\n", "close_stdin": True}
+    )
+    result = await BackgroundResultTool(registry).invoke(
+        {"job_id": job_id, "wait": True, "timeout": 10}
+    )
+    payload = json.loads(result.content)
+
+    assert not interaction.is_error
+    assert payload["status"] == "completed"
+    assert "hello-background" in payload["output"]

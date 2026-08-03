@@ -4,7 +4,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field, model_validator
 
-from code_rook.core.authority import AuthorityProfile, AuthoritySnapshot, RuntimeMode
+from code_rook.core.authority import (
+    AuthorityProfile,
+    AuthoritySnapshot,
+    RuntimeMode,
+    WorkspaceTrust,
+)
 from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.session.model import SessionMode, SessionStatus
 
@@ -129,8 +134,16 @@ class SessionGetAuthorityCommand(BaseModel):
 class SessionSetAuthorityCommand(BaseModel):
     type: Literal["session.set_authority"] = "session.set_authority"
     session_id: str
-    mode: RuntimeMode
-    profile: AuthorityProfile
+    mode: RuntimeMode | None = None
+    profile: AuthorityProfile | None = None
+    workspace_trust: WorkspaceTrust | None = None
+
+    @model_validator(mode="after")
+    # 确保权限更新命令至少改变一个独立维度
+    def require_change(self) -> SessionSetAuthorityCommand:
+        if self.mode is None and self.profile is None and self.workspace_trust is None:
+            raise ValueError("mode, profile, or workspace_trust is required")
+        return self
 
 
 class SessionAuthorityResult(BaseModel):

@@ -36,10 +36,6 @@ from code_rook.core.tools.base import BaseTool
 from code_rook.core.tools.builtin import (
     ApplyPatchTool,
     AskUserQuestionTool,
-    BackgroundCancelTool,
-    BackgroundListTool,
-    BackgroundResultTool,
-    BackgroundStartTool,
     BashTool,
     CheckpointListTool,
     CheckpointRewindTool,
@@ -63,6 +59,12 @@ from code_rook.core.tools.builtin import (
     WorktreeListTool,
     WorktreeRemoveTool,
     WriteFileTool,
+)
+from code_rook.core.tools.families import (
+    register_bash_family,
+    register_file_family,
+    register_git_family,
+    register_run_family,
 )
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.trace.provider import TracingProvider
@@ -152,13 +154,11 @@ class AgentRunner:
                 runtime_mode != RuntimeMode.PLAN or tool.is_read_only
             )
 
-        registry = ToolRegistry()
-        for t in [
+        registry = ToolRegistry(runtime_mode=runtime_mode)
+        file_tools = [
             ReadFileTool(self._workspace_boundary),
             GlobTool(self._workspace_boundary),
             GrepTool(self._workspace_boundary),
-            GitDiffTool(self._workspace_boundary),
-            BashTool(self._workspace_boundary.root),
             EditFileTool(
                 self._workspace_boundary,
                 checkpoint_store=checkpoint_store,
@@ -172,10 +172,32 @@ class AgentRunner:
                 checkpoint_store=checkpoint_store,
             ),
             ListDirTool(self._workspace_boundary),
-            SkillTool(self._skill_loader),
-        ]:
-            if _ok(t):
-                registry.register(t)
+        ]
+        register_file_family(
+            registry,
+            self._workspace_boundary,
+            file_tools,
+            allowed_names=allowed,
+        )
+        register_git_family(
+            registry,
+            self._workspace_boundary,
+            GitDiffTool(self._workspace_boundary),
+            allowed_names=allowed,
+        )
+        shell = BashTool(self._workspace_boundary.root)
+        register_run_family(registry, shell, allowed_names=allowed)
+        register_bash_family(
+            registry,
+            shell,
+            background_registry=self._background_registry,
+            session_id=session_id,
+            run_id=run_id or "",
+            allowed_names=allowed,
+        )
+        skill_tool = SkillTool(self._skill_loader)
+        if _ok(skill_tool):
+            registry.register(skill_tool)
         if checkpoint_store is not None:
             for checkpoint_tool in [
                 CheckpointListTool(checkpoint_store),
@@ -236,15 +258,6 @@ class AgentRunner:
             for mcp_tool in self._mcp_manager.get_tools():
                 if _ok(mcp_tool):
                     registry.register(mcp_tool)
-        if self._background_registry is not None:
-            for background_tool in [
-                BackgroundStartTool(self._background_registry, session_id, run_id or ""),
-                BackgroundResultTool(self._background_registry),
-                BackgroundListTool(self._background_registry, session_id),
-                BackgroundCancelTool(self._background_registry),
-            ]:
-                if _ok(background_tool):
-                    registry.register(background_tool)
         for worktree_tool in [
             WorktreeCreateTool(self._worktree_manager),
             WorktreeListTool(self._worktree_manager),

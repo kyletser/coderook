@@ -2,6 +2,7 @@ from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
 from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
 from code_rook.core.tools.builtin.background import (
     BackgroundCancelTool,
+    BackgroundInteractTool,
     BackgroundListTool,
     BackgroundResultTool,
     BackgroundStartTool,
@@ -41,6 +42,7 @@ __all__ = [
     "AskUserQuestionTool",
     "BashTool",
     "BackgroundCancelTool",
+    "BackgroundInteractTool",
     "BackgroundListTool",
     "BackgroundResultTool",
     "BackgroundStartTool",

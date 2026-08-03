@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from code_rook.core.agents.loader import AgentProfile, AgentProfileLoader
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import SubagentFinishedEvent, SubagentStartedEvent
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
@@ -40,6 +41,12 @@ from code_rook.core.tools.builtin.task_get import TaskGetTool
 from code_rook.core.tools.builtin.task_list import TaskListTool
 from code_rook.core.tools.builtin.task_update import TaskUpdateTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
+from code_rook.core.tools.families import (
+    register_bash_family,
+    register_file_family,
+    register_git_family,
+    register_run_family,
+)
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeError, WorktreeManager
@@ -373,17 +380,17 @@ class SpawnAgentTool(BaseTool):
                     return False
             return allowed is None or name in allowed
 
-        registry = ToolRegistry()
+        registry = ToolRegistry(
+            runtime_mode=RuntimeMode.PLAN if restrict_read_only else RuntimeMode.ACT
+        )
         checkpoint_store = CheckpointStore(
             self._runs_dir / child_run_id / ".checkpoints",
             boundary,
         )
-        _all_tools = [
+        file_tools = [
             ReadFileTool(boundary),
             GlobTool(boundary),
             GrepTool(boundary),
-            GitDiffTool(boundary),
-            BashTool(boundary.root),
             EditFileTool(
                 boundary,
                 checkpoint_store=checkpoint_store,
@@ -397,11 +404,38 @@ class SpawnAgentTool(BaseTool):
                 checkpoint_store=checkpoint_store,
             ),
             ListDirTool(boundary),
-            SkillTool(SkillLoader(boundary.root)),
         ]
-        for t in _all_tools:
-            if _allowed(t):
-                registry.register(t)
+        file_allowed = allowed
+        if restrict_read_only:
+            read_aliases = {tool.name for tool in file_tools if tool.is_read_only}
+            file_allowed = (
+                read_aliases
+                if allowed is None or "File" in allowed
+                else read_aliases & allowed
+            )
+        register_file_family(
+            registry,
+            boundary,
+            file_tools,
+            allowed_names=file_allowed,
+        )
+        register_git_family(
+            registry,
+            boundary,
+            GitDiffTool(boundary),
+            allowed_names=allowed,
+        )
+        shell = BashTool(boundary.root)
+        if not restrict_read_only:
+            register_run_family(registry, shell, allowed_names=allowed)
+            register_bash_family(
+                registry,
+                shell,
+                allowed_names=allowed,
+            )
+        skill_tool = SkillTool(SkillLoader(boundary.root))
+        if _allowed(skill_tool):
+            registry.register(skill_tool)
         for checkpoint_tool in [
             CheckpointListTool(checkpoint_store),
             CheckpointRewindTool(checkpoint_store),

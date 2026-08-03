@@ -5,9 +5,15 @@ from typing import Any
 
 import pytest
 
+from code_rook.core.authority import AuthorityProfile
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
-from code_rook.core.permissions.storage import load_policy_file
+from code_rook.core.permissions.storage import (
+    load_authority_profile,
+    load_policy_file,
+    save_policy_file,
+)
+from code_rook.core.tools.spec import ApprovalRequirement
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -409,12 +415,11 @@ def test_respond_unknown_tool_use_id_is_noop() -> None:
     mgr.respond("nonexistent", "allow_once")  # should not raise
 
 
-# ── OUTSIDE_CWD 不被 always 缓存绕过 ─────────────────────────────────────────
+# ── OUTSIDE_CWD 显式授权 ──────────────────────────────────────────────────────
 
-# 功能：验证 always_allow bash 之后，含绝对路径的命令仍触发 ASK，不被缓存绕过
-# 设计：先让 session s1 对 bash 设置 always_allow，再请求含绝对路径命令；
-#       OUTSIDE_CWD 检查在 always 缓存之前，应发出 permission.requested 事件
-async def test_always_allow_does_not_bypass_outside_cwd() -> None:
+# 功能：验证 always_allow bash 之后，绝对路径命令命中缓存且不再询问
+# 设计：先显式永久允许普通 bash，再请求工作区外路径，断言缓存语义与界面文案一致
+async def test_always_allow_applies_to_outside_cwd() -> None:
     mgr = _make_manager()
     emitted, emitter = await _collect_emitted()
 
@@ -432,21 +437,79 @@ async def test_always_allow_does_not_bypass_outside_cwd() -> None:
     await t
     assert len(emitted) == 1  # 首次 ASK 触发事件
 
-    # 第二次：bash + 绝对路径 → OUTSIDE_CWD 强制 ASK，不命中 session always 缓存
-    async def _auto_respond_abs() -> None:
-        await asyncio.sleep(0)
-        mgr.respond("t_abs", "allow_once")
-
-    t2 = asyncio.create_task(_auto_respond_abs())
+    # 第二次：bash + 绝对路径 → 命中用户显式设置的 always 缓存
     allowed, decision = await mgr.check_and_wait(
         tool_use_id="t_abs", tool_name="bash",
         params={"command": "cat /etc/hosts"}, session_id="s1",
         event_emitter=emitter,
     )
-    await t2
 
     assert allowed is True
-    assert len(emitted) == 2  # 绝对路径命令再次触发 ASK，共 2 个事件
+    assert decision == "auto_allow"
+    assert len(emitted) == 1
+
+
+# 功能：验证 Full Access 自动批准工作区外命令且不触发询问
+# 设计：给会话设置 full_access authority 后执行绝对路径命令，断言硬策略之后直接授权
+async def test_full_access_allows_outside_cwd_without_prompt() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+    current = mgr.get_authority_snapshot("s-full")
+    mgr.set_authority_snapshot(
+        "s-full",
+        current.model_copy(update={"profile": AuthorityProfile.FULL_ACCESS}),
+    )
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="t-full",
+        tool_name="bash",
+        params={"command": "cat /etc/hosts"},
+        session_id="s-full",
+        event_emitter=emitter,
+        action="shell",
+    )
+
+    assert allowed is True
+    assert decision == "authority_allow"
+    assert emitted == []
+
+
+# 功能：验证 always_allow 仍不能绕过危险命令的 deny pattern
+# 设计：先永久允许安全 bash，再执行命中硬拒绝规则的命令，断言拒绝发生在缓存之前
+async def test_always_allow_cannot_bypass_deny_pattern() -> None:
+    mgr = _make_manager(
+        bash=ToolPolicy(
+            default=PermissionDecision.ASK,
+            deny_patterns=[r"rm\s+-rf"],
+        )
+    )
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("t-safe", "always_allow")
+
+    task = asyncio.create_task(_auto_always())
+    await mgr.check_and_wait(
+        tool_use_id="t-safe",
+        tool_name="bash",
+        params={"command": "echo safe"},
+        session_id="s-safe",
+        event_emitter=emitter,
+    )
+    await task
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="t-danger",
+        tool_name="bash",
+        params={"command": "rm -rf /tmp/example"},
+        session_id="s-safe",
+        event_emitter=emitter,
+    )
+
+    assert allowed is False
+    assert decision == "auto_deny"
+    assert len(emitted) == 1
 
 
 # ── 持久化 always 写文件 ──────────────────────────────────────────────────────
@@ -487,6 +550,102 @@ async def test_persistent_always_written_and_reloaded(tmp_path: pytest.TempPathF
     assert allowed2 is True
     assert decision2 == "auto_allow"
     assert emitted2 == []  # 无需 ASK
+
+
+# 功能：验证权限姿态写入 policy.toml 后可跨 PermissionManager 实例恢复
+# 设计：先持久化 full_access，再创建新 manager，断言新会话继承且旧 always 规则未丢失
+def test_authority_profile_persists_as_global_default(
+    tmp_path: pytest.TempPathFixture,
+) -> None:
+    policy_file = tmp_path / "policy.toml"
+    mgr = PermissionManager(policy_file=policy_file)
+    mgr._persistent_always["bash"] = "allow"
+
+    mgr.set_default_profile(AuthorityProfile.FULL_ACCESS)
+
+    assert load_authority_profile(policy_file) == AuthorityProfile.FULL_ACCESS
+    assert load_policy_file(policy_file) == {"bash": "allow"}
+    restored = PermissionManager(policy_file=policy_file)
+    assert (
+        restored.get_authority_snapshot("new-session").profile
+        == AuthorityProfile.FULL_ACCESS
+    )
+
+
+# 功能：验证 action 级 NEVER 与 ALWAYS 审批要求覆盖工具默认策略
+# 设计：对同一只读 action 分别传两种声明，断言 NEVER 静默放行而 ALWAYS 在 Ask 姿态发出请求
+async def test_action_approval_requirement_overrides_policy() -> None:
+    manager = PermissionManager(timeout_s=0)
+    emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await manager.check_and_wait(
+        tool_use_id="never",
+        tool_name="Custom",
+        params={"action": "inspect"},
+        session_id="scope",
+        event_emitter=emitter,
+        action="read",
+        approval_requirement=ApprovalRequirement.NEVER,
+    )
+
+    async def _approve_required() -> None:
+        await asyncio.sleep(0)
+        manager.respond("always", "allow_once")
+
+    response = asyncio.create_task(_approve_required())
+    required_allowed, required_decision = await manager.check_and_wait(
+        tool_use_id="always",
+        tool_name="Custom",
+        params={"action": "inspect"},
+        session_id="scope",
+        event_emitter=emitter,
+        action="read",
+        approval_requirement=ApprovalRequirement.ALWAYS,
+    )
+    await response
+
+    assert allowed is True and decision == "auto_allow"
+    assert required_allowed is True and required_decision == "allow_once"
+    assert [event["tool_use_id"] for event in emitted] == ["always"]
+
+
+# 功能：验证旧平铺 always 规则只迁移到对应 family action 而不扩大到整个工具族
+# 设计：预置 write_file=allow，断言 File.write 自动放行，但 File.edit 仍独立触发审批
+async def test_legacy_always_rule_maps_to_exact_family_action(
+    tmp_path: pytest.TempPathFixture,
+) -> None:
+    policy_file = tmp_path / "policy.toml"
+    save_policy_file({"write_file": "allow"}, policy_file)
+    manager = PermissionManager(policy_file=policy_file, timeout_s=0)
+    emitted, emitter = await _collect_emitted()
+
+    write_allowed, write_decision = await manager.check_and_wait(
+        tool_use_id="file-write",
+        tool_name="File",
+        params={"action": "write", "path": "x"},
+        session_id="scope",
+        event_emitter=emitter,
+        action="mutate",
+    )
+
+    async def _deny_edit() -> None:
+        await asyncio.sleep(0)
+        manager.respond("file-edit", "deny_once")
+
+    response = asyncio.create_task(_deny_edit())
+    edit_allowed, edit_decision = await manager.check_and_wait(
+        tool_use_id="file-edit",
+        tool_name="File",
+        params={"action": "edit", "path": "x"},
+        session_id="scope",
+        event_emitter=emitter,
+        action="mutate",
+    )
+    await response
+
+    assert write_allowed is True and write_decision == "auto_allow"
+    assert edit_allowed is False and edit_decision == "deny_once"
+    assert [event["tool_use_id"] for event in emitted] == ["file-edit"]
 
 
 # ── 审批超时 ──────────────────────────────────────────────────────────────────

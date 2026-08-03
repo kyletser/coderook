@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from code_rook.core.authority import ToolAction
 from code_rook.core.bus.events import (
     PermissionDeniedEvent,
     PermissionGrantedEvent,
@@ -18,9 +17,10 @@ from code_rook.core.bus.events import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
-from code_rook.core.tools.base import ToolResult, ToolSideEffect
+from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.errors import RateLimitedError
 from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.tools.spec import ToolCaller, ToolCatalogError
 
 if TYPE_CHECKING:
     from code_rook.core.hooks import HookManager
@@ -33,17 +33,6 @@ _RETRY_BASE_S: float = 2.0  # backoff base; tests can monkeypatch to 0
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-# 将现有工具副作用声明映射为 authority action
-def _tool_action(tool_name: str, side_effect: ToolSideEffect) -> ToolAction:
-    if tool_name == "bash":
-        return ToolAction.SHELL
-    if side_effect == ToolSideEffect.NONE:
-        return ToolAction.READ
-    if side_effect == ToolSideEffect.LOCAL_WRITE:
-        return ToolAction.MUTATE
-    return ToolAction.EXTERNAL
 
 
 # 发布 ToolCallFailedEvent 并返回对应 ToolResult
@@ -83,6 +72,7 @@ async def invoke_tool(
     permission_manager: PermissionManager | None = None,
     session_id: str = "",
     hooks: HookManager | None = None,
+    caller: ToolCaller | str = ToolCaller.MODEL,
 ) -> ToolResult:
     t0 = time.monotonic()
 
@@ -104,6 +94,18 @@ async def invoke_tool(
         return await _fail(
             bus, run_id, tool_call,
             "runtime_error", f"unknown tool: {tool_call.name}", elapsed(),
+        )
+
+    try:
+        resolved_call = registry.resolve_call(
+            tool_call.name,
+            dict(tool_call.input),
+            caller=caller,
+        )
+    except ToolCatalogError as exc:
+        return await _fail(
+            bus, run_id, tool_call,
+            "schema_error", str(exc), elapsed(),
         )
 
     if tool.params_model is not None:
@@ -146,7 +148,8 @@ async def invoke_tool(
             params=dict(tool_call.input),
             session_id=session_id,
             event_emitter=_emit_permission,
-            action=_tool_action(tool_name=tool.name, side_effect=tool.side_effect),
+            action=resolved_call.action.authority_action(),
+            approval_requirement=resolved_call.effective_approval_requirement,
         )
         if allowed:
             if decision not in ("auto_allow",):

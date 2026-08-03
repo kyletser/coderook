@@ -7,6 +7,16 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
+from code_rook.core.tools.spec import (
+    ApprovalRequirement,
+    ParallelPolicy,
+    ResourceClaim,
+    ToolActionSpec,
+    ToolCaller,
+    ToolCapability,
+    ToolSpec,
+)
+
 
 @dataclass
 class ToolResult:
@@ -39,6 +49,13 @@ class BaseTool(ABC):
     side_effect: ClassVar[ToolSideEffect] = ToolSideEffect.EXTERNAL_WRITE
     # 仅在读且彼此输入无冲突时由 loop 并发执行；默认 False 表示串行
     can_parallel: ClassVar[bool] = False
+    version: ClassVar[str] = "1"
+    model_visible: ClassVar[bool] = True
+    deferred: ClassVar[bool] = False
+    allowed_callers: ClassVar[frozenset[ToolCaller]] = frozenset(
+        {ToolCaller.MODEL, ToolCaller.INTERNAL}
+    )
+    spec_override: ClassVar[ToolSpec | None] = None
 
     def can_retry(self, error_type: str) -> bool:
         if self.retry_policy == ToolRetryPolicy.IDEMPOTENT:
@@ -51,6 +68,54 @@ class BaseTool(ABC):
     @property
     def is_read_only(self) -> bool:
         return self.side_effect == ToolSideEffect.NONE
+
+    # 将旧工具副作用声明转换为 V2 capability，供 action-family 迁移期间兼容使用
+    def _legacy_capabilities(self) -> frozenset[ToolCapability]:
+        if self.name == "bash":
+            return frozenset({ToolCapability.PROCESS, ToolCapability.EXTERNAL})
+        if self.side_effect == ToolSideEffect.NONE:
+            capabilities = {ToolCapability.READ}
+            if self.name.startswith("git_"):
+                capabilities.add(ToolCapability.GIT)
+            return frozenset(capabilities)
+        if self.side_effect == ToolSideEffect.LOCAL_WRITE:
+            return frozenset({ToolCapability.WRITE})
+        return frozenset({ToolCapability.EXTERNAL})
+
+    # 构建稳定 ToolSpec；显式 override 优先，否则适配旧平铺工具
+    def build_spec(self) -> ToolSpec:
+        if self.spec_override is not None:
+            return self.spec_override
+        capabilities = self._legacy_capabilities()
+        return ToolSpec(
+            name=self.name,
+            version=self.version,
+            description=self.description,
+            input_schema=self.input_schema,
+            actions=(
+                ToolActionSpec(
+                    name="invoke",
+                    description=self.description,
+                    capabilities=capabilities,
+                ),
+            ),
+            capabilities=capabilities,
+            approval_requirement=(
+                ApprovalRequirement.NEVER
+                if self.is_read_only
+                else ApprovalRequirement.POLICY
+            ),
+            parallel_policy=(
+                ParallelPolicy.SAFE if self.can_parallel else ParallelPolicy.SERIAL
+            ),
+            allowed_callers=self.allowed_callers,
+            model_visible=self.model_visible,
+            deferred=self.deferred,
+        )
+
+    # 声明本次调用占用的资源；旧工具默认无显式 claim
+    def resource_claims(self, params: dict[str, object]) -> tuple[ResourceClaim, ...]:
+        return ()
 
     # 执行工具调用，返回结果或错误
     @abstractmethod

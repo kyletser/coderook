@@ -34,7 +34,9 @@ def test_no_layers() -> None:
     prompt = ctx.system_prompt("BASE_ONLY")
     assert prompt.startswith("BASE_ONLY")
     assert "## Language Policy" in prompt
-    assert "Use concise English for internal analysis" in prompt
+    assert "Always use concise English for internal analysis" in prompt
+    assert "reasoning content" in prompt
+    assert "For the final user-facing reply" in prompt
     assert "## Response Language" in prompt
     assert "language used in the original user request" in prompt
 
@@ -102,7 +104,8 @@ def test_response_language_uses_original_user_text_not_tool_result() -> None:
     prompt = ctx.system_prompt("BASE")
 
     assert ctx.user_request == "请检查当前项目"
-    assert "## Response Language\nSimplified Chinese." in prompt
+    assert "## Response Language\nFinal answer only: Simplified Chinese." in prompt
+    assert "reasoning content; those must remain concise English" in prompt
     assert "never on tool-result messages" in prompt
 
 

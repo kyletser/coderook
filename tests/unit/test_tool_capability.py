@@ -9,6 +9,25 @@ from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import SpawnAgentTool
 from code_rook.core.tools.base import BaseTool, ToolSideEffect
+from code_rook.core.tools.registry import ToolRegistry
+
+
+# 返回 registry 当前实际暴露给模型的工具名
+def _visible_names(registry: ToolRegistry) -> set[str]:
+    return {str(schema["name"]) for schema in registry.tool_schemas()}
+
+
+# 返回 File family 当前实际暴露给模型的 action 名称
+def _visible_file_actions(registry: ToolRegistry) -> set[str]:
+    schema = next(item for item in registry.tool_schemas() if item["name"] == "File")
+    input_schema = schema["input_schema"]
+    assert isinstance(input_schema, dict)
+    variants = input_schema["oneOf"]
+    assert isinstance(variants, list)
+    return {
+        str(variant["properties"]["action"]["enum"][0])
+        for variant in variants
+    }
 
 
 # 功能：BaseTool 默认安全保守——side_effect=EXTERNAL_WRITE、can_parallel=False、is_read_only=False
@@ -144,6 +163,14 @@ def test_reviewer_restrict_excludes_write_tools(tmp_path: Path) -> None:
     assert "task_get" in names
     # agent_result 查询后台完成状态，无副作用，应在只读范围内
     assert "agent_result" in names
+    assert {"File", "Git"} <= _visible_names(registry)
+    assert "git_diff" not in _visible_names(registry)
+    assert _visible_file_actions(registry) == {
+        "read",
+        "list",
+        "search_name",
+        "search_content",
+    }
 
 
 # 功能：restrict 与显式 allowed_tools 同时存在时取最严子集
@@ -205,6 +232,7 @@ def test_allowed_tools_alone_filters_by_name(tmp_path: Path) -> None:
     assert "glob" in names
     assert "list_dir" not in names
     assert "bash" not in names
+    assert _visible_file_actions(registry) == {"read", "search_name"}
 
 
 # 功能：profile=None 时无任何过滤，所有可能工具注册
@@ -226,3 +254,8 @@ def test_no_profile_allows_all_tools(tmp_path: Path) -> None:
     assert "edit_file" in names
     assert "apply_patch" in names
     assert "read_file" in names
+    visible = _visible_names(registry)
+    assert {"File", "Git"} <= visible
+    assert "git_diff" not in visible
+    assert "read_file" not in visible
+    assert "edit_file" not in visible

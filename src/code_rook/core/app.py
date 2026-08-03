@@ -227,7 +227,7 @@ class CoreApp:
             snapshot=self._permission_manager.get_authority_snapshot(cmd.session_id)
         )
 
-    # 更新指定会话后续轮次的 mode 与 profile，同时保留 trust、sandbox 和 action scope
+    # 独立更新后续轮次的 mode、profile 或 trust，并保留未指定维度
     async def _session_set_authority_handler(
         self,
         params: dict[str, Any],
@@ -236,9 +236,20 @@ class CoreApp:
         assert self._permission_manager is not None
         cmd = SessionSetAuthorityCommand.model_validate(params)
         self._sessions.get_session(cmd.session_id)
+        if self._sessions.is_busy(cmd.session_id):
+            raise HandlerError(INVALID_PARAMS, "authority cannot change during an active turn")
         current = self._permission_manager.get_authority_snapshot(cmd.session_id)
-        updated = current.model_copy(update={"mode": cmd.mode, "profile": cmd.profile})
+        changes: dict[str, Any] = {}
+        if cmd.mode is not None:
+            changes["mode"] = cmd.mode
+        if cmd.profile is not None:
+            changes["profile"] = cmd.profile
+        if cmd.workspace_trust is not None:
+            changes["workspace_trust"] = cmd.workspace_trust
+        updated = current.model_copy(update=changes)
         self._permission_manager.set_authority_snapshot(cmd.session_id, updated)
+        if cmd.profile is not None:
+            self._permission_manager.set_default_profile(cmd.profile)
         return SessionAuthorityResult(snapshot=updated)
 
     # 返回 session 的完整 Anthropic messages 历史

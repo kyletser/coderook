@@ -3,8 +3,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from code_rook.core.app import CoreApp
-from code_rook.core.authority import AuthorityProfile, RuntimeMode, ToolAction
+from code_rook.core.authority import (
+    AuthorityProfile,
+    RuntimeMode,
+    ToolAction,
+    WorkspaceTrust,
+)
+from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.session.model import Session
 
@@ -75,6 +83,11 @@ async def test_session_authority_handlers_preserve_scope() -> None:
             assert session_id == session.id
             return session
 
+        # 模拟当前没有运行中的 turn
+        def is_busy(self, session_id: str) -> bool:
+            assert session_id == session.id
+            return False
+
     app = CoreApp()
     app._sessions = _Sessions()  # type: ignore[assignment]
     app._permission_manager = manager  # type: ignore[attr-defined]
@@ -94,3 +107,42 @@ async def test_session_authority_handlers_preserve_scope() -> None:
     assert updated.snapshot.profile == AuthorityProfile.AUTO_REVIEW
     assert updated.snapshot.allowed_actions == original.allowed_actions
     assert restored.snapshot == updated.snapshot
+    assert (
+        manager.get_authority_snapshot("new-session").profile
+        == AuthorityProfile.AUTO_REVIEW
+    )
+
+    trust_only = await app._session_set_authority_handler(  # type: ignore[attr-defined]
+        {"session_id": session.id, "workspace_trust": "trusted"}
+    )
+    assert trust_only.snapshot.workspace_trust == WorkspaceTrust.TRUSTED
+    assert trust_only.snapshot.mode == RuntimeMode.PLAN
+    assert trust_only.snapshot.profile == AuthorityProfile.AUTO_REVIEW
+
+
+# 功能：验证运行中的 turn 不能通过协议静默改变 authority 快照
+# 设计：让会话服务明确报告 busy，断言 handler 在写入 PermissionManager 前返回结构化错误
+async def test_session_authority_change_rejected_while_turn_is_busy() -> None:
+    manager = PermissionManager()
+    session = Session("sess-busy", "chat", "active", "", "t", "t")
+
+    class _Sessions:
+        # 返回存在的测试会话
+        def get_session(self, session_id: str) -> Session:
+            assert session_id == session.id
+            return session
+
+        # 模拟 turn 正持有执行锁
+        def is_busy(self, session_id: str) -> bool:
+            assert session_id == session.id
+            return True
+
+    app = CoreApp()
+    app._sessions = _Sessions()  # type: ignore[assignment]
+    app._permission_manager = manager  # type: ignore[attr-defined]
+
+    with pytest.raises(HandlerError, match="active turn"):
+        await app._session_set_authority_handler(  # type: ignore[attr-defined]
+            {"session_id": session.id, "mode": "plan"}
+        )
+    assert manager.get_authority_snapshot(session.id).mode == RuntimeMode.ACT

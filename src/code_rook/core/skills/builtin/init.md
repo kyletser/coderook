@@ -12,8 +12,8 @@ allowed_tools:
 Analyze the current project and generate `.coderook/context.md` so future agents can quickly recover the project context.
 
 Steps:
-1. Use list_dir and glob to inspect the root, major directories, and configuration files.
-2. Read relevant files such as README, package.json, pyproject.toml, and Cargo.toml when present.
+1. Use File.list and File.search_name to inspect the root, major directories, and configuration files.
+2. Use File.read for relevant files such as README, package.json, pyproject.toml, and Cargo.toml when present.
 3. Identify languages, frameworks, major modules, and directory structure.
 
 Write concise English machine-facing context containing:
@@ -23,6 +23,6 @@ Write concise English machine-facing context containing:
 - Common build, test, and run commands
 - Important conventions or prohibitions
 
-Write `.coderook/context.md`, creating `.coderook/` if needed.
+Use File.write to write `.coderook/context.md`, creating `.coderook/` if needed.
 
 $ARGUMENTS

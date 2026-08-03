@@ -7,8 +7,9 @@ from typing import Any
 import pytest
 from rich.markup import render
 from textual.app import App, ComposeResult
+from textual.containers import ScrollableContainer
 from textual.widget import Widget
-from textual.widgets import Input, Markdown
+from textual.widgets import Input, Markdown, Static
 
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
@@ -29,8 +30,8 @@ from code_rook.tui.app import (
     SessionPicker,
     SlashCompleteWidget,
     ToolCallBlock,
+    ToolStepGroup,
     UserQuestionSelect,
-    _output_preview,
     _param_summary,
     _preview,
 )
@@ -96,6 +97,39 @@ def test_permission_block_uses_pending_and_decision_labels() -> None:
     block._resolve("allow_once")
 
     assert "permission-pending" not in block.classes
+
+
+# 功能：验证审批完成后移除临时权限块，避免与工具动作重复显示
+# 设计：在真实 TUI 中注入权限请求并允许一次，检查选择器和摘要块均从时间线消失
+async def test_permission_decision_leaves_no_duplicate_summary() -> None:
+    class PermissionTimelineHarness(CodeRookTuiApp):
+        # 跳过真实 Core 连接并聚焦主输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = PermissionTimelineHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        app._handle_event(
+            {
+                "type": "permission.requested",
+                "run_id": "run-1",
+                "tool_use_id": "tool-1",
+                "tool_name": "bash",
+                "param_preview": "command='git status'",
+                "params": {"command": "git status"},
+            }
+        )
+        await pilot.pause()
+        select = app.query_one(PermissionSelect)
+
+        await app.on_permission_select_decided(
+            PermissionSelect.Decided(select, "tool-1", "allow_once")
+        )
+        await pilot.pause()
+
+        assert len(app.query(PermissionSelect)) == 0
+        assert len(app.query(PermissionBlock)) == 0
 
 
 async def test_permission_panel_keyboard_navigation_and_escape() -> None:
@@ -265,6 +299,7 @@ async def test_permission_mode_picker_keyboard_flow() -> None:
         await pilot.pause()
         picker = app.query_one(PermissionModePicker)
         assert "询问后修改" in render(picker._render_ui()).plain
+        assert "全自动执行" in render(picker._render_ui()).plain
         assert "current" in render(picker._render_ui()).plain
 
         await pilot.press("down", "enter")
@@ -651,12 +686,25 @@ def test_param_summary_prefers_key_fields() -> None:
     )
 
 
-# 功能：验证工具结果预览限制默认显示的行数和字符量
-# 设计：输入四行输出并检查只保留前三行及省略标记，完整内容由展开区负责
-def test_output_preview_is_compact_but_informative() -> None:
-    preview = _output_preview("one\ntwo\nthree\nfour")
+# 功能：验证常见工具使用自然动作文案且摘要没有额外左缩进
+# 设计：渲染运行中与完成态摘要，覆盖三种高频文案并检查图标从控件左边界开始
+def test_tool_summary_uses_natural_action_text() -> None:
+    bash = ToolCallBlock("bash", {"command": "git status"})
+    read = ToolCallBlock("read_file", {"path": "README.md"})
+    family_read = ToolCallBlock("File", {"action": "read", "path": "README.md"})
+    search = ToolCallBlock("grep", {"pattern": "TODO", "path": "src"})
 
-    assert preview == "one\ntwo\nthree\n..."
+    bash_summary = render(bash._summary()).plain  # type: ignore[attr-defined]
+    assert bash_summary.startswith("◌")
+    assert "正在执行命令 git status" in bash_summary
+    read.set_result("content", 2)
+    family_read.set_result("content", 2)
+    search.set_result("match", 3)
+    read_summary = render(read._summary()).plain  # type: ignore[attr-defined]
+    assert read_summary.startswith("✓")
+    assert "已读取 README.md" in read_summary
+    assert "已读取 README.md" in render(family_read._summary()).plain  # type: ignore[attr-defined]
+    assert "已搜索 TODO in src" in render(search._summary()).plain  # type: ignore[attr-defined]
 
 
 # 功能：验证 llm.token 事件累积到 LLMStreamBlock，不连续 token 各自新开一块
@@ -673,6 +721,36 @@ def test_llm_tokens_accumulate_in_block() -> None:
     assert len(appended) == 1  # same block reused
     assert isinstance(appended[0], LLMStreamBlock)
     assert appended[0]._text == "Hello world"  # type: ignore[attr-defined]
+
+
+# 功能：验证独立 reasoning 事件才会生成已完成的深度思考块
+# 设计：先发送英文 reasoning 再发送最终 token，断言两者进入不同组件且不会被错误拼接
+def test_reasoning_event_is_separate_from_final_text() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_event({
+        "type": "llm.reasoning",
+        "content": "I should inspect the project first.",
+        "run_id": "r",
+        "ts": "t",
+    })
+    app._handle_event({
+        "type": "llm.token",
+        "token": "最终答案",
+        "run_id": "r",
+        "ts": "t",
+    })
+
+    assert len(appended) == 2
+    reasoning = appended[0]
+    answer = appended[1]
+    assert isinstance(reasoning, LLMStreamBlock)
+    assert reasoning._finalized  # type: ignore[attr-defined]
+    assert reasoning._text == "I should inspect the project first."  # type: ignore[attr-defined]
+    assert isinstance(answer, LLMStreamBlock)
+    assert answer._text == "最终答案"  # type: ignore[attr-defined]
 
 
 # 功能：验证 LLMStreamBlock 结束时切换为支持屏幕选择的 Textual Markdown
@@ -696,8 +774,34 @@ async def test_llm_block_finalize_renders_selectable_markdown() -> None:
         assert "## Title" in markdown.source
 
 
-# 功能：验证 agent.decision 将流式模型文本明确标记为实际动作意图
-# 设计：先发送 token 再发送 inspect 决策，断言同一消息块完成并获得 inspect 标签
+# 功能：验证思考内容显示时间线标题，而最终回答隐藏思考标题
+# 设计：在真实挂载状态下先检查思考头，再切换 answer class 并检查标题的计算显示状态
+async def test_llm_block_switches_from_thinking_timeline_to_answer() -> None:
+    block = LLMStreamBlock()
+    block.append_token("正在分析项目。")
+
+    class ThinkingHarness(App[None]):
+        # 挂载流式块以读取 Textual 计算后的 CSS 状态
+        def compose(self) -> ComposeResult:
+            yield block
+
+    app = ThinkingHarness()
+    async with app.run_test(size=(80, 16)) as pilot:
+        await pilot.pause()
+        header = block.query_one(".message-kind", Static)
+        assert header.display
+        assert "思考中" in render(str(header.content)).plain
+
+        block.set_kind("answer")
+        block.finalize_markdown()
+        await pilot.pause()
+
+        assert "answer" in block.classes
+        assert not block.query_one(".message-kind", Static).display
+
+
+# 功能：验证 agent.decision 完成当前思考块并保留实际动作意图状态
+# 设计：先发送 token 再发送 inspect 决策，断言同一消息块完成且未误切换为最终回答样式
 def test_agent_decision_labels_visible_progress_as_intent() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
@@ -721,9 +825,9 @@ def test_agent_decision_labels_visible_progress_as_intent() -> None:
     assert block._finalized  # type: ignore[attr-defined]
 
 
-# 功能：验证没有模型进度文本时 TUI 仍显示根据实际工具生成的意图摘要
-# 设计：直接发送无可见文本的执行决策，断言追加的静态行包含 intent 与回退说明
-def test_agent_decision_without_text_renders_fallback_summary() -> None:
+# 功能：验证没有模型进度文本时不额外显示机械化 intent 摘要
+# 设计：直接发送无可见文本的执行决策，断言工具行可独立表达动作而时间线不增加噪声
+def test_agent_decision_without_text_stays_silent() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
@@ -738,9 +842,7 @@ def test_agent_decision_without_text_renders_fallback_summary() -> None:
         "has_visible_text": False,
     })
 
-    assert len(appended) == 1
-    assert "execute" in appended[0].content
-    assert "Using bash" in appended[0].content
+    assert appended == []
 
 
 # 功能：验证 Ctrl+C 在存在屏幕选择时复制文本且不取消任务
@@ -883,9 +985,9 @@ def test_llm_block_resets_after_non_token_event() -> None:
     assert app._last_assistant_text == "A"
 
 
-# 功能：验证 run.started 事件追加 Static widget 且包含 run_id 和 goal
-# 设计：monkey-patch _append，断言追加的 widget 的 renderable 包含关键字段
-def test_run_started_appends_widget_with_content() -> None:
+# 功能：验证 run.started 只更新活动运行状态而不重复显示用户目标和内部 ID
+# 设计：截获追加控件并发送真实形状事件，断言状态被记录且时间线保持安静
+def test_run_started_updates_state_without_timeline_noise() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
@@ -894,16 +996,38 @@ def test_run_started_appends_widget_with_content() -> None:
         "type": "run.started", "run_id": "run-abc", "goal": "do the thing", "ts": "t"
     })
 
-    assert len(appended) == 1
-    rendered = appended[0].content
-    assert "run-abc" in rendered
-    assert "do the thing" in rendered
+    assert app._active_run_id == "run-abc"
+    assert appended == []
 
 
-# 功能：验证 run.finished success 追加包含 "completed" 的 widget
-# 设计：monkey-patch _append，检查 rendered 内容包含 completed 和 green
-def test_run_finished_success_shows_completed() -> None:
+# 功能：验证 step.started 和 llm.usage 不再向主时间线追加内部元数据
+# 设计：连续注入步骤与用量事件，断言仅更新上下文占用状态且没有产生可见控件
+def test_step_and_usage_events_stay_out_of_timeline() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_event({"type": "step.started", "run_id": "run-1", "step": 2})
+    app._handle_event(
+        {
+            "type": "llm.usage",
+            "run_id": "run-1",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 0,
+            "context_pct": 0.25,
+        }
+    )
+
+    assert appended == []
+    assert app._last_context_pct == 0.25
+
+
+# 功能：验证 run.finished success 只结束运行状态而不追加完成提示
+# 设计：截获可见控件并发送成功事件，断言最终回答之后不再出现重复的 completed 状态行
+def test_run_finished_success_stays_out_of_timeline() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._active_run_id = "r"
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -911,13 +1035,12 @@ def test_run_finished_success_shows_completed() -> None:
         "type": "run.finished", "run_id": "r", "status": "success", "steps": 3, "ts": "t"
     })
 
-    rendered = appended[0].content
-    assert "completed" in rendered
-    assert "green" in rendered
+    assert app._active_run_id is None
+    assert appended == []
 
 
-# 功能：验证 run.finished failed 追加包含 "failed" 和 red 的 widget
-# 设计：与 success 对称，检查颜色标记差异
+# 功能：验证 run.finished failed 追加轻量失败摘要
+# 设计：与成功态对称检查失败图标、步骤数和原因，保留必要诊断而不显示内部运行头
 def test_run_finished_failed_shows_red() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     appended: list[Widget] = []
@@ -929,8 +1052,9 @@ def test_run_finished_failed_shows_red() -> None:
     })
 
     rendered = appended[0].content
-    assert "failed" in rendered
-    assert "red" in rendered
+    assert "×" in rendered
+    assert "Failed after 1 step" in rendered
+    assert "llm_error" in rendered
 
 
 # 功能：验证 tool.call_started 追加 ToolCallBlock，call_finished 更新其结果
@@ -958,18 +1082,22 @@ def test_tool_call_started_and_finished() -> None:
         "run_id": "r", "ts": "t",
     })
     assert "uid-1" not in app._pending_tool_blocks  # type: ignore[attr-defined]
-    block = appended[0]
+    group = appended[0]
+    assert isinstance(group, ToolStepGroup)
+    block = group._blocks[0]  # type: ignore[attr-defined]
     assert isinstance(block, ToolCallBlock)
     assert block._finished  # type: ignore[attr-defined]
     assert block._output == "hi"  # type: ignore[attr-defined]
-    assert "running" not in block._summary()  # type: ignore[attr-defined]
-    assert "done" in block._summary()  # type: ignore[attr-defined]
+    summary = render(block._summary()).plain  # type: ignore[attr-defined]
+    assert "Running" not in summary
+    assert "已执行命令 echo hi" in summary
 
 
-# 功能：验证工具完成后默认显示结果预览并保留完整展开能力
-# 设计：在真实 App 中挂载工具块后设置四行结果，检查 finished 状态和三行预览内容
-async def test_tool_block_shows_result_preview_by_default() -> None:
+# 功能：验证快速成功工具默认紧凑且可完整展开输入、结果和状态
+# 设计：先传入多行输出再挂载控件，复现零毫秒竞态并核对展开面板内容与滚动容器
+async def test_tool_block_fast_completion_expands_full_result() -> None:
     block = ToolCallBlock("bash", {"command": "test"})
+    block.set_result("one\ntwo\nthree\nfour", 12)
 
     class ToolHarness(App[None]):
         # 挂载待完成的工具调用块
@@ -979,20 +1107,80 @@ async def test_tool_block_shows_result_preview_by_default() -> None:
     app = ToolHarness()
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause()
-        block.set_result("one\ntwo\nthree\nfour", 12)
+        detail = block.query_one(".detail", ScrollableContainer)
+        detail_content = block.query_one(".detail-content", Static)
+
+        assert "finished" in block.classes
+        assert "expanded" not in block.classes
+        assert not detail.display
+        assert str(detail_content.content) == ""
+
+        block.set_expanded(True)
         await pilot.pause()
 
-        preview = block.query_one(".preview")
-        assert "finished" in block.classes
-        assert str(preview.content) == "one\ntwo\nthree\n..."
+        assert "expanded" in block.classes
+        assert detail.display
+        rendered_detail = str(detail_content.content)
+        assert "bash\ntest" in rendered_detail
+        assert "Response\none\ntwo\nthree\nfour" in rendered_detail
+        assert "✓ 成功 · 12 ms" in rendered_detail
 
 
-# 功能：验证 note_save 成功完成时工具块摘要显示 remembered
-# 设计：直接操作 ToolCallBlock，覆盖 note_save 的特殊低噪声展示策略
-def test_note_save_tool_block_shows_remembered() -> None:
+# 功能：验证失败工具仍可展开查看错误信息
+# 设计：挂载已失败工具并显式展开，断言错误保留而成功态隐藏规则不影响故障诊断
+async def test_failed_tool_block_expands_error_details() -> None:
+    block = ToolCallBlock("bash", {"command": "bad"})
+    block.set_result("command failed", 7, is_error=True)
+
+    class FailedToolHarness(App[None]):
+        # 挂载已失败工具调用块
+        def compose(self) -> ComposeResult:
+            yield block
+
+    app = FailedToolHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        block.set_expanded(True)
+        await pilot.pause()
+
+        assert "expanded" in block.classes
+        assert "command failed" in str(block.query_one(".detail-content", Static).content)
+
+
+# 功能：验证同一 step 的多个工具被合并到一个可折叠步骤组
+# 设计：先挂载一个工具再动态追加第二个，检查标题计数、子项数量和标题点击折叠行为
+async def test_tool_step_group_collects_and_collapses_tools() -> None:
+    first = ToolCallBlock("read_file", {"path": "README.md"})
+    second = ToolCallBlock("grep", {"pattern": "TODO", "path": "src"})
+    group = ToolStepGroup(1)
+    group.add_tool(first)
+
+    class StepHarness(App[None]):
+        # 挂载步骤组以验证动态追加和样式状态
+        def compose(self) -> ComposeResult:
+            yield group
+
+    app = StepHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        group.add_tool(second)
+        await pilot.pause()
+        header = group.query_one(".step-header", Static)
+
+        assert "读取了文件 · 搜索了内容" in render(str(header.content)).plain
+        assert len(group.query(ToolCallBlock)) == 2
+
+        event = type("Click", (), {"widget": header})()
+        group.on_click(event)  # type: ignore[arg-type]
+        assert "collapsed" in group.classes
+
+
+# 功能：验证 note_save 成功完成后使用自然动作文案
+# 设计：直接操作 ToolCallBlock，覆盖 note_save 的专用名称映射而非暴露内部标识
+def test_note_save_tool_block_uses_natural_action() -> None:
     block = ToolCallBlock("note_save", {"content": "Python 3.12"})
     block.set_result("saved", 3)
-    assert "remembered" in block._summary()  # type: ignore[attr-defined]
+    assert "已保存笔记" in render(block._summary()).plain  # type: ignore[attr-defined]
 
 
 # 功能：验证提交新消息后保留输入框可用，使用户能在 run 中继续输入纠偏
@@ -1026,10 +1214,10 @@ async def test_input_submit_appends_user_turn_and_keeps_prompt_for_steering() ->
 
     assert app._busy  # type: ignore[attr-defined]
     assert not area.disabled
-    assert "type to steer" in area.border_title
+    assert area.border_title == "执行中 · Enter 补充 · Ctrl+C 取消"
     assert area.text == ""
-    assert "agent is working" in area.border_title.lower()
-    assert appended[0].content == "[bold]>[/bold] hello"
+    assert area.border_title == "执行中 · Enter 补充 · Ctrl+C 取消"
+    assert appended[0].content == "hello"
 
 
 # 功能：验证 /plan 描述单次提交进入只读 run，计划完成后批准才发送 Act run
@@ -1048,8 +1236,8 @@ async def test_plan_command_requires_review_before_act() -> None:
             if method == "session.set_authority":
                 return {
                     "snapshot": {
-                        "mode": params["mode"],
-                        "profile": params["profile"],
+                        "mode": params.get("mode", "act"),
+                        "profile": params.get("profile", "ask"),
                     }
                 }
             return {"run_id": "run-plan"}
@@ -1152,26 +1340,31 @@ async def test_plan_command_enters_mode_on_first_submit() -> None:
         assert prompt.text == ""
         assert app._input_runtime_mode == RuntimeMode.PLAN
         assert not app._busy
-        assert "plan mode" in prompt.border_title
+        assert prompt.border_title == "规划模式"
 
 
-# 功能：验证 Shift+Tab 依次切换自动接受修改、Plan 和询问模式并同步到 Core
-# 设计：用 fake IPC 返回真实 authority 形状，直接执行绑定 action，核对循环顺序和本地输入模式
+# 功能：验证 Shift+Tab 只循环三种权限姿态且不会改变当前工作模式
+# 设计：用有状态 fake IPC 合并局部更新，核对 authority 循环与 mode 独立性
 async def test_shift_tab_cycles_and_persists_permission_modes() -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
     class _FakeClient:
-        # 返回与设置参数一致的 authority 快照
+        mode = "operate"
+        profile = "ask"
+
+        # 合并局部 authority 更新并返回完整快照
         async def send_command(
             self,
             method: str,
             params: dict[str, object],
         ) -> dict[str, object]:
             calls.append((method, params))
+            self.mode = str(params.get("mode", self.mode))
+            self.profile = str(params.get("profile", self.profile))
             return {
                 "snapshot": {
-                    "mode": params["mode"],
-                    "profile": params["profile"],
+                    "mode": self.mode,
+                    "profile": self.profile,
                 }
             }
 
@@ -1185,29 +1378,66 @@ async def test_shift_tab_cycles_and_persists_permission_modes() -> None:
         await pilot.pause()
         app._client = _FakeClient()  # type: ignore[assignment]
         app._session_id = "sess-permission"
+        app._input_runtime_mode = RuntimeMode.OPERATE
 
         await app.action_cycle_permission_mode()
         assert app._authority_preset == "accept_edits"
-        assert app._input_runtime_mode == RuntimeMode.ACT
+        assert app._input_runtime_mode == RuntimeMode.OPERATE
 
         await app.action_cycle_permission_mode()
-        assert app._authority_preset == "plan"
-        assert app._input_runtime_mode == RuntimeMode.PLAN
+        assert app._authority_preset == "full_access"
+        assert app._input_runtime_mode == RuntimeMode.OPERATE
 
         await app.action_cycle_permission_mode()
         assert app._authority_preset == "ask"
-        assert app._input_runtime_mode == RuntimeMode.ACT
+        assert app._input_runtime_mode == RuntimeMode.OPERATE
 
     assert [params["profile"] for _method, params in calls] == [
         "auto_review",
-        "ask",
+        "full_access",
         "ask",
     ]
-    assert [params["mode"] for _method, params in calls] == [
-        "act",
-        "plan",
-        "act",
-    ]
+    assert all("mode" not in params for _method, params in calls)
+
+
+# 功能：验证 Tab 独立循环 Act、Operate、Plan 且不改变权限姿态
+# 设计：使用有状态 fake IPC 返回完整快照，固定 Mode 与 Authority 的正交切换语义
+async def test_tab_cycles_runtime_modes_without_changing_authority() -> None:
+    calls: list[dict[str, object]] = []
+
+    class _FakeClient:
+        mode = "act"
+
+        # 合并 mode 更新并保留 full access 姿态
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            assert method == "session.set_authority"
+            calls.append(params)
+            self.mode = str(params.get("mode", self.mode))
+            return {"snapshot": {"mode": self.mode, "profile": "full_access"}}
+
+    class ModeHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = ModeHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-mode"
+        app._authority_preset = "full_access"
+
+        await app.action_cycle_runtime_mode()
+        await app.action_cycle_runtime_mode()
+        await app.action_cycle_runtime_mode()
+
+    assert [params["mode"] for params in calls] == ["operate", "plan", "act"]
+    assert all("profile" not in params for params in calls)
+    assert app._authority_preset == "full_access"
 
 
 # 功能：验证 /permissions 第一次 Enter 直接打开选择器且不会发送 agent 消息
@@ -1231,6 +1461,80 @@ async def test_permissions_command_opens_picker_on_first_submit() -> None:
         assert prompt.disabled
         assert app.query_one(PermissionModePicker).has_focus
         assert not app._busy
+
+
+# 功能：验证 /trust 和 /sandbox 使用独立状态并如实展示 Windows 无隔离后端
+# 设计：让 fake IPC 只接收 trust 局部更新，再检查状态与输出，避免 mode/profile 被连带重置
+async def test_trust_and_sandbox_commands_are_independent() -> None:
+    calls: list[dict[str, object]] = []
+    appended: list[Widget] = []
+
+    class _FakeClient:
+        # 返回包含四个独立维度的完整 authority 快照
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            assert method == "session.set_authority"
+            calls.append(params)
+            return {
+                "snapshot": {
+                    "mode": "operate",
+                    "profile": "full_access",
+                    "workspace_trust": params["workspace_trust"],
+                    "sandbox": {
+                        "available": False,
+                        "kind": "windows_none",
+                        "reason": "no OS isolation backend is available on Windows",
+                    },
+                }
+            }
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-trust"
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._update_header = lambda _state: None  # type: ignore[method-assign]
+
+    await app._set_workspace_trust(tui_app_module.WorkspaceTrust.TRUSTED)
+    app._show_sandbox_status()
+
+    assert calls == [
+        {"session_id": "sess-trust", "workspace_trust": "trusted"}
+    ]
+    assert app._input_runtime_mode == RuntimeMode.OPERATE
+    assert app._authority_preset == "full_access"
+    output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
+    assert "Workspace trust" in output
+    assert "trusted" in output
+    assert "Sandbox" in output
+    assert "unavailable" in output
+    assert "windows_none" in output
+
+
+# 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式
+# 设计：在真实 CodeRookTuiApp 输入部分命令并发送 Tab，防止全局 Mode 快捷键破坏既有单次提交交互
+async def test_tab_keeps_slash_completion_priority() -> None:
+    class SlashHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self._slash_items = [("model", "switch model")]
+            popup = SlashCompleteWidget(self._slash_items)
+            self.mount(popup, before="#prompt")
+            popup.set_query("mo")
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/mo"
+            prompt.focus()
+
+    app = SlashHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.query_one("#prompt", ChatTextArea).text == "/model "
+        assert app._input_runtime_mode == RuntimeMode.ACT
 
 
 # 功能：验证 tasks、diff 和 context 视图读取 typed IPC 并产生可复制输出
@@ -1399,7 +1703,7 @@ async def test_busy_input_steers_active_run() -> None:
             )
         ]
         assert prompt.text == ""
-        assert "steering queued" in prompt.border_title
+        assert prompt.border_title == "补充要求已发送"
 
 
 # 功能：验证 Agent 结构化问题在 TUI 内显示，选择答案后恢复同一活动 run
@@ -1472,7 +1776,7 @@ async def test_user_question_event_answers_without_starting_new_turn() -> None:
         ]
         assert app._pending_question_id is None
         assert not prompt.disabled
-        assert "agent is continuing" in prompt.border_title
+        assert prompt.border_title == "回答已发送 · Agent 继续执行"
 
 
 async def test_cancel_worker_sends_active_run_id() -> None:
@@ -1524,7 +1828,7 @@ def test_session_interrupted_restores_prompt() -> None:
     assert not prompt.disabled
     assert not prompt.read_only
     assert prompt.focused
-    assert "cancelled" in prompt.border_title
+    assert prompt.border_title == "任务已取消"
     assert states == ["interrupted"]
 
 

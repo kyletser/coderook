@@ -67,7 +67,7 @@ class ToolCallFinishedEvent(BaseModel):
     tool_use_id: str
     tool_name: str
     elapsed_ms: int
-    output: str = ""  # tool result content, for TUI display
+    output: str = ""
     ts: str
 
 
@@ -88,6 +88,13 @@ class LlmTokenEvent(BaseModel):
     type: Literal["llm.token"] = "llm.token"
     run_id: str
     token: str
+    ts: str
+
+
+class LlmReasoningEvent(BaseModel):
+    type: Literal["llm.reasoning"] = "llm.reasoning"
+    run_id: str
+    content: str
     ts: str
 
 
@@ -318,6 +325,7 @@ Event = Annotated[
     | ToolCallFinishedEvent
     | ToolCallFailedEvent
     | LlmTokenEvent
+    | LlmReasoningEvent
     | LlmUsageEvent
     | LlmModelSelectedEvent
     | LogLineEvent

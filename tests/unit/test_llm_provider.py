@@ -303,3 +303,98 @@ async def test_openai_official_uses_max_completion_tokens() -> None:
 
     assert captured[0]["max_completion_tokens"] == 8192
     assert "max_tokens" not in captured[0]
+
+
+# 功能：验证 DeepSeek thinking 模式单独发布英文 reasoning 且工具前正文不冒充思考
+# 设计：同时注入 reasoning、中文 content 和工具调用，检查请求开关、事件类型及后续上下文回填
+async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
+    captured: list[dict[str, object]] = []
+
+    # 返回同时包含 reasoning、普通正文和工具调用的 DeepSeek 响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "reasoning_content": "I should inspect the workspace first.",
+                        "content": "我先检查工作区。",
+                        "tool_calls": [{
+                            "id": "call-2",
+                            "type": "function",
+                            "function": {
+                                "name": "list_dir",
+                                "arguments": "{}",
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+            },
+        )
+
+    messages: list[dict[str, object]] = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Earlier reasoning."},
+                {"type": "text", "text": "Checking."},
+                {
+                    "type": "tool_use",
+                    "id": "call-1",
+                    "name": "list_dir",
+                    "input": {},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "call-1",
+                "content": "README.md",
+            }],
+        },
+    ]
+    events: list[BaseModel] = []
+    bus = EventBus()
+
+    # 收集 Provider 发布的事件以核对 reasoning 与正文边界
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "deepseek-v4-flash",
+            base_url="https://api.deepseek.com/chat/completions",
+            api_key_env="DEEPSEEK_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        result = await provider.chat(
+            messages=messages,
+            tool_schemas=[{
+                "name": "list_dir",
+                "description": "List files",
+                "input_schema": {"type": "object"},
+            }],
+            bus=bus,
+            run_id="r-deepseek",
+        )
+
+    payload = captured[0]
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == "high"
+    sent_messages = payload["messages"]
+    assert isinstance(sent_messages, list)
+    assert sent_messages[1]["reasoning_content"] == "Earlier reasoning."
+    reasoning_events = [event for event in events if event.type == "llm.reasoning"]  # type: ignore[attr-defined]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].content == "I should inspect the workspace first."  # type: ignore[attr-defined]
+    assert not [event for event in events if event.type == "llm.token"]  # type: ignore[attr-defined]
+    assert result.thinking_blocks == [{
+        "type": "thinking",
+        "thinking": "I should inspect the workspace first.",
+    }]

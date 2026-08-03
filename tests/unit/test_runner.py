@@ -88,6 +88,7 @@ class _ForcedPlanWriteProvider:
     def __init__(self) -> None:
         self.calls = 0
         self.first_tool_names: set[str] = set()
+        self.first_file_actions: set[str] = set()
         self.system = ""
 
     # 首轮故意请求 edit_file，次轮返回计划，验证 Core 不信任模型自律
@@ -104,6 +105,17 @@ class _ForcedPlanWriteProvider:
         self.calls += 1
         if self.calls == 1:
             self.first_tool_names = {str(schema["name"]) for schema in tool_schemas}
+            file_schema = next(
+                schema for schema in tool_schemas if schema["name"] == "File"
+            )
+            input_schema = file_schema["input_schema"]
+            assert isinstance(input_schema, dict)
+            variants = input_schema["oneOf"]
+            assert isinstance(variants, list)
+            self.first_file_actions = {
+                str(variant["properties"]["action"]["enum"][0])
+                for variant in variants
+            }
             self.system = system or ""
             return LlmResponse(
                 stop_reason="tool_use",
@@ -380,19 +392,17 @@ async def test_general_intent_correction_contract_is_injected(
     assert "not from surface word overlap" in provider.system
     assert "failed, denied, or unavailable check is unknown" in provider.system
     assert "avoid redundant probes" in provider.system
-    assert "Use concise English for internal analysis" in provider.system
+    assert "Always use concise English for internal analysis" in provider.system
     assert "## Response Language" in provider.system
-    assert "## Response Language\nSimplified Chinese." in provider.system
-    assert "Before the first tool call, write one brief user-visible progress sentence" in (
-        provider.system
-    )
+    assert "## Response Language\nFinal answer only: Simplified Chinese." in provider.system
+    assert "Do not emit progress narration before tool calls" in provider.system
     assert "use task_create and task_update" in provider.system
     assert "Never use emoji" in provider.system
     assert "## Runtime Environment" in provider.system
     assert "## Available Extensions" in provider.system
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
     assert "skill" in schemas
-    assert "host computer's local shell" in str(schemas["bash"]["description"])
+    assert "shell command in the workspace" in str(schemas["Bash"]["description"])
     assert "scope is only CodeRook task records" in str(
         schemas["task_list"]["description"]
     )
@@ -492,8 +502,8 @@ async def test_cancelled_runner_recovers_incremental_transcript_tail(tmp_path: P
                 tool_calls=[
                     ToolCallBlock(
                         id="bash-1",
-                        name="bash",
-                        input={"command": command, "timeout": 120},
+                            name="Bash",
+                            input={"action": "run", "command": command, "timeout": 120},
                     )
                 ],
             )
@@ -605,6 +615,13 @@ async def test_plan_mode_enforces_read_only_registry_and_restores_authority(
     assert "edit_file" not in provider.first_tool_names
     assert "write_file" not in provider.first_tool_names
     assert "bash" not in provider.first_tool_names
-    assert {"read_file", "grep", "glob", "git_diff"} <= provider.first_tool_names
+    assert {"File", "Git"} <= provider.first_tool_names
+    assert "git_diff" not in provider.first_tool_names
+    assert provider.first_file_actions == {
+        "read",
+        "list",
+        "search_name",
+        "search_content",
+    }
     assert "## Plan Mode" in provider.system
     assert permission_manager.get_authority_snapshot(session.id) == original_authority

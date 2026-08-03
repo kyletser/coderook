@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from code_rook.core.authority import (
     AuthorityDecision,
+    AuthorityProfile,
     AuthoritySnapshot,
     ToolAction,
     detect_sandbox_capability,
@@ -24,15 +25,49 @@ from code_rook.core.permissions.policy import (
     matches_outside_cwd,
     param_preview,
 )
-from code_rook.core.permissions.storage import load_policy_file, save_policy_file
+from code_rook.core.permissions.storage import (
+    load_authority_profile,
+    load_policy_file,
+    save_policy_file,
+)
+from code_rook.core.tools.spec import ApprovalRequirement
 
 logger = logging.getLogger(__name__)
 
 PermissionRunMode = Literal["interactive", "deny", "fail_fast", "allow_list"]
 
+_FAMILY_POLICY_ALIASES: dict[tuple[str, str], str] = {
+    ("Bash", "run"): "bash",
+    ("Bash", "wait"): "background_result",
+    ("Bash", "interact"): "background_interact",
+    ("Bash", "cancel"): "background_cancel",
+    ("File", "read"): "read_file",
+    ("File", "list"): "list_dir",
+    ("File", "search_name"): "glob",
+    ("File", "search_content"): "grep",
+    ("File", "write"): "write_file",
+    ("File", "edit"): "edit_file",
+    ("File", "patch"): "apply_patch",
+    ("Git", "diff"): "git_diff",
+    ("Run", "tests"): "run_tests",
+    ("Run", "verifiers"): "run_verifiers",
+}
+
 
 def _now() -> str:
     return datetime.datetime.now(UTC).isoformat()
+
+
+# 返回 action-family 调用的精确缓存键和兼容旧策略名
+def _permission_scope(
+    tool_name: str,
+    params: dict[str, Any],
+) -> tuple[str, str]:
+    action = params.get("action")
+    if not isinstance(action, str) or not action:
+        return tool_name, tool_name
+    scope = f"{tool_name}.{action}"
+    return scope, _FAMILY_POLICY_ALIASES.get((tool_name, action), scope)
 
 
 @dataclass
@@ -67,13 +102,33 @@ class PermissionManager:
         self._persistent_always: dict[str, str] = (
             load_policy_file(policy_file) if policy_file is not None else {}
         )
+        persistent_profile = (
+            load_authority_profile(policy_file) if policy_file is not None else None
+        )
         # 0 表示不超时
         self._timeout_s = timeout_s
         self._session_modes: dict[str, _SessionPermissionMode] = {}
         self._default_authority = AuthoritySnapshot(
-            sandbox=detect_sandbox_capability()
+            profile=persistent_profile or AuthorityProfile.ASK,
+            sandbox=detect_sandbox_capability(),
         )
         self._session_authorities: dict[str, AuthoritySnapshot] = {}
+
+    # 持久化全局权限姿态并同步已有会话，避免每次启动后重新批准
+    def set_default_profile(self, profile: AuthorityProfile) -> None:
+        self._default_authority = self._default_authority.model_copy(
+            update={"profile": profile}
+        )
+        self._session_authorities = {
+            session_id: snapshot.model_copy(update={"profile": profile})
+            for session_id, snapshot in self._session_authorities.items()
+        }
+        if self._policy_file is not None:
+            save_policy_file(
+                self._persistent_always,
+                self._policy_file,
+                authority_profile=profile,
+            )
 
     # 设置从下一 turn 开始使用的 session authority 快照
     def set_authority_snapshot(
@@ -113,8 +168,9 @@ class PermissionManager:
     # 对工具名 + 参数执行 4 层静态评估，不挂起
     def evaluate(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
         from code_rook.core.permissions.policy import evaluate
-        policy = self._policies.get(tool_name)
-        return evaluate(tool_name, params, policy)
+        _permission_key, policy_name = _permission_scope(tool_name, params)
+        policy = self._policies.get(policy_name)
+        return evaluate(policy_name, params, policy)
 
     # 检查权限；如需 ask 则向客户端发事件并等待响应；返回 (allowed, decision_str)
     async def check_and_wait(
@@ -126,9 +182,11 @@ class PermissionManager:
         event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
         *,
         action: ToolAction | str | None = None,
+        approval_requirement: ApprovalRequirement = ApprovalRequirement.POLICY,
     ) -> tuple[bool, str]:
-        command = str(params.get("command", "")) if tool_name == "bash" else ""
-        policy = self._policies.get(tool_name)
+        permission_key, policy_name = _permission_scope(tool_name, params)
+        command = str(params.get("command", "")) if policy_name == "bash" else ""
+        policy = self._policies.get(policy_name)
         session_mode = self._session_modes.get(
             session_id,
             _SessionPermissionMode("interactive"),
@@ -156,32 +214,55 @@ class PermissionManager:
                     logger.debug("permission: deny_pattern hit tool=%s", tool_name)
                     return False, "auto_deny"
 
-        # Tier 2: OUTSIDE_CWD_HEURISTICS（bash only，强制 ASK，不可被任何缓存绕过）
+        # Tier 2: 标记工作区外 bash，未显式 always 或 Full Access 时仍要求确认
         outside_cwd = bool(command and matches_outside_cwd(command))
 
-        if not outside_cwd:
-            if session_mode.mode == "interactive":
-                # Tier 3: session always 缓存
-                session_key = (session_id, tool_name)
-                if session_key in self._session_always:
-                    cached = self._session_always[session_key]
-                    logger.debug(
-                        "permission: session cache hit tool=%s decision=%s",
-                        tool_name,
-                        cached,
-                    )
-                    return cached == "allow", f"auto_{cached}"
+        if session_mode.mode == "interactive":
+            # Tier 3: session always 缓存（用户显式选择后也适用于工作区外命令）
+            session_key = (session_id, permission_key)
+            if session_key in self._session_always:
+                cached = self._session_always[session_key]
+                logger.debug(
+                    "permission: session cache hit tool=%s decision=%s",
+                    permission_key,
+                    cached,
+                )
+                return cached == "allow", f"auto_{cached}"
 
-                # Tier 4: persistent always（跨 session）
-                if tool_name in self._persistent_always:
-                    cached = self._persistent_always[tool_name]
-                    logger.debug(
-                        "permission: persistent cache hit tool=%s decision=%s",
-                        tool_name,
-                        cached,
-                    )
-                    return cached == "allow", f"auto_{cached}"
+            # Tier 4: persistent always（跨 session，同样尊重用户对工作区外命令的选择）
+            cached_key = (
+                permission_key
+                if permission_key in self._persistent_always
+                else policy_name
+            )
+            if cached_key in self._persistent_always:
+                cached = self._persistent_always[cached_key]
+                logger.debug(
+                    "permission: persistent cache hit tool=%s decision=%s",
+                    cached_key,
+                    cached,
+                )
+                return cached == "allow", f"auto_{cached}"
 
+        if approval_requirement == ApprovalRequirement.NEVER:
+            return True, "auto_allow"
+
+        force_approval = approval_requirement == ApprovalRequirement.ALWAYS
+        if force_approval and (
+            self.get_authority_snapshot(session_id).profile
+            == AuthorityProfile.FULL_ACCESS
+        ):
+            return True, "authority_allow"
+
+        # Full Access 可自动执行工作区外命令，但前面的 deny_patterns 仍不可绕过
+        if (
+            not force_approval
+            and outside_cwd
+            and authority_decision == AuthorityDecision.ALLOW
+        ):
+            return True, "authority_allow"
+
+        if not outside_cwd and not force_approval:
             # Tier 5: allow_patterns（bash only）
             if command and policy:
                 for pat in policy.allow_patterns:
@@ -196,13 +277,18 @@ class PermissionManager:
                     return False, "auto_deny"
                 if authority_decision == AuthorityDecision.ALLOW:
                     return True, "authority_allow"
+            elif authority_decision == AuthorityDecision.ALLOW:
+                return True, "authority_allow"
             # default == ASK（bash、unknown tool）→ fall through to Future
 
         if session_mode.mode != "interactive":
             if (
                 not outside_cwd
                 and session_mode.mode == "allow_list"
-                and tool_name in session_mode.allow_tools
+                and bool(
+                    {tool_name, permission_key, policy_name}
+                    & session_mode.allow_tools
+                )
             ):
                 return True, "headless_allow_list"
             if session_mode.mode == "fail_fast":
@@ -245,7 +331,7 @@ class PermissionManager:
                 future.cancel()
             raise
 
-        allowed = self._apply_response(raw, session_id, tool_name)
+        allowed = self._apply_response(raw, session_id, permission_key)
         return allowed, raw
 
     # 处理客户端返回的审批决策，resolve 对应 Future
@@ -258,18 +344,22 @@ class PermissionManager:
             req.future.set_result(decision)
 
     # 应用审批决策，更新 session + persistent 缓存，返回是否放行
-    def _apply_response(self, decision: str, session_id: str, tool_name: str) -> bool:
+    def _apply_response(self, decision: str, session_id: str, permission_key: str) -> bool:
         allow = decision in ("allow_once", "always_allow")
         if decision == "always_allow":
-            self._session_always[(session_id, tool_name)] = "allow"
-            self._persistent_always[tool_name] = "allow"
+            self._session_always[(session_id, permission_key)] = "allow"
+            self._persistent_always[permission_key] = "allow"
             logger.info(
                 "permission: always allow tool=%s policy_file=%s persistent=%s",
-                tool_name, self._policy_file, self._persistent_always,
+                permission_key, self._policy_file, self._persistent_always,
             )
             if self._policy_file is not None:
                 try:
-                    save_policy_file(self._persistent_always, self._policy_file)
+                    save_policy_file(
+                        self._persistent_always,
+                        self._policy_file,
+                        authority_profile=self._default_authority.profile,
+                    )
                     logger.info("permission: policy.toml written path=%s", self._policy_file)
                 except Exception:
                     logger.exception(
@@ -278,15 +368,19 @@ class PermissionManager:
             else:
                 logger.warning("permission: policy_file is None, skipping persistence")
         elif decision == "always_deny":
-            self._session_always[(session_id, tool_name)] = "deny"
-            self._persistent_always[tool_name] = "deny"
+            self._session_always[(session_id, permission_key)] = "deny"
+            self._persistent_always[permission_key] = "deny"
             logger.info(
                 "permission: always deny tool=%s policy_file=%s persistent=%s",
-                tool_name, self._policy_file, self._persistent_always,
+                permission_key, self._policy_file, self._persistent_always,
             )
             if self._policy_file is not None:
                 try:
-                    save_policy_file(self._persistent_always, self._policy_file)
+                    save_policy_file(
+                        self._persistent_always,
+                        self._policy_file,
+                        authority_profile=self._default_authority.profile,
+                    )
                     logger.info("permission: policy.toml written path=%s", self._policy_file)
                 except Exception:
                     logger.exception(

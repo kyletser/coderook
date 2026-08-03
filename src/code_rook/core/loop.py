@@ -14,6 +14,7 @@ from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.tools.spec import ParallelPolicy, ResourceClaim, ToolCatalogError
 
 if TYPE_CHECKING:
     from code_rook.core.compact.compactor import Compactor
@@ -75,10 +76,9 @@ _BASE_SYSTEM_PROMPT = (
     "When multiple interpretations remain plausible, use conversation context and safe, "
     "low-cost read-only inspection to resolve them; otherwise ask one focused clarification. "
     "Use the available tools to complete the user's actual goal. "
-    "Keep private reasoning private. Before the first tool call, write one brief user-visible "
-    "progress sentence in the user's language that states your interpretation and immediate "
-    "next action. On later tool rounds, add another progress sentence only when new evidence "
-    "changes the direction. Do not narrate obvious mechanics. "
+    "Keep reasoning out of ordinary response text; reasoning-capable providers expose it "
+    "through a separate reasoning channel. Do not emit progress narration before tool calls. "
+    "Call the required tools directly. "
     "For complex work with at least three meaningful actions, use task_create and task_update "
     "to maintain a concise, verifiable plan. Skip task tracking for simple requests. "
     "Never use emoji, decorative symbols, filler greetings, or redundant recaps in "
@@ -282,10 +282,49 @@ class AgentLoop:
             keep=self._tool_result_keep,
         )
 
-    # 判断某个 tool_call 是否允许并行：tool 存在且声明 can_parallel=True（多为只读工具）
+    # 返回可参与并行批次的资源 claim；未知或不完整声明保守返回 None
+    def _parallel_claims(self, tc: ToolCallBlock) -> tuple[ResourceClaim, ...] | None:
+        try:
+            resolved = self._registry.resolve_call(tc.name, dict(tc.input))
+            if resolved.effective_parallel_policy == ParallelPolicy.SERIAL:
+                return None
+            if resolved.effective_parallel_policy == ParallelPolicy.SAFE:
+                return () if not resolved.action.is_mutating else None
+            claims = self._registry.resource_claims(tc.name, dict(tc.input))
+        except (ToolCatalogError, PermissionError, ValueError, OSError):
+            return None
+        return claims or None
+
+    # 判断两个资源 claim 是否因路径相交且至少一方独占而冲突
+    @staticmethod
+    def _claims_conflict(left: ResourceClaim, right: ResourceClaim) -> bool:
+        if not left.exclusive and not right.exclusive:
+            return False
+        left_path = left.resource.removesuffix("/**")
+        right_path = right.resource.removesuffix("/**")
+        return (
+            left_path == right_path
+            or left.resource.endswith("/**")
+            and right_path.startswith(left_path)
+            or right.resource.endswith("/**")
+            and left_path.startswith(right_path)
+        )
+
+    # 判断某个 tool_call 是否具备加入空并行批次的完整声明
     def _is_parallelable(self, tc: ToolCallBlock) -> bool:
-        tool = self._registry.get(tc.name)
-        return tool is not None and tool.can_parallel
+        return self._parallel_claims(tc) is not None
+
+    # 判断候选调用的 claims 是否可加入当前并行批次
+    def _can_join_parallel_batch(
+        self,
+        claims: tuple[ResourceClaim, ...],
+        batch_claims: list[ResourceClaim],
+    ) -> bool:
+        return not any(
+            self._claims_conflict(candidate, existing)
+            for candidate in claims
+            for existing in batch_claims
+        )
 
     # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
     async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
@@ -332,8 +371,16 @@ class AgentLoop:
         n = len(tool_calls)
         while i < n:
             j = i
+            batch_claims: list[ResourceClaim] = []
             # 收集从 i 开始连续的并行工具，构造一个批
-            while j < n and self._is_parallelable(tool_calls[j]):
+            while j < n:
+                claims = self._parallel_claims(tool_calls[j])
+                if claims is None or not self._can_join_parallel_batch(
+                    claims,
+                    batch_claims,
+                ):
+                    break
+                batch_claims.extend(claims)
                 j += 1
             batch = tool_calls[i:j]
 

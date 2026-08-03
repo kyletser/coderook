@@ -14,7 +14,9 @@
 | PR-02 Runtime service 与 session facade | 已完成 | 历史 session 幂等导入、真实 IPC 投影、`470 passed, 3 skipped` |
 | PR-03 Event replay 与 boot recovery | 已完成 | 游标分页、回放转实时去重、boot recovery、tool pair invariant、`479 passed, 3 skipped` |
 | PR-04 权限领域模型和收窄规则 | 已完成 | 四维快照、child authority 交集、action fail-closed、Windows sandbox truth、`497 passed, 3 skipped` |
-| PR-05 权限协议与 TUI 投影 | 下一步 | 尚未开始 |
+| PR-05 权限协议与 TUI 投影 | 已完成 | Mode/Authority/Trust/Sandbox 独立投影、运行中冻结、Header 与命令、`99 passed` 定向回归 |
+| PR-06 ToolSpec、Catalog 与稳定 schema | 已完成 | ToolSpec V2、canonical/memoized catalog、Plan action 裁剪、caller/action fail-closed、deferred head 稳定性、`54 passed` 工具回归 |
+| PR-07 Action-family adapter | 已完成 | File/Git/Run/Bash family、action 权限与并行策略、旧 alias replay、后台 wait/interact/cancel；完整 CI `635 passed, 3 skipped` |
 
 ## 1. 改造结果
 

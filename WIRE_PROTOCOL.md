@@ -950,8 +950,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
-| `mode` | `object` | yes |
-| `profile` | `object` | yes |
+| `mode` | `? | null` | no |
+| `profile` | `? | null` | no |
+| `workspace_trust` | `? | null` | no |
 
 ```json
 {
@@ -973,6 +974,14 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "title": "RuntimeMode",
       "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
     }
   },
   "properties": {
@@ -987,16 +996,41 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "type": "string"
     },
     "mode": {
-      "$ref": "#/$defs/RuntimeMode"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "profile": {
-      "$ref": "#/$defs/AuthorityProfile"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AuthorityProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workspace_trust": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceTrust"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [
-    "session_id",
-    "mode",
-    "profile"
+    "session_id"
   ],
   "title": "SessionSetAuthorityCommand",
   "type": "object"
@@ -3320,6 +3354,58 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "type": "llm.token",
   "run_id": "20260516-100000-abc123",
   "token": "The ",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### LlmReasoningEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `content` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "llm.reasoning",
+      "default": "llm.reasoning",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "content": {
+      "title": "Content",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "content",
+    "ts"
+  ],
+  "title": "LlmReasoningEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "llm.reasoning",
+  "run_id": "20260516-100000-abc123",
+  "content": "I should inspect the project first.",
   "ts": "2026-05-16T10:00:00.001Z"
 }
 ```

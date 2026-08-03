@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from code_rook.core.authority import AuthorityProfile, RuntimeMode
+from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     CoreAuthenticateCommand,
@@ -235,14 +235,15 @@ def test_session_message_runtime_mode_roundtrip() -> None:
     ).runtime_mode == RuntimeMode.PLAN
 
 
-# 功能：验证会话 authority 查询与更新命令使用强类型 mode 和 profile
-# 设计：执行 JSON 往返并覆盖两种非默认值，固定 TUI 与 Core 的权限模式同步协议
+# 功能：验证会话 authority 更新可独立携带 mode、profile 和 workspace trust
+# 设计：执行 JSON 往返并覆盖三个非默认值，固定四维状态互不绑定的协议契约
 def test_session_authority_commands_roundtrip() -> None:
     get_command = SessionGetAuthorityCommand(session_id="sess-1")
     set_command = SessionSetAuthorityCommand(
         session_id="sess-1",
         mode=RuntimeMode.PLAN,
         profile=AuthorityProfile.AUTO_REVIEW,
+        workspace_trust=WorkspaceTrust.TRUSTED,
     )
 
     restored = SessionSetAuthorityCommand.model_validate_json(
@@ -253,6 +254,23 @@ def test_session_authority_commands_roundtrip() -> None:
     assert restored.type == "session.set_authority"
     assert restored.mode == RuntimeMode.PLAN
     assert restored.profile == AuthorityProfile.AUTO_REVIEW
+    assert restored.workspace_trust == WorkspaceTrust.TRUSTED
+
+
+# 功能：验证 authority 更新允许只改变一个维度并拒绝空更新
+# 设计：分别构造仅 mode、仅 profile、仅 trust 和空命令，防止客户端被迫联动无关状态
+def test_session_authority_partial_update_validation() -> None:
+    assert SessionSetAuthorityCommand(
+        session_id="sess-1", mode=RuntimeMode.OPERATE
+    ).profile is None
+    assert SessionSetAuthorityCommand(
+        session_id="sess-1", profile=AuthorityProfile.FULL_ACCESS
+    ).mode is None
+    assert SessionSetAuthorityCommand(
+        session_id="sess-1", workspace_trust=WorkspaceTrust.TRUSTED
+    ).workspace_trust == WorkspaceTrust.TRUSTED
+    with pytest.raises(ValidationError):
+        SessionSetAuthorityCommand(session_id="sess-1")
 
 
 # 功能：验证 tasks、diff、checkpoint、rewind 和 context 高频视图命令具有稳定判别类型

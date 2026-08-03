@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.processes import _decode_shell_output
 from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
@@ -46,6 +47,15 @@ async def test_bash_stderr_merged() -> None:
     result = await BashTool().invoke({"command": "echo err >&2"})
     assert not result.is_error
     assert "err" in result.content
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows OEM code page only")
+# 功能：验证 Windows 原生命令的 OEM 编码输出可直接作为工具结果返回
+# 设计：使用当前系统 OEM 编码构造非 ASCII 字节，绕过控制台状态并稳定复现旧版 UTF-8 乱码
+def test_bash_decodes_windows_oem_output() -> None:
+    text = "中文目录"
+    encoded = text.encode("oem")
+    assert _decode_shell_output(encoded) == text
 
 
 # ── write_file ────────────────────────────────────────────────────────────────

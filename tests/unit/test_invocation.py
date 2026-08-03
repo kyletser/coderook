@@ -88,6 +88,10 @@ async def test_success_returns_content_and_finished_event() -> None:
     assert types[0] == "tool.call_started"
     assert "tool.call_finished" in types
     assert "tool.call_failed" not in types
+    finished = next(
+        event for event in events if event.type == "tool.call_finished"  # type: ignore[attr-defined]
+    )
+    assert finished.output == "hi"  # type: ignore[attr-defined]
 
 
 # 功能：验证调用不存在的工具时返回 runtime_error 并发布 failed 事件而非 finished

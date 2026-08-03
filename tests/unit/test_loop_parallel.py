@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 from code_rook.core.context import ExecutionContext
@@ -9,7 +10,9 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.loop import AgentLoop
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
+from code_rook.core.tools.families import FileTool
 from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.workspace import WorkspaceBoundary
 
 # --- stub provider -----------------------------------------------------------
 
@@ -95,6 +98,34 @@ class _FailRead(BaseTool):
 
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         raise RuntimeError("boom")
+
+
+class _TrackedWrite(BaseTool):
+    name = "write_file"
+    description = "tracked file write"
+    side_effect = ToolSideEffect.LOCAL_WRITE
+    input_schema: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "content": {"type": "string"},
+            "delay": {"type": "number"},
+        },
+        "required": ["path", "content"],
+    }
+
+    # 初始化并发计数器
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    # 模拟写入并记录峰值并发数
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        await asyncio.sleep(float(params.get("delay", 0.05)))
+        self.active -= 1
+        return ToolResult(content=str(params["path"]))
 
 
 # --- helpers -----------------------------------------------------------------
@@ -298,3 +329,67 @@ async def test_single_parallel_tool_in_batch_still_works() -> None:
                     assert b.get("content") == "solo"
                     found = True
     assert found
+
+
+# 功能：验证两个 File.write 声明同一路径时由 resource claims 自动串行
+# 设计：tracked backend 记录峰值并发，两个相同独占 claim 必须使 max_active 保持 1
+async def test_same_file_write_claims_run_serially(tmp_path: Path) -> None:
+    backend = _TrackedWrite()
+    family = FileTool(WorkspaceBoundary(tmp_path), {"write_file": backend})
+    registry = ToolRegistry()
+    registry.register(family)
+    loop, _ = _make_loop(
+        _StubProvider([LlmResponse(stop_reason="end_turn", text="done")]),
+        registry,
+    )
+    ctx = _ctx()
+
+    await loop._run_act_phase(
+        [
+            ToolCallBlock(
+                id="w1",
+                name="File",
+                input={"action": "write", "path": "same.txt", "content": "a"},
+            ),
+            ToolCallBlock(
+                id="w2",
+                name="File",
+                input={"action": "write", "path": "same.txt", "content": "b"},
+            ),
+        ],
+        ctx,
+    )
+
+    assert backend.max_active == 1
+
+
+# 功能：验证两个 File.write 声明不同路径时可以进入同一并行批次
+# 设计：使用不同独占 claim，tracked backend 峰值必须达到 2，证明调度不是把所有写操作一律串行
+async def test_disjoint_file_write_claims_run_concurrently(tmp_path: Path) -> None:
+    backend = _TrackedWrite()
+    family = FileTool(WorkspaceBoundary(tmp_path), {"write_file": backend})
+    registry = ToolRegistry()
+    registry.register(family)
+    loop, _ = _make_loop(
+        _StubProvider([LlmResponse(stop_reason="end_turn", text="done")]),
+        registry,
+    )
+    ctx = _ctx()
+
+    await loop._run_act_phase(
+        [
+            ToolCallBlock(
+                id="w1",
+                name="File",
+                input={"action": "write", "path": "a.txt", "content": "a"},
+            ),
+            ToolCallBlock(
+                id="w2",
+                name="File",
+                input={"action": "write", "path": "b.txt", "content": "b"},
+            ),
+        ],
+        ctx,
+    )
+
+    assert backend.max_active == 2

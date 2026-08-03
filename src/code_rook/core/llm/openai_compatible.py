@@ -8,7 +8,12 @@ from typing import Any
 
 import httpx
 
-from code_rook.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
+from code_rook.core.bus.events import (
+    LlmModelSelectedEvent,
+    LlmReasoningEvent,
+    LlmTokenEvent,
+    LlmUsageEvent,
+)
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
 
@@ -79,10 +84,21 @@ class OpenAICompatibleProvider:
             )
         )
 
+        deepseek_thinking = (
+            "api.deepseek.com" in self._base_url
+            and resolved_model.startswith("deepseek-")
+        )
         payload: dict[str, object] = {
             "model": resolved_model,
-            "messages": _to_openai_messages(messages, system or _SYSTEM_PROMPT),
+            "messages": _to_openai_messages(
+                messages,
+                system or _SYSTEM_PROMPT,
+                include_reasoning=deepseek_thinking,
+            ),
         }
+        if deepseek_thinking:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = "high"
         max_tokens_field = (
             "max_completion_tokens" if self._use_max_completion_tokens else "max_tokens"
         )
@@ -106,7 +122,17 @@ class OpenAICompatibleProvider:
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         text = str(message.get("content") or "")
-        if text:
+        reasoning = str(message.get("reasoning_content") or "")
+        tool_calls = _parse_tool_calls(message.get("tool_calls") or [])
+        if reasoning:
+            await bus.publish(
+                LlmReasoningEvent(
+                    run_id=run_id,
+                    content=reasoning,
+                    ts=_now(),
+                )
+            )
+        if text and not tool_calls:
             await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
 
         usage_raw = data.get("usage") or {}
@@ -127,11 +153,15 @@ class OpenAICompatibleProvider:
             )
         )
 
-        tool_calls = _parse_tool_calls(message.get("tool_calls") or [])
         return LlmResponse(
             stop_reason="tool_use" if tool_calls else "end_turn",
             tool_calls=tool_calls,
             text=text,
+            thinking_blocks=(
+                [{"type": "thinking", "thinking": reasoning}]
+                if reasoning and tool_calls
+                else []
+            ),
             usage=UsageStats(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -179,6 +209,8 @@ def _to_openai_tools(tool_schemas: list[dict[str, object]]) -> list[dict[str, ob
 def _to_openai_messages(
     messages: list[dict[str, object]],
     system: str,
+    *,
+    include_reasoning: bool = False,
 ) -> list[dict[str, object]]:
     converted: list[dict[str, object]] = [{"role": "system", "content": system}]
     for msg in messages:
@@ -190,6 +222,7 @@ def _to_openai_messages(
 
         if role == "assistant" and isinstance(content, list):
             text_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tool_calls: list[dict[str, object]] = []
             for block in content:
                 if not isinstance(block, dict):
@@ -197,6 +230,8 @@ def _to_openai_messages(
                 block_type = block.get("type")
                 if block_type == "text":
                     text_parts.append(str(block.get("text", "")))
+                elif block_type == "thinking" and include_reasoning:
+                    reasoning_parts.append(str(block.get("thinking", "")))
                 elif block_type == "tool_use":
                     tool_calls.append(
                         {
@@ -217,6 +252,8 @@ def _to_openai_messages(
             }
             if tool_calls:
                 row["tool_calls"] = tool_calls
+            if reasoning_parts:
+                row["reasoning_content"] = "".join(reasoning_parts)
             converted.append(row)
             continue
 

@@ -12,13 +12,13 @@ from rich.markup import escape
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import ScrollableContainer, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, Label, Markdown, Static, TextArea
 
-from code_rook.core.authority import AuthorityProfile, RuntimeMode
+from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
@@ -32,6 +32,14 @@ from code_rook.tui.clipboard import copy_to_windows_clipboard
 
 log = logging.getLogger(__name__)
 
+_PROMPT_READY = "消息"
+_PROMPT_CONNECTING = "正在连接"
+_PROMPT_PLAN = "规划模式"
+_PROMPT_RUNNING = "执行中 · Enter 补充 · Ctrl+C 取消"
+_PROMPT_PLANNING = "规划中 · Enter 补充 · Ctrl+C 取消"
+_PROMPT_PERMISSION = "等待操作确认"
+_PROMPT_QUESTION = "请回答上方问题"
+
 
 def _preview(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
@@ -41,18 +49,6 @@ def _preview(s: str, n: int) -> str:
 
 def _params_str(params: dict[str, Any]) -> str:
     return json.dumps(params, ensure_ascii=False, indent=2)
-
-
-# 生成默认可见的工具结果预览，完整内容仍可点击展开
-def _output_preview(output: str, *, max_lines: int = 3, max_chars: int = 360) -> str:
-    lines = [line.rstrip() for line in output.strip().splitlines() if line.strip()]
-    preview = "\n".join(lines[:max_lines])
-    truncated = len(lines) > max_lines or len(preview) > max_chars
-    if len(preview) > max_chars:
-        preview = preview[:max_chars].rstrip()
-    if not preview:
-        return "(no output)"
-    return preview + ("\n..." if truncated else "")
 
 
 # 从工具参数中提取最适合摘要展示的关键字段
@@ -81,13 +77,172 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
     return _preview(", ".join(parts), max_len)
 
 
+_TOOL_ACTIONS: dict[str, tuple[str, str]] = {
+    "apply_patch": ("正在应用补丁", "已应用补丁"),
+    "background_cancel": ("正在停止后台任务", "已停止后台任务"),
+    "background_list": ("正在查看后台任务", "已查看后台任务"),
+    "background_run": ("正在启动后台命令", "已启动后台命令"),
+    "background_status": ("正在检查后台任务", "已检查后台任务"),
+    "bash": ("正在执行命令", "已执行命令"),
+    "checkpoint_list": ("正在加载恢复点", "已加载恢复点"),
+    "checkpoint_rewind": ("正在恢复检查点", "已恢复检查点"),
+    "edit_file": ("正在修改", "已修改"),
+    "git_diff": ("正在检查工作区改动", "已检查工作区改动"),
+    "glob": ("正在搜索", "已搜索"),
+    "grep": ("正在搜索", "已搜索"),
+    "list_dir": ("正在查看目录", "已查看目录"),
+    "memory_forget": ("正在删除项目记忆", "已删除项目记忆"),
+    "memory_save": ("正在保存项目记忆", "已保存项目记忆"),
+    "memory_search": ("正在搜索项目记忆", "已搜索项目记忆"),
+    "note_save": ("正在保存笔记", "已保存笔记"),
+    "read_file": ("正在读取", "已读取"),
+    "spawn_agent": ("正在启动子代理", "已启动子代理"),
+    "task_claim": ("正在认领任务", "已认领任务"),
+    "task_create": ("正在创建任务", "已创建任务"),
+    "task_list": ("正在加载任务", "已加载任务"),
+    "task_update": ("正在更新任务", "已更新任务"),
+    "write_file": ("正在写入", "已写入"),
+}
+
+
+# 把工具参数转换成接近自然语言的紧凑目标文本
+def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
+    if tool_name == "File":
+        action = str(params.get("action", ""))
+        if action in {"search_name", "search_content"}:
+            pattern = str(params.get("pattern", ""))
+            path = str(params.get("path", "."))
+            return _preview(f"{pattern} in {path}" if pattern else path, 110)
+        if action == "patch":
+            return "workspace patch"
+        return _preview(str(params.get("path", ".")), 110)
+    if tool_name == "Git":
+        action = str(params.get("action", ""))
+        if action == "show":
+            revision = str(params.get("revision", ""))
+            path = str(params.get("path", "."))
+            return _preview(f"{revision} · {path}".strip(" ·"), 110)
+        if action == "blame":
+            return _preview(str(params.get("path", ".")), 110)
+        return _preview(str(params.get("path", ".")), 110)
+    if tool_name == "Run":
+        action = str(params.get("action", ""))
+        if action == "tests":
+            return _preview(str(params.get("command", "tests")), 110)
+        commands = params.get("commands", [])
+        if isinstance(commands, list):
+            return f"{len(commands)} verification gates"
+        return "verification gates"
+    if tool_name == "Bash":
+        action = str(params.get("action", "run"))
+        if action == "run":
+            return _preview(str(params.get("command", "")), 110)
+        return _preview(str(params.get("job_id", "background job")), 110)
+    if tool_name == "bash":
+        return _preview(str(params.get("command", "")), 110)
+    if tool_name in {"read_file", "edit_file", "write_file", "list_dir"}:
+        return _preview(str(params.get("path", ".")), 110)
+    if tool_name in {"glob", "grep"}:
+        pattern = str(params.get("pattern", ""))
+        path = str(params.get("path", "."))
+        target = f"{pattern} in {path}" if pattern else path
+        return _preview(target, 110)
+    if tool_name == "checkpoint_rewind":
+        return _preview(str(params.get("checkpoint_id", "")), 110)
+    if tool_name.startswith("background_"):
+        value = params.get("command", params.get("job_id", ""))
+        return _preview(str(value), 110)
+    if tool_name.startswith("task_"):
+        value = params.get("subject", params.get("task_id", ""))
+        return _preview(str(value), 110)
+    if tool_name == "spawn_agent":
+        value = params.get("description", params.get("goal", ""))
+        return _preview(str(value), 110)
+    return _param_summary(tool_name, params, max_len=110)
+
+
+# 生成工具运行中或完成后的自然动作文案
+def _tool_action_text(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    finished: bool,
+) -> str:
+    if tool_name == "File":
+        action = str(params.get("action", ""))
+        file_actions = {
+            "read": ("正在读取", "已读取"),
+            "list": ("正在查看目录", "已查看目录"),
+            "search_name": ("正在按名称搜索", "已完成名称搜索"),
+            "search_content": ("正在搜索内容", "已完成内容搜索"),
+            "write": ("正在写入", "已写入"),
+            "edit": ("正在修改", "已修改"),
+            "patch": ("正在应用补丁", "已应用补丁"),
+        }
+        actions = file_actions.get(action, ("正在操作文件", "已完成文件操作"))
+        label = actions[1 if finished else 0]
+        return f"{label} {_tool_target(tool_name, params)}".rstrip()
+    if tool_name == "Git":
+        action = str(params.get("action", ""))
+        git_actions = {
+            "status": ("正在检查 Git 状态", "已检查 Git 状态"),
+            "diff": ("正在检查 Git 改动", "已检查 Git 改动"),
+            "log": ("正在读取提交记录", "已读取提交记录"),
+            "show": ("正在查看提交", "已查看提交"),
+            "blame": ("正在追溯代码行", "已追溯代码行"),
+        }
+        actions = git_actions.get(action, ("正在读取 Git", "已读取 Git"))
+        label = actions[1 if finished else 0]
+        return f"{label} {_tool_target(tool_name, params)}".rstrip()
+    if tool_name == "Run":
+        action = str(params.get("action", ""))
+        run_actions = {
+            "tests": ("正在运行测试", "已运行测试"),
+            "verifiers": ("正在运行验证", "已运行验证"),
+        }
+        actions = run_actions.get(action, ("正在运行检查", "已运行检查"))
+        label = actions[1 if finished else 0]
+        return f"{label} {_tool_target(tool_name, params)}".rstrip()
+    if tool_name == "Bash":
+        action = str(params.get("action", "run"))
+        bash_actions = {
+            "run": ("正在执行命令", "已执行命令"),
+            "wait": ("正在等待后台任务", "已检查后台任务"),
+            "interact": ("正在发送后台输入", "已发送后台输入"),
+            "cancel": ("正在停止后台任务", "已停止后台任务"),
+        }
+        actions = bash_actions.get(action, ("正在操作命令", "已完成命令操作"))
+        label = actions[1 if finished else 0]
+        return f"{label} {_tool_target(tool_name, params)}".rstrip()
+    actions = _TOOL_ACTIONS.get(
+        tool_name,
+        (f"正在执行 {tool_name}", f"已完成 {tool_name}"),
+    )
+    action = actions[1 if finished else 0]
+    target = _tool_target(tool_name, params)
+    return f"{action} {target}".rstrip()
+
+
 class LLMStreamBlock(Widget):
-    """流式阶段显示纯文本，结束后切换为可选择的 Textual Markdown。"""
+    """流式思考时间线；最终回答自动退化为无标题的普通 Markdown。"""
 
     DEFAULT_CSS = """
-    LLMStreamBlock { height: auto; color: $text; }
-    LLMStreamBlock > .message-kind { padding: 0 2; color: $text-muted; }
-    LLMStreamBlock > .stream-text { padding: 0 2; color: $text; }
+    LLMStreamBlock { height: auto; padding: 0 2; color: $text; }
+    LLMStreamBlock > .message-kind { color: #8e98a5; }
+    LLMStreamBlock > .thought-body {
+        padding: 0 1 0 2;
+        margin-left: 1;
+        border-left: solid #343b45;
+        color: #aab2be;
+    }
+    LLMStreamBlock.answer > .message-kind { display: none; }
+    LLMStreamBlock.answer > .thought-body {
+        padding: 0;
+        margin-left: 0;
+        border-left: none;
+        color: $text;
+    }
+    LLMStreamBlock.collapsed > .thought-body { display: none; }
     """
 
     # 初始化为空文本块
@@ -97,14 +252,23 @@ class LLMStreamBlock(Widget):
         self._finalized = False
         self._kind = "working"
 
+    # 根据流式与折叠状态生成思考区标题
+    def _header(self) -> str:
+        state = "深度思考" if self._finalized else "思考中"
+        chevron = "›" if "collapsed" in self.classes else "⌄"
+        return f"[#7f8996]◉[/#7f8996] [#8e98a5]{state}[/#8e98a5]  [dim]{chevron}[/dim]"
+
     # 根据流式状态挂载纯文本或支持屏幕选择的 Markdown 子组件
     def compose(self) -> ComposeResult:
-        yield Static(f"[dim]{self._kind}[/dim]", classes="message-kind")
+        yield Static(self._header(), classes="message-kind")
         if self._finalized:
             if self._text.strip():
-                yield Markdown(self._text, classes="assistant-response")
+                yield Markdown(
+                    self._text,
+                    classes="assistant-response thought-body",
+                )
             return
-        yield Static(self._text, classes="stream-text", markup=False)
+        yield Static(self._text, classes="stream-text thought-body", markup=False)
 
     # 追加一个 token 并刷新显示
     def append_token(self, token: str) -> None:
@@ -120,11 +284,9 @@ class LLMStreamBlock(Widget):
     # 将当前可见模型消息标记为意图说明或最终回答
     def set_kind(self, kind: str) -> None:
         self._kind = kind
+        self.set_class(kind in {"answer", "respond"}, "answer")
         if self.is_attached:
-            try:
-                self.query_one(".message-kind", Static).update(f"[dim]{kind}[/dim]")
-            except NoMatches:
-                self.refresh(recompose=True)
+            self.refresh(recompose=True)
 
     # 返回当前流式块已累积的原始 Markdown 文本
     @property
@@ -139,18 +301,40 @@ class LLMStreamBlock(Widget):
         if self.is_attached:
             self.refresh(recompose=True)
 
+    # 点击思考标题时折叠或展开正文，最终回答不参与折叠
+    def on_click(self, event: events.Click) -> None:
+        if "answer" in self.classes:
+            return
+        try:
+            header = self.query_one(".message-kind", Static)
+        except NoMatches:
+            return
+        if event.widget is not header:
+            return
+        self.toggle_class("collapsed")
+        header.update(self._header())
+
 
 class ToolCallBlock(Widget):
-    """可折叠的工具调用块：折叠时显示摘要，点击后展开完整 params 和 output。"""
+    """Codex 风格工具行；默认紧凑，完成后可展开完整输入与结果。"""
 
     DEFAULT_CSS = """
-    ToolCallBlock { height: auto; padding: 0 2; color: $text-muted; }
-    ToolCallBlock > .summary { color: $text-muted; }
-    ToolCallBlock > .preview { display: none; padding: 0 2 0 4; color: $text-muted; }
-    ToolCallBlock.finished > .preview { display: block; }
-    ToolCallBlock.expanded > .preview { display: none; }
-    ToolCallBlock > .detail { display: none; padding: 0 2 0 4; color: $text-muted; }
+    ToolCallBlock { height: auto; padding: 0 1; color: #9aa4b2; }
+    ToolCallBlock > .summary { color: #aab2be; }
+    ToolCallBlock > .detail {
+        display: none;
+        height: auto;
+        max-height: 12;
+        margin: 0 0 1 2;
+        padding: 1 2;
+        border: round #343b45;
+        background: #15191e;
+        color: #aab2be;
+        overflow-x: auto;
+        overflow-y: auto;
+    }
     ToolCallBlock.expanded > .detail { display: block; }
+    ToolCallBlock .detail-content { width: auto; height: auto; }
     """
 
     # 初始化工具调用信息
@@ -166,54 +350,152 @@ class ToolCallBlock(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(self._summary(), classes="summary")
-        yield Static("", classes="preview", markup=False)
-        yield Static("", classes="detail", markup=False)
+        with ScrollableContainer(classes="detail"):
+            yield Static("", classes="detail-content", markup=False)
 
-    # 生成摘要行文本
+    # 生成自然动作、轻量状态图标和展开提示组成的单行摘要
     def _summary(self) -> str:
-        if self._tool_name == "note_save" and self._finished and not self._is_error:
-            return f"  [green]remembered[/green]  [dim]{self._elapsed_ms}ms[/dim]"
-
-        params_pre = escape(_param_summary(self._tool_name, self._params))
-        planning_tools = {"task_claim", "task_create", "task_update"}
-        label = "plan" if self._tool_name in planning_tools else "tool"
-        line = f"  [dim]{label}[/dim] [bold]{escape(self._tool_name)}[/bold]"
-        if params_pre:
-            line += f"  [dim]{params_pre}[/dim]"
-        if self._finished:
-            color = "red" if self._is_error else "green"
-            status = "failed" if self._is_error else "done"
-            hint = "  [dim](click for full output)[/dim]" if self._output else ""
-            line += f"  [{color}]{status}[/{color}]  [dim]{self._elapsed_ms}ms[/dim]{hint}"
+        if self._is_error:
+            icon = "[bold red]×[/bold red]"
+            attempted = _tool_action_text(self._tool_name, self._params, finished=False)
+            action = f"执行失败：{attempted}"
+        elif self._finished:
+            icon = "[green]✓[/green]"
+            action = _tool_action_text(self._tool_name, self._params, finished=True)
         else:
-            line += "  [yellow]running[/yellow]"
-        return line
+            icon = "[bold cyan]◌[/bold cyan]"
+            action = _tool_action_text(self._tool_name, self._params, finished=False)
+        chevron = ""
+        if self._finished:
+            chevron = (
+                "  [#66717e]⌄[/#66717e]"
+                if "expanded" in self.classes
+                else "  [#66717e]›[/#66717e]"
+            )
+        return f"{icon} [#aab2be]{escape(action)}[/#aab2be]{chevron}"
 
-    # 工具调用完成时更新结果并刷新摘要（widget 未挂载时跳过 DOM 更新）
+    # 生成完整工具输入、结果与终态，供滚动详情面板按需展示
+    def _detail_text(self) -> str:
+        if self._tool_name in {"bash", "Bash"} and self._params.get(
+            "action", "run"
+        ) == "run":
+            input_text = str(self._params.get("command", ""))
+        else:
+            input_text = self._params_full
+        result_label = "Error" if self._is_error else "Response"
+        status = "失败" if self._is_error else "成功"
+        parts = [
+            f"{self._tool_name}\n{input_text}",
+            f"{result_label}\n{self._output.strip() or '(no output)'}",
+            f"{'×' if self._is_error else '✓'} {status} · {self._elapsed_ms} ms",
+        ]
+        return "\n\n".join(parts)
+
+    # 工具调用完成时先更新持久状态，再在已挂载时刷新可见控件
     def set_result(self, output: str, elapsed_ms: int, *, is_error: bool = False) -> None:
         self._output = output
         self._elapsed_ms = elapsed_ms
         self._is_error = is_error
         self._finished = True
+        self.add_class("finished")
+        self.set_class(is_error, "failed")
         if self.children:
             self.query_one(".summary", Static).update(self._summary())
-            self.query_one(".preview", Static).update(_output_preview(output))
-            self.add_class("finished")
 
-    # 点击时切换展开/折叠状态
-    def on_click(self) -> None:
+    # 仅允许已完成工具展开详情并同步摘要与完整内容
+    def set_expanded(self, expanded: bool) -> None:
         if not self._finished:
-            return
-        if "expanded" in self.classes:
             self.remove_class("expanded")
-        else:
-            detail = self.query_one(".detail", Static)
-            detail.update(
-                f"params\n{self._params_full}\n\n"
-                f"output\n{self._output}\n\n"
-                f"elapsed: {self._elapsed_ms}ms"
-            )
+            return
+        if expanded:
+            self.query_one(".detail-content", Static).update(self._detail_text())
             self.add_class("expanded")
+        else:
+            self.remove_class("expanded")
+        self.query_one(".summary", Static).update(self._summary())
+
+    # 点击已完成工具行时切换完整详情
+    def on_click(self) -> None:
+        self.set_expanded("expanded" not in self.classes)
+
+
+class ToolStepGroup(Widget):
+    """把同一 Agent step 的工具调用合并为可折叠的步骤时间线。"""
+
+    DEFAULT_CSS = """
+    ToolStepGroup { height: auto; padding: 0 2; }
+    ToolStepGroup > .step-header { color: #8e98a5; }
+    ToolStepGroup > .step-body {
+        height: auto;
+        margin-left: 1;
+        padding-left: 1;
+        border-left: solid #343b45;
+    }
+    ToolStepGroup.collapsed > .step-body { display: none; }
+    """
+
+    # 初始化空步骤组并记录 step 编号
+    def __init__(self, step: int) -> None:
+        super().__init__()
+        self.step = step
+        self._blocks: list[ToolCallBlock] = []
+
+    # 按工具种类聚合同一步的自然动作摘要
+    def _action_summary(self) -> str:
+        names = [block._tool_name for block in self._blocks]
+        labels: list[str] = []
+        categories = (
+            ({"bash", "background_run"}, "运行了命令", "运行了 {count} 条命令"),
+            ({"read_file", "list_dir"}, "读取了文件", "读取了 {count} 个位置"),
+            ({"grep", "glob", "memory_search"}, "搜索了内容", "进行了 {count} 次搜索"),
+            ({"web_search", "web_fetch"}, "搜索了网页", "搜索了 {count} 次网页"),
+            ({"edit_file", "write_file", "apply_patch"}, "编辑了文件", "编辑了 {count} 个文件"),
+        )
+        categorized: set[str] = set()
+        for tool_names, singular, plural in categories:
+            count = sum(name in tool_names for name in names)
+            if count:
+                labels.append(singular if count == 1 else plural.format(count=count))
+                categorized.update(name for name in names if name in tool_names)
+        for name in names:
+            if name not in categorized:
+                label = f"使用了 {name}"
+                if label not in labels:
+                    labels.append(label)
+        return " · ".join(labels) or "执行工具"
+
+    # 根据聚合动作和折叠状态生成步骤标题
+    def _header(self) -> str:
+        chevron = "›" if "collapsed" in self.classes else "⌄"
+        return (
+            "[#7f8996]▣[/#7f8996] "
+            f"[#8e98a5]{escape(self._action_summary())}[/#8e98a5]  "
+            f"[dim]{chevron}[/dim]"
+        )
+
+    # 挂载标题和当前已收集的工具调用
+    def compose(self) -> ComposeResult:
+        yield Static(self._header(), classes="step-header")
+        yield Vertical(*self._blocks, classes="step-body")
+
+    # 向步骤组追加一个工具块并刷新计数
+    def add_tool(self, block: ToolCallBlock) -> None:
+        self._blocks.append(block)
+        if not self.children:
+            return
+        self.query_one(".step-body", Vertical).mount(block)
+        self.query_one(".step-header", Static).update(self._header())
+
+    # 点击步骤标题时折叠或展开整个工具列表
+    def on_click(self, event: events.Click) -> None:
+        try:
+            header = self.query_one(".step-header", Static)
+        except NoMatches:
+            return
+        if event.widget is not header:
+            return
+        self.toggle_class("collapsed")
+        header.update(self._header())
 
 
 class PermissionSelect(Static):
@@ -460,26 +742,25 @@ class PermissionBlock(Static):
 _PERMISSION_PRESETS = (
     (
         "ask",
-        RuntimeMode.ACT,
         AuthorityProfile.ASK,
         "询问后修改",
         "文件修改、命令和外部操作按策略确认",
     ),
     (
         "accept_edits",
-        RuntimeMode.ACT,
         AuthorityProfile.AUTO_REVIEW,
         "自动接受修改",
         "工作区文件修改自动执行，命令和外部操作仍确认",
     ),
     (
-        "plan",
-        RuntimeMode.PLAN,
-        AuthorityProfile.ASK,
-        "Plan Mode",
-        "只读分析并生成计划，批准后才实施",
+        "full_access",
+        AuthorityProfile.FULL_ACCESS,
+        "全自动执行",
+        "本机命令、修改和外部操作自动批准，Plan Mode 与工具边界仍生效",
     ),
 )
+
+_MODE_CYCLE = (RuntimeMode.ACT, RuntimeMode.OPERATE, RuntimeMode.PLAN)
 
 
 class PermissionModePicker(Static):
@@ -519,7 +800,7 @@ class PermissionModePicker(Static):
         self._current = current
         self._cursor = names.index(current) if current in names else 0
 
-    # 挂载后显示三种常用权限模式并取得焦点
+    # 挂载后显示三种权限姿态并取得焦点
     def on_mount(self) -> None:
         self.border_title = " Permissions "
         self.border_subtitle = " ↑↓ move   Enter select   Esc close "
@@ -529,7 +810,7 @@ class PermissionModePicker(Static):
     # 渲染当前权限模式及其安全边界
     def _render_ui(self) -> str:
         lines = ["[bold]选择后续消息使用的权限模式[/bold]"]
-        for index, (preset, _mode, _profile, label, detail) in enumerate(
+        for index, (preset, _profile, label, detail) in enumerate(
             _PERMISSION_PRESETS
         ):
             marker = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
@@ -539,7 +820,7 @@ class PermissionModePicker(Static):
                 f"{marker} [{style}]{escape(label)}[/{style}]"
                 f"  [dim]{escape(detail)}[/dim]{current}"
             )
-        lines.append("[dim]也可用 Shift+Tab 在三种模式间循环[/dim]")
+        lines.append("[dim]也可用 Shift+Tab 在三种权限姿态间循环[/dim]")
         return "\n".join(lines)
 
     # 处理权限模式的键盘导航、选择和关闭
@@ -1273,14 +1554,18 @@ class ChatTextArea(TextArea):
         height: auto;
         min-height: 3;
         max-height: 12;
-        border: round $surface-lighten-2;
+        border: round #343b45;
         background: $background;
         padding: 0 1;
         margin: 1 2;
         scrollbar-size-vertical: 1;
     }
     ChatTextArea:focus {
-        border: round $accent;
+        border: round #596472;
+        background: $background;
+    }
+    ChatTextArea:disabled {
+        border: round #2c323a;
         background: $background;
     }
     """
@@ -1297,6 +1582,9 @@ class ChatTextArea(TextArea):
         def __init__(self, query: str | None) -> None:
             self.query = query
             super().__init__()
+
+    class CycleMode(Message):
+        pass
 
     # 文本变化时检测 / 前缀，通知宿主 App 更新自动补全弹窗
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -1357,6 +1645,11 @@ class ChatTextArea(TextArea):
                 event.prevent_default()
                 self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
+        if key == "tab":
+            event.stop()
+            event.prevent_default()
+            self.post_message(ChatTextArea.CycleMode())
+            return
         await super()._on_key(event)
 
 
@@ -1383,6 +1676,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding(
+            "tab",
+            "cycle_runtime_mode",
+            "cycle runtime mode",
+            show=False,
+            priority=True,
+        ),
+        Binding(
             "shift+tab",
             "cycle_permission_mode",
             "cycle permission mode",
@@ -1405,12 +1705,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         scrollbar-size-horizontal: 1;
     }
     #banner { padding: 1 2 0 2; }
-    Static.user-turn { color: $text; padding: 1 2 0 2; }
-    Static.run-header { color: $text-muted; padding: 1 2 0 2; }
-    Static.step-divider { color: $text-muted; padding: 0 2; }
-    Static.run-ok { color: green; padding: 0 2 1 2; }
+    Static.user-turn {
+        color: $text;
+        padding: 1 2 1 18;
+        text-align: right;
+    }
     Static.run-err { color: red; padding: 0 2 1 2; }
-    Static.usage { padding: 0 2; }
     Static.log-line { padding: 0 2; }
     Static.permission-pending { display: none; }
     Markdown.history-assistant { color: $text; }
@@ -1426,7 +1726,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         " ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝"
         "[/bold cyan]\n"
         "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  拖选后 Ctrl+C 复制"
-        "  ·  /copy 复制上一条回复  ·  Ctrl+Q 退出[/dim]"
+        "  ·  Ctrl+Q 退出[/dim]"
     )
 
     # 初始化连接参数和 TUI 内部状态
@@ -1457,6 +1757,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
         self._pending_tool_blocks: dict[str, ToolCallBlock] = {}
+        self._current_steps: dict[str, int] = {}
+        self._tool_step_groups: dict[tuple[str, int], ToolStepGroup] = {}
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._active_run_id: str | None = None
@@ -1466,6 +1768,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._last_assistant_text = ""
         self._authority_preset = "ask"
         self._input_runtime_mode = RuntimeMode.ACT
+        self._workspace_trust = WorkspaceTrust.UNTRUSTED
+        self._sandbox: dict[str, Any] = {
+            "available": False,
+            "kind": "none",
+            "reason": "sandbox capability has not been detected",
+        }
         self._plan_review_pending = False
         self._plan_session_id: str | None = None
         self._plan_request = ""
@@ -1486,7 +1794,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
         prompt.disabled = True
-        prompt.border_title = "connecting..."
+        prompt.border_title = _PROMPT_CONNECTING
 
     # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
     def _build_slash_items(self) -> list[tuple[str, str]]:
@@ -1498,7 +1806,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("compact", "compress context window"),
             ("copy", "copy the latest assistant reply"),
             ("plan", "analyze read-only and review a plan before implementation"),
+            ("mode", "show or change Plan, Act, or Operate mode"),
             ("permissions", "review or change the permission mode"),
+            ("trust", "show, grant, or revoke workspace trust"),
+            ("sandbox", "show the real OS isolation capability"),
             ("tasks", "show tasks from the latest run"),
             ("diff", "show current workspace changes"),
             ("rewind", "restore files from a safe checkpoint"),
@@ -1574,7 +1885,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except Exception:
             pass
 
-    # 在询问、自动接受修改和 Plan Mode 之间循环
+    # 在询问、自动接受修改和全自动执行之间循环权限姿态
     async def action_cycle_permission_mode(self) -> None:
         if self._busy or self._plan_review_pending:
             self._append(
@@ -1587,6 +1898,30 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         names = [item[0] for item in _PERMISSION_PRESETS]
         index = (names.index(self._authority_preset) + 1) % len(names)
         await self._select_authority_preset(names[index])
+
+    # 在 Act、Operate 和 Plan 之间循环工作模式
+    async def action_cycle_runtime_mode(self) -> None:
+        try:
+            popup = self.query_one(SlashCompleteWidget)
+        except NoMatches:
+            popup = None
+        if popup is not None and popup.has_selection():
+            popup.select_current()
+            return
+        if self._busy or self._plan_review_pending:
+            self._append(
+                Static(
+                    "[yellow]当前 run 或计划审阅完成后再切换工作模式[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+        index = (_MODE_CYCLE.index(self._input_runtime_mode) + 1) % len(_MODE_CYCLE)
+        await self._select_runtime_mode(_MODE_CYCLE[index])
+
+    # 输入框在没有斜杠补全时用 Tab 请求切换工作模式
+    async def on_chat_text_area_cycle_mode(self, _message: ChatTextArea.CycleMode) -> None:
+        await self.action_cycle_runtime_mode()
 
     # 退出只断开界面，session 保留在 Core 中以便下次 resume
     async def action_quit(self) -> None:
@@ -1687,7 +2022,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if content == "/permissions":
             event.text_area.text = ""
             event.text_area.disabled = True
-            event.text_area.border_title = "select a permission mode..."
+            event.text_area.border_title = "选择权限模式"
             try:
                 self.query_one(PermissionModePicker).remove()
             except NoMatches:
@@ -1697,16 +2032,85 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 before="#prompt",
             )
             return
+        if content.startswith("/permissions "):
+            event.text_area.text = ""
+            requested = content.removeprefix("/permissions ").strip().replace("-", "_")
+            aliases = {
+                "ask": "ask",
+                "auto_review": "accept_edits",
+                "accept_edits": "accept_edits",
+                "full_access": "full_access",
+            }
+            preset = aliases.get(requested)
+            if preset is None:
+                self._append(
+                    Static(
+                        "[yellow]用法：/permissions ask|auto-review|full-access[/yellow]",
+                        classes="log-line",
+                    )
+                )
+            else:
+                await self._select_authority_preset(preset)
+            return
+        if content == "/mode":
+            event.text_area.text = ""
+            self._append(
+                Static(
+                    f"[bold cyan]工作模式[/bold cyan]  {self._input_runtime_mode.value}"
+                    "  [dim]用法：/mode plan|act|operate[/dim]",
+                    classes="log-line",
+                )
+            )
+            return
+        if content.startswith("/mode "):
+            event.text_area.text = ""
+            raw_mode = content.removeprefix("/mode ").strip()
+            try:
+                mode = RuntimeMode(raw_mode)
+            except ValueError:
+                self._append(
+                    Static(
+                        "[yellow]用法：/mode plan|act|operate[/yellow]",
+                        classes="log-line",
+                    )
+                )
+            else:
+                await self._select_runtime_mode(mode)
+            return
+        if content == "/trust" or content.startswith("/trust "):
+            event.text_area.text = ""
+            action = content.removeprefix("/trust").strip() or "status"
+            if action == "status":
+                self._show_trust_status()
+            elif action in {"grant", "revoke"}:
+                trust = (
+                    WorkspaceTrust.TRUSTED
+                    if action == "grant"
+                    else WorkspaceTrust.UNTRUSTED
+                )
+                await self._set_workspace_trust(trust)
+            else:
+                self._append(
+                    Static(
+                        "[yellow]用法：/trust status|grant|revoke[/yellow]",
+                        classes="log-line",
+                    )
+                )
+            return
+        if content == "/sandbox" or content == "/sandbox status":
+            event.text_area.text = ""
+            self._show_sandbox_status()
+            return
         if content == "/plan":
             event.text_area.text = ""
-            await self._select_authority_preset("plan", announce=False)
+            await self._select_runtime_mode(RuntimeMode.PLAN, announce=False)
             return
         requested_mode = self._input_runtime_mode
         if content.startswith("/plan "):
             content = content.removeprefix("/plan ").strip()
             if not content:
                 event.text_area.text = ""
-                event.text_area.border_title = "plan mode — describe the task, then press Enter"
+                event.text_area.border_title = _PROMPT_PLAN
                 self._input_runtime_mode = RuntimeMode.PLAN
                 return
             requested_mode = RuntimeMode.PLAN
@@ -1714,14 +2118,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             event.text_area.text = ""
             if self._client is not None and not self._busy:
                 event.text_area.disabled = True
-                event.text_area.border_title = "loading sessions..."
+                event.text_area.border_title = "正在加载会话"
                 self.run_worker(self._show_session_picker(), name="session_picker", exclusive=False)
             return
         if content == "/new":
             event.text_area.text = ""
             if self._client is not None and not self._busy:
                 event.text_area.disabled = True
-                event.text_area.border_title = "creating session..."
+                event.text_area.border_title = "正在创建会话"
                 self.run_worker(
                     self._create_and_switch_session(),
                     name="new_session",
@@ -1736,7 +2140,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
                 return
             event.text_area.disabled = True
-            event.text_area.border_title = f"loading {content}..."
+            event.text_area.border_title = f"正在加载 {content}"
             workers = {
                 "/tasks": self._show_tasks,
                 "/diff": self._show_diff,
@@ -1760,7 +2164,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
                 return
             event.text_area.disabled = True
-            event.text_area.border_title = "select a model..."
+            event.text_area.border_title = "选择模型"
             self.mount(ModelPicker(self._models, self._model), before="#prompt")
             return
         if content.startswith("/model "):
@@ -1797,7 +2201,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
                 return
             event.text_area.disabled = True
-            event.text_area.border_title = "select an API provider..."
+            event.text_area.border_title = "选择 API 平台"
             self.mount(
                 ProviderPicker(PROVIDER_PRESETS, self._provider),
                 before="#prompt",
@@ -1832,17 +2236,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         prompt.disabled = False
         prompt.read_only = False
         prompt.border_title = (
-            "agent is planning — type to steer, Ctrl+C to cancel"
+            _PROMPT_PLANNING
             if runtime_mode == RuntimeMode.PLAN
-            else "agent is working — type to steer, Ctrl+C to cancel"
+            else _PROMPT_RUNNING
         )
         shown = visible_content if visible_content is not None else content
-        prefix = (
-            "[bold cyan]plan >[/bold cyan]"
+        visible = (
+            f"[bold cyan]Plan[/bold cyan]  {escape(shown)}"
             if runtime_mode == RuntimeMode.PLAN
-            else "[bold]>[/bold]"
+            else escape(shown)
         )
-        self._append(Static(f"{prefix} {escape(shown)}", classes="user-turn"))
+        self._append(Static(visible, classes="user-turn"))
         self._update_header("planning" if runtime_mode == RuntimeMode.PLAN else "running")
         self.run_worker(
             self._do_send_message(content, runtime_mode),
@@ -1893,27 +2297,31 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt.disabled = False
             prompt.read_only = False
             if self._input_runtime_mode == RuntimeMode.PLAN:
-                prompt.border_title = "plan mode — describe the task, then press Enter"
+                prompt.border_title = _PROMPT_PLAN
             else:
-                prompt.border_title = (
-                    "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                )
+                prompt.border_title = _PROMPT_READY
             prompt.focus()
 
-    # 将 Core 返回的 authority 快照映射为 TUI 的三种常用权限模式
+    # 将 Core 返回的四维 authority 快照映射到 TUI 状态
     def _apply_authority_snapshot(self, snapshot: dict[str, Any]) -> None:
         mode = RuntimeMode(str(snapshot.get("mode", RuntimeMode.ACT.value)))
         profile = AuthorityProfile(
             str(snapshot.get("profile", AuthorityProfile.ASK.value))
         )
-        if mode == RuntimeMode.PLAN:
-            preset = "plan"
+        if profile == AuthorityProfile.FULL_ACCESS:
+            preset = "full_access"
         elif profile == AuthorityProfile.AUTO_REVIEW:
             preset = "accept_edits"
         else:
             preset = "ask"
         self._authority_preset = preset
         self._input_runtime_mode = mode
+        self._workspace_trust = WorkspaceTrust(
+            str(snapshot.get("workspace_trust", WorkspaceTrust.UNTRUSTED.value))
+        )
+        sandbox = snapshot.get("sandbox")
+        if isinstance(sandbox, dict):
+            self._sandbox = dict(sandbox)
 
     # 读取当前会话的 authority，保证续接和切换会话后状态指示真实
     async def _refresh_authority(self) -> None:
@@ -1925,7 +2333,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         self._apply_authority_snapshot(dict(result.get("snapshot", {})))
 
-    # 持久化并应用用户选择的权限预设
+    # 持久化并应用用户选择的权限姿态，不改变工作模式
     async def _select_authority_preset(
         self,
         preset: str,
@@ -1938,24 +2346,56 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         if selected is None:
             return
-        _name, mode, profile, label, _detail = selected
+        _name, profile, label, _detail = selected
         try:
             if self._client is not None and self._session_id is not None:
                 result = await self._client.send_command(
                     "session.set_authority",
                     {
                         "session_id": self._session_id,
-                        "mode": mode.value,
                         "profile": profile.value,
                     },
                 )
                 self._apply_authority_snapshot(dict(result.get("snapshot", {})))
             else:
                 self._authority_preset = preset
-                self._input_runtime_mode = mode
         except (IpcError, RuntimeError, OSError, ValueError) as exc:
             self._append(
                 Static(f"[red]permission mode error: {escape(str(exc))}[/red]", classes="log-line")
+            )
+            self._restore_ready_prompt()
+            return
+        self._restore_ready_prompt()
+        self._update_header(
+            "plan" if self._input_runtime_mode == RuntimeMode.PLAN else "ready"
+        )
+        if announce:
+            self._append(
+                Static(
+                    f"[bold cyan]权限模式[/bold cyan]  {escape(label)}",
+                    classes="log-line",
+                )
+            )
+
+    # 持久化并应用工作模式，不改变权限姿态
+    async def _select_runtime_mode(
+        self,
+        mode: RuntimeMode,
+        *,
+        announce: bool = True,
+    ) -> None:
+        try:
+            if self._client is not None and self._session_id is not None:
+                result = await self._client.send_command(
+                    "session.set_authority",
+                    {"session_id": self._session_id, "mode": mode.value},
+                )
+                self._apply_authority_snapshot(dict(result.get("snapshot", {})))
+            else:
+                self._input_runtime_mode = mode
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._append(
+                Static(f"[red]runtime mode error: {escape(str(exc))}[/red]", classes="log-line")
             )
             self._restore_ready_prompt()
             return
@@ -1964,10 +2404,56 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if announce:
             self._append(
                 Static(
-                    f"[bold cyan]权限模式[/bold cyan]  {escape(label)}",
+                    f"[bold cyan]工作模式[/bold cyan]  {escape(mode.value)}",
                     classes="log-line",
                 )
             )
+
+    # 更新工作区信任状态并保留 mode、authority 和 sandbox
+    async def _set_workspace_trust(self, trust: WorkspaceTrust) -> None:
+        try:
+            if self._client is not None and self._session_id is not None:
+                result = await self._client.send_command(
+                    "session.set_authority",
+                    {
+                        "session_id": self._session_id,
+                        "workspace_trust": trust.value,
+                    },
+                )
+                self._apply_authority_snapshot(dict(result.get("snapshot", {})))
+            else:
+                self._workspace_trust = trust
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._append(
+                Static(f"[red]workspace trust error: {escape(str(exc))}[/red]", classes="log-line")
+            )
+            return
+        self._update_header("plan" if self._input_runtime_mode == RuntimeMode.PLAN else "ready")
+        self._show_trust_status()
+
+    # 在 transcript 中显示当前工作区信任状态
+    def _show_trust_status(self) -> None:
+        self._append(
+            Static(
+                f"[bold cyan]Workspace trust[/bold cyan]  {self._workspace_trust.value}",
+                classes="log-line",
+            )
+        )
+
+    # 在 transcript 中如实显示操作系统隔离能力
+    def _show_sandbox_status(self) -> None:
+        available = bool(self._sandbox.get("available", False))
+        kind = escape(str(self._sandbox.get("kind", "none")))
+        reason = escape(str(self._sandbox.get("reason", "unavailable")))
+        state = "available" if available else "unavailable"
+        color = "green" if available else "yellow"
+        self._append(
+            Static(
+                f"[bold cyan]Sandbox[/bold cyan]  [{color}]{state}[/{color}]"
+                f"  [dim]{kind}: {reason}[/dim]",
+                classes="log-line",
+            )
+        )
 
     # 关闭权限模式选择器并恢复聊天输入
     async def on_permission_mode_picker_dismissed(
@@ -2346,7 +2832,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if prompt is not None:
                 prompt.disabled = False
                 prompt.read_only = False
-                prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                prompt.border_title = _PROMPT_READY
             self._update_header("ready")
             self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
 
@@ -2361,7 +2847,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             prompt = self._prompt()
             if prompt is not None and self._busy:
-                prompt.border_title = "steering queued — continue typing or wait"
+                prompt.border_title = "补充要求已发送"
                 prompt.focus()
         except (IpcError, RuntimeError, OSError) as exc:
             self._append(Static(f"[red]steering error: {exc}[/red]", classes="log-line"))
@@ -2380,7 +2866,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = False
-                prompt.border_title = "answer received — agent is continuing; type to steer"
+                prompt.border_title = "回答已发送 · Agent 继续执行"
                 prompt.focus()
         except (IpcError, RuntimeError, OSError) as exc:
             self._answering_question = True
@@ -2388,7 +2874,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = False
-                prompt.border_title = "answer the question above, then press Enter"
+                prompt.border_title = _PROMPT_QUESTION
                 prompt.focus()
 
     # 处理结构化问题选项；自由回答分支把焦点交给主输入框
@@ -2402,13 +2888,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._answering_question = True
             if prompt is not None:
                 prompt.disabled = False
-                prompt.border_title = "answer the question above, then press Enter"
+                prompt.border_title = _PROMPT_QUESTION
                 prompt.focus()
             return
         self._answering_question = False
         if prompt is not None:
             prompt.disabled = True
-            prompt.border_title = "sending answer..."
+            prompt.border_title = "正在发送回答"
         self._append(
             Static(
                 f"[bold cyan]answer >[/bold cyan] {escape(message.answer)}",
@@ -2443,7 +2929,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             original_request = self._plan_request
             self._plan_session_id = None
             self._plan_request = ""
-            await self._select_authority_preset("ask", announce=False)
+            await self._select_runtime_mode(RuntimeMode.ACT, announce=False)
             self._begin_message(
                 prompt,
                 "Implement the approved plan from the immediately preceding planning turn. "
@@ -2457,15 +2943,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._plan_request = ""
         self._restore_ready_prompt()
         if message.decision == "revise":
-            await self._select_authority_preset("plan", announce=False)
+            await self._select_runtime_mode(RuntimeMode.PLAN, announce=False)
             prompt = self._prompt()
             if prompt is not None:
                 prompt.text = "/plan "
                 prompt.move_cursor(prompt.document.end)
-                prompt.border_title = "plan mode — enter feedback, then press Enter"
+                prompt.border_title = "规划模式 · 输入反馈"
             self._update_header("plan")
         else:
-            await self._select_authority_preset("ask", announce=False)
+            await self._select_runtime_mode(RuntimeMode.ACT, announce=False)
             self._append(Static("[dim]计划已取消，未执行改动[/dim]", classes="log-line"))
             self._update_header("ready")
 
@@ -2478,7 +2964,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             msg.widget.remove()
             perm_block = self._pending_permission_blocks.pop(tool_use_id, None)
             if perm_block is not None:
-                perm_block._resolve(decision)
+                perm_block.remove()
             if self._client is not None:
                 try:
                     await self._client.send_command(
@@ -2492,7 +2978,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if p is not None:
                     p.disabled = False
                     p.read_only = False
-                    p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                    p.border_title = _PROMPT_READY
                     p.focus()
         except Exception:
             log.exception("on_permission_select_decided failed tool_use_id=%s", tool_use_id)
@@ -2514,7 +3000,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if isinstance(content, str):
                 if role == "user":
                     self._append(
-                        Static(f"[bold]>[/bold] {escape(content)}", classes="user-turn")
+                        Static(escape(content), classes="user-turn")
                     )
                 elif content.strip():
                     self._last_assistant_text = content.strip()
@@ -2531,13 +3017,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     self._last_assistant_text = assistant_text
                     self._append(Markdown(assistant_text, classes="history-assistant"))
                 elif block.get("type") == "tool_use":
-                    tool_name = escape(str(block.get("name", "tool")))
                     params_raw = block.get("input", {})
                     params = params_raw if isinstance(params_raw, dict) else {}
-                    summary = escape(_param_summary(str(block.get("name", "")), params))
+                    action = escape(
+                        _tool_action_text(
+                            str(block.get("name", "")),
+                            params,
+                            finished=True,
+                        )
+                    )
                     self._append(
                         Static(
-                            f"  [dim]tool[/dim] [bold]{tool_name}[/bold]  [dim]{summary}[/dim]",
+                            f"[green]✓[/green] [#aab2be]{action}[/#aab2be]",
                             classes="log-line",
                         )
                     )
@@ -2604,11 +3095,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         permission_labels = {
             "ask": "ask",
             "accept_edits": "accept edits",
-            "plan": "plan",
+            "full_access": "full access",
         }
+        mode = f"  [blue]{self._input_runtime_mode.value}[/blue]"
         permission = (
             f"  [magenta]{permission_labels[self._authority_preset]}[/magenta]"
         )
+        trust_color = "green" if self._workspace_trust == WorkspaceTrust.TRUSTED else "yellow"
+        trust = f"  [{trust_color}]{self._workspace_trust.value}[/{trust_color}]"
         color = {
             "ready": "green",
             "running": "yellow",
@@ -2620,7 +3114,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}{model}{permission}  [{color}]{state}[/{color}]"
+            f"{session}{model}{mode}{permission}{trust}  [{color}]{state}[/{color}]"
         )
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
@@ -2705,15 +3199,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     prompt.disabled = self._plan_review_pending
                     prompt.read_only = False
                     if self._plan_review_pending:
-                        prompt.border_title = "review the plan above"
+                        prompt.border_title = "审阅上方计划"
                     elif self._input_runtime_mode == RuntimeMode.PLAN:
-                        prompt.border_title = (
-                            "plan mode — describe the task, then press Enter"
-                        )
+                        prompt.border_title = _PROMPT_PLAN
                     else:
-                        prompt.border_title = (
-                            "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                        )
+                        prompt.border_title = _PROMPT_READY
                         prompt.focus()
                 self._update_header("plan ready" if self._plan_review_pending else "ready")
                 await loop_task
@@ -2728,7 +3218,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if prompt is not None:
                     prompt.disabled = True
                     prompt.read_only = False
-                    prompt.border_title = "disconnected, retrying..."
+                    prompt.border_title = "连接已断开 · 正在重试"
                 self._break_llm()
                 await client.close()
 
@@ -2746,6 +3236,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     def _handle_event_inner(self, event: dict[str, Any]) -> None:
         t = event.get("type", "")
 
+        if t == "llm.reasoning":
+            content = str(event.get("content") or "")
+            self._break_llm()
+            if content.strip():
+                reasoning_block = LLMStreamBlock()
+                reasoning_block.append_token(content)
+                reasoning_block.set_kind("reasoning")
+                reasoning_block.finalize_markdown()
+                self._append(reasoning_block)
+            return
+
         if t == "llm.token":
             token = event.get("token", "")
             if self._current_llm is None:
@@ -2757,20 +3258,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
         if t == "agent.decision":
             intent = str(event.get("intent") or "execute")
-            summary = str(event.get("summary") or "")
-            had_visible_text = (
-                self._current_llm is not None and bool(self._current_llm._text.strip())
-            )
             if self._current_llm is not None:
                 self._current_llm.set_kind("answer" if intent == "respond" else intent)
             self._break_llm()
-            if not had_visible_text and summary:
-                self._append(
-                    Static(
-                        f"[dim]{escape(intent)}[/dim]  {escape(summary)}",
-                        classes="log-line",
-                    )
-                )
             return
 
         if t == "llm.usage":
@@ -2779,15 +3269,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 return
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
-            ctx_bar = self._render_ctx_bar(pct)
-            self._append(Static(
-                f"[dim]  tokens  "
-                f"in={event.get('input_tokens')} "
-                f"out={event.get('output_tokens')} "
-                f"cache={event.get('cache_read_input_tokens')}[/dim]"
-                f"  {ctx_bar}",
-                classes="usage",
-            ))
             return
 
         self._break_llm()
@@ -2801,11 +3282,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.disabled = self._plan_review_pending
                 prompt.read_only = False
                 if self._plan_review_pending:
-                    prompt.border_title = "review the plan above"
+                    prompt.border_title = "审阅上方计划"
                 else:
-                    prompt.border_title = (
-                        "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                    )
+                    prompt.border_title = _PROMPT_READY
                     prompt.focus()
             self._update_header("plan ready" if self._plan_review_pending else "ready")
 
@@ -2824,7 +3303,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True
-                prompt.border_title = "review the plan above"
+                prompt.border_title = "审阅上方计划"
             self.mount(PlanReview(run_id), before="#prompt")
             self._update_header("plan ready")
 
@@ -2842,7 +3321,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True
-                prompt.border_title = "answer required"
+                prompt.border_title = _PROMPT_QUESTION
             self.mount(
                 UserQuestionSelect(
                     question_id,
@@ -2864,7 +3343,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if prompt is not None:
                 prompt.disabled = False
                 prompt.read_only = False
-                prompt.border_title = "run cancelled - type a message to continue"
+                prompt.border_title = "任务已取消"
                 prompt.focus()
             self._update_header("interrupted")
 
@@ -2876,18 +3355,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if prompt is not None:
                 prompt.disabled = True
                 prompt.read_only = False
-                prompt.border_title = "session closed"
+                prompt.border_title = "会话已关闭"
             self._update_header("disconnected")
 
         elif t == "run.started":
-            run_id = event.get("run_id", "")
-            self._active_run_id = str(run_id)
+            run_id = str(event.get("run_id", ""))
+            self._active_run_id = run_id
+            self._current_steps.pop(run_id, None)
             self._cancel_requested = False
-            goal = event.get("goal", "")
-            self._append(Static(
-                f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{_preview(goal, 96)}[/dim]",
-                classes="run-header",
-            ))
 
         elif t == "skill.invoked":
             skill_name = event.get("skill_name", "")
@@ -2952,25 +3427,40 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
 
         elif t == "step.started":
-            run_id = event.get("run_id", "")
+            run_id = str(event.get("run_id", ""))
             if run_id in self._subagent_run_ids:
                 return
-            step = event.get("step", "")
-            self._append(Static(
-                f"[dim]step {step}  analyzing[/dim]",
-                classes="step-divider",
-            ))
+            self._current_steps[run_id] = int(event.get("step") or 0)
+
+        elif t == "step.finished":
+            run_id = str(event.get("run_id", ""))
+            step = int(event.get("step") or self._current_steps.get(run_id, 0))
+            self._tool_step_groups.pop((run_id, step), None)
+            if self._current_steps.get(run_id) == step:
+                self._current_steps.pop(run_id, None)
 
         elif t == "tool.call_started":
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("tool_name", ""))
-            params = event.get("params") or {}
-            run_id = event.get("run_id", "")
+            raw_params = event.get("params") or {}
+            params = raw_params if isinstance(raw_params, dict) else {}
+            run_id = str(event.get("run_id", ""))
             tc_block = ToolCallBlock(tool_name, params)
             if run_id in self._subagent_run_ids:
                 tc_block.styles.padding = (0, 2, 0, 6)
+                self._append(tc_block)
+            else:
+                step = self._current_steps.get(run_id, 0)
+                group_key = (run_id, step)
+                group = self._tool_step_groups.get(group_key)
+                if group is None:
+                    group = ToolStepGroup(step)
+                    self._tool_step_groups[group_key] = group
+                    group.add_tool(tc_block)
+                    self._append(group)
+                else:
+                    group.add_tool(tc_block)
             self._pending_tool_blocks[tool_use_id] = tc_block
-            self._append(tc_block)
 
         elif t == "tool.call_finished":
             tool_use_id = str(event.get("tool_use_id", ""))
@@ -2991,23 +3481,25 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         elif t == "run.finished":
             status = event.get("status", "")
             steps = event.get("steps", 0)
+            step_label = "step" if steps == 1 else "steps"
             reason = event.get("reason") or ""
+            run_id = str(event.get("run_id", ""))
+            self._current_steps.pop(run_id, None)
+            for group_key in [key for key in self._tool_step_groups if key[0] == run_id]:
+                self._tool_step_groups.pop(group_key, None)
             self._active_run_id = None
             self._cancel_requested = False
             if status == "success":
+                return
+            if reason == "cancelled":
                 self._append(Static(
-                    f"[bold green]completed[/bold green]  [dim]{steps} steps[/dim]",
-                    classes="run-ok",
-                ))
-            elif reason == "cancelled":
-                self._append(Static(
-                    f"[bold yellow]cancelled[/bold yellow]  [dim]{steps} steps[/dim]",
+                    f"[yellow]–[/yellow] [dim]Cancelled after {steps} {step_label}[/dim]",
                     classes="run-err",
                 ))
             else:
                 detail = f"  [dim]{reason}[/dim]" if reason else ""
                 self._append(Static(
-                    f"[bold red]failed[/bold red]{detail}  [dim]{steps} steps[/dim]",
+                    f"[red]×[/red] [dim]Failed after {steps} {step_label}[/dim]{detail}",
                     classes="run-err",
                 ))
 
@@ -3056,7 +3548,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True
-                prompt.border_title = "permission required"
+                prompt.border_title = _PROMPT_PERMISSION
             self._append(perm_block)
             select = PermissionSelect(tool_use_id, tool_name, param_preview, params)
             self._mount_permission_select(select)
@@ -3066,13 +3558,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
 
         elif t == "permission.denied":
-            # 处理超时或断连等非用户交互触发的 deny。
-            # 用户主动 deny 已由 on_permission_select_decided 处理。
+            # 处理超时或断连等非用户交互触发的 deny，失败结果由工具行统一展示。
             tool_use_id = str(event.get("tool_use_id", ""))
-            decision = str(event.get("decision", "denied"))
             if tool_use_id in self._pending_permission_blocks:
                 perm_block = self._pending_permission_blocks.pop(tool_use_id)
-                perm_block._resolve(decision)
+                perm_block.remove()
                 try:
                     select = self.query_one(PermissionSelect)
                     select.remove()
@@ -3083,7 +3573,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     if p is not None:
                         p.disabled = False
                         p.read_only = False
-                        p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                        p.border_title = _PROMPT_READY
                         p.focus()
 
         elif t == "log.line":

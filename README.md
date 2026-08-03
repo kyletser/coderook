@@ -33,7 +33,7 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 | Agent Loop | 异步 Plan-Act-Observe 循环、只读工具批量并行、Todo 软状态机、限流退避与上下文溢出恢复 |
 | 类型化协议 | Pydantic v2 命令/事件模型、JSON-RPC 2.0、NDJSON 流、自动生成协议文档 |
 | 本地安全 | loopback 限制、首帧 token 认证、工作区边界、参数校验、交互审批与 headless 权限模式 |
-| 代码工具 | Read、Glob、Grep、Edit、Write、Apply Patch、Git Diff、Bash、Checkpoint/Rewind |
+| 代码工具 | 稳定的 `File`、`Git`、`Run`、`Bash` action-family；Checkpoint/Rewind 与旧 transcript replay 兼容 |
 | 会话系统 | 多轮 thread、block 级 transcript、崩溃尾部恢复、会话恢复/分叉/导出/删除 |
 | 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
 | 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
@@ -42,6 +42,10 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 | 可观测性 | TUI 实时事件、token 水位、工具与审批状态、压缩指标、events.jsonl 和脱敏 Trace |
 
 ## 快速开始
+
+如果只想安装并开始使用，请直接阅读
+[《CodeRook 使用说明》](docs/USER_GUIDE.md)，其中包含首次配置、快捷键、模型切换、
+权限模式、Plan Mode、会话恢复和常见问题。
 
 ### 环境要求
 
@@ -136,6 +140,10 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 | `/model add <模型 ID>` | 新增自定义模型并立即切换 |
 | `/config` | 在当前页面选择 API 平台、填写 API Key 并探测可用模型 |
 | `/compact` | 手动执行结构化上下文压缩 |
+| `/mode plan\|act\|operate` | 独立查看或切换工作模式，`Tab` 循环 |
+| `/permissions ask\|auto-review\|full-access` | 独立查看或切换权限姿态，`Shift+Tab` 循环 |
+| `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
+| `/sandbox status` | 查看真实 OS 隔离能力 |
 | `/skill_name` | 调用已安装 Skill |
 | `Ctrl+Q` | 退出 TUI |
 
@@ -158,7 +166,7 @@ uv run coderook run --goal "修改并验证代码" `
   --permission-mode allow-list `
   --allow-tool edit_file `
   --allow-tool apply_patch `
-  --allow-tool bash
+  --allow-tool Bash.run
 ```
 
 allow-list 仍不能绕过危险命令规则和工作区边界。
@@ -241,7 +249,7 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-当前测试基线为 `455 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、上下文压缩、会话恢复、记忆、后台任务、品牌迁移和 worktree 管理。
+当前测试基线为 `635 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、action-family、上下文压缩、会话恢复、记忆、后台任务、品牌迁移和 worktree 管理。
 
 ## 设计文档
 

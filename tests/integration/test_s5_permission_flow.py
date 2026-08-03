@@ -39,7 +39,11 @@ class _SingleBashProvider:
     ) -> LlmResponse:
         self._step += 1
         if self._step == 1:
-            tc = ToolCallBlock(id="tc1", name="bash", input={"command": self._command})
+            tc = ToolCallBlock(
+                id="tc1",
+                name="Bash",
+                input={"action": "run", "command": self._command},
+            )
             return LlmResponse(stop_reason="tool_use", tool_calls=[tc])
         return LlmResponse(stop_reason="end_turn", text="done")
 
@@ -62,10 +66,18 @@ class _TwoBashProvider:
     ) -> LlmResponse:
         self._step += 1
         if self._step == 1:
-            tc = ToolCallBlock(id="tc1", name="bash", input={"command": "echo first"})
+            tc = ToolCallBlock(
+                id="tc1",
+                name="Bash",
+                input={"action": "run", "command": "echo first"},
+            )
             return LlmResponse(stop_reason="tool_use", tool_calls=[tc])
         if self._step == 2:
-            tc = ToolCallBlock(id="tc2", name="bash", input={"command": "echo second"})
+            tc = ToolCallBlock(
+                id="tc2",
+                name="Bash",
+                input={"action": "run", "command": "echo second"},
+            )
             return LlmResponse(stop_reason="tool_use", tool_calls=[tc])
         return LlmResponse(stop_reason="end_turn", text="done")
 
