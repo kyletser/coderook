@@ -12,10 +12,12 @@ from code_rook.core.bus.envelope import (
     make_error,
 )
 from code_rook.core.bus.events import (
+    AgentStuckEvent,
     CoreStartedEvent,
     Event,
     LlmModelSelectedEvent,
     LlmReasoningEvent,
+    LlmRetryEvent,
     LlmTokenEvent,
     LlmUsageEvent,
     LogLineEvent,
@@ -32,11 +34,13 @@ from code_rook.core.bus.events import (
 
 __all__ = [
     "Command",
+    "AgentStuckEvent",
     "CoreStartedEvent",
     "Event",
     "LogLineEvent",
     "LlmModelSelectedEvent",
     "LlmReasoningEvent",
+    "LlmRetryEvent",
     "LlmTokenEvent",
     "LlmUsageEvent",
     "PlanReadyEvent",

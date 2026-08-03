@@ -5,16 +5,31 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from code_rook.core.bus.events import AgentDecisionEvent, StepFinishedEvent, StepStartedEvent
+from code_rook.core.bus.events import (
+    AgentDecisionEvent,
+    AgentStuckEvent,
+    LlmRetryEvent,
+    StepFinishedEvent,
+    StepStartedEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+)
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.base import LLMProvider
-from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import ParallelPolicy, ResourceClaim, ToolCatalogError
+from code_rook.core.turn import (
+    NoContentResponseError,
+    ReadRepeatGuard,
+    StreamWatchdog,
+    StreamWatchdogError,
+    StuckGuard,
+)
 
 if TYPE_CHECKING:
     from code_rook.core.artifacts import ArtifactStore
@@ -115,6 +130,8 @@ _TODO_END_TURN_REMINDER = (
 )
 # 连续最多推迟次数；超过即视为模型不再推进 todos，放弃阻拦让其结束
 _MAX_TODO_DEFERS = 3
+_MAX_TRANSIENT_RETRIES = 2
+_MAX_NO_CONTENT_RETRIES = 2
 
 
 def _now() -> str:
@@ -195,7 +212,13 @@ class AgentLoop:
         todo_state: TodoStateView | None = None,
         interaction_manager: InteractionManager | None = None,
         artifact_store: ArtifactStore | None = None,
+        watchdog: StreamWatchdog | None = None,
+        stuck_guard: StuckGuard | None = None,
+        read_guard: ReadRepeatGuard | None = None,
+        retry_backoff_s: float = 0.5,
     ) -> None:
+        if retry_backoff_s < 0:
+            raise ValueError("retry_backoff_s must not be negative")
         self._provider = provider
         self._registry = registry
         self._bus = bus
@@ -211,6 +234,10 @@ class AgentLoop:
         self._todo_state = todo_state
         self._interaction_manager = interaction_manager
         self._artifact_store = artifact_store
+        self._watchdog = watchdog or StreamWatchdog()
+        self._stuck_guard = stuck_guard or StuckGuard()
+        self._read_guard = read_guard or ReadRepeatGuard()
+        self._retry_backoff_s = retry_backoff_s
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -227,6 +254,84 @@ class AgentLoop:
     def _is_transient_error(exc: Exception) -> bool:
         message = f"{type(exc).__name__} {exc}".lower()
         return any(marker in message for marker in _TRANSIENT_ERROR_MARKERS)
+
+    # 判断 provider 是否返回了既无正文、推理也无工具调用的空响应
+    @staticmethod
+    def _is_no_content(response: LlmResponse) -> bool:
+        return not (
+            response.text.strip()
+            or response.tool_calls
+            or response.thinking_blocks
+        )
+
+    # 显式让出一次事件循环，使已请求的任务取消在启动下一操作前生效
+    @staticmethod
+    async def _cancellation_checkpoint() -> None:
+        await asyncio.sleep(0)
+
+    # 在 watchdog 下调用 Provider，并分别统计 transient 与 no-content 重试
+    async def _call_provider(self, context: ExecutionContext) -> LlmResponse:
+        transient_retries = 0
+        no_content_retries = 0
+
+        while True:
+            # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
+            async def _attempt(monitored_bus: EventBus) -> LlmResponse:
+                return await self._provider.chat(
+                    messages=context.messages,
+                    tool_schemas=self._registry.tool_schemas(),
+                    bus=monitored_bus,
+                    run_id=context.run_id,
+                    step=context.step,
+                    system=self._render_system(context),
+                )
+
+            try:
+                response = await self._watchdog.run(_attempt, self._bus)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if (
+                    transient_retries >= _MAX_TRANSIENT_RETRIES
+                    or not self._is_transient_error(exc)
+                ):
+                    raise
+                transient_retries += 1
+                await self._bus.publish(
+                    LlmRetryEvent(
+                        run_id=context.run_id,
+                        step=context.step,
+                        kind="transient",
+                        attempt=transient_retries,
+                        reason=str(exc),
+                        ts=_now(),
+                    )
+                )
+                if self._retry_backoff_s > 0:
+                    await asyncio.sleep(
+                        self._retry_backoff_s * (2 ** (transient_retries - 1))
+                    )
+                else:
+                    await self._cancellation_checkpoint()
+                continue
+
+            if not self._is_no_content(response):
+                return response
+            if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
+                raise NoContentResponseError(
+                    "provider returned no text, reasoning, or tool calls"
+                )
+            no_content_retries += 1
+            await self._bus.publish(
+                LlmRetryEvent(
+                    run_id=context.run_id,
+                    step=context.step,
+                    kind="no_content",
+                    attempt=no_content_retries,
+                    reason="provider returned no text, reasoning, or tool calls",
+                    ts=_now(),
+                )
+            )
 
     # 计算 system prompt：context 已加载 base 后追加 todos 软状态摘要（若有）
     def _render_system(self, context: ExecutionContext) -> str:
@@ -329,18 +434,105 @@ class AgentLoop:
             for existing in batch_claims
         )
 
+    # 判断一次调用是否可能改变可读状态，mutation 前清空读取缓存
+    def _is_mutating_call(self, tc: ToolCallBlock) -> bool:
+        try:
+            return self._registry.resolve_call(
+                tc.name,
+                dict(tc.input),
+            ).action.is_mutating
+        except (ToolCatalogError, PermissionError, ValueError, OSError):
+            return False
+
+    # 为复用的只读结果补齐 started/finished 事件，保持工具事件配对
+    async def _publish_cached_call(
+        self,
+        tc: ToolCallBlock,
+        context: ExecutionContext,
+        result: ToolResult,
+    ) -> None:
+        await self._bus.publish(
+            ToolCallStartedEvent(
+                run_id=context.run_id,
+                tool_use_id=tc.id,
+                tool_name=tc.name,
+                params=dict(tc.input),
+                ts=_now(),
+            )
+        )
+        await self._bus.publish(
+            ToolCallFinishedEvent(
+                run_id=context.run_id,
+                tool_use_id=tc.id,
+                tool_name=tc.name,
+                elapsed_ms=0,
+                output=result.content,
+                ts=_now(),
+            )
+        )
+
     # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
     async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
-        return await invoke_tool(
+        await self._cancellation_checkpoint()
+        read_key = self._read_guard.call_key(self._registry, tc)
+        if read_key is not None:
+            cached = self._read_guard.get(read_key)
+            if cached is not None:
+                await self._publish_cached_call(tc, context, cached)
+                await self._cancellation_checkpoint()
+                return cached
+        elif self._is_mutating_call(tc):
+            self._read_guard.clear()
+
+        result = await invoke_tool(
             self._registry, tc, self._bus, context.run_id,
             permission_manager=self._permission_manager,
             session_id=self._session_id,
             hooks=self._hooks,
             artifact_store=self._artifact_store,
         )
+        await self._cancellation_checkpoint()
+        if read_key is not None:
+            self._read_guard.put(read_key, result)
+        return result
+
+    # 同一并行批中只执行一次完全相同的只读调用，并为重复项回放配对事件
+    async def _invoke_parallel_batch(
+        self,
+        batch: list[ToolCallBlock],
+        context: ExecutionContext,
+    ) -> list[ToolResult]:
+        representatives: list[ToolCallBlock] = []
+        representative_indexes: list[int] = []
+        duplicate_of: dict[int, int] = {}
+        seen: dict[str, int] = {}
+        for index, tool_call in enumerate(batch):
+            key = self._read_guard.call_key(self._registry, tool_call)
+            if key is not None and key in seen:
+                duplicate_of[index] = seen[key]
+                continue
+            if key is not None:
+                seen[key] = index
+            representatives.append(tool_call)
+            representative_indexes.append(index)
+
+        await self._cancellation_checkpoint()
+        gathered = await asyncio.gather(
+            *(self._invoke_one(tool_call, context) for tool_call in representatives)
+        )
+        results_by_index = {
+            index: result
+            for index, result in zip(representative_indexes, gathered, strict=True)
+        }
+        for index, source_index in duplicate_of.items():
+            await self._cancellation_checkpoint()
+            result = results_by_index[source_index]
+            results_by_index[index] = result
+            await self._publish_cached_call(batch[index], context, result)
+        return [results_by_index[index] for index in range(len(batch))]
 
     # 把单个 ToolResult 按原顺序写回 context/transcript；返回是否命中 permission_required
-    def _record_result(
+    async def _record_result(
         self,
         idx: int,
         block_count: int,
@@ -361,6 +553,21 @@ class AgentLoop:
         if result.error_type == "permission_required":
             context.mark_failed("permission_required")
             return True
+        if not context.is_done():
+            stuck = self._stuck_guard.observe(tc, result)
+            if stuck is not None:
+                await self._bus.publish(
+                    AgentStuckEvent(
+                        run_id=context.run_id,
+                        step=context.step,
+                        tool_name=stuck.tool_name,
+                        signature=stuck.signature,
+                        repeat_count=stuck.repeat_count,
+                        ts=_now(),
+                    )
+                )
+                context.mark_failed("stuck_repetition")
+                return True
         return False
 
     # 执行一轮 tool_use 序列：连续的 can_parallel 工具组成一批用 asyncio.gather 并发，
@@ -374,6 +581,7 @@ class AgentLoop:
         i = 0
         n = len(tool_calls)
         while i < n:
+            await self._cancellation_checkpoint()
             j = i
             batch_claims: list[ResourceClaim] = []
             # 收集从 i 开始连续的并行工具，构造一个批
@@ -392,7 +600,7 @@ class AgentLoop:
                 # 当前 tool_calls[i] 不可并行（副作用或未知工具），单独串行执行
                 tc = tool_calls[i]
                 result = await self._invoke_one(tc, context)
-                if self._record_result(i, block_count, tc, result, context):
+                if await self._record_result(i, block_count, tc, result, context):
                     return
                 i += 1
                 continue
@@ -400,14 +608,22 @@ class AgentLoop:
             if len(batch) == 1:
                 results: list[ToolResult] = [await self._invoke_one(batch[0], context)]
             else:
-                gathered = await asyncio.gather(
-                    *(self._invoke_one(tc, context) for tc in batch)
-                )
-                results = list(gathered)
+                results = await self._invoke_parallel_batch(batch, context)
 
+            should_stop = False
             for k, tc in enumerate(batch):
-                if self._record_result(i + k, block_count, tc, results[k], context):
-                    return
+                should_stop = (
+                    await self._record_result(
+                        i + k,
+                        block_count,
+                        tc,
+                        results[k],
+                        context,
+                    )
+                    or should_stop
+                )
+            if should_stop:
+                return
             i = j
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
@@ -421,28 +637,30 @@ class AgentLoop:
 
             await self._apply_tool_result_budget(context)
 
-            # [plan] call LLM — transient errors retry; context overflow triggers one compaction
+            # [plan] watchdog 内调用 LLM；重试计数与 context overflow 恢复彼此独立
             try:
-                for attempt in range(3):
-                    try:
-                        response = await self._provider.chat(
-                            messages=context.messages,
-                            tool_schemas=self._registry.tool_schemas(),
-                            bus=self._bus,
-                            run_id=context.run_id,
-                            step=context.step,
-                            system=self._render_system(context),
-                        )
-                        break
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        if attempt >= 2 or not self._is_transient_error(exc):
-                            raise
-                        await asyncio.sleep(0.5 * (2**attempt))
+                response = await self._call_provider(context)
             except asyncio.CancelledError:
                 context.mark_failed("cancelled")
                 raise
+            except StreamWatchdogError as exc:
+                log.warning(
+                    "LLM watchdog failed run_id=%s step=%d reason=%s",
+                    context.run_id,
+                    context.step,
+                    exc.reason,
+                )
+                context.mark_failed(exc.reason)
+                break
+            except NoContentResponseError as exc:
+                log.warning(
+                    "LLM returned no content run_id=%s step=%d: %s",
+                    context.run_id,
+                    context.step,
+                    exc,
+                )
+                context.mark_failed(exc.reason)
+                break
             except Exception as exc:
                 if (
                     self._is_context_error(exc)
@@ -498,7 +716,11 @@ class AgentLoop:
 
             # [act] 按工具能力分组执行；连续的 can_parallel 工具组成一批并发，副作用工具串行
             if response.stop_reason == "tool_use":
-                await self._run_act_phase(response.tool_calls, context)
+                try:
+                    await self._run_act_phase(response.tool_calls, context)
+                except asyncio.CancelledError:
+                    context.mark_failed("cancelled")
+                    raise
             elif response.stop_reason == "max_tokens" and response.tool_calls:
                 # Output token limit hit mid-tool-call; input is incomplete.
                 # Add synthetic error results so the conversation stays balanced.

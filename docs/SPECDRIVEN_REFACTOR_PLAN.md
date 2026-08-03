@@ -18,6 +18,7 @@
 | PR-06 ToolSpec、Catalog 与稳定 schema | 已完成 | ToolSpec V2、canonical/memoized catalog、Plan action 裁剪、caller/action fail-closed、deferred head 稳定性、`54 passed` 工具回归 |
 | PR-07 Action-family adapter | 已完成 | File/Git/Run/Bash family、action 权限与并行策略、旧 alias replay、后台 wait/interact/cancel；完整 CI `635 passed, 3 skipped` |
 | PR-08 Deferred tools 与 Artifact store | 已完成 | 确定性 tool_search、MCP deferred、32 项可见上限、soft/hard 输出边界、内容寻址 Artifact、独立工具装配；分层回归 `644 passed, 3 skipped` |
+| PR-09 Watchdog 与重复行为防护 | 已完成 | stream idle/wall/size watchdog、独立 transient/no-content retry、stuck/read-repeat/coalesce、取消检查、结构化事件；分层回归 `656 passed, 3 skipped` |
 
 ## 1. 改造结果
 

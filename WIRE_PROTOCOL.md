@@ -3019,6 +3019,65 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+### AgentStuckEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `tool_name` | `string` | yes |
+| `signature` | `string` | yes |
+| `repeat_count` | `integer` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.stuck",
+      "default": "agent.stuck",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "tool_name": {
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "signature": {
+      "title": "Signature",
+      "type": "string"
+    },
+    "repeat_count": {
+      "title": "Repeat Count",
+      "type": "integer"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "tool_name",
+    "signature",
+    "repeat_count",
+    "ts"
+  ],
+  "title": "AgentStuckEvent",
+  "type": "object"
+}
+```
+
 ### ToolCallStartedEvent
 
 | Field | Type | Required |
@@ -3486,6 +3545,69 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "cache_read_input_tokens": 490,
   "cache_creation_input_tokens": 0,
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### LlmRetryEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `kind` | `string` | yes |
+| `attempt` | `integer` | yes |
+| `reason` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "llm.retry",
+      "default": "llm.retry",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "kind": {
+      "enum": [
+        "transient",
+        "no_content"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "attempt": {
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "kind",
+    "attempt",
+    "reason",
+    "ts"
+  ],
+  "title": "LlmRetryEvent",
+  "type": "object"
 }
 ```
 

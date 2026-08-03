@@ -208,7 +208,7 @@ async def test_tool_use_then_end_turn_marks_success() -> None:
 async def test_tool_result_appended_to_context() -> None:
     provider = _MockProvider([
         LlmResponse(stop_reason="tool_use", tool_calls=[_tc(inp={"msg": "hello"})]),
-        LlmResponse(stop_reason="end_turn"),
+        LlmResponse(stop_reason="end_turn", text="done"),
     ])
     registry = ToolRegistry()
     registry.register(_EchoTool())
@@ -244,7 +244,7 @@ async def test_tool_failure_loop_continues_to_success() -> None:
 async def test_tool_failure_result_is_error_in_context() -> None:
     provider = _MockProvider([
         LlmResponse(stop_reason="tool_use", tool_calls=[_tc("fail", {})]),
-        LlmResponse(stop_reason="end_turn"),
+        LlmResponse(stop_reason="end_turn", text="done"),
     ])
     registry = ToolRegistry()
     registry.register(_FailTool())
@@ -315,7 +315,7 @@ async def test_llm_api_error_marks_failed() -> None:
 async def test_step_started_and_finished_events_published() -> None:
     bus = EventBus()
     events = await _events(bus)
-    provider = _MockProvider([LlmResponse(stop_reason="end_turn")])
+    provider = _MockProvider([LlmResponse(stop_reason="end_turn", text="done")])
     loop, _ = _make_loop(provider, bus=bus)
     ctx = _ctx()
     await loop.run(ctx)
@@ -357,7 +357,7 @@ async def test_agent_decision_event_has_tool_fallback_without_text() -> None:
     events = await _events(bus)
     provider = _MockProvider([
         LlmResponse(stop_reason="tool_use", tool_calls=[_tc("custom_tool", {})]),
-        LlmResponse(stop_reason="end_turn"),
+        LlmResponse(stop_reason="end_turn", text="done"),
     ])
     loop, _ = _make_loop(provider, bus=bus)
 
@@ -377,7 +377,7 @@ async def test_step_counter_increments_across_steps() -> None:
     provider = _MockProvider([
         LlmResponse(stop_reason="tool_use", tool_calls=[_tc()]),
         LlmResponse(stop_reason="tool_use", tool_calls=[_tc()]),
-        LlmResponse(stop_reason="end_turn"),
+        LlmResponse(stop_reason="end_turn", text="done"),
     ])
     registry = ToolRegistry()
     registry.register(_EchoTool())

@@ -3273,7 +3273,28 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
         self._break_llm()
 
-        if t == "session.waiting_for_input":
+        if t == "llm.retry":
+            kind = str(event.get("kind") or "retry")
+            attempt = int(event.get("attempt") or 0)
+            self._append(
+                Static(
+                    f"[dim]retrying model response  {escape(kind)} #{attempt}[/dim]",
+                    classes="log-line",
+                )
+            )
+
+        elif t == "agent.stuck":
+            tool_name = escape(str(event.get("tool_name") or "tool"))
+            repeat_count = int(event.get("repeat_count") or 0)
+            self._append(
+                Static(
+                    f"[yellow]stopped repeated action[/yellow]  "
+                    f"[bold]{tool_name}[/bold]  [dim]{repeat_count} identical results[/dim]",
+                    classes="log-line",
+                )
+            )
+
+        elif t == "session.waiting_for_input":
             self._busy = False
             self._cancel_requested = False
             self._clear_user_question()

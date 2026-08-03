@@ -52,6 +52,16 @@ class AgentDecisionEvent(BaseModel):
     ts: str
 
 
+class AgentStuckEvent(BaseModel):
+    type: Literal["agent.stuck"] = "agent.stuck"
+    run_id: str
+    step: int
+    tool_name: str
+    signature: str
+    repeat_count: int
+    ts: str
+
+
 class ToolCallStartedEvent(BaseModel):
     type: Literal["tool.call_started"] = "tool.call_started"
     run_id: str
@@ -114,6 +124,16 @@ class LlmModelSelectedEvent(BaseModel):
     run_id: str
     model: str
     strategy: str  # "static" | "rule_based" | "cost_budget"
+    ts: str
+
+
+class LlmRetryEvent(BaseModel):
+    type: Literal["llm.retry"] = "llm.retry"
+    run_id: str
+    step: int
+    kind: Literal["transient", "no_content"]
+    attempt: int
+    reason: str
     ts: str
 
 
@@ -321,6 +341,7 @@ Event = Annotated[
     | StepStartedEvent
     | StepFinishedEvent
     | AgentDecisionEvent
+    | AgentStuckEvent
     | ToolCallStartedEvent
     | ToolCallFinishedEvent
     | ToolCallFailedEvent
@@ -328,6 +349,7 @@ Event = Annotated[
     | LlmReasoningEvent
     | LlmUsageEvent
     | LlmModelSelectedEvent
+    | LlmRetryEvent
     | LogLineEvent
     | SessionCreatedEvent
     | SessionMessageReceivedEvent

@@ -1023,6 +1023,30 @@ def test_step_and_usage_events_stay_out_of_timeline() -> None:
     assert app._last_context_pct == 0.25
 
 
+# 功能：验证 retry 与 stuck 可靠性事件以轻量摘要进入时间线
+# 设计：直接注入两种结构化事件，断言重试类别、工具名和重复次数均可观察
+def test_retry_and_stuck_events_show_bounded_timeline_summaries() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_event(
+        {"type": "llm.retry", "kind": "no_content", "attempt": 1}
+    )
+    app._handle_event(
+        {
+            "type": "agent.stuck",
+            "tool_name": "File",
+            "repeat_count": 3,
+        }
+    )
+
+    rendered = [str(widget.content) for widget in appended]  # type: ignore[attr-defined]
+    assert "no_content #1" in rendered[0]
+    assert "File" in rendered[1]
+    assert "3 identical results" in rendered[1]
+
+
 # 功能：验证 run.finished success 只结束运行状态而不追加完成提示
 # 设计：截获可见控件并发送成功事件，断言最终回答之后不再出现重复的 completed 状态行
 def test_run_finished_success_stays_out_of_timeline() -> None:
