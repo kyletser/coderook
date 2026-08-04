@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.skills.loader import SkillError, SkillLoader
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
@@ -55,7 +55,14 @@ class SkillTool(BaseTool):
     # 加载选中 skill 的完整正文并替换参数占位符
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         parsed = SkillParams.model_validate(params)
-        skill = self._loader.resolve(parsed.name)
+        try:
+            skill = self._loader.resolve(parsed.name)
+        except SkillError as exc:
+            return ToolResult(
+                content=str(exc),
+                is_error=True,
+                error_type="integrity_error",
+            )
         if skill is None:
             return ToolResult(
                 content=f"Unknown skill: {parsed.name}",

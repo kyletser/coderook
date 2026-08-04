@@ -280,6 +280,7 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 | `/diff` | 查看当前工作区改动和统一 diff |
 | `/rewind` | 从安全 checkpoint 恢复文件 |
 | `/context` | 查看消息数、token 估算、运行次数和上下文占用 |
+| `/skills` | 列出、查看、安装、删除或审计 Skills |
 | `/技能名` | 调用已注册的 Skill |
 
 输入 `/` 会同时列出内置命令和当前已注册的 Skills。
@@ -293,6 +294,38 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 
 TUI 顶部会显示当前上下文占用。CodeRook 默认在上下文接近 80% 时自动压缩旧历史；
 也可以用 `/compact` 手动压缩，用 `/context` 查看当前估算。
+
+### 管理 Skills
+
+TUI 和 CLI 都支持 `list/show/install/remove/audit`：
+
+```text
+/skills list
+/skills show review
+/skills install "C:\path\to\my-skill" --trust
+/skills install "C:\path\to\my-skill" --trust --yes
+/skills audit
+/skills remove my-skill --yes
+```
+
+第一次 `install` 只显示名称、目标路径、文件清单、trust 和 digest，不会写文件；确认内容后
+用同一命令追加 `--yes`。项目级 Skill 只会安装到 `.coderook/skills/<name>/`。
+`--scope user` 改为用户级安装。`.claude/skills`、`.codex/skills` 和 `.agents/skills`
+只做只读兼容导入，`remove` 不会删除其中内容。
+
+命令行等价形式：
+
+```powershell
+uv run coderook skills list
+uv run coderook skills show review
+uv run coderook skills install C:\path\to\my-skill --trust
+uv run coderook skills install C:\path\to\my-skill --trust --yes
+uv run coderook skills audit
+uv run coderook skills remove my-skill --yes
+```
+
+受管 Skill 安装后会记录 source、installed_at、trust 和 SHA-256。文件被修改后，
+`audit` 会显示 `mismatch`，CodeRook 也会在正文进入模型前拒绝执行。
 
 ## 9. 会话恢复
 
@@ -375,6 +408,7 @@ uv run coderook-tui --no-auto-core
 | `.coderook/config.toml` | 当前项目配置 |
 | `~/.coderook/credentials.json` | 模型 API Key |
 | `~/.coderook/policy.toml` | 永久权限规则 |
+| `~/.coderook/hooks.toml` | 用户级进程 Hooks |
 | `~/.coderook/sessions/` | 会话和 transcript |
 | `~/.coderook/runtime.db` | 运行时状态 |
 | `~/.coderook/ipc-token` | 本地 IPC 认证 token |
@@ -382,8 +416,30 @@ uv run coderook-tui --no-auto-core
 | `~/.coderook/logs/tui.log` | TUI 日志 |
 | `~/.coderook/traces/daemon.jsonl` | 脱敏 Trace |
 | `.coderook/memory/` | 当前项目的长期记忆 |
+| `.coderook/hooks.toml` | 当前项目进程 Hooks |
+| `.coderook/skills/` | 当前项目受管 Skills |
 
 不要提交 `credentials.json`、`ipc-token` 或包含密钥的 `.env`。
+
+进程 Hook 使用 TOML 数组配置。每项必须明确声明 timeout、blocking、command、conditions
+和 trusted_scope；项目 Hook 只有在 `/trust grant` 后才运行：
+
+```toml
+[[hooks]]
+id = "check-bash"
+event = "tool_call_before"
+timeout_ms = 2000
+blocking = true
+command = ["python", ".coderook/hooks/check_bash.py"]
+conditions = { tool_name = "Bash" }
+trusted_scope = "project"
+on_failure = "closed"
+```
+
+可用事件为 `session_start`、`message_submit`、`turn_start`、`tool_call_before`、
+`tool_call_after`、`approval_requested`、`compaction_completed`、`worker_started`、
+`worker_finished`、`turn_stop`、`session_stop`。Hook 通过 stdin 接收版本化 JSON；其中 secret
+会脱敏、超大工具结果会截断。`blocking = false` 的 Hook 使用有界队列。
 
 配置优先级由低到高为：
 

@@ -27,6 +27,7 @@ from code_rook.core.bus.events import (
 from code_rook.core.checkpoints import CheckpointError, CheckpointStore
 from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.events.bus import EventBus
+from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.runs import new_run_id
@@ -35,7 +36,8 @@ from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
-from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.skills.loader import SkillError, SkillLoader
+from code_rook.core.skills.models import Skill
 from code_rook.core.task.model import Task
 from code_rook.core.workspace import WorkspaceBoundary
 
@@ -76,6 +78,7 @@ class SessionManager:
         runtime_service: RuntimeService | None = None,
         interaction_manager: InteractionManager | None = None,
         route_registry: RouteRegistry | None = None,
+        hooks: HookManager | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
@@ -85,6 +88,7 @@ class SessionManager:
         self._runtime = runtime_service
         self._interaction_manager = interaction_manager
         self._route_registry = route_registry
+        self._hooks = hooks
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
@@ -118,6 +122,13 @@ class SessionManager:
         await self._ensure_runtime_sessions()
         sid = f"sess-{uuid.uuid4().hex[:12]}"
         ts = _now()
+        if self._hooks is not None:
+            decision = await self._hooks.emit(
+                "session_start",
+                {"session_id": sid, "mode": mode, "title": title},
+            )
+            if decision.blocked:
+                raise HandlerError(INVALID_PARAMS, decision.reason or "session blocked by hook")
         session = Session(
             id=sid,
             mode=mode,
@@ -165,6 +176,40 @@ class SessionManager:
                 await self._bus.publish(SessionResumedEvent(session_id=sid, ts=_now()))
 
             run_id = run_id or new_run_id()
+            requested_skill: Skill | None = None
+            skill_name = ""
+            skill_arguments = ""
+            if content.startswith("/"):
+                parts = content[1:].split(None, 1)
+                skill_name = parts[0]
+                skill_arguments = parts[1] if len(parts) > 1 else ""
+                try:
+                    requested_skill = self._skill_loader.resolve(skill_name)
+                except SkillError as exc:
+                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            if self._hooks is not None:
+                message_decision = await self._hooks.emit(
+                    "message_submit",
+                    {"session_id": sid, "run_id": run_id, "content": content},
+                )
+                if message_decision.blocked:
+                    raise HandlerError(
+                        INVALID_PARAMS,
+                        message_decision.reason or "message blocked by hook",
+                    )
+                turn_decision = await self._hooks.emit(
+                    "turn_start",
+                    {
+                        "session_id": sid,
+                        "run_id": run_id,
+                        "runtime_mode": runtime_mode.value,
+                    },
+                )
+                if turn_decision.blocked:
+                    raise HandlerError(
+                        INVALID_PARAMS,
+                        turn_decision.reason or "turn blocked by hook",
+                    )
             self._store.append_message(
                 sid,
                 "user",
@@ -196,23 +241,18 @@ class SessionManager:
             goal = content
             system_prompt_override: str | None = None
             tool_whitelist: list[str] | None = None
-            if content.startswith("/"):
-                parts = content[1:].split(None, 1)
-                skill_name = parts[0]
-                arguments = parts[1] if len(parts) > 1 else ""
-                skill = self._skill_loader.resolve(skill_name)
-                if skill is not None:
-                    goal = self._skill_loader.render_prompt(skill, arguments)
-                    system_prompt_override = skill.system_prompt_template
-                    tool_whitelist = skill.allowed_tools or None
-                    await self._bus.publish(
-                        SkillInvokedEvent(
-                            skill_name=skill_name,
-                            arguments=arguments,
-                            run_id=run_id,
-                            ts=_now(),
-                        )
+            if requested_skill is not None:
+                goal = self._skill_loader.render_prompt(requested_skill, skill_arguments)
+                system_prompt_override = requested_skill.system_prompt_template
+                tool_whitelist = requested_skill.allowed_tools or None
+                await self._bus.publish(
+                    SkillInvokedEvent(
+                        skill_name=skill_name,
+                        arguments=skill_arguments,
+                        run_id=run_id,
+                        ts=_now(),
                     )
+                )
 
             runner = self._runner_factory()
             run_coroutine = (
@@ -292,6 +332,11 @@ class SessionManager:
                     )
                 )
             if session.mode == "one_shot":
+                if self._hooks is not None:
+                    await self._hooks.emit(
+                        "session_stop",
+                        {"session_id": sid, "run_id": run_id, "reason": "one_shot_complete"},
+                    )
                 session.status = "closed"
                 await self._bus.publish(SessionClosedEvent(session_id=sid, ts=session.updated_at))
             else:
@@ -375,6 +420,11 @@ class SessionManager:
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
         async with lock:
+            if self._hooks is not None:
+                await self._hooks.emit(
+                    "session_stop",
+                    {"session_id": sid, "reason": "closed"},
+                )
             session.status = "closed"
             session.updated_at = _now()
             self._store.write_meta(session)
@@ -418,6 +468,20 @@ class SessionManager:
                 trigger="manual",
                 publish=False,
             )
+            if self._hooks is not None:
+                await self._hooks.emit(
+                    "compaction_completed",
+                    {
+                        "session_id": sid,
+                        "run_id": "manual",
+                        "trigger": "manual",
+                        "summary_path": result.summary_path,
+                        "saved_tokens": max(
+                            0,
+                            result.original_token_estimate - result.compacted_tokens,
+                        ),
+                    },
+                )
             return SessionCompactResult(
                 summary_tokens=result.summary_tokens,
                 saved_tokens=max(0, result.original_token_estimate - result.compacted_tokens),
@@ -637,6 +701,11 @@ class SessionManager:
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
         async with lock:
+            if self._hooks is not None:
+                await self._hooks.emit(
+                    "session_stop",
+                    {"session_id": sid, "reason": "deleted"},
+                )
             self._store.delete_session(sid)
         self._sessions.pop(sid, None)
         self._locks.pop(sid, None)

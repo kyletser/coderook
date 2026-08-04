@@ -20,6 +20,7 @@ from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.events.writer import EventWriter
+from code_rook.core.hooks import HookManager
 from code_rook.core.loop import AgentLoop
 from code_rook.core.lsp import PythonDiagnosticsClient
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
@@ -137,6 +138,7 @@ class SpawnAgentTool(BaseTool):
         workspace_boundary: WorkspaceBoundary | None = None,
         task_manager: TaskManager | None = None,
         route_registry: RouteRegistry | None = None,
+        hooks: HookManager | None = None,
     ) -> None:
         self._provider = provider
         self._parent_bus = parent_bus
@@ -150,6 +152,7 @@ class SpawnAgentTool(BaseTool):
         self._workspace_boundary = workspace_boundary or WorkspaceBoundary.current()
         self._task_manager = task_manager
         self._route_registry = route_registry
+        self._hooks = hooks
         self._profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         self._skill_loader = SkillLoader(self._workspace_boundary.root)
         profiles = self._profile_loader.list_all()
@@ -318,10 +321,28 @@ class SpawnAgentTool(BaseTool):
                 child_boundary.root / ".coderook" / "artifacts"
             ),
             diagnostics_client=PythonDiagnosticsClient(child_boundary),
+            hooks=self._hooks,
         )
 
         if route_event is not None:
             await self._parent_bus.publish(route_event)
+        if self._hooks is not None:
+            worker_decision = await self._hooks.emit(
+                "worker_started",
+                {
+                    "run_id": child_run_id,
+                    "parent_run_id": self._parent_run_id,
+                    "session_id": self._session_id,
+                    "background": p.run_in_background,
+                    "profile": p.subagent_type,
+                },
+            )
+            if worker_decision.blocked:
+                return ToolResult(
+                    content=worker_decision.reason or "Worker start blocked by hook.",
+                    is_error=True,
+                    error_type="hook_denied",
+                )
         await self._parent_bus.publish(
             SubagentStartedEvent(
                 run_id=child_run_id,
@@ -362,6 +383,16 @@ class SpawnAgentTool(BaseTool):
                 child_context.mark_failed("cancelled")
             raise
         finally:
+            if self._hooks is not None:
+                await self._hooks.emit(
+                    "worker_finished",
+                    {
+                        "run_id": child_run_id,
+                        "parent_run_id": self._parent_run_id,
+                        "session_id": self._session_id,
+                        "status": child_context.status,
+                    },
+                )
             await self._parent_bus.publish(
                 SubagentFinishedEvent(
                     run_id=child_run_id,
@@ -402,6 +433,16 @@ class SpawnAgentTool(BaseTool):
                 context.mark_failed("cancelled")
             raise
         finally:
+            if self._hooks is not None:
+                await self._hooks.emit(
+                    "worker_finished",
+                    {
+                        "run_id": run_id,
+                        "parent_run_id": self._parent_run_id,
+                        "session_id": self._session_id,
+                        "status": context.status,
+                    },
+                )
             await self._parent_bus.publish(
                 SubagentFinishedEvent(
                     run_id=run_id,
@@ -532,6 +573,7 @@ class SpawnAgentTool(BaseTool):
                 workspace_boundary=boundary,
                 task_manager=task_manager,
                 route_registry=self._route_registry,
+                hooks=self._hooks,
             )
             if _allowed("spawn_agent"):
                 registry.register(nested)

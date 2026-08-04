@@ -144,6 +144,7 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 | `/permissions ask\|auto-review\|full-access` | 独立查看或切换权限姿态，`Shift+Tab` 循环 |
 | `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
 | `/sandbox status` | 查看真实 OS 隔离能力 |
+| `/skills list\|show\|install\|remove\|audit` | 管理带 provenance 和 digest 校验的 Skills |
 | `/skill_name` | 调用已安装 Skill |
 | `Ctrl+Q` | 退出 TUI |
 
@@ -156,6 +157,7 @@ uv run coderook ping
 uv run coderook chat
 uv run coderook run --goal "分析项目并运行测试"
 uv run coderook sessions --all
+uv run coderook skills audit
 uv run coderook trace --follow
 ```
 

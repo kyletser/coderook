@@ -117,6 +117,7 @@ class AgentRunner:
             interaction_manager=self._interaction_manager,
             mcp_manager=self._mcp_manager,
             route_registry=self._route_registry,
+            hooks=self._hooks,
         )
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
@@ -220,11 +221,15 @@ class AgentRunner:
             system_prompt_override=system_prompt_override,
             runtime_mode=runtime_mode,
         )
-        prompt_decision = await self._hooks.emit(
-            "UserPromptSubmit",
-            {"run_id": run_id, "session_id": session.id if session else "", "prompt": goal},
+        prompt_decision = (
+            await self._hooks.emit(
+                "message_submit",
+                {"run_id": run_id, "session_id": "", "content": goal},
+            )
+            if session is None
+            else None
         )
-        if prompt_decision.blocked:
+        if prompt_decision is not None and prompt_decision.blocked:
             return RunOutcome(
                 status="failed",
                 result="",

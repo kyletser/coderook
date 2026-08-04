@@ -5,7 +5,9 @@ import asyncio
 from pydantic import BaseModel
 
 from code_rook.core.events.bus import EventBus
+from code_rook.core.hooks import HookManager
 from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.tools.base import BaseTool, ToolResult
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
@@ -147,3 +149,53 @@ async def test_runtime_exception_gives_runtime_error() -> None:
 async def test_started_event_always_first() -> None:
     result, events = await _run(ToolRegistry(), _call("nonexistent"))
     assert events[0].type == "tool.call_started"  # type: ignore[attr-defined]
+
+
+# 功能：验证 tool_call_before、approval_requested、tool_call_after 按真实执行顺序触发
+# 设计：让默认高权 EchoTool 进入 ASK，并由 EventBus 立即批准，完整覆盖工具与权限接线
+async def test_tool_and_approval_hooks_follow_execution_order() -> None:
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    bus = EventBus()
+    permission_manager = PermissionManager(timeout_s=1)
+    hooks = HookManager()
+    seen: list[str] = []
+
+    # 记录每个 Hooks V2 工具生命周期名称
+    async def record(context: dict[str, object]) -> None:
+        seen.append(str(context["phase"]))
+
+    # 收到真实 permission.requested 后立刻批准，避免测试等待人工输入
+    async def approve(event: BaseModel) -> None:
+        if getattr(event, "type", "") == "permission.requested":
+            permission_manager.respond("t1", "allow_once")
+
+    # 为三个生命周期分别注入稳定 phase 标记
+    async def before(_context: dict[str, object]) -> None:
+        await record({"phase": "before"})
+
+    # 记录实际需要审批而非静态猜测的 approval 事件
+    async def approval(_context: dict[str, object]) -> None:
+        await record({"phase": "approval"})
+
+    # 记录工具成功完成后的 after 事件
+    async def after(_context: dict[str, object]) -> None:
+        await record({"phase": "after"})
+
+    hooks.register("tool_call_before", before)
+    hooks.register("approval_requested", approval)
+    hooks.register("tool_call_after", after)
+    bus.subscribe(approve)
+
+    result = await invoke_tool(
+        registry,
+        _call("echo", {"msg": "hi"}),
+        bus,
+        run_id="r1",
+        permission_manager=permission_manager,
+        session_id="sess-1",
+        hooks=hooks,
+    )
+
+    assert not result.is_error
+    assert seen == ["before", "approval", "after"]

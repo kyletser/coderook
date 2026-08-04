@@ -365,6 +365,21 @@ class SkillInvokedEvent(BaseModel):
     ts: str
 
 
+class HookExecutedEvent(BaseModel):
+    type: Literal["hook.executed"] = "hook.executed"
+    hook_id: str
+    event_name: str
+    status: str
+    blocking: bool
+    on_failure: str
+    elapsed_ms: int
+    blocked: bool
+    reason: str
+    output_truncated: bool
+    exit_code: int | None
+    ts: str
+
+
 class RuntimeEventAppendedEvent(BaseModel):
     type: Literal["runtime.event"] = "runtime.event"
     thread_id: str
@@ -418,6 +433,7 @@ Event = Annotated[
     | BackgroundJobStartedEvent
     | BackgroundJobFinishedEvent
     | SkillInvokedEvent
+    | HookExecutedEvent
     | RuntimeEventAppendedEvent,
     Discriminator("type"),
 ]

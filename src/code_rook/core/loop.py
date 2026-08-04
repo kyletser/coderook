@@ -909,11 +909,25 @@ class AgentLoop:
                 and response.usage.context_pct >= self._compact_threshold
             ):
                 await self._apply_tool_result_budget(context)
-                await self._compactor.compact(
+                compacted = await self._compactor.compact(
                     context,
                     self._provider,
                     trigger="auto_threshold",
                 )
+                if compacted is not None and self._hooks is not None:
+                    await self._hooks.emit(
+                        "compaction_completed",
+                        {
+                            "run_id": context.run_id,
+                            "session_id": self._session_id,
+                            "trigger": "auto_threshold",
+                            "summary_path": compacted.summary_path,
+                            "saved_tokens": max(
+                                0,
+                                compacted.original_token_estimate - compacted.compacted_tokens,
+                            ),
+                        },
+                    )
 
             await self._bus.publish(
                 StepFinishedEvent(run_id=context.run_id, step=context.step, ts=_now())
@@ -921,7 +935,7 @@ class AgentLoop:
 
         if self._hooks is not None:
             await self._hooks.emit(
-                "Stop",
+                "turn_stop",
                 {
                     "run_id": context.run_id,
                     "session_id": self._session_id,

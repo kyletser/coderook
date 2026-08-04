@@ -30,6 +30,13 @@ from code_rook.cli.commands.session import (
     cmd_session_rename,
 )
 from code_rook.cli.commands.sessions import cmd_sessions
+from code_rook.cli.commands.skills import (
+    cmd_skills_audit,
+    cmd_skills_install,
+    cmd_skills_list,
+    cmd_skills_remove,
+    cmd_skills_show,
+)
 from code_rook.cli.commands.trace import cmd_trace
 from code_rook.cli.commands.version import cmd_version
 from code_rook.core.config import get_config
@@ -127,6 +134,22 @@ def main() -> None:
     model_sub = model_parser.add_subparsers(dest="model_command")
     list_models_parser = model_sub.add_parser("list", help="List configured route models")
     list_models_parser.add_argument("--route", dest="route_id")
+    skills_parser = subparsers.add_parser("skills", help="Manage reusable skills")
+    skills_sub = skills_parser.add_subparsers(dest="skills_command")
+    skills_sub.add_parser("list", help="List skills and provenance")
+    show_skill = skills_sub.add_parser("show", help="Show a skill manifest")
+    show_skill.add_argument("name")
+    install_skill = skills_sub.add_parser("install", help="Preview or install a local skill")
+    install_skill.add_argument("source")
+    install_skill.add_argument("--scope", choices=("project", "user"), default="project")
+    install_skill.add_argument("--trust", action="store_true")
+    install_skill.add_argument("--yes", action="store_true")
+    install_skill.add_argument("--force", action="store_true")
+    remove_skill = skills_sub.add_parser("remove", help="Remove a managed skill")
+    remove_skill.add_argument("name")
+    remove_skill.add_argument("--scope", choices=("project", "user"), default="project")
+    remove_skill.add_argument("--yes", action="store_true")
+    skills_sub.add_parser("audit", help="Verify skill digests")
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an active agent run")
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
@@ -243,6 +266,26 @@ def main() -> None:
             cmd_model_list(config, route_id=args.route_id)
         else:
             model_parser.print_help()
+            sys.exit(1)
+    elif args.command == "skills":
+        if args.skills_command == "list":
+            cmd_skills_list()
+        elif args.skills_command == "show":
+            cmd_skills_show(args.name)
+        elif args.skills_command == "install":
+            cmd_skills_install(
+                args.source,
+                scope=args.scope,
+                trust=args.trust,
+                confirmed=args.yes,
+                overwrite=args.force,
+            )
+        elif args.skills_command == "remove":
+            cmd_skills_remove(args.name, scope=args.scope, confirmed=args.yes)
+        elif args.skills_command == "audit":
+            cmd_skills_audit()
+        else:
+            skills_parser.print_help()
             sys.exit(1)
     elif args.command == "ping":
         cmd_ping(config)

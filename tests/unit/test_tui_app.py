@@ -673,6 +673,35 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["diff"] == "show current workspace changes"
     assert items["rewind"] == "restore files from a safe checkpoint"
     assert items["context"] == "show context size and usage"
+    assert items["skills"] == "list, show, install, remove, or audit skills"
+
+
+# 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录
+# 设计：直接调用本地命令 handler 并收集 Static，避免 socket 干扰文件确认语义
+def test_tui_skills_install_requires_explicit_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: tui-skill\ndescription: TUI test\n---\nDo work\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._handle_skills_command(f'/skills install "{source}" --trust')
+
+    target = tmp_path / ".coderook" / "skills" / "tui-skill"
+    assert not target.exists()
+    assert "安装预览" in "\n".join(str(widget.render()) for widget in appended)
+
+    app._handle_skills_command(f'/skills install "{source}" --trust --yes')
+
+    assert target.is_dir()
 
 
 # 功能：验证 TUI 的 Provider 与模型切换直接更新同一用户级 RouteStore

@@ -12,6 +12,7 @@ from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
 from code_rook.core.editing import FileMutation, apply_file_transaction
 from code_rook.core.events.bus import EventBus
+from code_rook.core.hooks import HookManager
 from code_rook.core.runner import RunOutcome
 from code_rook.core.session.manager import (
     RUN_NOT_ACTIVE,
@@ -49,6 +50,36 @@ class _Runner:
             run_id,
         )
         return RunOutcome(status="success", result="done", reason=None)
+
+
+# 功能：验证 session_start、message_submit、turn_start、session_stop 接入真实会话生命周期
+# 设计：共享一个 HookManager 贯穿 create/send/close，使用内存回调核对稳定事件顺序
+async def test_session_lifecycle_emits_hooks_v2(tmp_path: Path) -> None:
+    hooks = HookManager()
+    seen: list[str] = []
+
+    # 构造为每个事件记录固定名称的异步回调
+    def callback(event_name: str):
+        # 将事件名称闭包成符合 HookCallback 协议的协程
+        async def receive(_context: dict[str, object]) -> None:
+            seen.append(event_name)
+
+        return receive
+
+    for event_name in ("session_start", "message_submit", "turn_start", "session_stop"):
+        hooks.register(event_name, callback(event_name))  # type: ignore[arg-type]
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: _Runner(),
+        EventBus(),
+        hooks=hooks,
+    )  # type: ignore[arg-type]
+
+    session = await manager.create("chat")
+    await manager.send_message(session.id, "hello")
+    await manager.close(session.id)
+
+    assert seen == ["session_start", "message_submit", "turn_start", "session_stop"]
 
 
 # 功能：验证 create 会创建 active session、写入 meta 并发布 session.created 事件

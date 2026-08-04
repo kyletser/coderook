@@ -4,7 +4,7 @@ from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfile
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
-from code_rook.core.skills.loader import Skill
+from code_rook.core.skills.models import Skill, SkillManifest
 
 
 # 功能：验证运行环境摘要公开工作目录与本机 shell 能力但不展开环境变量
@@ -22,9 +22,15 @@ def test_runtime_context_describes_host_and_workspace(tmp_path: Path) -> None:
 # 设计：构造带独特正文标记的对象，断言描述可见而系统提示正文不可见
 def test_capability_context_uses_progressive_disclosure() -> None:
     skill = Skill(
-        name="review",
-        description="Review changed code",
+        manifest=SkillManifest(name="review", description="Review changed code"),
         system_prompt_template="SECRET_FULL_SKILL_BODY",
+        digest="sha256:" + "0" * 64,
+        source="builtin:test",
+        installed_at="2026-08-04T00:00:00Z",
+        trust="builtin",
+        scope="builtin",
+        path="review.md",
+        integrity="verified",
     )
     agent = AgentProfile(
         name="planner",
@@ -34,7 +40,7 @@ def test_capability_context_uses_progressive_disclosure() -> None:
 
     context = build_capability_context([skill], [agent])
 
-    assert "review: Review changed code" in context
+    assert "review [integrity=verified, trust=builtin]: Review changed code" in context
     assert "planner: Plan multi-step work" in context
     assert "SECRET_FULL_SKILL_BODY" not in context
     assert "SECRET_AGENT_SYSTEM_PROMPT" not in context

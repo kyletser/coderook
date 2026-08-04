@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rich.markup import escape
 from textual import events
@@ -30,6 +31,12 @@ from code_rook.core.llm.provider_presets import (
 from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import ProviderRoute
 from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.skills.manager import (
+    InstallScope,
+    SkillConfirmationRequired,
+    SkillManager,
+    SkillManagerError,
+)
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui.clipboard import copy_to_windows_clipboard
@@ -1828,6 +1835,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("diff", "show current workspace changes"),
             ("rewind", "restore files from a safe checkpoint"),
             ("context", "show context size and usage"),
+            ("skills", "list, show, install, remove, or audit skills"),
         ]
         try:
             loader = SkillLoader()
@@ -1985,6 +1993,122 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if not self._copy_selected_text():
             self._copy_last_response()
 
+    # 在 TUI 本地执行 /skills list/show/install/remove/audit，并要求变更操作显式确认
+    def _handle_skills_command(self, content: str) -> None:
+        try:
+            parts = shlex.split(content)
+        except ValueError as exc:
+            self._append(
+                Static(
+                    f"[red]skills 参数错误：{escape(str(exc))}[/red]",
+                    classes="log-line",
+                )
+            )
+            return
+        action = parts[1] if len(parts) > 1 else "list"
+        args = parts[2:]
+        manager = SkillManager(Path.cwd())
+        try:
+            if action == "list":
+                skills = manager.list_all()
+                lines = [
+                    f"{skill.name}  {skill.scope}  {skill.trust}  {skill.integrity}"
+                    for skill in skills
+                ]
+                self._append(
+                    Static(
+                        "[bold cyan]Skills[/bold cyan]\n"
+                        + escape("\n".join(lines) or "No skills."),
+                        classes="log-line",
+                    )
+                )
+                return
+            if action == "show" and args:
+                skill = manager.show(args[0])
+                if skill is None:
+                    raise SkillManagerError(f"skill not found: {args[0]}")
+                payload = skill.model_dump(
+                    mode="json",
+                    exclude={"system_prompt_template"},
+                )
+                self._append(
+                    Static(
+                        "[bold cyan]Skill manifest[/bold cyan]\n"
+                        + escape(json.dumps(payload, ensure_ascii=False, indent=2)),
+                        classes="log-line",
+                    )
+                )
+                return
+            scope: InstallScope = "user" if "--user" in args else "project"
+            if "--scope" in args:
+                scope_index = args.index("--scope")
+                if scope_index + 1 >= len(args) or args[scope_index + 1] not in {"user", "project"}:
+                    raise SkillManagerError("--scope must be project or user")
+                scope = cast(InstallScope, args[scope_index + 1])
+            if action == "install" and args:
+                installed = manager.install(
+                    args[0],
+                    scope=scope,
+                    trust="trusted" if "--trust" in args else "untrusted",
+                    confirmed="--yes" in args,
+                    overwrite="--force" in args,
+                )
+                self._slash_items = self._build_slash_items()
+                self._append(
+                    Static(
+                        f"[green]已安装 skill {escape(installed.name)}[/green]",
+                        classes="log-line",
+                    )
+                )
+                return
+            if action == "remove" and args:
+                manager.remove(
+                    args[0],
+                    scope=scope,
+                    confirmed="--yes" in args,
+                )
+                self._slash_items = self._build_slash_items()
+                self._append(
+                    Static(
+                        f"[green]已删除 {scope} skill {escape(args[0])}[/green]",
+                        classes="log-line",
+                    )
+                )
+                return
+            if action == "audit":
+                records = manager.audit()
+                lines = [
+                    f"{record.name}  {record.scope}  {record.trust}  {record.integrity}  "
+                    f"{record.digest[:19]}"
+                    for record in records
+                ]
+                self._append(
+                    Static(
+                        "[bold cyan]Skill audit[/bold cyan]\n"
+                        + escape("\n".join(lines) or "No skills."),
+                        classes="log-line",
+                    )
+                )
+                return
+            raise SkillManagerError(
+                "用法：/skills list|show <name>|install <path> [--scope user|project] "
+                "[--trust] [--yes]|remove <name> [--scope user|project] --yes|audit"
+            )
+        except SkillConfirmationRequired as exc:
+            preview = json.dumps(exc.preview.model_dump(mode="json"), ensure_ascii=False, indent=2)
+            self._append(
+                Static(
+                    "[bold yellow]安装预览（尚未写入）[/bold yellow]\n"
+                    + escape(preview)
+                    + "\n[dim]确认后在相同命令末尾添加 --yes[/dim]",
+                    classes="log-line",
+                )
+            )
+        except (SkillManagerError, OSError) as exc:
+            self._append(
+                Static(f"[red]skills 错误：{escape(str(exc))}[/red]", classes="log-line")
+            )
+
     async def _do_cancel_run(self, run_id: str) -> None:
         if self._client is None:
             return
@@ -2032,6 +2156,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 name="steer_run",
                 exclusive=False,
             )
+            return
+        if content == "/skills" or content.startswith("/skills "):
+            event.text_area.text = ""
+            self._handle_skills_command(content)
             return
         if content == "/permissions":
             event.text_area.text = ""

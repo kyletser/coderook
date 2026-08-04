@@ -9,6 +9,7 @@ import pytest
 
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
+from code_rook.core.hooks import HookManager
 from code_rook.core.llm import factory as llm_factory
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.route_registry import RouteRegistry
@@ -44,6 +45,7 @@ def _make_tool(
     tmp_path: Path,
     provider: Any = None,
     depth: int = 0,
+    hooks: HookManager | None = None,
 ) -> tuple[SpawnAgentTool, BackgroundTaskRegistry, EventBus]:
     bus = EventBus()
     registry = BackgroundTaskRegistry()
@@ -58,6 +60,7 @@ def _make_tool(
         session_id="sess-test",
         depth=depth,
         workspace_boundary=WorkspaceBoundary(tmp_path),
+        hooks=hooks,
     )
     return tool, registry, bus
 
@@ -87,6 +90,32 @@ async def test_foreground_returns_result(tmp_path: Path) -> None:
     })
     assert not result.is_error
     assert "analysis complete" in result.content
+
+
+# 功能：验证前台 worker 的 started/finished hooks 包围真实子 Agent 执行
+# 设计：给 SpawnAgentTool 注入共享 HookManager，收集两个 worker 生命周期并检查完成状态
+async def test_worker_lifecycle_hooks_wrap_subagent(tmp_path: Path) -> None:
+    hooks = HookManager()
+    seen: list[tuple[str, str]] = []
+
+    # 记录 worker started 的 run ID
+    async def started(context: dict[str, object]) -> None:
+        seen.append(("started", str(context["run_id"])))
+
+    # 记录 worker finished 的同一 run ID 和终态
+    async def finished(context: dict[str, object]) -> None:
+        seen.append((str(context["status"]), str(context["run_id"])))
+
+    hooks.register("worker_started", started)
+    hooks.register("worker_finished", finished)
+    tool, _, _ = _make_tool(tmp_path, hooks=hooks)
+
+    result = await tool.invoke({"description": "work", "prompt": "finish"})
+
+    assert not result.is_error
+    assert seen[0][0] == "started"
+    assert seen[1][0] == "success"
+    assert seen[0][1] == seen[1][1]
 
 
 # 功能：后台模式应立即返回含 run_id 的消息，不阻塞等待子 agent

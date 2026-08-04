@@ -2646,6 +2646,102 @@ Events sent over the IPC socket (daemon -> client).
 }
 ```
 
+### HookExecutedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `hook_id` | `string` | yes |
+| `event_name` | `string` | yes |
+| `status` | `string` | yes |
+| `blocking` | `boolean` | yes |
+| `on_failure` | `string` | yes |
+| `elapsed_ms` | `integer` | yes |
+| `blocked` | `boolean` | yes |
+| `reason` | `string` | yes |
+| `output_truncated` | `boolean` | yes |
+| `exit_code` | `integer | null` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "hook.executed",
+      "default": "hook.executed",
+      "title": "Type",
+      "type": "string"
+    },
+    "hook_id": {
+      "title": "Hook Id",
+      "type": "string"
+    },
+    "event_name": {
+      "title": "Event Name",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "blocking": {
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "on_failure": {
+      "title": "On Failure",
+      "type": "string"
+    },
+    "elapsed_ms": {
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "blocked": {
+      "title": "Blocked",
+      "type": "boolean"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "output_truncated": {
+      "title": "Output Truncated",
+      "type": "boolean"
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exit Code"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hook_id",
+    "event_name",
+    "status",
+    "blocking",
+    "on_failure",
+    "elapsed_ms",
+    "blocked",
+    "reason",
+    "output_truncated",
+    "exit_code",
+    "ts"
+  ],
+  "title": "HookExecutedEvent",
+  "type": "object"
+}
+```
+
 ## Run Events
 
 Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscribed clients.

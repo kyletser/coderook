@@ -60,6 +60,7 @@ from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
 
 if TYPE_CHECKING:
+    from code_rook.core.hooks import HookManager
     from code_rook.core.llm.route_registry import RouteRegistry
 
 
@@ -81,6 +82,7 @@ class RuntimeToolAssembly:
         interaction_manager: InteractionManager | None,
         mcp_manager: McpServerManager | None,
         route_registry: RouteRegistry | None,
+        hooks: HookManager | None = None,
     ) -> None:
         self._boundary = workspace_boundary
         self._artifact_store = artifact_store
@@ -95,6 +97,7 @@ class RuntimeToolAssembly:
         self._interaction_manager = interaction_manager
         self._mcp_manager = mcp_manager
         self._route_registry = route_registry
+        self._hooks = hooks
 
     # 根据本次 run 的动态依赖构建完整且受 Mode/白名单裁剪的工具目录
     def build(
@@ -214,6 +217,7 @@ class RuntimeToolAssembly:
                         workspace_boundary=self._boundary,
                         task_manager=task_manager,
                         route_registry=self._route_registry,
+                        hooks=self._hooks,
                     )
                 )
             agent_result_tool = AgentResultTool(self._task_registry)

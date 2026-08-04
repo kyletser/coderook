@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 import code_rook
+from code_rook.core.authority import WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
@@ -71,6 +72,7 @@ from code_rook.core.bus.commands import (
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.events.bus import EventBus
+from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteRegistry
 from code_rook.core.logging_setup import setup_logging
@@ -110,6 +112,7 @@ class CoreApp:
         self._runtime: RuntimeService | None = None
         self._route_registry: RouteRegistry | None = None
         self._permission_manager: PermissionManager | None = None
+        self._hooks: HookManager | None = None
         self._mcp_manager: McpServerManager | None = None
         self._background_registry = BackgroundJobRegistry(self._bus)
         self._interaction_manager = InteractionManager(self._bus)
@@ -538,6 +541,15 @@ class CoreApp:
             self._config.permission.timeout_s,
             len(load_policy_file(policy_file)),
         )
+        self._hooks = HookManager.from_workspace(
+            Path.cwd(),
+            bus=self._bus,
+            project_trust_provider=lambda session_id: (
+                self._permission_manager is not None
+                and self._permission_manager.get_authority_snapshot(session_id).workspace_trust
+                == WorkspaceTrust.TRUSTED
+            ),
+        )
 
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
         self._bus.subscribe(self._broadcaster.handle)
@@ -574,12 +586,14 @@ class CoreApp:
                 interaction_manager=self._interaction_manager,
                 route_registry=self._route_registry,
                 runtime_service=self._runtime,
+                hooks=self._hooks,
             ),
             bus=self._bus,
             subagent_registry=self._subagent_registry,
             runtime_service=self._runtime,
             interaction_manager=self._interaction_manager,
             route_registry=self._route_registry,
+            hooks=self._hooks,
         )
 
         server = SocketServer(
@@ -642,6 +656,8 @@ class CoreApp:
         await self._background_registry.cancel_all()
         if self._subagent_registry is not None:
             await self._subagent_registry.cancel_all()
+        if self._hooks is not None:
+            await self._hooks.close()
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()

@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.skills.loader import Skill, SkillLoader
+from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.skills.models import Skill, SkillManifest
 
 
 # 功能：内建 review skill 应能被 SkillLoader 查找到
@@ -42,10 +43,15 @@ def test_unknown_skill_returns_none() -> None:
 def test_arguments_substituted() -> None:
     loader = SkillLoader()
     skill = Skill(
-        name="test",
-        description="test skill",
+        manifest=SkillManifest(name="test", description="test skill"),
         system_prompt_template="Review this: $ARGUMENTS\nPlease be thorough.",
-        allowed_tools=[],
+        digest="sha256:" + "0" * 64,
+        source="test",
+        installed_at="2026-08-04T00:00:00Z",
+        trust="trusted",
+        scope="project",
+        path="test.md",
+        integrity="unmanaged",
     )
     rendered = loader.render_prompt(skill, "src/foo.py")
     assert "$ARGUMENTS" not in rendered

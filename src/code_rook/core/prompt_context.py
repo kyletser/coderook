@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfile
-from code_rook.core.skills.loader import Skill
+from code_rook.core.skills.models import Skill
 
 
 # 把能力描述压缩成安全的单行元数据，避免目录内容无界占用上下文
@@ -52,7 +52,8 @@ def build_capability_context(
     ]
     if skills:
         lines.extend(
-            f"- {skill.name}: {_summary(skill.description) or 'No description provided.'}"
+            f"- {skill.name} [integrity={skill.integrity}, trust={skill.trust}]: "
+            f"{_summary(skill.description) or 'No description provided.'}"
             for skill in sorted(skills, key=lambda item: item.name)
         )
     else:

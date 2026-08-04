@@ -211,7 +211,7 @@ async def invoke_tool(
 
     if hooks is not None:
         hook_decision = await hooks.emit(
-            "PreToolUse",
+            "tool_call_before",
             {
                 "run_id": run_id,
                 "session_id": session_id,
@@ -232,6 +232,8 @@ async def invoke_tool(
 
     if permission_manager is not None:
         async def _emit_permission(raw: dict[str, Any]) -> None:
+            if hooks is not None:
+                await hooks.emit("approval_requested", dict(raw, run_id=run_id))
             await bus.publish(PermissionRequestedEvent(**raw, run_id=run_id))
 
         allowed, decision = await permission_manager.check_and_wait(
@@ -309,7 +311,7 @@ async def invoke_tool(
                 )
                 if hooks is not None:
                     await hooks.emit(
-                        "PostToolUse",
+                        "tool_call_after",
                         {
                             "run_id": run_id,
                             "session_id": session_id,
