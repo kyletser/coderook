@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 import code_rook
 from code_rook.core.agents.loader import AgentProfileLoader
+from code_rook.core.api import HttpApiServer, RuntimeApiService
 from code_rook.core.authority import RuntimeMode, ToolAction, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
@@ -66,6 +67,8 @@ from code_rook.core.bus.commands import (
     SessionSetAuthorityCommand,
     SessionTasksCommand,
     SessionTasksResult,
+    TurnInspectCommand,
+    TurnInspectResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
     WorkerListCommand,
@@ -98,7 +101,8 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
-from code_rook.core.runtime import RuntimeService, RuntimeStore
+from code_rook.core.runtime.service import RuntimeService
+from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session import Session, SessionManager, SessionStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
@@ -143,6 +147,8 @@ class CoreApp:
         self._subagent_registry: BackgroundTaskRegistry | None = None
         self._fleet_registry: BackgroundTaskRegistry | None = None
         self._fleet: LocalFleet | None = None
+        self._http_api: HttpApiServer | None = None
+        self._runtime_api: RuntimeApiService | None = None
 
     # 从当前 route、agent profile 和 authority 真值构建不可变 FleetProfile
     def _build_fleet_profiles(self) -> list[FleetProfile]:
@@ -538,8 +544,40 @@ class CoreApp:
     ) -> SessionContextResult:
         assert self._sessions is not None
         cmd = SessionContextCommand.model_validate(params)
-        return SessionContextResult.model_validate(
-            self._sessions.context_info(cmd.session_id)
+        context = self._sessions.context_info(cmd.session_id)
+        last_run_id = context.get("last_run_id")
+        if isinstance(last_run_id, str) and self._runtime is not None:
+            turn = await self._runtime.get_turn(last_run_id)
+            events = [
+                event
+                for event in await self._runtime.list_events(cmd.session_id)
+                if event.turn_id == last_run_id
+            ]
+            context["usage"] = turn.usage
+            for event in reversed(events):
+                if event.type == "context.working_set" and not context.get("working_set"):
+                    paths = event.payload.get("paths")
+                    context["working_set"] = paths if isinstance(paths, list) else []
+                elif event.type == "context.compacted" and context.get("compaction") is None:
+                    context["compaction"] = event.payload
+                elif event.type == "context.budget" and context.get("tool_schema_tokens") is None:
+                    context["tool_schema_tokens"] = event.payload.get("tool_schema_tokens")
+                    context["system_tokens"] = event.payload.get("system_tokens")
+        return SessionContextResult.model_validate(context)
+
+    # 返回 turn inspector 所需的 durable 状态、items、events 与 receipt
+    async def _turn_inspect_handler(self, params: dict[str, Any]) -> TurnInspectResult:
+        assert self._runtime is not None
+        cmd = TurnInspectCommand.model_validate(params)
+        turn = await self._runtime.get_turn(cmd.turn_id)
+        items = await self._runtime.list_items(cmd.turn_id)
+        events = await self._runtime.list_turn_events(cmd.turn_id)
+        receipt = await self._runtime.get_receipt(cmd.turn_id)
+        return TurnInspectResult(
+            turn=turn.model_dump(mode="json"),
+            items=[item.model_dump(mode="json") for item in items],
+            events=[event.model_dump(mode="json") for event in events],
+            receipt=receipt.model_dump(mode="json"),
         )
 
     # 关闭 session 并返回 closed 状态
@@ -701,6 +739,7 @@ class CoreApp:
             bus=self._bus,
             authority_provider=self._permission_manager.get_authority_snapshot,
         )
+        self._bus.subscribe(self._runtime.record_bus_event)
         await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
         assert self._config is not None
         self._route_registry = RouteRegistry(self._config.llm)
@@ -756,6 +795,13 @@ class CoreApp:
             route_registry=self._route_registry,
             hooks=self._hooks,
         )
+        self._runtime_api = RuntimeApiService(self._runtime, self._sessions)
+        self._http_api = HttpApiServer(
+            self._config.api.host,
+            self._config.api.port,
+            self._config.api.token,
+            self._runtime_api,
+        )
 
         server = SocketServer(
             self._config.host,
@@ -794,9 +840,16 @@ class CoreApp:
         server.register("session.checkpoints", self._session_checkpoints_handler)
         server.register("session.rewind", self._session_rewind_handler)
         server.register("session.context", self._session_context_handler)
+        server.register("turn.inspect", self._turn_inspect_handler)
 
         addr = await server.start()
+        try:
+            api_addr = await self._http_api.start()
+        except Exception:
+            await server.stop()
+            raise
         logger.info("coderook-core %s listening addr=%s", code_rook.__version__, addr)
+        logger.info("runtime API listening addr=%s", api_addr)
         logger.info("config: %s", self._config)
 
         loop = asyncio.get_running_loop()
@@ -810,12 +863,16 @@ class CoreApp:
         await shutdown.wait()
 
         logger.info("shutting down")
+        if self._http_api is not None:
+            await self._http_api.stop()
         if self._fleet is not None:
             await self._fleet.shutdown()
         if self._subagent_registry is not None:
             self._subagent_registry.begin_shutdown()
         if self._sessions is not None:
             await self._sessions.cancel_all()
+        if self._runtime_api is not None:
+            await self._runtime_api.close()
         for run_task in list(self._running_runs):
             run_task.cancel()
         if self._running_runs:

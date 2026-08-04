@@ -10,7 +10,16 @@ from code_rook.core.authority import (
     ToolAction,
     WorkspaceTrust,
 )
-from code_rook.core.bus.events import RuntimeEventAppendedEvent
+from code_rook.core.bus.events import (
+    LlmUsageEvent,
+    PermissionGrantedEvent,
+    PermissionRequestedEvent,
+    RuntimeEventAppendedEvent,
+    SubagentFinishedEvent,
+    ToolCallFailedEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+)
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runner import RunOutcome
@@ -102,7 +111,11 @@ async def test_session_message_projects_to_runtime(tmp_path: Path) -> None:
     assert thread.title == "hello"
     assert turn.status == TurnStatus.COMPLETED
     assert items[0].payload == {"role": "user", "content": "hello"}
-    assert [event.type for event in events] == ["turn.started", "turn.completed"]
+    assert [event.type for event in events] == [
+        "turn.started",
+        "message.completed",
+        "turn.completed",
+    ]
     assert [message["role"] for message in session_store.read_messages(session.id)] == [
         "user",
         "assistant",
@@ -314,3 +327,111 @@ async def test_start_turn_applies_per_turn_plan_mode(tmp_path: Path) -> None:
     assert persisted.mode == RuntimeMode.PLAN
     assert persisted.authority_profile == AuthorityProfile.FULL_ACCESS
     assert persisted.allowed_actions == snapshot.allowed_actions
+
+
+# 功能：验证运行时领域事件被持久投影为 usage、工具 item、审批事件和最终 assistant 消息
+# 设计：依次投递真实事件模型并完成 turn，再从重开的 SQLite store 和 receipt 核对重启后事实
+async def test_bus_events_and_final_message_are_durable(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-events",
+        mode="chat",
+        status="active",
+        title="events",
+        created_at="2026-08-04T08:00:00Z",
+        updated_at="2026-08-04T08:00:00Z",
+    )
+    run_id = "run-events"
+    await service.start_turn(session, run_id, "change it")
+    await service.record_bus_event(
+        ToolCallStartedEvent(
+            run_id=run_id,
+            tool_use_id="tool-1",
+            tool_name="write_file",
+            params={"path": "src/main.py"},
+            ts="2026-08-04T08:00:01Z",
+        )
+    )
+    await service.record_bus_event(
+        PermissionRequestedEvent(
+            run_id=run_id,
+            tool_use_id="tool-1",
+            tool_name="write_file",
+            params={"path": "src/main.py"},
+            param_preview="src/main.py",
+            session_id=session.id,
+            ts="2026-08-04T08:00:01Z",
+        )
+    )
+    await service.record_bus_event(
+        PermissionGrantedEvent(
+            run_id=run_id,
+            tool_use_id="tool-1",
+            decision="always_allow",
+            ts="2026-08-04T08:00:02Z",
+        )
+    )
+    await service.record_bus_event(
+        ToolCallFailedEvent(
+            run_id=run_id,
+            tool_use_id="tool-1",
+            tool_name="write_file",
+            error_class="rate_limited",
+            error_message="retrying",
+            elapsed_ms=5,
+            attempt=1,
+            terminal=False,
+            ts="2026-08-04T08:00:02Z",
+        )
+    )
+    await service.record_bus_event(
+        ToolCallFinishedEvent(
+            run_id=run_id,
+            tool_use_id="tool-1",
+            tool_name="write_file",
+            elapsed_ms=12,
+            output="written",
+            ts="2026-08-04T08:00:03Z",
+        )
+    )
+    for input_tokens, output_tokens in ((10, 3), (20, 4)):
+        await service.record_bus_event(
+            LlmUsageEvent(
+                run_id=run_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=1,
+                cache_creation_input_tokens=0,
+                context_pct=0.25,
+                ts="2026-08-04T08:00:04Z",
+            )
+        )
+    await service.record_bus_event(
+        SubagentFinishedEvent(
+            run_id="worker-1",
+            parent_run_id=run_id,
+            status="success",
+            ts="2026-08-04T08:00:04Z",
+        )
+    )
+    session.updated_at = "2026-08-04T08:00:05Z"
+    await service.finish_turn(
+        session,
+        run_id,
+        TurnStatus.COMPLETED,
+        result="已完成。",
+    )
+
+    restarted = RuntimeService(RuntimeStore(store.path), workspace=tmp_path)
+    receipt = await restarted.get_receipt(run_id)
+    items = await restarted.list_items(run_id)
+
+    assert receipt.usage["input_tokens"] == 30
+    assert receipt.usage["output_tokens"] == 7
+    assert receipt.tool_call_count == 1
+    assert receipt.approvals.requested == 1
+    assert receipt.approvals.granted == 1
+    assert receipt.files_changed == ["src/main.py"]
+    assert receipt.workers[0]["worker_run_id"] == "worker-1"
+    assert len([item for item in items if item.kind.value == "tool_result"]) == 1
+    assert items[-1].payload == {"role": "assistant", "content": "已完成。"}

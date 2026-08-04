@@ -40,7 +40,11 @@ from code_rook.core.skills.manager import (
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui.clipboard import copy_to_windows_clipboard
-from code_rook.tui.panels import render_workflow_graph, render_workflow_list
+from code_rook.tui.panels import (
+    render_turn_inspector,
+    render_workflow_graph,
+    render_workflow_list,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1857,6 +1861,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("diff", "show current workspace changes"),
             ("rewind", "restore files from a safe checkpoint"),
             ("context", "show context size and usage"),
+            ("turn", "inspect route, usage, tools, approvals, and receipt"),
             ("skills", "list, show, install, remove, or audit skills"),
         ]
         try:
@@ -2297,7 +2302,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
             return
         workflow_command = content == "/workflow" or content.startswith("/workflow ")
-        if content in {"/tasks", "/workers", "/diff", "/rewind", "/context"} or workflow_command:
+        turn_command = content == "/turn" or content.startswith("/turn ")
+        if (
+            content in {"/tasks", "/workers", "/diff", "/rewind", "/context"}
+            or workflow_command
+            or turn_command
+        ):
             event.text_area.text = ""
             if self._client is None or (
                 self._session_id is None and not workflow_command
@@ -2328,6 +2338,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self.run_worker(
                     self._show_workflow(workflow_arg),
                     name="view_workflow",
+                    exclusive=False,
+                )
+                return
+            if turn_command:
+                turn_id = content.removeprefix("/turn").strip()
+                self.run_worker(
+                    self._show_turn(turn_id),
+                    name="view_turn",
                     exclusive=False,
                 )
                 return
@@ -2958,6 +2976,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 {"session_id": self._session_id},
             )
             last_run = result.get("last_run_id") or "-"
+            usage = dict(result.get("usage", {}))
+            working_set = [str(path) for path in result.get("working_set", [])]
+            compaction = result.get("compaction")
+            compaction_data = dict(compaction) if isinstance(compaction, dict) else {}
             self._append(
                 Static(
                     "[bold cyan]Context[/bold cyan]  "
@@ -2965,12 +2987,47 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     f"estimated_tokens≈{int(result.get('estimated_tokens', 0))}  "
                     f"runs={int(result.get('run_count', 0))}\n"
                     f"[dim]last_run={escape(str(last_run))}[/dim]  "
-                    f"{self._render_ctx_bar(self._last_context_pct)}",
+                    f"{self._render_ctx_bar(self._last_context_pct)}\n"
+                    f"usage={escape(json.dumps(usage, ensure_ascii=False))}  "
+                    f"tool_schema≈{result.get('tool_schema_tokens') or 'unavailable'}  "
+                    f"system≈{result.get('system_tokens') or 'unavailable'}  "
+                    f"memories={int(result.get('memory_count', 0))}\n"
+                    f"working_set={escape(', '.join(working_set) or 'empty')}\n"
+                    "[dim]compaction="
+                    f"{escape(json.dumps(compaction_data, ensure_ascii=False))}[/dim]",
                     classes="log-line",
                 )
             )
         except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
             self._append(Static(f"[red]context error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载指定或当前最近 turn 的 durable inspector 投影
+    async def _show_turn(self, turn_id: str = "") -> None:
+        if self._client is None:
+            return
+        try:
+            resolved_id = turn_id or self._active_run_id or ""
+            if not resolved_id:
+                if self._session_id is None:
+                    raise ValueError("no current session")
+                context = await self._client.send_command(
+                    "session.context",
+                    {"session_id": self._session_id},
+                )
+                resolved_id = str(context.get("last_run_id") or "")
+            if not resolved_id:
+                raise ValueError("current session has no turn")
+            result = await self._client.send_command(
+                "turn.inspect",
+                {"turn_id": resolved_id},
+            )
+            self._append(
+                Static(render_turn_inspector(dict(result)), classes="log-line")
+            )
+        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._append(Static(f"[red]turn error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
 
@@ -3967,6 +4024,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             elapsed_ms = int(event.get("elapsed_ms") or 0)
             error_msg = str(event.get("error_message") or "")
+            if event.get("terminal") is False:
+                return
             if tool_use_id in self._pending_tool_blocks:
                 tc_done = self._pending_tool_blocks.pop(tool_use_id)
                 tc_done.set_result(error_msg, elapsed_ms, is_error=True)

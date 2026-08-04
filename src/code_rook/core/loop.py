@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
     AgentStuckEvent,
+    ContextBudgetEvent,
     ContextPrefixFingerprintEvent,
     ContextWorkingSetEvent,
     LlmRetryEvent,
@@ -302,6 +303,21 @@ class AgentLoop:
         no_content_retries = 0
         system_prompt = self._render_system(context)
         tool_schemas = self._registry.tool_schemas()
+        await self._bus.publish(
+            ContextBudgetEvent(
+                run_id=context.run_id,
+                step=context.step,
+                message_tokens=max(
+                    1,
+                    sum(len(str(message.get("content", ""))) for message in context.messages)
+                    // 4,
+                ),
+                system_tokens=max(1, len(system_prompt) // 4),
+                tool_schema_tokens=max(1, len(json.dumps(tool_schemas, sort_keys=True)) // 4),
+                tool_count=len(tool_schemas),
+                ts=_now(),
+            )
+        )
         prefix = self._prefix_tracker.observe(
             system_prompt=context.stable_system_prompt(_BASE_SYSTEM_PROMPT),
             tool_catalog=self._registry.canonical_catalog_json(),

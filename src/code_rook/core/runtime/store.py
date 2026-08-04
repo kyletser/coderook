@@ -594,6 +594,19 @@ class RuntimeStore:
                 ).fetchall()
         return [_event_from_row(row) for row in rows]
 
+    # 按 durable seq 列出单个 turn 的全部事件，不受 SSE 分页窗口限制
+    def list_turn_events(self, turn_id: str) -> list[RuntimeEventRecord]:
+        with connect_database(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM runtime_events
+                WHERE turn_id = ?
+                ORDER BY seq
+                """,
+                (turn_id,),
+            ).fetchall()
+        return [_event_from_row(row) for row in rows]
+
     # 返回 thread 当前已提交的最大事件序号
     def latest_event_seq(self, thread_id: str) -> int:
         with connect_database(self.path) as connection:
@@ -670,6 +683,45 @@ class RuntimeStore:
                 )
             connection.commit()
             return events
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    # 在单一事务中更新 turn 用量并写入对应事件
+    def update_usage_and_event(
+        self,
+        turn_id: str,
+        *,
+        usage: dict[str, JsonValue],
+        event_type: str,
+        event_payload: dict[str, JsonValue],
+        event_ts: datetime,
+    ) -> RuntimeEventRecord:
+        connection = open_database(self.path)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            turn_row = connection.execute(
+                "SELECT * FROM runtime_turns WHERE id = ?",
+                (turn_id,),
+            ).fetchone()
+            if turn_row is None:
+                raise RecordNotFoundError(f"turn not found: {turn_id}")
+            connection.execute(
+                "UPDATE runtime_turns SET usage_json = ?, updated_at = ? WHERE id = ?",
+                (_dump_json(usage), _dump_datetime(event_ts), turn_id),
+            )
+            event = self._insert_event(
+                connection,
+                thread_id=turn_row["thread_id"],
+                turn_id=turn_id,
+                event_type=event_type,
+                payload=event_payload,
+                ts=event_ts,
+            )
+            connection.commit()
+            return event
         except Exception:
             connection.rollback()
             raise

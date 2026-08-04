@@ -157,3 +157,26 @@ def test_project_config_allows_non_sensitive_preferences(
 
     assert config.port == 7555
     assert config.llm.default_model == "project-model"
+
+
+# 功能：验证 HTTP API host/port 可配置但 bearer token 只从环境变量读取且不会出现在 repr
+# 设计：TOML 设置公开监听参数、环境变量注入 secret，再检查优先结果与日志安全边界
+def test_runtime_api_config_keeps_token_out_of_repr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "coderook.toml"
+    config_path.write_text(
+        '[api]\nhost = "127.0.0.1"\nport = 8123\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEROOK_CONFIG", str(config_path))
+    monkeypatch.setenv("CODEROOK_API_TOKEN", "api-secret")
+
+    config = get_config()
+
+    assert config.api.host == "127.0.0.1"
+    assert config.api.port == 8123
+    assert config.api.token == "api-secret"
+    assert "api-secret" not in repr(config)

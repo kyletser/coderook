@@ -28,6 +28,7 @@ from code_rook.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSetAuthorityCommand,
     SessionTasksCommand,
+    TurnInspectCommand,
     UserQuestionRespondCommand,
     WorkerListCommand,
     WorkflowGetCommand,
@@ -37,12 +38,33 @@ from code_rook.core.bus.commands import (
 )
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
+    ContextBudgetEvent,
     CoreStartedEvent,
     PlanReadyEvent,
     RunSteeredEvent,
     SessionInterruptedEvent,
     UserQuestionAskedEvent,
 )
+
+
+# 功能：验证 turn inspector 命令和 context budget 事件的 typed wire 字段可往返
+# 设计：同时覆盖新增请求判别值与 schema token 开销事件，防止 Core/TUI 协议字段漂移
+def test_turn_inspect_and_context_budget_protocol() -> None:
+    command = TurnInspectCommand(turn_id="run-1")
+    budget = ContextBudgetEvent(
+        run_id="run-1",
+        step=2,
+        message_tokens=100,
+        system_tokens=200,
+        tool_schema_tokens=300,
+        tool_count=12,
+        ts="2026-08-04T00:00:00Z",
+    )
+
+    assert TurnInspectCommand.model_validate_json(command.model_dump_json()).type == "turn.inspect"
+    assert ContextBudgetEvent.model_validate_json(
+        budget.model_dump_json()
+    ).tool_schema_tokens == 300
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留

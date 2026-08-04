@@ -91,6 +91,7 @@ class ToolCallFailedEvent(BaseModel):
     error_message: str
     elapsed_ms: int
     attempt: int = 1  # 1=first attempt, 2=first retry, 3=second retry
+    terminal: bool = True
     ts: str
 
 
@@ -260,6 +261,17 @@ class ContextWorkingSetEvent(BaseModel):
     ts: str
 
 
+class ContextBudgetEvent(BaseModel):
+    type: Literal["context.budget"] = "context.budget"
+    run_id: str
+    step: int
+    message_tokens: int
+    system_tokens: int
+    tool_schema_tokens: int
+    tool_count: int
+    ts: str
+
+
 class LspDiagnosticsEvent(BaseModel):
     type: Literal["lsp.diagnostics"] = "lsp.diagnostics"
     run_id: str
@@ -422,6 +434,7 @@ Event = Annotated[
     | ContextCompactedEvent
     | ContextPrefixFingerprintEvent
     | ContextWorkingSetEvent
+    | ContextBudgetEvent
     | LspDiagnosticsEvent
     | PermissionRequestedEvent
     | PermissionGrantedEvent

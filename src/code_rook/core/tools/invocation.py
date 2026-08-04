@@ -353,6 +353,7 @@ async def invoke_tool(
                     error_message=error_message,
                     elapsed_ms=ms,
                     attempt=attempt,
+                    terminal=False,
                     ts=_now(),
                 )
             )

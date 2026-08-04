@@ -325,6 +325,8 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 | `/diff` | 查看当前工作区改动和统一 diff |
 | `/rewind` | 从安全 checkpoint 恢复文件 |
 | `/context` | 查看消息数、token 估算、运行次数和上下文占用 |
+| `/turn` | 检视当前最近 turn 的 route、usage、工具、审批、诊断与 receipt |
+| `/turn ID` | 检视指定 durable turn |
 | `/skills` | 列出、查看、安装、删除或审计 Skills |
 | `/技能名` | 调用已注册的 Skill |
 
@@ -338,7 +340,10 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 ### 管理上下文
 
 TUI 顶部会显示当前上下文占用。CodeRook 默认在上下文接近 80% 时自动压缩旧历史；
-也可以用 `/compact` 手动压缩，用 `/context` 查看当前估算。
+也可以用 `/compact` 手动压缩。`/context` 还会显示 durable usage、working set、项目
+memory 数量、最近压缩摘要路径，以及 system prompt 和 tool schema 的 token 开销估算。
+
+本地 HTTP/SSE SDK 接口、鉴权与断线重连方式见 [Runtime API](RUNTIME_API.md)。
 
 ### 管理 Skills
 

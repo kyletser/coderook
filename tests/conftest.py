@@ -22,6 +22,17 @@ def free_port() -> int:
 
 
 @pytest.fixture
+# 分配与 IPC 端口不同的随机 HTTP API 端口
+def api_port(free_port: int) -> int:
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+            candidate.bind(("127.0.0.1", 0))
+            port = candidate.getsockname()[1]
+        if port != free_port:
+            return port
+
+
+@pytest.fixture
 def ipc_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = secrets.token_urlsafe(32)
     monkeypatch.setenv("CODEROOK_IPC_TOKEN", token)
@@ -40,11 +51,13 @@ def daemon_home(tmp_path: Path) -> Path:
 # 启动使用隔离用户目录和随机端口的真实 Core daemon
 async def running_daemon(
     free_port: int,
+    api_port: int,
     ipc_token: str,
     daemon_home: Path,
 ) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
     env["CODEROOK_PORT"] = str(free_port)
+    env["CODEROOK_API_PORT"] = str(api_port)
     env["CODEROOK_LOG_FILE"] = ""
     env["CODEROOK_LOG_LEVEL"] = "WARNING"
     env["HOME"] = str(daemon_home)

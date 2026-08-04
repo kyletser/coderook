@@ -13,6 +13,7 @@ from code_rook.core.bus.envelope import (
 )
 from code_rook.core.bus.events import (
     AgentStuckEvent,
+    ContextBudgetEvent,
     ContextPrefixFingerprintEvent,
     ContextWorkingSetEvent,
     CoreStartedEvent,
@@ -41,6 +42,7 @@ __all__ = [
     "Command",
     "AgentStuckEvent",
     "ContextPrefixFingerprintEvent",
+    "ContextBudgetEvent",
     "ContextWorkingSetEvent",
     "CoreStartedEvent",
     "Event",

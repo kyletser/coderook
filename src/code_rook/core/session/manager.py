@@ -30,6 +30,7 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteResolutionError
+from code_rook.core.memory import MemoryStore
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import TurnStatus
 from code_rook.core.runtime.service import RuntimeService
@@ -360,6 +361,7 @@ class SessionManager:
                     run_id,
                     runtime_status,
                     reason=outcome.reason,
+                    result=outcome.result,
                 )
             return run_id
 
@@ -572,6 +574,9 @@ class SessionManager:
             "estimated_tokens": estimate_messages_tokens(messages),
             "run_count": len(session.run_ids),
             "last_run_id": session.run_ids[-1] if session.run_ids else None,
+            "memory_count": len(
+                MemoryStore(WorkspaceBoundary.current().root / ".coderook" / "memory").list_all()
+            ),
         }
 
     # 返回已恢复的指定会话，供 Core 的会话级配置命令做存在性校验

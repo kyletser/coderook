@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from code_rook.core.authority import (
     AuthoritySnapshot,
@@ -16,6 +18,8 @@ from code_rook.core.authority import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.routes import RouteReceipt
+from code_rook.core.receipts.builder import build_turn_receipt
+from code_rook.core.receipts.models import TurnReceipt
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
     SessionFacadeRecord,
@@ -42,6 +46,9 @@ _SESSION_TO_THREAD_STATUS = {
     "interrupted": ThreadStatus.INTERRUPTED,
     "closed": ThreadStatus.ARCHIVED,
 }
+_JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
+_IGNORED_BUS_EVENTS = {"llm.token", "runtime.event_appended"}
+logger = logging.getLogger(__name__)
 
 
 # 将 session 时间文本解析为 datetime
@@ -117,8 +124,17 @@ class RuntimeService:
         status: TurnStatus,
         *,
         reason: str | None = None,
+        result: str = "",
     ) -> TurnRecord:
         async with self._write_lock:
+            if result.strip():
+                message_event = await asyncio.to_thread(
+                    self._append_assistant_message_sync,
+                    run_id,
+                    result,
+                    _parse_time(session.updated_at),
+                )
+                await self._publish_runtime_event(message_event)
             turn, event = await asyncio.to_thread(
                 self._finish_turn_sync,
                 session,
@@ -215,6 +231,38 @@ class RuntimeService:
     async def list_items(self, turn_id: str) -> list[TurnItemRecord]:
         return await asyncio.to_thread(self._store.list_items, turn_id)
 
+    # 异步列出单个 turn 的全部 durable events
+    async def list_turn_events(self, turn_id: str) -> list[RuntimeEventRecord]:
+        return await asyncio.to_thread(self._store.list_turn_events, turn_id)
+
+    # 从持久化记录构建可在 daemon 重启后离线读取的 turn receipt
+    async def get_receipt(self, turn_id: str) -> TurnReceipt:
+        turn = await self.get_turn(turn_id)
+        items = await self.list_items(turn_id)
+        events = await self.list_turn_events(turn_id)
+        return build_turn_receipt(turn, items, events)
+
+    # 将运行中的领域事件投影到同一 durable runtime ledger
+    async def record_bus_event(self, event: BaseModel) -> None:
+        event_type = str(getattr(event, "type", ""))
+        run_id = getattr(event, "run_id", None)
+        if event_type in _IGNORED_BUS_EVENTS or not isinstance(run_id, str) or not run_id:
+            return
+        async with self._write_lock:
+            try:
+                persisted = await asyncio.to_thread(self._record_bus_event_sync, event)
+            except RecordNotFoundError:
+                return
+            except RecordAlreadyExistsError:
+                logger.debug(
+                    "runtime event already persisted type=%s run_id=%s",
+                    event_type,
+                    run_id,
+                )
+                return
+        if persisted is not None:
+            await self._publish_runtime_event(persisted)
+
     # 同步批量导入历史 session
     def _bootstrap_sessions_sync(self, sessions: list[Session]) -> None:
         for session in sessions:
@@ -300,6 +348,113 @@ class RuntimeService:
             event_ts=now,
         )
         return turn, event
+
+    # 同步追加最终 assistant 正文并生成消息事件
+    def _append_assistant_message_sync(
+        self,
+        run_id: str,
+        content: str,
+        ts: datetime,
+    ) -> RuntimeEventRecord:
+        return self._store.record_item_and_event(
+            TurnItemRecord(
+                id=f"{run_id}:assistant:final",
+                turn_id=run_id,
+                kind=TurnItemKind.MESSAGE,
+                payload={"role": "assistant", "content": content},
+                created_at=ts,
+            ),
+            event_type="message.completed",
+            event_payload={"role": "assistant"},
+            event_ts=ts,
+        )
+
+    # 同步把单个 EventBus 事件映射为 event、item 或 usage 更新
+    def _record_bus_event_sync(self, event: BaseModel) -> RuntimeEventRecord | None:
+        raw = json.loads(event.model_dump_json())
+        payload = _JSON_OBJECT.validate_python(
+            {key: value for key, value in raw.items() if key not in {"type", "run_id", "ts"}}
+        )
+        event_type = str(raw["type"])
+        source_run_id = str(raw["run_id"])
+        run_id = (
+            str(raw.get("parent_run_id") or source_run_id)
+            if event_type.startswith("subagent.")
+            else source_run_id
+        )
+        if event_type.startswith("subagent."):
+            payload["worker_run_id"] = source_run_id
+        ts = _parse_time(str(raw["ts"]))
+        turn = self._store.get_turn(run_id)
+        if event_type == "llm.usage":
+            usage = dict(turn.usage)
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            ):
+                previous = usage.get(key, 0)
+                current = payload.get(key, 0)
+                previous_count = int(previous) if isinstance(previous, (int, float)) else 0
+                current_count = int(current) if isinstance(current, (int, float)) else 0
+                usage[key] = previous_count + current_count
+            usage["context_pct"] = payload.get("context_pct", 0.0)
+            return self._store.update_usage_and_event(
+                run_id,
+                usage=usage,
+                event_type=event_type,
+                event_payload=payload,
+                event_ts=ts,
+            )
+        if event_type == "tool.call_started":
+            item = TurnItemRecord(
+                id=f"{run_id}:tool-call:{payload['tool_use_id']}",
+                turn_id=run_id,
+                kind=TurnItemKind.TOOL_CALL,
+                tool_call_id=str(payload["tool_use_id"]),
+                payload={
+                    "tool_name": payload["tool_name"],
+                    "params": payload["params"],
+                },
+                created_at=ts,
+            )
+            return self._store.record_item_and_event(
+                item,
+                event_type=event_type,
+                event_payload=payload,
+                event_ts=ts,
+            )
+        if event_type in {"tool.call_finished", "tool.call_failed"}:
+            if event_type == "tool.call_failed" and payload.get("terminal") is False:
+                return self._store.append_event(
+                    thread_id=turn.thread_id,
+                    turn_id=run_id,
+                    event_type=event_type,
+                    payload=payload,
+                    ts=ts,
+                )
+            item = TurnItemRecord(
+                id=f"{run_id}:tool-result:{payload['tool_use_id']}",
+                turn_id=run_id,
+                kind=TurnItemKind.TOOL_RESULT,
+                tool_call_id=str(payload["tool_use_id"]),
+                payload=payload,
+                created_at=ts,
+            )
+            return self._store.record_item_and_event(
+                item,
+                event_type=event_type,
+                event_payload=payload,
+                event_ts=ts,
+            )
+        return self._store.append_event(
+            thread_id=turn.thread_id,
+            turn_id=run_id,
+            event_type=event_type,
+            payload=payload,
+            ts=ts,
+        )
 
     # 同步完成 turn 并刷新所属 thread 状态
     def _finish_turn_sync(

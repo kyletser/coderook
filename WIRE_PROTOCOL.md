@@ -2698,6 +2698,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `estimated_tokens` | `integer` | yes |
 | `run_count` | `integer` | yes |
 | `last_run_id` | `string | null` | no |
+| `usage` | `object` | no |
+| `working_set` | `array` | no |
+| `memory_count` | `integer` | no |
+| `compaction` | `object | null` | no |
+| `tool_schema_tokens` | `integer | null` | no |
+| `system_tokens` | `integer | null` | no |
 
 ```json
 {
@@ -2725,6 +2731,63 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Last Run Id"
+    },
+    "usage": {
+      "additionalProperties": true,
+      "title": "Usage",
+      "type": "object"
+    },
+    "working_set": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Working Set",
+      "type": "array"
+    },
+    "memory_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Memory Count",
+      "type": "integer"
+    },
+    "compaction": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Compaction"
+    },
+    "tool_schema_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Schema Tokens"
+    },
+    "system_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "System Tokens"
     }
   },
   "required": [
@@ -2733,6 +2796,84 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "run_count"
   ],
   "title": "SessionContextResult",
+  "type": "object"
+}
+```
+
+### TurnInspectCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `turn_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.inspect",
+      "default": "turn.inspect",
+      "title": "Type",
+      "type": "string"
+    },
+    "turn_id": {
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id"
+  ],
+  "title": "TurnInspectCommand",
+  "type": "object"
+}
+```
+
+### TurnInspectResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turn` | `object` | yes |
+| `items` | `array` | no |
+| `events` | `array` | no |
+| `receipt` | `object` | yes |
+
+```json
+{
+  "properties": {
+    "turn": {
+      "additionalProperties": true,
+      "title": "Turn",
+      "type": "object"
+    },
+    "items": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "receipt": {
+      "additionalProperties": true,
+      "title": "Receipt",
+      "type": "object"
+    }
+  },
+  "required": [
+    "turn",
+    "receipt"
+  ],
+  "title": "TurnInspectResult",
   "type": "object"
 }
 ```
@@ -3572,6 +3713,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `error_message` | `string` | yes |
 | `elapsed_ms` | `integer` | yes |
 | `attempt` | `integer` | no |
+| `terminal` | `boolean` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -3611,6 +3753,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": 1,
       "title": "Attempt",
       "type": "integer"
+    },
+    "terminal": {
+      "default": true,
+      "title": "Terminal",
+      "type": "boolean"
     },
     "ts": {
       "title": "Ts",
@@ -4084,6 +4231,71 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "ts"
   ],
   "title": "ContextPrefixFingerprintEvent",
+  "type": "object"
+}
+```
+
+### ContextBudgetEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `message_tokens` | `integer` | yes |
+| `system_tokens` | `integer` | yes |
+| `tool_schema_tokens` | `integer` | yes |
+| `tool_count` | `integer` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "context.budget",
+      "default": "context.budget",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "message_tokens": {
+      "title": "Message Tokens",
+      "type": "integer"
+    },
+    "system_tokens": {
+      "title": "System Tokens",
+      "type": "integer"
+    },
+    "tool_schema_tokens": {
+      "title": "Tool Schema Tokens",
+      "type": "integer"
+    },
+    "tool_count": {
+      "title": "Tool Count",
+      "type": "integer"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "message_tokens",
+    "system_tokens",
+    "tool_schema_tokens",
+    "tool_count",
+    "ts"
+  ],
+  "title": "ContextBudgetEvent",
   "type": "object"
 }
 ```

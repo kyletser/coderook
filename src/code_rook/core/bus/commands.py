@@ -372,6 +372,24 @@ class SessionContextResult(BaseModel):
     estimated_tokens: int
     run_count: int
     last_run_id: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    working_set: list[str] = Field(default_factory=list)
+    memory_count: int = Field(default=0, ge=0)
+    compaction: dict[str, Any] | None = None
+    tool_schema_tokens: int | None = Field(default=None, ge=0)
+    system_tokens: int | None = Field(default=None, ge=0)
+
+
+class TurnInspectCommand(BaseModel):
+    type: Literal["turn.inspect"] = "turn.inspect"
+    turn_id: str = Field(min_length=1)
+
+
+class TurnInspectResult(BaseModel):
+    turn: dict[str, Any]
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    receipt: dict[str, Any]
 
 
 # 根据 type 字段决定命令类型的判别联合
@@ -406,6 +424,7 @@ Command = Annotated[
     | WorkspaceDiffCommand
     | SessionCheckpointsCommand
     | SessionRewindCommand
-    | SessionContextCommand,
+    | SessionContextCommand
+    | TurnInspectCommand,
     Discriminator("type"),
 ]

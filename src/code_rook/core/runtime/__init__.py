@@ -9,7 +9,6 @@ from code_rook.core.runtime.models import (
     TurnRecord,
     TurnStatus,
 )
-from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import (
     DuplicateTerminalResultError,
     IncompleteToolCallError,
@@ -29,7 +28,6 @@ __all__ = [
     "RecordNotFoundError",
     "RuntimeEventRecord",
     "RuntimeMode",
-    "RuntimeService",
     "RuntimeStore",
     "RuntimeStoreError",
     "SessionFacadeRecord",

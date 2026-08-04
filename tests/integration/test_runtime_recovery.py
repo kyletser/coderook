@@ -106,6 +106,7 @@ async def test_daemon_boot_recovers_stale_runtime(
 
     env = os.environ.copy()
     env["CODEROOK_PORT"] = str(free_port)
+    env["CODEROOK_API_PORT"] = "0"
     env["CODEROOK_LOG_FILE"] = ""
     env["CODEROOK_LOG_LEVEL"] = "WARNING"
     env["CODEROOK_IPC_TOKEN"] = ipc_token

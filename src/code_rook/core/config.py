@@ -19,6 +19,8 @@ _DEFAULT_MODEL = "claude-sonnet-4-6"
 _DEFAULT_TRACE_FILE = "~/.coderook/traces/daemon.jsonl"
 _DEFAULT_LLM_PROVIDER = "anthropic"
 _DEFAULT_IPC_TOKEN_FILE = "~/.coderook/ipc-token"
+_DEFAULT_API_HOST = "127.0.0.1"
+_DEFAULT_API_PORT = 7438
 
 
 @dataclass
@@ -58,6 +60,13 @@ class PermissionConfig:
 
 
 @dataclass
+class ApiConfig:
+    host: str = _DEFAULT_API_HOST
+    port: int = _DEFAULT_API_PORT
+    token: str = field(default="", repr=False)
+
+
+@dataclass
 class CompactionConfig:
     # context_pct 触发自动压缩的阈值（0 表示禁用）
     auto_threshold: float = 0.80
@@ -93,6 +102,7 @@ class CodeRookConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
+    api: ApiConfig = field(default_factory=ApiConfig)
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
 
@@ -145,7 +155,15 @@ def _reject_project_route_settings(data: dict[str, Any], path: Path) -> None:
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程
 def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
     known_sections = {
-        "core", "logging", "agent", "llm", "trace", "permission", "compaction", "mcp"
+        "core",
+        "logging",
+        "agent",
+        "llm",
+        "trace",
+        "permission",
+        "api",
+        "compaction",
+        "mcp",
     }
     unknown = set(data.keys()) - known_sections
     if unknown:
@@ -299,6 +317,24 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
                 raise SystemExit("Config error: permission.timeout_s must be a non-negative number")
             config.permission.timeout_s = float(val)
 
+    if "api" in data:
+        api = data["api"]
+        if not isinstance(api, dict):
+            raise SystemExit("Config error: [api] must be a table")
+        unknown_api: set[str] = set(api.keys()) - {"host", "port"}
+        if unknown_api:
+            raise SystemExit(f"Unknown [api] keys: {', '.join(sorted(unknown_api))}")
+        if "host" in api:
+            val = api["host"]
+            if not isinstance(val, str) or not val.strip():
+                raise SystemExit("Config error: api.host must be a non-empty string")
+            config.api.host = val
+        if "port" in api:
+            val = api["port"]
+            if not isinstance(val, int) or isinstance(val, bool) or not (0 <= val <= 65535):
+                raise SystemExit("Config error: api.port must be between 0 and 65535")
+            config.api.port = val
+
     if "compaction" in data:
         comp = data["compaction"]
         if not isinstance(comp, dict):
@@ -414,6 +450,28 @@ def _apply_env(config: CodeRookConfig) -> None:
         if not ipc_token_file.strip():
             raise SystemExit("Config error: CODEROOK_IPC_TOKEN_FILE must not be empty")
         config.ipc_token_file = ipc_token_file
+
+    api_host = os.environ.get("CODEROOK_API_HOST")
+    if api_host is not None:
+        if not api_host.strip():
+            raise SystemExit("Config error: CODEROOK_API_HOST must not be empty")
+        config.api.host = api_host
+
+    api_port = os.environ.get("CODEROOK_API_PORT")
+    if api_port is not None:
+        try:
+            config.api.port = int(api_port)
+            if not (0 <= config.api.port <= 65535):
+                raise ValueError
+        except ValueError:
+            raise SystemExit(
+                "Config error: CODEROOK_API_PORT must be between 0 and 65535, "
+                f"got: {api_port!r}"
+            ) from None
+
+    api_token = os.environ.get("CODEROOK_API_TOKEN")
+    if api_token is not None:
+        config.api.token = api_token
 
     log_level = os.environ.get("CODEROOK_LOG_LEVEL")
     if log_level is not None:

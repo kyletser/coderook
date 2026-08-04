@@ -1762,8 +1762,8 @@ async def test_high_frequency_views_render_core_results() -> None:
     assert any(isinstance(widget, Markdown) for widget in appended)
 
 
-@pytest.mark.parametrize("command", ["/tasks", "/diff", "/rewind", "/context"])
-# 功能：验证四个高频视图命令第一次 Enter 就直接执行
+@pytest.mark.parametrize("command", ["/tasks", "/diff", "/rewind", "/context", "/turn"])
+# 功能：验证五个高频视图命令第一次 Enter 就直接执行
 # 设计：提交完整命令并截获 worker coroutine，检查输入清空、禁用和单次调度，防止回车两次回归
 async def test_high_frequency_commands_execute_on_first_submit(command: str) -> None:
     scheduled: list[Coroutine[Any, Any, None]] = []
