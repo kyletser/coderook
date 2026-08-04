@@ -4,6 +4,7 @@ import builtins
 from collections.abc import Callable
 from pathlib import Path
 from threading import RLock
+from typing import Protocol
 
 from pydantic import ValidationError
 
@@ -12,6 +13,29 @@ from code_rook.core.subagent.models import WorkerEvent, WorkerRecord
 
 class WorkerStoreError(ValueError):
     pass
+
+
+class WorkerStoreBackend(Protocol):
+    # 保存一个完整 WorkerRecord
+    def save(self, worker: WorkerRecord) -> None: ...
+
+    # 读取指定 WorkerRecord
+    def get(self, worker_id: str) -> WorkerRecord: ...
+
+    # 稳定列出全部 WorkerRecord
+    def list(self) -> list[WorkerRecord]: ...
+
+    # 追加一条 WorkerEvent
+    def append_event(self, event: WorkerEvent) -> None: ...
+
+    # 从游标后读取有界 WorkerEvent
+    def list_events(
+        self,
+        worker_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 20,
+    ) -> builtins.list[WorkerEvent]: ...
 
 
 class WorkerStore:

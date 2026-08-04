@@ -40,6 +40,7 @@ from code_rook.core.skills.manager import (
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui.clipboard import copy_to_windows_clipboard
+from code_rook.tui.panels import render_workflow_graph, render_workflow_list
 
 log = logging.getLogger(__name__)
 
@@ -1851,7 +1852,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("trust", "show, grant, or revoke workspace trust"),
             ("sandbox", "show the real OS isolation capability"),
             ("tasks", "show tasks from the latest run"),
-            ("workers", "show durable workers for this session"),
+            ("workers", "show all durable workers and Fleet workers"),
+            ("workflow", "list, start, or inspect durable workflows"),
             ("diff", "show current workspace changes"),
             ("rewind", "restore files from a safe checkpoint"),
             ("context", "show context size and usage"),
@@ -2294,9 +2296,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     exclusive=False,
                 )
             return
-        if content in {"/tasks", "/workers", "/diff", "/rewind", "/context"}:
+        workflow_command = content == "/workflow" or content.startswith("/workflow ")
+        if content in {"/tasks", "/workers", "/diff", "/rewind", "/context"} or workflow_command:
             event.text_area.text = ""
-            if self._client is None or self._session_id is None:
+            if self._client is None or (
+                self._session_id is None and not workflow_command
+            ):
                 self._append(
                     Static("[yellow]Core 未连接[/yellow]", classes="log-line")
                 )
@@ -2310,6 +2315,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 "/rewind": self._show_rewind_picker,
                 "/context": self._show_context,
             }
+            if workflow_command:
+                workflow_arg = content.removeprefix("/workflow").strip()
+                if workflow_arg.startswith("start "):
+                    workflow_path = workflow_arg.removeprefix("start ").strip()
+                    self.run_worker(
+                        self._start_workflow_file(workflow_path),
+                        name="start_workflow",
+                        exclusive=False,
+                    )
+                    return
+                self.run_worker(
+                    self._show_workflow(workflow_arg),
+                    name="view_workflow",
+                    exclusive=False,
+                )
+                return
             self.run_worker(
                 workers[content](),
                 name=f"view_{content[1:]}",
@@ -2712,18 +2733,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         finally:
             self._restore_ready_prompt()
 
-    # 加载并展示当前会话的持久 Worker 状态、attempt、预算和简短结果
+    # 加载并展示全部持久 Worker/Fleet 状态、attempt、预算和简短结果
     async def _show_workers(self) -> None:
         if self._client is None or self._session_id is None:
             return
         try:
             result = await self._client.send_command(
                 "worker.list",
-                {"session_id": self._session_id, "limit": 50},
+                {"limit": 50},
             )
             workers = list(result.get("workers", []))
             if not workers:
-                body = "[dim]当前会话没有持久 Worker。[/dim]"
+                body = "[dim]当前没有持久 Worker。[/dim]"
             else:
                 markers = {
                     "queued": "[ ]",
@@ -2756,6 +2777,58 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(Static(body, classes="log-line"))
         except (IpcError, RuntimeError, OSError) as exc:
             self._append(Static(f"[red]workers error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 从 Core durable ledger 加载 workflow 列表或单个 Work Graph projection
+    async def _show_workflow(self, workflow_id: str = "") -> None:
+        if self._client is None:
+            return
+        try:
+            if workflow_id:
+                result = await self._client.send_command(
+                    "workflow.get",
+                    {"workflow_id": workflow_id},
+                )
+                body = render_workflow_graph(dict(result.get("workflow", {})))
+            else:
+                result = await self._client.send_command(
+                    "workflow.list",
+                    {"limit": 50},
+                )
+                body = render_workflow_list(list(result.get("workflows", [])))
+            self._append(Static(body, classes="log-line"))
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]workflow error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 读取本地 TOML/JSON IR 文件并通过 typed IPC 启动 durable workflow
+    async def _start_workflow_file(self, raw_path: str) -> None:
+        if self._client is None:
+            return
+        try:
+            clean_path = raw_path.strip().strip('"').strip("'")
+            path = Path(clean_path).expanduser()
+            format_name = path.suffix.lower().removeprefix(".")
+            if format_name not in {"json", "toml"}:
+                raise ValueError("workflow file must use .json or .toml")
+            source = path.read_text(encoding="utf-8")
+            result = await self._client.send_command(
+                "workflow.start",
+                {"source": source, "format": format_name},
+            )
+            workflow_id = escape(str(result.get("workflow_id", "")))
+            self._append(
+                Static(
+                    f"[green]Workflow 已启动[/green] {workflow_id}",
+                    classes="log-line",
+                )
+            )
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._append(
+                Static(f"[red]workflow start error: {exc}[/red]", classes="log-line")
+            )
         finally:
             self._restore_ready_prompt()
 

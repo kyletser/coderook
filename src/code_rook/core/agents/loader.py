@@ -13,6 +13,7 @@ class AgentProfile:
     allowed_tools: list[str] = field(default_factory=list)
     route: str = ""
     model: str = ""
+    reasoning: str = ""
     # 角色配置可选的访问限制策略，目前支持 "read_only"：仅允许副作用为 NONE 的工具
     restrict: str = ""
 
@@ -71,5 +72,6 @@ class AgentProfileLoader:
             allowed_tools=agent.get("allowed_tools", []),
             route=agent.get("route", ""),
             model=agent.get("model", ""),
+            reasoning=agent.get("reasoning", ""),
             restrict=agent.get("restrict", ""),
         )

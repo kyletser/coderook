@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from code_rook.core.authority import AuthoritySnapshot
 
@@ -46,7 +46,7 @@ class WriteClaim(BaseModel):
 class WorkerRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: int = 2
+    schema_version: int = 3
     id: str = Field(min_length=1)
     parent_turn_id: str = Field(min_length=1)
     parent_worker_id: str = ""
@@ -58,6 +58,7 @@ class WorkerRecord(BaseModel):
     profile: str = ""
     route: str = ""
     model: str = ""
+    reasoning: str = ""
     status: WorkerStatus = WorkerStatus.QUEUED
     status_reason: str = ""
     depth: int = Field(default=1, ge=1, le=8)
@@ -89,6 +90,8 @@ class WorkerRecord(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     event_cursor: int = Field(default=0, ge=0)
     artifact_handles: list[str] = Field(default_factory=list)
+    approved: bool | None = None
+    receipt: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     started_at: str = ""

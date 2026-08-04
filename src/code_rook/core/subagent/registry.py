@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from pydantic import JsonValue
+
 from code_rook.core.authority import AuthoritySnapshot
 from code_rook.core.context import ExecutionContext
 from code_rook.core.subagent.models import (
@@ -16,7 +18,11 @@ from code_rook.core.subagent.models import (
     WorkerStatus,
     WriteClaim,
 )
-from code_rook.core.subagent.store import WorkerStore, WorkerStoreError
+from code_rook.core.subagent.store import (
+    WorkerStore,
+    WorkerStoreBackend,
+    WorkerStoreError,
+)
 
 
 # 返回当前 UTC 时间字符串
@@ -64,13 +70,16 @@ class BackgroundTaskRegistry:
         max_entries: int = 256,
         *,
         store_path: Path | None = None,
+        store: WorkerStoreBackend | None = None,
         boot_id: str | None = None,
         recover: bool = True,
     ) -> None:
+        if store_path is not None and store is not None:
+            raise ValueError("store_path and store are mutually exclusive")
         self._tasks: dict[str, _BackgroundEntry] = {}
         self._memory_records: dict[str, WorkerRecord] = {}
         self._max_entries = max(1, max_entries)
-        self._store = WorkerStore(store_path) if store_path is not None else None
+        self._store = store or (WorkerStore(store_path) if store_path is not None else None)
         self.boot_id = boot_id or uuid.uuid4().hex
         self._shutting_down = False
         if recover:
@@ -99,6 +108,7 @@ class BackgroundTaskRegistry:
         profile: str = "",
         route: str = "",
         model: str = "",
+        reasoning: str = "",
         worktree: str = "",
         branch: str = "",
         merge_owner: str = "",
@@ -126,6 +136,7 @@ class BackgroundTaskRegistry:
             profile=profile,
             route=route,
             model=model,
+            reasoning=reasoning,
             depth=depth,
             max_steps=max_steps,
             wall_time_s=wall_time_s,
@@ -297,6 +308,23 @@ class BackgroundTaskRegistry:
         self._tasks[run_id] = _BackgroundEntry(task, context, parent_run_id)
         task.add_done_callback(lambda _task: self._prune_completed())
 
+    # 将外部 host 托管的 WorkerRecord 转换为 running 并刷新租约
+    def start(self, worker_id: str) -> WorkerRecord:
+        worker = self.record(worker_id)
+        if worker is None:
+            raise WorkerStoreError(f"worker not found: {worker_id}")
+        if worker.status != WorkerStatus.QUEUED:
+            raise ValueError(f"worker status {worker.status.value} cannot start")
+        now = _now()
+        worker.status = WorkerStatus.RUNNING
+        worker.status_reason = ""
+        worker.started_at = now
+        worker.heartbeat_at = now
+        worker.updated_at = now
+        worker.boot_id = self.boot_id
+        self._save(worker)
+        return worker
+
     # 超过容量时按注册顺序淘汰最早的已完成内存句柄，持久记录不删除
     def _prune_completed(self) -> None:
         for run_id, entry in list(self._tasks.items()):
@@ -326,6 +354,9 @@ class BackgroundTaskRegistry:
         evidence: list[str] | None = None,
         risks: list[str] | None = None,
         blockers: list[str] | None = None,
+        artifact_handles: list[str] | None = None,
+        approved: bool | None = None,
+        receipt: dict[str, JsonValue] | None = None,
     ) -> WorkerRecord:
         worker = self.record(worker_id)
         if worker is None:
@@ -350,6 +381,12 @@ class BackgroundTaskRegistry:
             worker.risks = risks
         if blockers is not None:
             worker.blockers = blockers
+        if artifact_handles is not None:
+            worker.artifact_handles = artifact_handles
+        if approved is not None:
+            worker.approved = approved
+        if receipt is not None:
+            worker.receipt = receipt
         self._save(worker)
         return worker
 

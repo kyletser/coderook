@@ -6,6 +6,7 @@ import fnmatch
 import json
 import logging
 import signal
+import sys
 import time
 from datetime import UTC
 from pathlib import Path
@@ -14,7 +15,8 @@ from typing import Any
 from pydantic import BaseModel
 
 import code_rook
-from code_rook.core.authority import WorkspaceTrust
+from code_rook.core.agents.loader import AgentProfileLoader
+from code_rook.core.authority import RuntimeMode, ToolAction, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
@@ -68,12 +70,25 @@ from code_rook.core.bus.commands import (
     UserQuestionRespondResult,
     WorkerListCommand,
     WorkerListResult,
+    WorkflowGetCommand,
+    WorkflowGetResult,
+    WorkflowListCommand,
+    WorkflowListResult,
+    WorkflowStartCommand,
+    WorkflowStartResult,
     WorkspaceDiffCommand,
     WorkspaceDiffResult,
 )
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.events.bus import EventBus
+from code_rook.core.fleet import (
+    FleetProfile,
+    LocalFleet,
+    LocalFleetScheduler,
+    LocalProcessHost,
+    SQLiteWorkerStore,
+)
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteRegistry
@@ -93,6 +108,12 @@ from code_rook.core.trace.writer import TraceWriter
 from code_rook.core.transport.auth import load_or_create_ipc_token, require_loopback_host
 from code_rook.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from code_rook.core.transport.socket_server import SocketServer, get_connection_writer
+from code_rook.core.workflow import (
+    WorkflowLedger,
+    WorkflowLedgerError,
+    WorkflowParseError,
+    parse_workflow_text,
+)
 from code_rook.core.workspace import WorkspaceBoundary
 
 logger = logging.getLogger(__name__)
@@ -120,6 +141,45 @@ class CoreApp:
         self._interaction_manager = InteractionManager(self._bus)
         # daemon 级后台 subagent 任务注册表，跨 turn 持有
         self._subagent_registry: BackgroundTaskRegistry | None = None
+        self._fleet_registry: BackgroundTaskRegistry | None = None
+        self._fleet: LocalFleet | None = None
+
+    # 从当前 route、agent profile 和 authority 真值构建不可变 FleetProfile
+    def _build_fleet_profiles(self) -> list[FleetProfile]:
+        assert self._route_registry is not None
+        assert self._permission_manager is not None
+        default_route = self._route_registry.route()
+        default_authority = self._permission_manager.get_authority_snapshot("")
+        profiles = {
+            "default": FleetProfile(
+                name="default",
+                route=default_route.id,
+                model=default_route.model,
+                authority_ceiling=default_authority,
+            )
+        }
+        for agent in AgentProfileLoader(Path.cwd()).list_all():
+            route = (
+                self._route_registry.route(agent.route)
+                if agent.route
+                else default_route
+            )
+            authority = default_authority
+            if agent.restrict == "read_only":
+                authority = authority.model_copy(
+                    update={
+                        "mode": RuntimeMode.PLAN,
+                        "allowed_actions": frozenset({ToolAction.READ}),
+                    }
+                )
+            profiles[agent.name] = FleetProfile(
+                name=agent.name,
+                route=route.id,
+                model=agent.model or route.model,
+                reasoning=agent.reasoning,
+                authority_ceiling=authority,
+            )
+        return list(profiles.values())
 
     # 处理 core.ping 请求，返回服务版本、运行时长和接收时间
     async def _ping_handler(self, params: dict[str, Any]) -> PongResult:
@@ -369,6 +429,8 @@ class CoreApp:
         assert self._subagent_registry is not None
         cmd = WorkerListCommand.model_validate(params)
         workers = self._subagent_registry.list_records()
+        if self._fleet_registry is not None:
+            workers.extend(self._fleet_registry.list_records())
         if cmd.worker_id:
             workers = [item for item in workers if item.id == cmd.worker_id]
         if cmd.root_goal_id:
@@ -387,6 +449,7 @@ class CoreApp:
                 "profile": item.profile,
                 "route": item.route,
                 "model": item.model,
+                "reasoning": item.reasoning,
                 "status": item.status.value,
                 "status_reason": item.status_reason,
                 "depth": item.depth,
@@ -402,6 +465,42 @@ class CoreApp:
             for item in workers[-cmd.limit :]
         ]
         return WorkerListResult(workers=payload)
+
+    # 启动声明式 TOML/JSON workflow，并立即返回 durable workflow ID
+    async def _workflow_start_handler(
+        self,
+        params: dict[str, Any],
+    ) -> WorkflowStartResult:
+        assert self._fleet is not None
+        cmd = WorkflowStartCommand.model_validate(params)
+        try:
+            spec = parse_workflow_text(cmd.source, format=cmd.format)
+            self._fleet.start(spec)
+        except (WorkflowParseError, WorkflowLedgerError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return WorkflowStartResult(workflow_id=spec.id)
+
+    # 列出 durable workflow 元数据供 TUI/CLI projection 使用
+    async def _workflow_list_handler(
+        self,
+        params: dict[str, Any],
+    ) -> WorkflowListResult:
+        assert self._fleet is not None
+        cmd = WorkflowListCommand.model_validate(params)
+        return WorkflowListResult(workflows=self._fleet.list()[-cmd.limit :])
+
+    # 从 SQLite event reducer 返回单个 workflow 的完整 Work Graph
+    async def _workflow_get_handler(
+        self,
+        params: dict[str, Any],
+    ) -> WorkflowGetResult:
+        assert self._fleet is not None
+        cmd = WorkflowGetCommand.model_validate(params)
+        try:
+            graph = self._fleet.graph(cmd.workflow_id)
+        except WorkflowLedgerError as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return WorkflowGetResult(workflow=graph.model_dump(mode="json"))
 
     # 返回工作区结构化 Git diff，供 TUI 直接展示文件和补丁
     async def _workspace_diff_handler(self, params: dict[str, Any]) -> WorkspaceDiffResult:
@@ -615,6 +714,25 @@ class CoreApp:
         self._subagent_registry = BackgroundTaskRegistry(
             store_path=sessions_root.parent / "workers"
         )
+        self._fleet_registry = BackgroundTaskRegistry(
+            store=SQLiteWorkerStore(sessions_root.parent / "fleet.db")
+        )
+        fleet_scheduler = LocalFleetScheduler(
+            self._fleet_registry,
+            LocalProcessHost(
+                (sys.executable, "-m", "code_rook.core.fleet.worker_process"),
+                cwd=Path.cwd(),
+            ),
+            workspace=Path.cwd(),
+            profiles=self._build_fleet_profiles(),
+        )
+        self._fleet = LocalFleet(
+            WorkflowLedger(sessions_root.parent / "workflow.db"),
+            fleet_scheduler,
+        )
+        resumed_workflows = self._fleet.resume_all()
+        if resumed_workflows:
+            logger.info("resumed %d durable workflows", len(resumed_workflows))
 
         self._sessions = SessionManager(
             store,
@@ -669,6 +787,9 @@ class CoreApp:
         server.register("session.compact", self._session_compact_handler)
         server.register("session.tasks", self._session_tasks_handler)
         server.register("worker.list", self._worker_list_handler)
+        server.register("workflow.start", self._workflow_start_handler)
+        server.register("workflow.list", self._workflow_list_handler)
+        server.register("workflow.get", self._workflow_get_handler)
         server.register("workspace.diff", self._workspace_diff_handler)
         server.register("session.checkpoints", self._session_checkpoints_handler)
         server.register("session.rewind", self._session_rewind_handler)
@@ -689,6 +810,8 @@ class CoreApp:
         await shutdown.wait()
 
         logger.info("shutting down")
+        if self._fleet is not None:
+            await self._fleet.shutdown()
         if self._subagent_registry is not None:
             self._subagent_registry.begin_shutdown()
         if self._sessions is not None:

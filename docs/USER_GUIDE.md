@@ -253,6 +253,28 @@ CodeRook 使用统一的 `agent` 工具管理后台 Worker，支持 `start`、`s
 `SUMMARY / CHANGES / EVIDENCE / RISKS / BLOCKERS` 结构化结果和有界进度事件，不加载完整
 子会话 transcript。
 
+### Workflow 与本地 Fleet
+
+Workflow 使用严格 TOML/JSON 数据描述 `sequence`、`parallel`、`branch`、`retry`、
+`review_gate` 和 `fan_in`，不会执行配置内的 Python、JavaScript 或 shell。启动文件：
+
+```text
+/workflow start path/to/release.toml
+```
+
+查看全部 durable workflow，或展开指定 Work Graph：
+
+```text
+/workflow
+/workflow release-workflow
+```
+
+Workflow、节点事件和 receipt 保存于 `~/.coderook/workflow.db`，本地进程 Fleet Worker
+保存在 `~/.coderook/fleet.db`。Core 重启会从 ledger 恢复中断节点，已经完成的节点不会重复
+执行。每个 workflow 都有节点数、深度、并发、token 和 wall-time 上限；并行写入必须声明
+互不相交的 `exact_files` / `write_roots`，或共享明确的 `coordination_contract`。高风险写入
+只能放在 `review_gate` 内，gate 未通过时下游节点保持 blocked。
+
 ## 7. Plan Mode
 
 Plan Mode 用于先分析、确认方案，再修改代码。
@@ -296,6 +318,10 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 | `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
 | `/sandbox status` | 查看真实 OS 隔离能力 |
 | `/tasks` | 查看最近一次运行的任务状态 |
+| `/workers` | 查看普通 Worker 与本地 Fleet Worker |
+| `/workflow` | 列出 durable workflow |
+| `/workflow start 文件` | 从 TOML/JSON IR 启动 workflow |
+| `/workflow ID` | 展开 reducer 生成的 Work Graph |
 | `/diff` | 查看当前工作区改动和统一 diff |
 | `/rewind` | 从安全 checkpoint 恢复文件 |
 | `/context` | 查看消息数、token 估算、运行次数和上下文占用 |

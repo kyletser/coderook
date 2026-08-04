@@ -301,6 +301,35 @@ class WorkerListResult(BaseModel):
     workers: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class WorkflowStartCommand(BaseModel):
+    type: Literal["workflow.start"] = "workflow.start"
+    source: str = Field(min_length=1, max_length=1_048_576)
+    format: Literal["json", "toml"]
+
+
+class WorkflowStartResult(BaseModel):
+    workflow_id: str
+    status: Literal["started"] = "started"
+
+
+class WorkflowListCommand(BaseModel):
+    type: Literal["workflow.list"] = "workflow.list"
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class WorkflowListResult(BaseModel):
+    workflows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowGetCommand(BaseModel):
+    type: Literal["workflow.get"] = "workflow.get"
+    workflow_id: str = Field(min_length=1)
+
+
+class WorkflowGetResult(BaseModel):
+    workflow: dict[str, Any]
+
+
 class WorkspaceDiffCommand(BaseModel):
     type: Literal["workspace.diff"] = "workspace.diff"
     scope: Literal["all", "staged", "unstaged"] = "all"
@@ -371,6 +400,9 @@ Command = Annotated[
     | SessionCompactCommand
     | SessionTasksCommand
     | WorkerListCommand
+    | WorkflowStartCommand
+    | WorkflowListCommand
+    | WorkflowGetCommand
     | WorkspaceDiffCommand
     | SessionCheckpointsCommand
     | SessionRewindCommand

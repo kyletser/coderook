@@ -687,6 +687,8 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["plan"] == "analyze read-only and review a plan before implementation"
     assert items["permissions"] == "review or change the permission mode"
     assert items["tasks"] == "show tasks from the latest run"
+    assert items["workers"] == "show all durable workers and Fleet workers"
+    assert items["workflow"] == "list, start, or inspect durable workflows"
     assert items["diff"] == "show current workspace changes"
     assert items["rewind"] == "restore files from a safe checkpoint"
     assert items["context"] == "show context size and usage"

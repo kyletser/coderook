@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -79,9 +80,26 @@ async def _wait_until_listening(port: int, process: subprocess.Popen[str]) -> No
     raise TimeoutError("wheel Core did not listen within 10 seconds")
 
 
+# 在 Windows daemon 退出后的短暂句柄释放窗口内重试删除隔离目录
+def _remove_tree_with_retry(path: Path) -> None:
+    for attempt in range(20):
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.1)
+
+
 # 从解压后的 wheel 验证资源、入口、鉴权 Core 和真实 ping
 def smoke(wheel: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="coderook-wheel-smoke-") as raw_temp:
+    with tempfile.TemporaryDirectory(
+        prefix="coderook-wheel-smoke-",
+        ignore_cleanup_errors=True,
+    ) as raw_temp:
         root = Path(raw_temp)
         site = root / "site"
         site.mkdir()
@@ -179,6 +197,7 @@ print(package)
                     process.kill()
                     process.wait(timeout=5.0)
 
+    _remove_tree_with_retry(Path(raw_temp))
     print(f"wheel smoke passed: {wheel.name}")
 
 

@@ -30,6 +30,9 @@ from code_rook.core.bus.commands import (
     SessionTasksCommand,
     UserQuestionRespondCommand,
     WorkerListCommand,
+    WorkflowGetCommand,
+    WorkflowListCommand,
+    WorkflowStartCommand,
     WorkspaceDiffCommand,
 )
 from code_rook.core.bus.events import (
@@ -286,6 +289,9 @@ def test_session_inspection_commands_validate() -> None:
         checkpoint_id="20260731T010203-abcdef12",
     )
     context = SessionContextCommand(session_id="sess-1")
+    workflow_start = WorkflowStartCommand(source="{}", format="json")
+    workflow_list = WorkflowListCommand(limit=25)
+    workflow_get = WorkflowGetCommand(workflow_id="release")
 
     assert tasks.type == "session.tasks"
     assert workers.type == "worker.list"
@@ -295,6 +301,9 @@ def test_session_inspection_commands_validate() -> None:
     assert checkpoints.type == "session.checkpoints"
     assert rewind.type == "session.rewind"
     assert context.type == "session.context"
+    assert workflow_start.type == "workflow.start"
+    assert workflow_list.type == "workflow.list"
+    assert workflow_get.type == "workflow.get"
 
 
 # 功能：验证计划完成事件携带原请求和完整计划供 TUI 审阅

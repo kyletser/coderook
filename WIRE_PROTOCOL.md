@@ -2287,6 +2287,181 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### WorkflowStartCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `source` | `string` | yes |
+| `format` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "workflow.start",
+      "default": "workflow.start",
+      "title": "Type",
+      "type": "string"
+    },
+    "source": {
+      "maxLength": 1048576,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "format": {
+      "enum": [
+        "json",
+        "toml"
+      ],
+      "title": "Format",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "format"
+  ],
+  "title": "WorkflowStartCommand",
+  "type": "object"
+}
+```
+
+### WorkflowStartResult
+
+| Field | Type | Required |
+|---|---|---|
+| `workflow_id` | `string` | yes |
+| `status` | `string` | no |
+
+```json
+{
+  "properties": {
+    "workflow_id": {
+      "title": "Workflow Id",
+      "type": "string"
+    },
+    "status": {
+      "const": "started",
+      "default": "started",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workflow_id"
+  ],
+  "title": "WorkflowStartResult",
+  "type": "object"
+}
+```
+
+### WorkflowListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "workflow.list",
+      "default": "workflow.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "WorkflowListCommand",
+  "type": "object"
+}
+```
+
+### WorkflowListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `workflows` | `array` | no |
+
+```json
+{
+  "properties": {
+    "workflows": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Workflows",
+      "type": "array"
+    }
+  },
+  "title": "WorkflowListResult",
+  "type": "object"
+}
+```
+
+### WorkflowGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `workflow_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "workflow.get",
+      "default": "workflow.get",
+      "title": "Type",
+      "type": "string"
+    },
+    "workflow_id": {
+      "minLength": 1,
+      "title": "Workflow Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workflow_id"
+  ],
+  "title": "WorkflowGetCommand",
+  "type": "object"
+}
+```
+
+### WorkflowGetResult
+
+| Field | Type | Required |
+|---|---|---|
+| `workflow` | `object` | yes |
+
+```json
+{
+  "properties": {
+    "workflow": {
+      "additionalProperties": true,
+      "title": "Workflow",
+      "type": "object"
+    }
+  },
+  "required": [
+    "workflow"
+  ],
+  "title": "WorkflowGetResult",
+  "type": "object"
+}
+```
+
 ### WorkspaceDiffCommand
 
 | Field | Type | Required |
