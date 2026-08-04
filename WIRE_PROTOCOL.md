@@ -2217,6 +2217,76 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### WorkerListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | no |
+| `worker_id` | `string` | no |
+| `root_goal_id` | `string` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.list",
+      "default": "worker.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "default": "",
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "root_goal_id": {
+      "default": "",
+      "title": "Root Goal Id",
+      "type": "string"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "WorkerListCommand",
+  "type": "object"
+}
+```
+
+### WorkerListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `workers` | `array` | no |
+
+```json
+{
+  "properties": {
+    "workers": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Workers",
+      "type": "array"
+    }
+  },
+  "title": "WorkerListResult",
+  "type": "object"
+}
+```
+
 ### WorkspaceDiffCommand
 
 | Field | Type | Required |

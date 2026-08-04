@@ -206,7 +206,7 @@ Mode 决定怎么工作，Authority 决定工具是否需要批准，两者彼�
 
 - `Plan`：只读分析；
 - `Act`：当前会话直接工作；
-- `Operate`：权限上限与 Act 相同，后续用于耐久 Worker 调度偏好。
+- `Operate`：权限上限与 Act 相同，适合把独立或长任务交给耐久 Worker。
 
 Header 会分别显示 Mode、Authority 和 workspace trust，不再把它们合并成一个状态。
 
@@ -233,6 +233,25 @@ Trust 是项目是否受信任的独立状态。Sandbox 显示操作系统真实
 
 也可以用 `↑` / `↓` 选择后按 `Enter`。`Esc` 等同于拒绝这一次。
 “始终允许/拒绝”规则保存在 `~/.coderook/policy.toml`。
+
+### Durable Worker
+
+CodeRook 使用统一的 `agent` 工具管理后台 Worker，支持 `start`、`status`、`peek`、
+`wait`、`cancel` 和 `followup`。后台 Worker 记录保存在 `~/.coderook/workers/`，daemon
+重启后仍可查询；失去租约的运行记录会变为 `interrupted`，随后可使用原 `worker_id`
+重新 `start`，在最大重试次数和 backoff 约束下恢复。
+
+输入以下命令可查看当前会话的 Worker、attempt、token 预算和摘要：
+
+```text
+/workers
+```
+
+写入型 Worker 必须在启动前声明 `exact_files`、`write_roots` 或
+`coordination_contract`。同一工作区的相交声明会直接拒绝；只读 Worker 不占用写声明。
+独立 worktree 的写入 Worker 还必须声明合并 owner 和 reviewer。父会话只接收
+`SUMMARY / CHANGES / EVIDENCE / RISKS / BLOCKERS` 结构化结果和有界进度事件，不加载完整
+子会话 transcript。
 
 ## 7. Plan Mode
 

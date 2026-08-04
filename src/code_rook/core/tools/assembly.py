@@ -16,6 +16,7 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.subagent.agent import AgentTool
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
@@ -56,6 +57,7 @@ from code_rook.core.tools.families import (
     register_run_family,
 )
 from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.tools.spec import ToolCaller
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
 
@@ -202,27 +204,49 @@ class RuntimeToolAssembly:
                 registry.register(question_tool)
         if provider is not None and bus is not None and run_id is not None:
             runs_dir = child_runs_dir or self._runs_dir
-            if runtime_mode != RuntimeMode.PLAN and _name_allowed("spawn_agent"):
+            spawn_tool = SpawnAgentTool(
+                provider=provider,
+                parent_bus=bus,
+                parent_run_id=run_id,
+                permission_manager=self._permission_manager,
+                max_steps=self._max_steps,
+                task_registry=self._task_registry,
+                runs_dir=runs_dir,
+                session_id=session_id,
+                depth=0,
+                workspace_boundary=self._boundary,
+                task_manager=task_manager,
+                route_registry=self._route_registry,
+                hooks=self._hooks,
+                interaction_manager=self._interaction_manager,
+            )
+            if _name_allowed("agent"):
+                registry.register(AgentTool(self._task_registry, spawn_tool))
+            if _name_allowed("spawn_agent"):
                 registry.register(
-                    SpawnAgentTool(
-                        provider=provider,
-                        parent_bus=bus,
-                        parent_run_id=run_id,
-                        permission_manager=self._permission_manager,
-                        max_steps=self._max_steps,
-                        task_registry=self._task_registry,
-                        runs_dir=runs_dir,
-                        session_id=session_id,
-                        depth=0,
-                        workspace_boundary=self._boundary,
-                        task_manager=task_manager,
-                        route_registry=self._route_registry,
-                        hooks=self._hooks,
-                    )
+                    spawn_tool,
+                    spec=spawn_tool.build_spec().model_copy(
+                        update={
+                            "model_visible": False,
+                            "allowed_callers": frozenset(
+                                {ToolCaller.INTERNAL, ToolCaller.REPLAY}
+                            ),
+                        }
+                    ),
                 )
             agent_result_tool = AgentResultTool(self._task_registry)
-            if _ok(agent_result_tool):
-                registry.register(agent_result_tool)
+            if _name_allowed("agent_result"):
+                registry.register(
+                    agent_result_tool,
+                    spec=agent_result_tool.build_spec().model_copy(
+                        update={
+                            "model_visible": False,
+                            "allowed_callers": frozenset(
+                                {ToolCaller.INTERNAL, ToolCaller.REPLAY}
+                            ),
+                        }
+                    ),
+                )
         if self._mcp_manager is not None:
             for mcp_tool in self._mcp_manager.get_tools():
                 if _ok(mcp_tool):

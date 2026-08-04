@@ -63,8 +63,9 @@ def build_capability_context(
         [
             "",
             (
-                "Subagents are isolated workers. Use spawn_agent only for a self-contained "
-                "delegated task whose description matches a profile."
+                "Subagents are isolated workers. Use agent action=start only for a "
+                "self-contained delegated task whose description matches a profile. "
+                "Use status, peek, wait, cancel, and followup for its durable lifecycle."
             ),
             "Available subagent profiles:",
         ]

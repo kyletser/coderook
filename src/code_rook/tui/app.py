@@ -144,6 +144,11 @@ def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
         if isinstance(commands, list):
             return f"{len(commands)} verification gates"
         return "verification gates"
+    if tool_name == "agent":
+        action = str(params.get("action", "status"))
+        if action == "start":
+            return _preview(str(params.get("description", "worker")), 110)
+        return _preview(str(params.get("worker_id", "workers")), 110)
     if tool_name == "Bash":
         action = str(params.get("action", "run"))
         if action == "run":
@@ -223,6 +228,19 @@ def _tool_action_text(
             "cancel": ("正在停止后台任务", "已停止后台任务"),
         }
         actions = bash_actions.get(action, ("正在操作命令", "已完成命令操作"))
+        label = actions[1 if finished else 0]
+        return f"{label} {_tool_target(tool_name, params)}".rstrip()
+    if tool_name == "agent":
+        action = str(params.get("action", "status"))
+        agent_actions = {
+            "start": ("正在启动 Worker", "已启动 Worker"),
+            "status": ("正在检查 Worker", "已检查 Worker"),
+            "peek": ("正在查看 Worker 进度", "已查看 Worker 进度"),
+            "wait": ("正在等待 Worker", "已等待 Worker"),
+            "cancel": ("正在停止 Worker", "已停止 Worker"),
+            "followup": ("正在发送 Worker 指令", "已发送 Worker 指令"),
+        }
+        actions = agent_actions.get(action, ("正在操作 Worker", "已完成 Worker 操作"))
         label = actions[1 if finished else 0]
         return f"{label} {_tool_target(tool_name, params)}".rstrip()
     actions = _TOOL_ACTIONS.get(
@@ -607,7 +625,7 @@ class PermissionSelect(Static):
             return "CHECKPOINT", str(
                 self._params.get("checkpoint_id", self._param_preview)
             )
-        if self._tool_name == "spawn_agent":
+        if self._tool_name in {"agent", "spawn_agent"}:
             value = self._params.get("description", self._params.get("goal"))
             return "TASK", str(value if value is not None else self._param_preview)
         return "REQUEST", self._param_preview or "No additional details"
@@ -619,6 +637,7 @@ class PermissionSelect(Static):
             "edit_file": "edit a file",
             "apply_patch": "apply workspace changes",
             "checkpoint_rewind": "rewind workspace changes",
+            "agent": "manage a durable worker",
             "spawn_agent": "start a subagent",
         }
         return labels.get(self._tool_name, f"use {self._tool_name}")
@@ -1832,6 +1851,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("trust", "show, grant, or revoke workspace trust"),
             ("sandbox", "show the real OS isolation capability"),
             ("tasks", "show tasks from the latest run"),
+            ("workers", "show durable workers for this session"),
             ("diff", "show current workspace changes"),
             ("rewind", "restore files from a safe checkpoint"),
             ("context", "show context size and usage"),
@@ -2274,7 +2294,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     exclusive=False,
                 )
             return
-        if content in {"/tasks", "/diff", "/rewind", "/context"}:
+        if content in {"/tasks", "/workers", "/diff", "/rewind", "/context"}:
             event.text_area.text = ""
             if self._client is None or self._session_id is None:
                 self._append(
@@ -2285,6 +2305,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             event.text_area.border_title = f"正在加载 {content}"
             workers = {
                 "/tasks": self._show_tasks,
+                "/workers": self._show_workers,
                 "/diff": self._show_diff,
                 "/rewind": self._show_rewind_picker,
                 "/context": self._show_context,
@@ -2688,6 +2709,53 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(Static(body, classes="log-line"))
         except (IpcError, RuntimeError, OSError) as exc:
             self._append(Static(f"[red]tasks error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示当前会话的持久 Worker 状态、attempt、预算和简短结果
+    async def _show_workers(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "worker.list",
+                {"session_id": self._session_id, "limit": 50},
+            )
+            workers = list(result.get("workers", []))
+            if not workers:
+                body = "[dim]当前会话没有持久 Worker。[/dim]"
+            else:
+                markers = {
+                    "queued": "[ ]",
+                    "running": "[>]",
+                    "waiting": "[~]",
+                    "completed": "[x]",
+                    "failed": "[!]",
+                    "cancelled": "[-]",
+                    "interrupted": "[|]",
+                    "budget_limited": "[$]",
+                }
+                lines = ["[bold cyan]Workers[/bold cyan]"]
+                for worker in workers:
+                    status = str(worker.get("status", "queued"))
+                    worker_id = escape(str(worker.get("worker_id", "")))
+                    description = escape(str(worker.get("description", "")))
+                    attempt = worker.get("attempt", 1)
+                    maximum = worker.get("max_attempts", 1)
+                    usage = worker.get("token_usage", 0)
+                    budget = worker.get("token_budget")
+                    budget_text = f"{usage}/{budget}" if budget else str(usage)
+                    lines.append(
+                        f"{markers.get(status, '[?]')} {worker_id} {description}  "
+                        f"[dim]{status} · attempt {attempt}/{maximum} · tokens {budget_text}[/dim]"
+                    )
+                    summary = str(worker.get("summary", "")).strip()
+                    if summary:
+                        lines.append(f"    [dim]{escape(_preview(summary, 140))}[/dim]")
+                body = "\n".join(lines)
+            self._append(Static(body, classes="log-line"))
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]workers error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
 

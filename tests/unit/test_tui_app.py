@@ -38,6 +38,8 @@ from code_rook.tui.app import (
     UserQuestionSelect,
     _param_summary,
     _preview,
+    _tool_action_text,
+    _tool_target,
 )
 
 
@@ -64,6 +66,21 @@ def test_permission_panel_shows_request_context_and_choices() -> None:
     assert "this request only" in plain
     assert "remember for future sessions" in plain
     assert "navigate" in plain
+
+
+# 功能：统一 agent action 在 TUI 中显示自然的 Worker 动作和目标
+# 设计：直接验证 start 与 wait 文案，覆盖 action-family 不再回退为原始参数摘要
+def test_agent_action_uses_worker_labels() -> None:
+    start = {"action": "start", "description": "inspect module"}
+    wait = {"action": "wait", "worker_id": "worker-1"}
+
+    assert _tool_target("agent", start) == "inspect module"
+    assert _tool_action_text("agent", start, finished=False) == (
+        "正在启动 Worker inspect module"
+    )
+    assert _tool_action_text("agent", wait, finished=True) == (
+        "已等待 Worker worker-1"
+    )
 
 
 # 功能：验证权限请求文本中的 Rich 标记会按普通文本显示

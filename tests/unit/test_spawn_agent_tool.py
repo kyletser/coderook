@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -129,6 +130,7 @@ async def test_background_returns_run_id(tmp_path: Path) -> None:
         "run_in_background": True,
     })
     assert not result.is_error
+    assert "worker_id=" in result.content
     assert "run_id=" in result.content
     # extract run_id from message
     run_id = result.content.split("run_id=")[1].split(".")[0]
@@ -193,12 +195,12 @@ async def test_agent_result_done(tmp_path: Path) -> None:
     assert "final answer" in result.content
 
 
-# 功能：depth=2 时调用 spawn_agent 应返回 is_error=True（嵌套限制）
-# 设计：构造 depth=2 的工具，断言 invoke 直接返回错误而不调用 provider
+# 功能：depth=3 时调用 spawn_agent 应返回 is_error=True（默认嵌套限制）
+# 设计：构造 depth=3 的工具，断言 invoke 直接返回错误而不调用 provider
 @pytest.mark.asyncio
 async def test_nesting_limit(tmp_path: Path) -> None:
     provider = _make_provider()
-    tool, _, _ = _make_tool(tmp_path, provider, depth=2)
+    tool, _, _ = _make_tool(tmp_path, provider, depth=3)
     result = await tool.invoke({
         "description": "nested",
         "prompt": "do nested work",
@@ -293,7 +295,7 @@ async def test_child_loop_uses_shared_todo_state(tmp_path: Path) -> None:
 
     result = await tool.invoke({"description": "child", "prompt": "work"})
 
-    assert result.content == "after reminder"
+    assert json.loads(result.content)["summary"] == "after reminder"
     assert provider.chat.await_count == 2
 
 
@@ -334,7 +336,7 @@ async def test_profile_route_pin_uses_configured_user_route(
     async def collect(event: object) -> None:
         events.append(event)
 
-    bus.subscribe(collect)  # type: ignore[arg-type]
+    bus.subscribe(collect)
     tool = SpawnAgentTool(
         provider=parent_provider,
         parent_bus=bus,
@@ -357,7 +359,7 @@ async def test_profile_route_pin_uses_configured_user_route(
     )
 
     assert not result.is_error
-    assert result.content == "routed"
+    assert json.loads(result.content)["summary"] == "routed"
     assert factory_calls == [("openai_chat", "gpt-profile", "profile-secret")]
     parent_provider.chat.assert_not_awaited()
     selected = next(event for event in events if event.type == "llm.route_selected")  # type: ignore[attr-defined]

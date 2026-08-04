@@ -29,6 +29,7 @@ from code_rook.core.bus.commands import (
     SessionSetAuthorityCommand,
     SessionTasksCommand,
     UserQuestionRespondCommand,
+    WorkerListCommand,
     WorkspaceDiffCommand,
 )
 from code_rook.core.bus.events import (
@@ -273,10 +274,11 @@ def test_session_authority_partial_update_validation() -> None:
         SessionSetAuthorityCommand(session_id="sess-1")
 
 
-# 功能：验证 tasks、diff、checkpoint、rewind 和 context 高频视图命令具有稳定判别类型
-# 设计：构造五个 typed command 并检查关键参数，确保 TUI 不依赖自由格式命令字符串
+# 功能：验证 tasks、workers、diff、checkpoint、rewind 和 context 高频视图命令具有稳定判别类型
+# 设计：构造六个 typed command 并检查关键参数，确保 TUI 不依赖自由格式命令字符串
 def test_session_inspection_commands_validate() -> None:
     tasks = SessionTasksCommand(session_id="sess-1")
+    workers = WorkerListCommand(session_id="sess-1", limit=25)
     diff = WorkspaceDiffCommand(scope="unstaged", path="src")
     checkpoints = SessionCheckpointsCommand(session_id="sess-1")
     rewind = SessionRewindCommand(
@@ -286,6 +288,8 @@ def test_session_inspection_commands_validate() -> None:
     context = SessionContextCommand(session_id="sess-1")
 
     assert tasks.type == "session.tasks"
+    assert workers.type == "worker.list"
+    assert workers.limit == 25
     assert diff.type == "workspace.diff"
     assert diff.scope == "unstaged"
     assert checkpoints.type == "session.checkpoints"

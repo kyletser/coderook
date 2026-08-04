@@ -51,6 +51,12 @@ _FAMILY_POLICY_ALIASES: dict[tuple[str, str], str] = {
     ("Git", "diff"): "git_diff",
     ("Run", "tests"): "run_tests",
     ("Run", "verifiers"): "run_verifiers",
+    ("agent", "start"): "spawn_agent",
+    ("agent", "status"): "agent_result",
+    ("agent", "peek"): "agent_result",
+    ("agent", "wait"): "agent_result",
+    ("agent", "cancel"): "spawn_agent",
+    ("agent", "followup"): "spawn_agent",
 }
 
 

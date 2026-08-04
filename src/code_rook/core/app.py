@@ -66,6 +66,8 @@ from code_rook.core.bus.commands import (
     SessionTasksResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
+    WorkerListCommand,
+    WorkerListResult,
     WorkspaceDiffCommand,
     WorkspaceDiffResult,
 )
@@ -362,6 +364,45 @@ class CoreApp:
         run_id, tasks = self._sessions.list_tasks(cmd.session_id)
         return SessionTasksResult(run_id=run_id, tasks=tasks)
 
+    # 返回持久 Worker 列表，省略 prompt 和完整子运行 transcript
+    async def _worker_list_handler(self, params: dict[str, Any]) -> WorkerListResult:
+        assert self._subagent_registry is not None
+        cmd = WorkerListCommand.model_validate(params)
+        workers = self._subagent_registry.list_records()
+        if cmd.worker_id:
+            workers = [item for item in workers if item.id == cmd.worker_id]
+        if cmd.root_goal_id:
+            workers = [
+                item for item in workers if item.root_goal_id == cmd.root_goal_id
+            ]
+        if cmd.session_id:
+            workers = [item for item in workers if item.session_id == cmd.session_id]
+        payload = [
+            {
+                "worker_id": item.id,
+                "parent_turn_id": item.parent_turn_id,
+                "root_goal_id": item.root_goal_id,
+                "description": item.description,
+                "role": item.role,
+                "profile": item.profile,
+                "route": item.route,
+                "model": item.model,
+                "status": item.status.value,
+                "status_reason": item.status_reason,
+                "depth": item.depth,
+                "attempt": item.attempt,
+                "max_attempts": item.max_attempts,
+                "worktree": item.worktree,
+                "token_budget": item.token_budget,
+                "token_usage": item.token_usage,
+                "heartbeat_at": item.heartbeat_at,
+                "summary": item.summary[:1_000],
+                "blockers": item.blockers[:10],
+            }
+            for item in workers[-cmd.limit :]
+        ]
+        return WorkerListResult(workers=payload)
+
     # 返回工作区结构化 Git diff，供 TUI 直接展示文件和补丁
     async def _workspace_diff_handler(self, params: dict[str, Any]) -> WorkspaceDiffResult:
         cmd = WorkspaceDiffCommand.model_validate(params)
@@ -570,8 +611,10 @@ class CoreApp:
             logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
             await self._mcp_manager.start_all(self._config.mcp.servers)
 
-        # daemon 级后台 subagent 注册表，跨 turn 持有，session/turn 间不销毁
-        self._subagent_registry = BackgroundTaskRegistry()
+        # daemon 级 Worker 控制面跨 turn 和重启持久化，内存仅保留本次 boot 任务句柄
+        self._subagent_registry = BackgroundTaskRegistry(
+            store_path=sessions_root.parent / "workers"
+        )
 
         self._sessions = SessionManager(
             store,
@@ -625,6 +668,7 @@ class CoreApp:
         server.register("user_question.respond", self._user_question_respond_handler)
         server.register("session.compact", self._session_compact_handler)
         server.register("session.tasks", self._session_tasks_handler)
+        server.register("worker.list", self._worker_list_handler)
         server.register("workspace.diff", self._workspace_diff_handler)
         server.register("session.checkpoints", self._session_checkpoints_handler)
         server.register("session.rewind", self._session_rewind_handler)
@@ -645,6 +689,8 @@ class CoreApp:
         await shutdown.wait()
 
         logger.info("shutting down")
+        if self._subagent_registry is not None:
+            self._subagent_registry.begin_shutdown()
         if self._sessions is not None:
             await self._sessions.cancel_all()
         for run_task in list(self._running_runs):

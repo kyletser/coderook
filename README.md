@@ -229,7 +229,7 @@ src/code_rook/
     ├── background/      # daemon 级后台任务
     ├── task/            # 多 Agent 任务状态
     ├── worktree/        # Git worktree 生命周期
-    ├── subagent/        # 子 Agent 调度
+    ├── subagent/        # 持久 Worker、写入声明、租约、预算与统一 agent actions
     ├── hooks/           # 异步生命周期扩展点
     ├── skills/          # Skill 加载
     └── mcp/             # MCP server 管理

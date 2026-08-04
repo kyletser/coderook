@@ -179,5 +179,7 @@ class ExecutionContext:
 
     # 将 run 标记为失败并记录原因
     def mark_failed(self, reason: str) -> None:
+        if self.is_done():
+            return
         self.status = "failed"
         self.reason = reason

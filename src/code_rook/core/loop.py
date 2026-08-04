@@ -145,6 +145,7 @@ _CONTENT_HASH_RE = re.compile(
 )
 
 
+# 返回当前 UTC 时间字符串
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -154,13 +155,24 @@ def _decision_intent(tool_calls: list[ToolCallBlock]) -> str:
     names = {call.name for call in tool_calls}
     if not names:
         return "respond"
+    agent_actions = {
+        str(call.input.get("action", ""))
+        for call in tool_calls
+        if call.name == "agent"
+    }
+    if agent_actions & {"start", "cancel", "followup"}:
+        return "delegate"
     if names & _DELEGATION_TOOLS:
         return "delegate"
     if names & _CHANGE_TOOLS:
         return "change"
     if names & _PLANNING_TOOLS:
         return "plan"
-    if names <= _INSPECTION_TOOLS:
+    if names <= (_INSPECTION_TOOLS | {"agent"}) and agent_actions <= {
+        "status",
+        "peek",
+        "wait",
+    }:
         return "inspect"
     return "execute"
 

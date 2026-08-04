@@ -289,6 +289,18 @@ class SessionTasksResult(BaseModel):
     tasks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class WorkerListCommand(BaseModel):
+    type: Literal["worker.list"] = "worker.list"
+    session_id: str = ""
+    worker_id: str = ""
+    root_goal_id: str = ""
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class WorkerListResult(BaseModel):
+    workers: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class WorkspaceDiffCommand(BaseModel):
     type: Literal["workspace.diff"] = "workspace.diff"
     scope: Literal["all", "staged", "unstaged"] = "all"
@@ -358,6 +370,7 @@ Command = Annotated[
     | UserQuestionRespondCommand
     | SessionCompactCommand
     | SessionTasksCommand
+    | WorkerListCommand
     | WorkspaceDiffCommand
     | SessionCheckpointsCommand
     | SessionRewindCommand
