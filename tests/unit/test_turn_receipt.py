@@ -144,6 +144,62 @@ def test_receipt_builds_from_durable_records_only() -> None:
     assert receipt.unavailable == ["cost"]
 
 
+# 功能：Receipt 从默认 File action-family 准确识别写入路径且忽略只读调用
+# 设计：同时传入 File.write 和 File.read 配对 item，避免只看 family 名导致读取路径被误报为变更
+def test_receipt_tracks_mutating_file_family_actions_only() -> None:
+    turn = TurnRecord(
+        id="turn-family",
+        thread_id="thread-family",
+        status=TurnStatus.COMPLETED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    items = [
+        TurnItemRecord(
+            id="call-write",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="write-1",
+            payload={
+                "tool_name": "File",
+                "params": {"action": "write", "path": "src\\changed.py"},
+            },
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-write",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="write-1",
+            payload={"tool_name": "File", "output": '{"path":"src/changed.py"}'},
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="call-read",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="read-1",
+            payload={
+                "tool_name": "File",
+                "params": {"action": "read", "path": "src/unchanged.py"},
+            },
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-read",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="read-1",
+            payload={"tool_name": "File", "output": '{"path":"src/unchanged.py"}'},
+            created_at=_now(),
+        ),
+    ]
+
+    receipt = build_turn_receipt(turn, items, [])
+
+    assert receipt.files_changed == ["src/changed.py"]
+
+
 # 功能：验证缺少可选事实时 receipt 明确报告 unavailable 而不伪造空值含义
 # 设计：使用运行中的最小 turn 和空 ledger，逐项断言未知字段并保留未完成时间为空
 def test_receipt_marks_unavailable_facts_explicitly() -> None:

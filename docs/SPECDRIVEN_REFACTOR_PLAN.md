@@ -9,7 +9,7 @@
 
 | 单元 | 状态 | 验证基线 |
 |---|---|---|
-| P0 基线与关键决策 | 进行中 | 完整 CI 已建立；ADR 待补 |
+| P0 基线与关键决策 | 已完成 | `ADR_RUNTIME_CONTRACT.md`；迁移/恢复 fixture；完整 CI 基线 |
 | PR-01 Runtime models 与 SQLite store | 已完成 | 幂等 migration、连续 seq、原子写入和工具终态约束 |
 | PR-02 Runtime service 与 session facade | 已完成 | 历史 session 幂等导入、真实 IPC 投影、`470 passed, 3 skipped` |
 | PR-03 Event replay 与 boot recovery | 已完成 | 游标分页、回放转实时去重、boot recovery、tool pair invariant、`479 passed, 3 skipped` |
@@ -20,6 +20,18 @@
 | PR-08 Deferred tools 与 Artifact store | 已完成 | 确定性 tool_search、MCP deferred、32 项可见上限、soft/hard 输出边界、内容寻址 Artifact、独立工具装配；分层回归 `644 passed, 3 skipped` |
 | PR-09 Watchdog 与重复行为防护 | 已完成 | stream idle/wall/size watchdog、独立 transient/no-content retry、stuck/read-repeat/coalesce、取消检查、结构化事件；分层回归 `656 passed, 3 skipped` |
 | PR-10 LSP V1、working set 与 prefix fingerprint | 已完成 | basedpyright/pyright 自动探测、有界 error diagnostics、一次性 transient context、路径工作集、无正文稳定前缀收据；单元回归 `653 passed, 2 skipped` |
+| PR-11 Route store、适配器与 Doctor | 已完成 | 五类 route、凭据隔离、分类诊断、实际 RouteReceipt、CLI/TUI 路由管理 |
+| PR-12 Task/Goal store 与 timeline | 已完成 | 依赖/gate/attempt/artifact/timeline、Goal 预算与 evidence、runtime event projection |
+| PR-13 Hooks V2 与 Skills provenance | 已完成 | 全生命周期 hook、timeout/process-tree、脱敏有界 payload；Skill preview/digest/audit |
+| PR-14 Worker ledger 与 agent actions | 已完成 | 六类 action、durable WorkerRecord、bounded events 与结构化结果 |
+| PR-15 Write claims、预算与恢复 | 已完成 | 冲突 fail-closed、共享预算、lease/heartbeat、retry/backoff、重启恢复 |
+| PR-16 Workflow IR 与 Work Graph | 已完成 | 六类声明式节点、限制/gate/fan-in、SQLite event reducer、恢复不重跑 |
+| PR-17 Local Fleet ledger | 已完成 | 固定 profile 本地进程、SQLite Worker、并发/claim/heartbeat/restart 集成 |
+| PR-18 HTTP/SSE 与 Turn Receipt | 已完成 | 规范路由、cursor SSE、remote auth、纯 durable Receipt、API/IPC 一致性 |
+| PR-19 TUI Inspector 与投影拆分 | 已完成 | Tasks/Workers/Workflow/Turn、扩展 `/context`、compaction 明细、typed IPC |
+| 最终主线验收 | 已完成 | 双平台 Mypy、`827 passed, 3 skipped`、协议、构建、wheel smoke |
+
+逐项完成证据见 `SPECDRIVEN_COMPLETION_AUDIT.md`。
 
 ## 1. 改造结果
 

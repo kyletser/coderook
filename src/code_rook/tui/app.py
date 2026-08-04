@@ -3857,6 +3857,26 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self.mount(PlanReview(run_id), before="#prompt")
             self._update_header("plan ready")
 
+        elif t == "plan.updated":
+            raw_plan = event.get("plan", [])
+            plan = raw_plan if isinstance(raw_plan, list) else []
+            markers = {
+                "pending": "[ ]",
+                "in_progress": "[>]",
+                "completed": "[x]",
+            }
+            lines = ["[bold cyan]Plan updated[/bold cyan]"]
+            explanation = str(event.get("explanation", "")).strip()
+            if explanation:
+                lines.append(f"[dim]{escape(explanation)}[/dim]")
+            for item in plan:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status", "pending"))
+                marker = markers.get(status, "[ ]")
+                lines.append(f"{marker} {escape(str(item.get('step', '')))}")
+            self._append(Static("\n".join(lines), classes="log-line"))
+
         elif t == "user_question.asked":
             session_id = str(event.get("session_id", ""))
             if session_id != self._session_id:

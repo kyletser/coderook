@@ -76,6 +76,7 @@ class RuntimeService:
             sandbox=detect_sandbox_capability()
         )
         self._write_lock = asyncio.Lock()
+        self._pending_writes: set[asyncio.Task[None]] = set()
 
     # 幂等导入历史 session 及其 run 索引
     async def bootstrap_sessions(self, sessions: list[Session]) -> None:
@@ -126,6 +127,7 @@ class RuntimeService:
         reason: str | None = None,
         result: str = "",
     ) -> TurnRecord:
+        await self.drain_pending_writes()
         async with self._write_lock:
             if result.strip():
                 message_event = await asyncio.to_thread(
@@ -193,27 +195,42 @@ class RuntimeService:
         thread_id: str,
         turn_id: str,
     ) -> Callable[[TaskTimelineEntry], None]:
-        # 在 task 文件成功保存后同步追加事件，并异步通知进程内订阅者
+        # 在 task 文件成功保存后把 SQLite 投影排入非阻塞后台写入
         def receive(entry: TaskTimelineEntry) -> None:
-            event = self._store.append_event(
-                thread_id=thread_id,
-                turn_id=turn_id,
-                event_type=entry.event,
-                payload={
-                    "task_id": entry.task_id,
-                    "timeline_seq": entry.seq,
-                    "actor": entry.actor,
-                    "details": entry.details,
-                },
-                ts=_parse_time(entry.at),
+            # 在专用线程完成 SQLite 写入并按 seq 发布事件
+            async def persist() -> None:
+                async with self._write_lock:
+                    event = await asyncio.to_thread(
+                        self._store.append_event,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        event_type=entry.event,
+                        payload={
+                            "task_id": entry.task_id,
+                            "timeline_seq": entry.seq,
+                            "actor": entry.actor,
+                            "details": entry.details,
+                        },
+                        ts=_parse_time(entry.at),
+                    )
+                    await self._publish_runtime_event(event)
+
+            task = asyncio.create_task(
+                persist(),
+                name=f"runtime-task-event:{thread_id}:{turn_id}:{entry.seq}",
             )
-            if self._bus is not None:
-                asyncio.get_running_loop().create_task(
-                    self._publish_runtime_event(event),
-                    name=f"runtime-event:{thread_id}:{event.seq}",
-                )
+            self._pending_writes.add(task)
 
         return receive
+
+    # 等待所有已排队的 runtime SQLite 写入完成并传播存储错误
+    async def drain_pending_writes(self) -> None:
+        while self._pending_writes:
+            pending = set(self._pending_writes)
+            try:
+                await asyncio.gather(*pending)
+            finally:
+                self._pending_writes.difference_update(pending)
 
     # 恢复其他 daemon boot 遗留的活动 turn 并发布持久事件
     async def recover_stale_turns(self, ts: datetime) -> list[RuntimeEventRecord]:

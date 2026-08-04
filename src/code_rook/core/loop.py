@@ -74,7 +74,7 @@ _INSPECTION_TOOLS = {
     "task_list",
     "worktree_list",
 }
-_PLANNING_TOOLS = {"task_claim", "task_create", "task_update"}
+_PLANNING_TOOLS = {"task_claim", "task_create", "task_update", "update_plan"}
 _CHANGE_TOOLS = {
     "apply_patch",
     "checkpoint_rewind",
@@ -104,8 +104,9 @@ _BASE_SYSTEM_PROMPT = (
     "Keep reasoning out of ordinary response text; reasoning-capable providers expose it "
     "through a separate reasoning channel. Do not emit progress narration before tool calls. "
     "Call the required tools directly. "
-    "For complex work with at least three meaningful actions, use task_create and task_update "
-    "to maintain a concise, verifiable plan. Skip task tracking for simple requests. "
+    "For complex work with at least three meaningful actions, call tasks with the create and "
+    "update actions to maintain concise, verifiable work items. Skip task tracking for simple "
+    "requests. "
     "Never use emoji, decorative symbols, filler greetings, or redundant recaps in "
     "user-visible text. Prefer short factual prose. "
     "Before claiming that you cannot inspect or perform something, check the available tool "
@@ -120,8 +121,8 @@ _BASE_SYSTEM_PROMPT = (
     "Prefer glob and grep over shell commands for code discovery. "
     "Prefer edit_file over write_file when changing an existing file. "
     "Use apply_patch for related changes across multiple files. "
-    "Use memory_save for durable project facts, user preferences, and "
-    "reusable debugging discoveries; do not store secrets. "
+    "Call memory with the save action for durable project facts, user preferences, and reusable "
+    "debugging discoveries; do not store secrets. "
     "Use background_start for slow tests or builds, then poll with "
     "background_result while continuing independent work. "
     "File changes are checkpointed automatically; use "
@@ -134,8 +135,8 @@ _BASE_SYSTEM_PROMPT = (
 # 当 todos 未完成却 end_turn 时注入给模型的提醒，强制其继续推进或显式更新 todos
 _TODO_END_TURN_REMINDER = (
     "You ended the turn, but the Todo State above still has incomplete items. "
-    "Either continue working on the next pending/in_progress todo, or call "
-    "task_update(status='completed') for any items that are truly done, then end."
+    "Either continue working on the next pending/in_progress todo, or call tasks with "
+    "action='update' and status='completed' for any items that are truly done, then end."
 )
 # 连续最多推迟次数；超过即视为模型不再推进 todos，放弃阻拦让其结束
 _MAX_TODO_DEFERS = 3
@@ -161,19 +162,30 @@ def _decision_intent(tool_calls: list[ToolCallBlock]) -> str:
         for call in tool_calls
         if call.name == "agent"
     }
+    memory_actions = {
+        str(call.input.get("action", ""))
+        for call in tool_calls
+        if call.name == "memory"
+    }
+    task_actions = {
+        str(call.input.get("action", ""))
+        for call in tool_calls
+        if call.name == "tasks"
+    }
     if agent_actions & {"start", "cancel", "followup"}:
         return "delegate"
     if names & _DELEGATION_TOOLS:
         return "delegate"
-    if names & _CHANGE_TOOLS:
+    if names & _CHANGE_TOOLS or memory_actions & {"save", "forget"}:
         return "change"
-    if names & _PLANNING_TOOLS:
+    if names & _PLANNING_TOOLS or task_actions & {"create", "claim", "update"}:
         return "plan"
-    if names <= (_INSPECTION_TOOLS | {"agent"}) and agent_actions <= {
-        "status",
-        "peek",
-        "wait",
-    }:
+    if (
+        names <= (_INSPECTION_TOOLS | {"agent", "memory", "tasks"})
+        and agent_actions <= {"status", "peek", "wait"}
+        and memory_actions <= {"search"}
+        and task_actions <= {"list", "get"}
+    ):
         return "inspect"
     return "execute"
 

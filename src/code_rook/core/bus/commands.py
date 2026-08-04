@@ -10,7 +10,12 @@ from code_rook.core.authority import (
     RuntimeMode,
     WorkspaceTrust,
 )
-from code_rook.core.runtime.models import RuntimeEventRecord
+from code_rook.core.runtime.models import (
+    RuntimeEventRecord,
+    ThreadRecord,
+    TurnItemRecord,
+    TurnRecord,
+)
 from code_rook.core.session.model import SessionMode, SessionStatus
 
 
@@ -102,6 +107,121 @@ class EventReplayResult(BaseModel):
     events: list[RuntimeEventRecord]
     latest_seq: int
     has_more: bool
+
+
+class ThreadCreateCommand(BaseModel):
+    type: Literal["thread.create"] = "thread.create"
+    title: str = Field(default="", max_length=200)
+    mode: SessionMode = "chat"
+
+
+class ThreadCreateResult(BaseModel):
+    thread: ThreadRecord
+
+
+class ThreadListCommand(BaseModel):
+    type: Literal["thread.list"] = "thread.list"
+    include_archived: bool = False
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class ThreadListResult(BaseModel):
+    threads: list[ThreadRecord]
+
+
+class ThreadGetCommand(BaseModel):
+    type: Literal["thread.get"] = "thread.get"
+    thread_id: str = Field(min_length=1)
+
+
+class ThreadGetResult(BaseModel):
+    thread: ThreadRecord
+
+
+class ThreadUpdateCommand(BaseModel):
+    type: Literal["thread.update"] = "thread.update"
+    thread_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ThreadUpdateResult(BaseModel):
+    thread: ThreadRecord
+
+
+class ThreadArchiveCommand(BaseModel):
+    type: Literal["thread.archive"] = "thread.archive"
+    thread_id: str = Field(min_length=1)
+
+
+class ThreadArchiveResult(BaseModel):
+    thread: ThreadRecord
+
+
+class TurnStartCommand(BaseModel):
+    type: Literal["turn.start"] = "turn.start"
+    thread_id: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=100_000)
+    runtime_mode: RuntimeMode = RuntimeMode.ACT
+
+
+class TurnStartResult(BaseModel):
+    turn_id: str
+
+
+class TurnGetCommand(BaseModel):
+    type: Literal["turn.get"] = "turn.get"
+    turn_id: str = Field(min_length=1)
+
+
+class TurnGetResult(BaseModel):
+    turn: TurnRecord
+
+
+class TurnListCommand(BaseModel):
+    type: Literal["turn.list"] = "turn.list"
+    thread_id: str = Field(min_length=1)
+
+
+class TurnListResult(BaseModel):
+    turns: list[TurnRecord]
+
+
+class TurnInterruptCommand(BaseModel):
+    type: Literal["turn.interrupt"] = "turn.interrupt"
+    turn_id: str = Field(min_length=1)
+
+
+class TurnInterruptResult(BaseModel):
+    turn: TurnRecord
+
+
+class TurnSteerCommand(BaseModel):
+    type: Literal["turn.steer"] = "turn.steer"
+    turn_id: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=10_000)
+
+
+class TurnSteerResult(BaseModel):
+    turn: TurnRecord
+
+
+class TurnItemsCommand(BaseModel):
+    type: Literal["turn.items"] = "turn.items"
+    turn_id: str = Field(min_length=1)
+
+
+class TurnItemsResult(BaseModel):
+    items: list[TurnItemRecord]
+
+
+class RuntimeCapabilitiesCommand(BaseModel):
+    type: Literal["runtime.capabilities"] = "runtime.capabilities"
+
+
+class RuntimeCapabilitiesResult(BaseModel):
+    version: str
+    runtime_modes: list[RuntimeMode]
+    features: list[str]
 
 
 class SessionCreateCommand(BaseModel):
@@ -401,6 +521,18 @@ Command = Annotated[
     | RunSteerCommand
     | EventSubscribeCommand
     | EventReplayCommand
+    | ThreadCreateCommand
+    | ThreadListCommand
+    | ThreadGetCommand
+    | ThreadUpdateCommand
+    | ThreadArchiveCommand
+    | TurnStartCommand
+    | TurnGetCommand
+    | TurnListCommand
+    | TurnInterruptCommand
+    | TurnSteerCommand
+    | TurnItemsCommand
+    | RuntimeCapabilitiesCommand
     | SessionCreateCommand
     | SessionSendMessageCommand
     | SessionGetAuthorityCommand

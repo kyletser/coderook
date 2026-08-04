@@ -301,6 +301,7 @@ def _to_openai_messages(
     return converted
 
 
+# 严格解析完整工具参数，拒绝把截断或非对象 JSON 交给执行器
 def _parse_tool_calls(raw_tool_calls: list[Any]) -> list[ToolCallBlock]:
     tool_calls: list[ToolCallBlock] = []
     for raw in raw_tool_calls:
@@ -313,12 +314,20 @@ def _parse_tool_calls(raw_tool_calls: list[Any]) -> list[ToolCallBlock]:
         if isinstance(arguments_raw, str):
             try:
                 arguments = json.loads(arguments_raw)
-            except json.JSONDecodeError:
-                arguments = {"_raw_arguments": arguments_raw}
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "OpenAI-compatible provider returned invalid tool arguments"
+                ) from exc
         elif isinstance(arguments_raw, dict):
             arguments = arguments_raw
         else:
-            arguments = {}
+            raise RuntimeError(
+                "OpenAI-compatible provider returned invalid tool arguments"
+            )
+        if not isinstance(arguments, dict):
+            raise RuntimeError(
+                "OpenAI-compatible tool arguments must be an object"
+            )
         tool_calls.append(
             ToolCallBlock(
                 id=str(raw.get("id", "")),

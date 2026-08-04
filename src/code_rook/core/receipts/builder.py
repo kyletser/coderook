@@ -40,15 +40,31 @@ def _unique_payloads(
     return list(found.values())
 
 
+# 判断工具调用是否属于旧写工具或 File family 的写 action
+def _is_mutating_file_call(item: TurnItemRecord) -> bool:
+    if item.kind != TurnItemKind.TOOL_CALL:
+        return False
+    tool_name = item.payload.get("tool_name")
+    if tool_name in {"apply_patch", "edit_file", "write_file"}:
+        return True
+    params = item.payload.get("params")
+    if tool_name != "File" or not isinstance(params, dict):
+        return False
+    action = params.get("action")
+    return isinstance(action, str) and action in {"write", "edit", "patch"}
+
+
 # 从工具调用和结果中提取实际发生变更的工作区路径
 def _changed_files(items: Iterable[TurnItemRecord]) -> list[str]:
+    records = list(items)
     changed: set[str] = set()
-    mutating_names = {"apply_patch", "edit_file", "write_file"}
-    for item in items:
+    mutating_call_ids = {
+        item.tool_call_id for item in records if _is_mutating_file_call(item)
+    }
+    for item in records:
         if item.kind not in {TurnItemKind.TOOL_CALL, TurnItemKind.TOOL_RESULT}:
             continue
-        name = item.payload.get("tool_name") or item.payload.get("name")
-        if name not in mutating_names:
+        if item.tool_call_id not in mutating_call_ids:
             continue
         params = item.payload.get("params")
         if isinstance(params, dict):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,38 @@ def test_worker_survives_restart_and_becomes_interrupted(tmp_path: Path) -> None
     second = BackgroundTaskRegistry(store_path=workers, boot_id="boot-b")
 
     restored = second.record("worker-1")
+    assert restored is not None
+    assert restored.status == WorkerStatus.INTERRUPTED
+    assert restored.status_reason == "daemon restarted or worker lease expired"
+
+
+# 功能：同一 boot 中 Worker 停止心跳并超过 lease 后恢复为 interrupted
+# 设计：从持久 heartbeat 精确推进到 timeout 边界，调用 recover_stale 验证无需 daemon 重启也能识别失联
+def test_stopped_heartbeat_expires_worker_lease(tmp_path: Path) -> None:
+    registry = BackgroundTaskRegistry(
+        store_path=tmp_path / "workers",
+        boot_id="boot-current",
+    )
+    worker = registry.new_record(
+        worker_id="worker-stale",
+        parent_turn_id="turn-parent",
+        root_goal_id="goal-root",
+        description="stale worker",
+        prompt="stop heartbeats",
+        workspace=str(tmp_path),
+        authority_ceiling=AuthoritySnapshot(),
+        depth=1,
+        max_steps=10,
+        heartbeat_interval_s=1,
+        lease_timeout_s=3,
+    )
+    registry.create(worker)
+    expired_at = datetime.fromisoformat(worker.heartbeat_at) + timedelta(seconds=3)
+
+    recovered = registry.recover_stale(now=expired_at)
+
+    assert [item.id for item in recovered] == [worker.id]
+    restored = registry.record(worker.id)
     assert restored is not None
     assert restored.status == WorkerStatus.INTERRUPTED
     assert restored.status_reason == "daemon restarted or worker lease expired"

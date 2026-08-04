@@ -398,16 +398,14 @@ async def test_general_intent_correction_contract_is_injected(
     assert "## Response Language" in provider.system
     assert "## Response Language\nFinal answer only: Simplified Chinese." in provider.system
     assert "Do not emit progress narration before tool calls" in provider.system
-    assert "use task_create and task_update" in provider.system
+    assert "call tasks with the create and update actions" in provider.system
     assert "Never use emoji" in provider.system
     assert "## Runtime Environment" in provider.system
     assert "## Available Extensions" in provider.system
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
     assert "skill" in schemas
     assert "shell command in the workspace" in str(schemas["Bash"]["description"])
-    assert "scope is only CodeRook task records" in str(
-        schemas["task_list"]["description"]
-    )
+    assert "scope is only CodeRook task records" in str(schemas["tasks"]["description"])
 
 
 # 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md

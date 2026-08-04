@@ -717,6 +717,2108 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### ThreadCreateCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `title` | `string` | no |
+| `mode` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "thread.create",
+      "default": "thread.create",
+      "title": "Type",
+      "type": "string"
+    },
+    "title": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Title",
+      "type": "string"
+    },
+    "mode": {
+      "default": "chat",
+      "enum": [
+        "one_shot",
+        "chat"
+      ],
+      "title": "Mode",
+      "type": "string"
+    }
+  },
+  "title": "ThreadCreateCommand",
+  "type": "object"
+}
+```
+
+### ThreadCreateResult
+
+| Field | Type | Required |
+|---|---|---|
+| `thread` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "ThreadRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "default": "idle"
+        },
+        "default_route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Route Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "workspace",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ThreadRecord",
+      "type": "object"
+    },
+    "ThreadStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "interrupted",
+        "failed",
+        "archived"
+      ],
+      "title": "ThreadStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/ThreadRecord"
+    }
+  },
+  "required": [
+    "thread"
+  ],
+  "title": "ThreadCreateResult",
+  "type": "object"
+}
+```
+
+### ThreadListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `include_archived` | `boolean` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "thread.list",
+      "default": "thread.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "include_archived": {
+      "default": false,
+      "title": "Include Archived",
+      "type": "boolean"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "ThreadListCommand",
+  "type": "object"
+}
+```
+
+### ThreadListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `threads` | `array` | yes |
+
+```json
+{
+  "$defs": {
+    "ThreadRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "default": "idle"
+        },
+        "default_route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Route Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "workspace",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ThreadRecord",
+      "type": "object"
+    },
+    "ThreadStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "interrupted",
+        "failed",
+        "archived"
+      ],
+      "title": "ThreadStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "threads": {
+      "items": {
+        "$ref": "#/$defs/ThreadRecord"
+      },
+      "title": "Threads",
+      "type": "array"
+    }
+  },
+  "required": [
+    "threads"
+  ],
+  "title": "ThreadListResult",
+  "type": "object"
+}
+```
+
+### ThreadGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "thread.get",
+      "default": "thread.get",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "thread_id"
+  ],
+  "title": "ThreadGetCommand",
+  "type": "object"
+}
+```
+
+### ThreadGetResult
+
+| Field | Type | Required |
+|---|---|---|
+| `thread` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "ThreadRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "default": "idle"
+        },
+        "default_route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Route Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "workspace",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ThreadRecord",
+      "type": "object"
+    },
+    "ThreadStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "interrupted",
+        "failed",
+        "archived"
+      ],
+      "title": "ThreadStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/ThreadRecord"
+    }
+  },
+  "required": [
+    "thread"
+  ],
+  "title": "ThreadGetResult",
+  "type": "object"
+}
+```
+
+### ThreadUpdateCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+| `title` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "thread.update",
+      "default": "thread.update",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "thread_id",
+    "title"
+  ],
+  "title": "ThreadUpdateCommand",
+  "type": "object"
+}
+```
+
+### ThreadUpdateResult
+
+| Field | Type | Required |
+|---|---|---|
+| `thread` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "ThreadRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "default": "idle"
+        },
+        "default_route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Route Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "workspace",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ThreadRecord",
+      "type": "object"
+    },
+    "ThreadStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "interrupted",
+        "failed",
+        "archived"
+      ],
+      "title": "ThreadStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/ThreadRecord"
+    }
+  },
+  "required": [
+    "thread"
+  ],
+  "title": "ThreadUpdateResult",
+  "type": "object"
+}
+```
+
+### ThreadArchiveCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "thread.archive",
+      "default": "thread.archive",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "thread_id"
+  ],
+  "title": "ThreadArchiveCommand",
+  "type": "object"
+}
+```
+
+### ThreadArchiveResult
+
+| Field | Type | Required |
+|---|---|---|
+| `thread` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "ThreadRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace": {
+          "minLength": 1,
+          "title": "Workspace",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ThreadStatus",
+          "default": "idle"
+        },
+        "default_route_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Route Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "workspace",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "ThreadRecord",
+      "type": "object"
+    },
+    "ThreadStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "interrupted",
+        "failed",
+        "archived"
+      ],
+      "title": "ThreadStatus",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/ThreadRecord"
+    }
+  },
+  "required": [
+    "thread"
+  ],
+  "title": "ThreadArchiveResult",
+  "type": "object"
+}
+```
+
+### TurnStartCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+| `content` | `string` | yes |
+| `runtime_mode` | `object` | no |
+
+```json
+{
+  "$defs": {
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "type": {
+      "const": "turn.start",
+      "default": "turn.start",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    },
+    "content": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    },
+    "runtime_mode": {
+      "$ref": "#/$defs/RuntimeMode",
+      "default": "act"
+    }
+  },
+  "required": [
+    "thread_id",
+    "content"
+  ],
+  "title": "TurnStartCommand",
+  "type": "object"
+}
+```
+
+### TurnStartResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turn_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "turn_id": {
+      "title": "Turn Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id"
+  ],
+  "title": "TurnStartResult",
+  "type": "object"
+}
+```
+
+### TurnGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `turn_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.get",
+      "default": "turn.get",
+      "title": "Type",
+      "type": "string"
+    },
+    "turn_id": {
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id"
+  ],
+  "title": "TurnGetCommand",
+  "type": "object"
+}
+```
+
+### TurnGetResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turn` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "RouteReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "wire_format": {
+          "enum": [
+            "openai_chat",
+            "openai_responses",
+            "anthropic_messages"
+          ],
+          "title": "Wire Format",
+          "type": "string"
+        },
+        "base_url_origin": {
+          "title": "Base Url Origin",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "credential_source": {
+          "enum": [
+            "keyring",
+            "file",
+            "env",
+            "missing"
+          ],
+          "title": "Credential Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "wire_format",
+        "base_url_origin",
+        "model",
+        "credential_source"
+      ],
+      "title": "RouteReceipt",
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "TurnRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus",
+          "default": "queued"
+        },
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "authority_profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability",
+          "default": {
+            "available": false,
+            "kind": "none",
+            "reason": "sandbox capability has not been detected"
+          }
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Usage",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "boot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boot Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "TurnRecord",
+      "type": "object"
+    },
+    "TurnStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "title": "TurnStatus",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "turn": {
+      "$ref": "#/$defs/TurnRecord"
+    }
+  },
+  "required": [
+    "turn"
+  ],
+  "title": "TurnGetResult",
+  "type": "object"
+}
+```
+
+### TurnListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `thread_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.list",
+      "default": "turn.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "thread_id": {
+      "minLength": 1,
+      "title": "Thread Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "thread_id"
+  ],
+  "title": "TurnListCommand",
+  "type": "object"
+}
+```
+
+### TurnListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turns` | `array` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "RouteReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "wire_format": {
+          "enum": [
+            "openai_chat",
+            "openai_responses",
+            "anthropic_messages"
+          ],
+          "title": "Wire Format",
+          "type": "string"
+        },
+        "base_url_origin": {
+          "title": "Base Url Origin",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "credential_source": {
+          "enum": [
+            "keyring",
+            "file",
+            "env",
+            "missing"
+          ],
+          "title": "Credential Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "wire_format",
+        "base_url_origin",
+        "model",
+        "credential_source"
+      ],
+      "title": "RouteReceipt",
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "TurnRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus",
+          "default": "queued"
+        },
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "authority_profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability",
+          "default": {
+            "available": false,
+            "kind": "none",
+            "reason": "sandbox capability has not been detected"
+          }
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Usage",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "boot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boot Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "TurnRecord",
+      "type": "object"
+    },
+    "TurnStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "title": "TurnStatus",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "turns": {
+      "items": {
+        "$ref": "#/$defs/TurnRecord"
+      },
+      "title": "Turns",
+      "type": "array"
+    }
+  },
+  "required": [
+    "turns"
+  ],
+  "title": "TurnListResult",
+  "type": "object"
+}
+```
+
+### TurnInterruptCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `turn_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.interrupt",
+      "default": "turn.interrupt",
+      "title": "Type",
+      "type": "string"
+    },
+    "turn_id": {
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id"
+  ],
+  "title": "TurnInterruptCommand",
+  "type": "object"
+}
+```
+
+### TurnInterruptResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turn` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "RouteReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "wire_format": {
+          "enum": [
+            "openai_chat",
+            "openai_responses",
+            "anthropic_messages"
+          ],
+          "title": "Wire Format",
+          "type": "string"
+        },
+        "base_url_origin": {
+          "title": "Base Url Origin",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "credential_source": {
+          "enum": [
+            "keyring",
+            "file",
+            "env",
+            "missing"
+          ],
+          "title": "Credential Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "wire_format",
+        "base_url_origin",
+        "model",
+        "credential_source"
+      ],
+      "title": "RouteReceipt",
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "TurnRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus",
+          "default": "queued"
+        },
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "authority_profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability",
+          "default": {
+            "available": false,
+            "kind": "none",
+            "reason": "sandbox capability has not been detected"
+          }
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Usage",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "boot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boot Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "TurnRecord",
+      "type": "object"
+    },
+    "TurnStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "title": "TurnStatus",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "turn": {
+      "$ref": "#/$defs/TurnRecord"
+    }
+  },
+  "required": [
+    "turn"
+  ],
+  "title": "TurnInterruptResult",
+  "type": "object"
+}
+```
+
+### TurnSteerCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `turn_id` | `string` | yes |
+| `content` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.steer",
+      "default": "turn.steer",
+      "title": "Type",
+      "type": "string"
+    },
+    "turn_id": {
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    },
+    "content": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id",
+    "content"
+  ],
+  "title": "TurnSteerCommand",
+  "type": "object"
+}
+```
+
+### TurnSteerResult
+
+| Field | Type | Required |
+|---|---|---|
+| `turn` | `object` | yes |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "RouteReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "route_id": {
+          "title": "Route Id",
+          "type": "string"
+        },
+        "wire_format": {
+          "enum": [
+            "openai_chat",
+            "openai_responses",
+            "anthropic_messages"
+          ],
+          "title": "Wire Format",
+          "type": "string"
+        },
+        "base_url_origin": {
+          "title": "Base Url Origin",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "credential_source": {
+          "enum": [
+            "keyring",
+            "file",
+            "env",
+            "missing"
+          ],
+          "title": "Credential Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "wire_format",
+        "base_url_origin",
+        "model",
+        "credential_source"
+      ],
+      "title": "RouteReceipt",
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "TurnRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus",
+          "default": "queued"
+        },
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "authority_profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability",
+          "default": {
+            "available": false,
+            "kind": "none",
+            "reason": "sandbox capability has not been detected"
+          }
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RouteReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Usage",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "boot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boot Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "TurnRecord",
+      "type": "object"
+    },
+    "TurnStatus": {
+      "enum": [
+        "queued",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "title": "TurnStatus",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "turn": {
+      "$ref": "#/$defs/TurnRecord"
+    }
+  },
+  "required": [
+    "turn"
+  ],
+  "title": "TurnSteerResult",
+  "type": "object"
+}
+```
+
+### TurnItemsCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `turn_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "turn.items",
+      "default": "turn.items",
+      "title": "Type",
+      "type": "string"
+    },
+    "turn_id": {
+      "minLength": 1,
+      "title": "Turn Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "turn_id"
+  ],
+  "title": "TurnItemsCommand",
+  "type": "object"
+}
+```
+
+### TurnItemsResult
+
+| Field | Type | Required |
+|---|---|---|
+| `items` | `array` | yes |
+
+```json
+{
+  "$defs": {
+    "JsonValue": {},
+    "TurnItemKind": {
+      "enum": [
+        "message",
+        "tool_call",
+        "tool_result",
+        "artifact",
+        "checkpoint"
+      ],
+      "title": "TurnItemKind",
+      "type": "string"
+    },
+    "TurnItemRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "minLength": 1,
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TurnItemKind"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "turn_id",
+        "kind",
+        "created_at"
+      ],
+      "title": "TurnItemRecord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/TurnItemRecord"
+      },
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "TurnItemsResult",
+  "type": "object"
+}
+```
+
+### RuntimeCapabilitiesCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "runtime.capabilities",
+      "default": "runtime.capabilities",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "RuntimeCapabilitiesCommand",
+  "type": "object"
+}
+```
+
+### RuntimeCapabilitiesResult
+
+| Field | Type | Required |
+|---|---|---|
+| `version` | `string` | yes |
+| `runtime_modes` | `array` | yes |
+| `features` | `array` | yes |
+
+```json
+{
+  "$defs": {
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "runtime_modes": {
+      "items": {
+        "$ref": "#/$defs/RuntimeMode"
+      },
+      "title": "Runtime Modes",
+      "type": "array"
+    },
+    "features": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Features",
+      "type": "array"
+    }
+  },
+  "required": [
+    "version",
+    "runtime_modes",
+    "features"
+  ],
+  "title": "RuntimeCapabilitiesResult",
+  "type": "object"
+}
+```
+
 ### SessionCreateCommand
 
 | Field | Type | Required |
@@ -4724,6 +6826,81 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "request": "\u89c4\u5212 README \u91cd\u6784",
   "plan": "1. Inspect\n2. Edit\n3. Test",
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### PlanUpdatedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `explanation` | `string` | no |
+| `plan` | `array` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "$defs": {
+    "PlanStepState": {
+      "properties": {
+        "step": {
+          "title": "Step",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "status"
+      ],
+      "title": "PlanStepState",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "type": {
+      "const": "plan.updated",
+      "default": "plan.updated",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "explanation": {
+      "default": "",
+      "title": "Explanation",
+      "type": "string"
+    },
+    "plan": {
+      "items": {
+        "$ref": "#/$defs/PlanStepState"
+      },
+      "title": "Plan",
+      "type": "array"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "plan",
+    "ts"
+  ],
+  "title": "PlanUpdatedEvent",
+  "type": "object"
 }
 ```
 

@@ -30,6 +30,19 @@ def test_all_builtin_skills_found(name: str) -> None:
     assert not any("\u4e00" <= char <= "\u9fff" for char in skill.system_prompt_template)
 
 
+# 功能：验证内建编排 skill 只向模型声明 action-family 工具
+# 设计：读取真实内建 manifest 与提示正文，防止 replay-only 旧别名重新进入模型契约
+def test_orchestrate_skill_uses_action_family_contract() -> None:
+    loader = SkillLoader()
+    skill = loader.resolve("orchestrate")
+
+    assert skill is not None
+    assert skill.allowed_tools == ["agent", "tasks"]
+    assert "Call agent with action `start`" in skill.system_prompt_template
+    assert "spawn_agent" not in skill.system_prompt_template
+    assert "task_create" not in skill.system_prompt_template
+
+
 # 功能：不存在的 skill 名应返回 None
 # 设计：查找一个不存在的名称，断言 resolve 返回 None 而非抛异常
 def test_unknown_skill_returns_none() -> None:

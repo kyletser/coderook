@@ -70,6 +70,35 @@ class FakeStream:
         return self._final
 
 
+class DroppingToolStream:
+    """Anthropic stream that disconnects before a buffered tool call is complete."""
+
+    # 保存仅用于证明失败流不会返回的工具调用终态
+    def __init__(self, final: MagicMock) -> None:
+        self._final = final
+
+    # 进入模拟的流式响应上下文
+    async def __aenter__(self) -> DroppingToolStream:
+        return self
+
+    # 离开模拟的流式响应上下文
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    @property
+    def text_stream(self):  # type: ignore[return]
+        # 生成部分内容后模拟远端在工具参数尚未完整时断线
+        async def _gen():
+            yield '{"path":'
+            raise httpx.RemoteProtocolError("stream disconnected")
+
+        return _gen()
+
+    # 若 Provider 错误接受失败流则暴露不应执行的工具调用
+    async def get_final_message(self) -> MagicMock:
+        return self._final
+
+
 def _make_provider(
     texts: list[str] | None = None,
     stop_reason: str = "end_turn",
@@ -171,6 +200,34 @@ async def test_tool_use_parsed_from_final_message() -> None:
     assert tc.id == "toolu_01"
     assert tc.name == "read_file"
     assert tc.input == {"path": "README.md"}
+
+
+# 功能：Provider 在半个工具 JSON 后断流时必须丢弃失败尝试且不生成工具调用
+# 设计：首个流携带工具终态但在参数片段后抛传输错误，第二次返回普通正文，断言只采用完整重试结果
+async def test_partial_tool_call_stream_is_discarded_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "toolu-partial"
+    tool_block.name = "read_file"
+    tool_block.input = {"path": "README.md"}
+    failed_final = _make_final("tool_use", [tool_block])
+    completed_final = _make_final("end_turn")
+    client = MagicMock()
+    client.messages.stream.side_effect = [
+        DroppingToolStream(failed_final),
+        FakeStream(["recovered"], completed_final),
+    ]
+    monkeypatch.setattr(provider_module, "_RETRY_BACKOFF_S", (0.0, 0.0, 0.0))
+    provider = AnthropicProvider(model="test-model", client=client)
+
+    result, _ = await _chat(provider)
+
+    assert client.messages.stream.call_count == 2
+    assert result.text == "recovered"
+    assert result.stop_reason == "end_turn"
+    assert result.tool_calls == []
 
 
 # 功能：验证 stop_reason=end_turn 时不产生任何工具调用
@@ -425,3 +482,42 @@ async def test_openai_compatible_http_error_is_fully_redacted(
     assert "provider-secret" not in caplog.text
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
+
+
+# 功能：OpenAI-compatible Provider 拒绝半截 JSON 工具参数而不是创建可执行调用
+# 设计：服务端返回截断 arguments，直接断言 chat 分类失败且错误不回显原始参数
+async def test_openai_compatible_rejects_partial_tool_arguments() -> None:
+    # 返回模拟断流后残留的半截工具参数
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": "call-partial",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":',
+                            },
+                        }],
+                    },
+                }],
+                "usage": {},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        with pytest.raises(RuntimeError, match="invalid tool arguments") as captured:
+            await provider.chat([], [], EventBus(), "run-partial")
+
+    assert '{"path":' not in str(captured.value)

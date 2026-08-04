@@ -188,6 +188,19 @@ class PlanReadyEvent(BaseModel):
     ts: str
 
 
+class PlanStepState(BaseModel):
+    step: str
+    status: Literal["pending", "in_progress", "completed"]
+
+
+class PlanUpdatedEvent(BaseModel):
+    type: Literal["plan.updated"] = "plan.updated"
+    run_id: str
+    explanation: str = ""
+    plan: list[PlanStepState]
+    ts: str
+
+
 class SessionResumedEvent(BaseModel):
     type: Literal["session.resumed"] = "session.resumed"
     session_id: str
@@ -425,6 +438,7 @@ Event = Annotated[
     | SessionMessageReceivedEvent
     | SessionWaitingForInputEvent
     | PlanReadyEvent
+    | PlanUpdatedEvent
     | SessionResumedEvent
     | SessionRenamedEvent
     | SessionForkedEvent

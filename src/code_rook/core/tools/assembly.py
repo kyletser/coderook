@@ -51,10 +51,13 @@ from code_rook.core.tools.builtin import (
 )
 from code_rook.core.tools.discovery import ToolSearchTool
 from code_rook.core.tools.families import (
+    UpdatePlanTool,
     register_bash_family,
     register_file_family,
     register_git_family,
+    register_memory_family,
     register_run_family,
+    register_tasks_family,
 )
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import ToolCaller
@@ -174,22 +177,22 @@ class RuntimeToolAssembly:
             ):
                 if _ok(checkpoint_tool):
                     registry.register(checkpoint_tool)
-        for task_tool in (
+        task_tools = [
             TaskCreateTool(task_manager),
             TaskClaimTool(task_manager),
             TaskUpdateTool(task_manager),
             TaskListTool(task_manager),
             TaskGetTool(task_manager),
-        ):
-            if _ok(task_tool):
-                registry.register(task_tool)
-        for memory_tool in (
+        ]
+        register_tasks_family(registry, task_tools, allowed_names=allowed)
+        memory_tools = [
             MemorySaveTool(self._memory_store, session_id, run_id or ""),
             MemorySearchTool(self._memory_store),
             MemoryForgetTool(self._memory_store),
-        ):
-            if _ok(memory_tool):
-                registry.register(memory_tool)
+        ]
+        register_memory_family(registry, memory_tools, allowed_names=allowed)
+        if bus is not None and run_id is not None and _name_allowed("update_plan"):
+            registry.register(UpdatePlanTool(bus, run_id))
         if session is not None and store is not None and run_id is not None:
             note_tool = NoteSaveTool(store, session.id, run_id)
             if _ok(note_tool):

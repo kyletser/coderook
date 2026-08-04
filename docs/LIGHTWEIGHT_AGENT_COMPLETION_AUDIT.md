@@ -1,5 +1,8 @@
 # CodeRook 轻量级 Agent 完成度审计
 
+> 历史快照：本文冻结于 2026-07-16，其中“未完成”项已在后续 spec-driven 改造中发生变化。
+> 当前判定请查阅 `SPECDRIVEN_COMPLETION_AUDIT.md`，不要引用本文作为现状证据。
+
 更新时间：2026-07-16
 
 ## 结论

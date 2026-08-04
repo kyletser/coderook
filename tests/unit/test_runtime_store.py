@@ -190,6 +190,51 @@ def test_records_item_status_and_event_atomically(tmp_path: Path) -> None:
     assert store.list_events("thread-1") == [event]
 
 
+# 功能：SQLite transaction 在 item 写入后中断时回滚 item、状态和事件序号
+# 设计：注入 event insert 故障命中事务中段，恢复后追加事件仍获得 seq=1，证明没有半提交或序号空洞
+def test_transaction_interruption_rolls_back_all_runtime_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store_with_turn(tmp_path)
+    original_insert_event = store._insert_event
+    item = TurnItemRecord(
+        id="item-interrupted",
+        turn_id="turn-1",
+        kind=TurnItemKind.MESSAGE,
+        payload={"content": "must roll back"},
+        created_at=_now(),
+    )
+
+    # 在 item 和状态已写入当前事务后模拟存储层中断
+    def interrupt_event_insert(*args: object, **kwargs: object) -> None:
+        raise OSError("injected transaction interruption")
+
+    monkeypatch.setattr(store, "_insert_event", interrupt_event_insert)
+    with pytest.raises(OSError, match="transaction interruption"):
+        store.record_item_and_event(
+            item,
+            event_type="turn.completed",
+            event_payload={"status": "completed"},
+            event_ts=_now(),
+            turn_status=TurnStatus.COMPLETED,
+        )
+
+    assert store.list_items("turn-1") == []
+    assert store.get_turn("turn-1").status == TurnStatus.RUNNING
+    assert store.list_events("thread-1") == []
+
+    monkeypatch.setattr(store, "_insert_event", original_insert_event)
+    event = store.append_event(
+        thread_id="thread-1",
+        turn_id="turn-1",
+        event_type="test.recovered",
+        payload={},
+        ts=_now(),
+    )
+    assert event.seq == 1
+
+
 # 功能：验证工具结果必须引用同一 turn 中已有的工具调用
 # 设计：直接写入孤立 result 并检查事务回滚，避免产生 item 或占用 event seq
 def test_tool_result_requires_existing_call(tmp_path: Path) -> None:

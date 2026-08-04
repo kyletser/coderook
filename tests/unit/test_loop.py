@@ -371,6 +371,36 @@ async def test_agent_decision_event_has_tool_fallback_without_text() -> None:
     assert decision.has_visible_text is False  # type: ignore[attr-defined]
 
 
+# 功能：验证 action-family 的读写动作参与通用意图分类
+# 设计：分别输入 memory 查询/保存、tasks 更新和 update_plan，覆盖 family action 而非旧平铺别名
+@pytest.mark.parametrize(
+    ("tool_name", "params", "expected"),
+    [
+        ("memory", {"action": "search", "query": "runtime"}, "inspect"),
+        ("memory", {"action": "save", "content": "fact"}, "change"),
+        ("tasks", {"action": "update", "task_id": "t1"}, "plan"),
+        ("update_plan", {"plan": []}, "plan"),
+    ],
+)
+async def test_agent_decision_classifies_action_family_calls(
+    tool_name: str,
+    params: dict[str, object],
+    expected: str,
+) -> None:
+    bus = EventBus()
+    events = await _events(bus)
+    provider = _MockProvider([
+        LlmResponse(stop_reason="tool_use", tool_calls=[_tc(tool_name, params)]),
+        LlmResponse(stop_reason="end_turn", text="done"),
+    ])
+    loop, _ = _make_loop(provider, bus=bus)
+
+    await loop.run(_ctx())
+
+    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
+    assert decision.intent == expected  # type: ignore[attr-defined]
+
+
 # 功能：验证多步执行后 step 计数器正确累积到步数总量
 # 设计：三步序列 [tool_use, tool_use, end_turn]，确认 step==3，排除计数器初始化错误或某步未递增的情况
 async def test_step_counter_increments_across_steps() -> None:

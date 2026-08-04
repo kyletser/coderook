@@ -33,6 +33,8 @@ from code_rook.core.bus.commands import (
     RunCancelResult,
     RunSteerCommand,
     RunSteerResult,
+    RuntimeCapabilitiesCommand,
+    RuntimeCapabilitiesResult,
     SessionAuthorityResult,
     SessionCheckpointsCommand,
     SessionCheckpointsResult,
@@ -67,8 +69,30 @@ from code_rook.core.bus.commands import (
     SessionSetAuthorityCommand,
     SessionTasksCommand,
     SessionTasksResult,
+    ThreadArchiveCommand,
+    ThreadArchiveResult,
+    ThreadCreateCommand,
+    ThreadCreateResult,
+    ThreadGetCommand,
+    ThreadGetResult,
+    ThreadListCommand,
+    ThreadListResult,
+    ThreadUpdateCommand,
+    ThreadUpdateResult,
+    TurnGetCommand,
+    TurnGetResult,
     TurnInspectCommand,
     TurnInspectResult,
+    TurnInterruptCommand,
+    TurnInterruptResult,
+    TurnItemsCommand,
+    TurnItemsResult,
+    TurnListCommand,
+    TurnListResult,
+    TurnStartCommand,
+    TurnStartResult,
+    TurnSteerCommand,
+    TurnSteerResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
     WorkerListCommand,
@@ -266,6 +290,119 @@ class CoreApp:
             events=events,
             latest_seq=latest_seq,
             has_more=last_seq < latest_seq,
+        )
+
+    # 创建兼容 session 并返回同一 durable thread
+    async def _thread_create_handler(self, params: dict[str, Any]) -> ThreadCreateResult:
+        assert self._sessions is not None
+        assert self._runtime is not None
+        cmd = ThreadCreateCommand.model_validate(params)
+        session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
+        return ThreadCreateResult(thread=await self._runtime.get_thread(session.id))
+
+    # 列出 durable threads 并按归档状态和数量裁剪
+    async def _thread_list_handler(self, params: dict[str, Any]) -> ThreadListResult:
+        assert self._runtime is not None
+        cmd = ThreadListCommand.model_validate(params)
+        threads = await self._runtime.list_threads()
+        if not cmd.include_archived:
+            threads = [thread for thread in threads if thread.status.value != "archived"]
+        return ThreadListResult(threads=threads[: cmd.limit])
+
+    # 查询单个 durable thread
+    async def _thread_get_handler(self, params: dict[str, Any]) -> ThreadGetResult:
+        assert self._runtime is not None
+        cmd = ThreadGetCommand.model_validate(params)
+        return ThreadGetResult(thread=await self._runtime.get_thread(cmd.thread_id))
+
+    # 通过 session facade 更新标题并返回 durable thread 投影
+    async def _thread_update_handler(self, params: dict[str, Any]) -> ThreadUpdateResult:
+        assert self._sessions is not None
+        assert self._runtime is not None
+        cmd = ThreadUpdateCommand.model_validate(params)
+        await self._sessions.rename(cmd.thread_id, cmd.title)
+        return ThreadUpdateResult(thread=await self._runtime.get_thread(cmd.thread_id))
+
+    # 通过 session facade 归档 thread 并返回持久终态
+    async def _thread_archive_handler(self, params: dict[str, Any]) -> ThreadArchiveResult:
+        assert self._sessions is not None
+        assert self._runtime is not None
+        cmd = ThreadArchiveCommand.model_validate(params)
+        await self._sessions.close(cmd.thread_id)
+        return ThreadArchiveResult(thread=await self._runtime.get_thread(cmd.thread_id))
+
+    # 异步启动 turn 并立即返回稳定 turn id
+    async def _turn_start_handler(self, params: dict[str, Any]) -> TurnStartResult:
+        assert self._sessions is not None
+        cmd = TurnStartCommand.model_validate(params)
+        turn_id = new_run_id()
+        task = asyncio.create_task(
+            self._sessions.send_message(
+                cmd.thread_id,
+                cmd.content,
+                run_id=turn_id,
+                runtime_mode=cmd.runtime_mode,
+            )
+        )
+        self._running_runs.add(task)
+        task.add_done_callback(self._running_runs.discard)
+        return TurnStartResult(turn_id=turn_id)
+
+    # 查询单个 durable turn
+    async def _turn_get_handler(self, params: dict[str, Any]) -> TurnGetResult:
+        assert self._runtime is not None
+        cmd = TurnGetCommand.model_validate(params)
+        return TurnGetResult(turn=await self._runtime.get_turn(cmd.turn_id))
+
+    # 列出 thread 的全部 durable turns
+    async def _turn_list_handler(self, params: dict[str, Any]) -> TurnListResult:
+        assert self._runtime is not None
+        cmd = TurnListCommand.model_validate(params)
+        return TurnListResult(turns=await self._runtime.list_turns(cmd.thread_id))
+
+    # 中断活动 turn 并返回持久终态
+    async def _turn_interrupt_handler(
+        self,
+        params: dict[str, Any],
+    ) -> TurnInterruptResult:
+        assert self._sessions is not None
+        assert self._runtime is not None
+        cmd = TurnInterruptCommand.model_validate(params)
+        await self._sessions.cancel_run(cmd.turn_id)
+        return TurnInterruptResult(turn=await self._runtime.get_turn(cmd.turn_id))
+
+    # 向活动 turn 排入纠偏指令并返回当前持久状态
+    async def _turn_steer_handler(self, params: dict[str, Any]) -> TurnSteerResult:
+        assert self._sessions is not None
+        assert self._runtime is not None
+        cmd = TurnSteerCommand.model_validate(params)
+        await self._sessions.steer_run(cmd.turn_id, cmd.content)
+        return TurnSteerResult(turn=await self._runtime.get_turn(cmd.turn_id))
+
+    # 返回 turn 的全部 durable items
+    async def _turn_items_handler(self, params: dict[str, Any]) -> TurnItemsResult:
+        assert self._runtime is not None
+        cmd = TurnItemsCommand.model_validate(params)
+        await self._runtime.get_turn(cmd.turn_id)
+        return TurnItemsResult(items=await self._runtime.list_items(cmd.turn_id))
+
+    # 返回客户端可协商的统一 runtime 能力
+    async def _runtime_capabilities_handler(
+        self,
+        params: dict[str, Any],
+    ) -> RuntimeCapabilitiesResult:
+        RuntimeCapabilitiesCommand.model_validate(params)
+        return RuntimeCapabilitiesResult(
+            version=code_rook.__version__,
+            runtime_modes=list(RuntimeMode),
+            features=[
+                "durable_threads",
+                "durable_turns",
+                "event_cursor_replay",
+                "interrupt",
+                "steer",
+                "turn_receipts",
+            ],
         )
 
     # 创建 chat 或 one_shot session，并返回 session_id
@@ -815,6 +952,18 @@ class CoreApp:
         server.register("run.cancel", self._run_cancel_handler)
         server.register("run.steer", self._run_steer_handler)
         server.register("event.replay", self._event_replay_handler)
+        server.register("thread.create", self._thread_create_handler)
+        server.register("thread.list", self._thread_list_handler)
+        server.register("thread.get", self._thread_get_handler)
+        server.register("thread.update", self._thread_update_handler)
+        server.register("thread.archive", self._thread_archive_handler)
+        server.register("turn.start", self._turn_start_handler)
+        server.register("turn.get", self._turn_get_handler)
+        server.register("turn.list", self._turn_list_handler)
+        server.register("turn.interrupt", self._turn_interrupt_handler)
+        server.register("turn.steer", self._turn_steer_handler)
+        server.register("turn.items", self._turn_items_handler)
+        server.register("runtime.capabilities", self._runtime_capabilities_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
         server.register("session.send_message", self._session_send_handler)
@@ -877,6 +1026,8 @@ class CoreApp:
             run_task.cancel()
         if self._running_runs:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
+        if self._runtime is not None:
+            await self._runtime.drain_pending_writes()
         if self._mcp_manager is not None:
             await self._mcp_manager.stop_all()
         await self._background_registry.cancel_all()

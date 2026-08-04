@@ -169,8 +169,8 @@ async def test_end_turn_deferred_once_when_todos_incomplete(tmp_path: Path) -> N
         m for m in ctx.messages
         if m.get("role") == "user" and m.get("content") == (
             "You ended the turn, but the Todo State above still has incomplete items. "
-            "Either continue working on the next pending/in_progress todo, or call "
-            "task_update(status='completed') for any items that are truly done, then end."
+            "Either continue working on the next pending/in_progress todo, or call tasks with "
+            "action='update' and status='completed' for any items that are truly done, then end."
         )
     ]
     assert len(reminder_msgs) == 1
@@ -305,6 +305,6 @@ async def test_todo_reminder_persists_as_plain_user_message(tmp_path: Path) -> N
     assert valid, errors
     assert any(message.get("content") == (
         "You ended the turn, but the Todo State above still has incomplete items. "
-        "Either continue working on the next pending/in_progress todo, or call "
-        "task_update(status='completed') for any items that are truly done, then end."
+        "Either continue working on the next pending/in_progress todo, or call tasks with "
+        "action='update' and status='completed' for any items that are truly done, then end."
     ) for message in messages)

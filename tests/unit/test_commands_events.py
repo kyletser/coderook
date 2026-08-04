@@ -15,6 +15,7 @@ from code_rook.core.bus.commands import (
     RunCancelCommand,
     RunCancelResult,
     RunSteerCommand,
+    RuntimeCapabilitiesCommand,
     SessionCheckpointsCommand,
     SessionContextCommand,
     SessionDeleteCommand,
@@ -28,7 +29,18 @@ from code_rook.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSetAuthorityCommand,
     SessionTasksCommand,
+    ThreadArchiveCommand,
+    ThreadCreateCommand,
+    ThreadGetCommand,
+    ThreadListCommand,
+    ThreadUpdateCommand,
+    TurnGetCommand,
     TurnInspectCommand,
+    TurnInterruptCommand,
+    TurnItemsCommand,
+    TurnListCommand,
+    TurnStartCommand,
+    TurnSteerCommand,
     UserQuestionRespondCommand,
     WorkerListCommand,
     WorkflowGetCommand,
@@ -65,6 +77,40 @@ def test_turn_inspect_and_context_budget_protocol() -> None:
     assert ContextBudgetEvent.model_validate_json(
         budget.model_dump_json()
     ).tool_schema_tokens == 300
+
+
+# 功能：R1 thread/turn/runtime 命令清单全部具有精确的 typed 判别值
+# 设计：逐个构造规范要求的十二个操作，固定兼容 session 之外的正式 runtime 协议面
+def test_runtime_contract_protocol_commands_are_complete() -> None:
+    commands = [
+        ThreadCreateCommand(title="Thread"),
+        ThreadListCommand(),
+        ThreadGetCommand(thread_id="thread-1"),
+        ThreadUpdateCommand(thread_id="thread-1", title="Renamed"),
+        ThreadArchiveCommand(thread_id="thread-1"),
+        TurnStartCommand(thread_id="thread-1", content="Work"),
+        TurnGetCommand(turn_id="turn-1"),
+        TurnListCommand(thread_id="thread-1"),
+        TurnInterruptCommand(turn_id="turn-1"),
+        TurnSteerCommand(turn_id="turn-1", content="Adjust"),
+        TurnItemsCommand(turn_id="turn-1"),
+        RuntimeCapabilitiesCommand(),
+    ]
+
+    assert [command.type for command in commands] == [
+        "thread.create",
+        "thread.list",
+        "thread.get",
+        "thread.update",
+        "thread.archive",
+        "turn.start",
+        "turn.get",
+        "turn.list",
+        "turn.interrupt",
+        "turn.steer",
+        "turn.items",
+        "runtime.capabilities",
+    ]
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留

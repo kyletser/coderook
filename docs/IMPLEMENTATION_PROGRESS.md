@@ -1,5 +1,9 @@
 # CodeRook 功能完善进度
 
+> 历史快照：本文记录 2026-07-16 的轻量 Agent 阶段，不再代表当前实现状态。R1–R9 的
+> 当前事实与完整门禁以 `SPECDRIVEN_COMPLETION_AUDIT.md` 和
+> `SPECDRIVEN_REFACTOR_PLAN.md` 为准。
+
 更新时间：2026-07-16
 
 本文是 `CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md` 的动态执行账本。差距报告负责说明目标，

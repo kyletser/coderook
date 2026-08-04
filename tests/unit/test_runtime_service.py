@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
@@ -208,6 +210,7 @@ async def test_task_timeline_projects_to_durable_runtime_events(tmp_path: Path) 
     manager.create("durable")
     manager.claim(1, "executor")
     manager.add_artifact(1, name="report", uri="artifact://report")
+    await service.drain_pending_writes()
 
     restarted_store = RuntimeStore(store.path)
     task_events = [
@@ -221,6 +224,45 @@ async def test_task_timeline_projects_to_durable_runtime_events(tmp_path: Path) 
         "task.artifact_added",
     ]
     assert all(event.payload["task_id"] == 1 for event in task_events)
+
+
+# 功能：Task runtime 投影不会在事件循环线程同步执行 SQLite 写入
+# 设计：替换 store.append_event 捕获线程 ID，排队后显式 drain 并断言写入发生在 asyncio.to_thread worker
+async def test_task_event_sink_offloads_sqlite_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-offload",
+        mode="chat",
+        status="active",
+        title="offload",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+    await service.start_turn(session, "run-offload", "work")
+    main_thread = threading.get_ident()
+    write_threads: list[int] = []
+    original = store.append_event
+
+    # 记录 SQLite append 实际执行线程后调用原实现
+    def observed_append_event(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        write_threads.append(threading.get_ident())
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "append_event", observed_append_event)
+    manager = TaskManager(
+        tmp_path / "offload-tasks",
+        event_sink=service.task_event_sink(session.id, "run-offload"),
+    )
+
+    manager.create("offloaded")
+    await service.drain_pending_writes()
+
+    assert write_threads and all(thread_id != main_thread for thread_id in write_threads)
 
 
 # 功能：验证 turn 启动时把实际 RouteReceipt 同时写入 TurnRecord 与 durable event
