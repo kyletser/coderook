@@ -15,4 +15,3 @@ Output an ordered list:
 For every step, state what to do, why it is needed, and how success is verified.
 """
 allowed_tools = ["read_file", "list_dir", "glob", "grep", "git_diff", "skill", "checkpoint_list", "task_create", "task_update"]
-model = "claude-sonnet-4-6"

@@ -16,4 +16,3 @@ At completion, report:
 - Any unfinished work
 """
 allowed_tools = ["bash", "read_file", "edit_file", "apply_patch", "write_file", "list_dir", "glob", "grep", "git_diff", "skill", "checkpoint_list", "checkpoint_rewind", "task_claim", "task_update", "task_list"]
-model = "claude-sonnet-4-6"

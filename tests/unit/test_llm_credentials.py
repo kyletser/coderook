@@ -7,10 +7,32 @@ import pytest
 
 from code_rook.core.config import LlmConfig
 from code_rook.core.llm.credentials import (
+    CredentialStore,
     llm_is_configured,
     resolve_api_key,
     save_api_key,
 )
+
+
+class _MemoryBackend:
+    # 初始化内存 keyring 与可选写入故障
+    def __init__(self, *, fail_write: bool = False) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+        self.fail_write = fail_write
+
+    # 从内存 keyring 读取凭据
+    def get_password(self, service: str, account: str) -> str | None:
+        return self.values.get((service, account))
+
+    # 向内存 keyring 保存凭据或模拟后端不可用
+    def set_password(self, service: str, account: str, password: str) -> None:
+        if self.fail_write:
+            raise RuntimeError("backend unavailable")
+        self.values[(service, account)] = password
+
+    # 从内存 keyring 删除凭据
+    def delete_password(self, service: str, account: str) -> None:
+        self.values.pop((service, account), None)
 
 
 # 功能：验证 Anthropic 与 OpenAI-compatible 的 API key 在同一凭据文件中独立保存
@@ -103,3 +125,65 @@ def test_builtin_provider_configuration_is_supported(
     )
 
     assert llm_is_configured(config, path) is True
+
+
+# 功能：验证 route 凭据优先写入 OS keyring 并以引用解析
+# 设计：注入内存后端，断言用户文件未创建且解析结果只报告 keyring 来源
+def test_route_credential_prefers_keyring(tmp_path: Path) -> None:
+    path = tmp_path / "credentials.json"
+    store = CredentialStore(path, backend=_MemoryBackend())
+
+    reference = store.save("route-a", "secret-a")
+    resolved = store.resolve(reference)
+
+    assert reference == "keyring:route-a"
+    assert resolved.value == "secret-a"
+    assert resolved.source == "keyring"
+    assert not path.exists()
+
+
+# 功能：验证 keyring 不可用时自动回退到权限收紧文件
+# 设计：让后端写入抛错，检查 file ref、V2 文档和重新实例化后的解析结果
+def test_route_credential_falls_back_to_file(tmp_path: Path) -> None:
+    path = tmp_path / "credentials.json"
+    store = CredentialStore(path, backend=_MemoryBackend(fail_write=True))
+
+    reference = store.save("route-a", "secret-a")
+    restored = CredentialStore(path, backend=_MemoryBackend()).resolve(reference)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert reference == "file:route-a"
+    assert restored.value == "secret-a"
+    assert restored.source == "file"
+    assert payload["route_credentials"] == {"route-a": "secret-a"}
+
+
+# 功能：验证两个 route 的凭据保存、切换解析和删除互不覆盖
+# 设计：强制文件后端保存两项，只删除第一项后确认第二项仍能解析
+def test_route_credentials_are_isolated_by_route(tmp_path: Path) -> None:
+    path = tmp_path / "credentials.json"
+    store = CredentialStore(path, backend=_MemoryBackend(fail_write=True))
+    first_ref = store.save("first", "first-secret")
+    second_ref = store.save("second", "second-secret")
+
+    store.delete(first_ref)
+
+    assert store.resolve(first_ref).source == "missing"
+    assert store.resolve(second_ref).value == "second-secret"
+
+
+# 功能：验证 env credential ref 仅报告 presence/source 且缺失时安全降级
+# 设计：设置一次环境变量后删除，比较两次解析而不经过任何凭据文件
+def test_route_credential_resolves_environment_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = CredentialStore(tmp_path / "credentials.json", backend=_MemoryBackend())
+    monkeypatch.setenv("ROUTE_TEST_KEY", "environment-secret")
+
+    present = store.resolve("env:ROUTE_TEST_KEY")
+    monkeypatch.delenv("ROUTE_TEST_KEY")
+    missing = store.resolve("env:ROUTE_TEST_KEY")
+
+    assert present.value == "environment-secret" and present.source == "env"
+    assert missing.value is None and missing.source == "missing"

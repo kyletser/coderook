@@ -15,6 +15,7 @@ from code_rook.core.authority import (
     detect_sandbox_capability,
 )
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
     SessionFacadeRecord,
@@ -86,6 +87,7 @@ class RuntimeService:
         content: str,
         *,
         runtime_mode: RuntimeMode | None = None,
+        route: RouteReceipt | None = None,
     ) -> TurnRecord:
         authority = (
             self._authority_provider(session.id)
@@ -101,6 +103,7 @@ class RuntimeService:
                 run_id,
                 content,
                 authority,
+                route,
             )
             await self._publish_runtime_event(event)
         return turn
@@ -233,6 +236,7 @@ class RuntimeService:
         run_id: str,
         content: str,
         authority: AuthoritySnapshot,
+        route: RouteReceipt | None,
     ) -> tuple[TurnRecord, RuntimeEventRecord]:
         self._sync_session_sync(session)
         now = _parse_time(session.updated_at)
@@ -245,6 +249,7 @@ class RuntimeService:
             workspace_trust=authority.workspace_trust,
             sandbox=authority.sandbox,
             allowed_actions=authority.allowed_actions,
+            route=route,
             boot_id=self.boot_id,
             created_at=now,
             updated_at=now,
@@ -259,7 +264,10 @@ class RuntimeService:
                 created_at=now,
             ),
             event_type="turn.started",
-            event_payload={"status": TurnStatus.RUNNING.value},
+            event_payload={
+                "status": TurnStatus.RUNNING.value,
+                "route": route.model_dump(mode="json") if route is not None else None,
+            },
             event_ts=now,
         )
         return turn, event

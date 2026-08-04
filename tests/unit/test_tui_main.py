@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.llm.route_store import RouteStore
 from code_rook.tui import __main__ as tui_main
 from code_rook.tui.app import ConfigSwitch, ModelSwitch
 
@@ -22,6 +23,7 @@ def test_tui_main_auto_starts_core_before_reading_token(
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
     monkeypatch.setattr(
         tui_main,
@@ -52,6 +54,7 @@ def test_tui_main_can_disable_auto_core(
     monkeypatch.setattr(sys, "argv", ["coderook-tui", "--no-auto-core"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
     ensure = MagicMock()
     monkeypatch.setattr(tui_main, "ensure_core_running", ensure)
@@ -86,6 +89,22 @@ def test_first_tui_start_runs_llm_setup(
     assert calls == ["configure"]
 
 
+# 功能：验证首次 TUI 启动把旧 LLM 配置迁移为显式活动 route
+# 设计：使用临时 RouteStore 连续调用两次，断言迁移幂等且模型和 wire 不靠前缀推断
+def test_tui_migrates_legacy_config_to_route(tmp_path: Path) -> None:
+    routes = RouteStore(tmp_path / "routes.json")
+    config = CodeRookConfig()
+
+    tui_main._ensure_route_configured(config, routes)
+    tui_main._ensure_route_configured(config, routes)
+
+    assert len(routes.list()) == 1
+    active = routes.active()
+    assert active is not None
+    assert active.model == config.llm.default_model
+    assert active.wire_format == "anthropic_messages"
+
+
 # 功能：验证模型切换会保存目录和默认模型、重启 Core 并恢复当前会话
 # 设计：用两次 TUI 返回值驱动入口循环，记录边界调用参数而不启动真实进程
 def test_tui_main_switches_model_and_resumes_session(
@@ -98,6 +117,7 @@ def test_tui_main_switches_model_and_resumes_session(
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(
@@ -144,6 +164,7 @@ def test_tui_main_saves_discovered_provider_config(
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
     monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
+    monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(

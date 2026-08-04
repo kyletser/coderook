@@ -22,6 +22,8 @@ from code_rook.core.llm.credentials import (
     save_api_key,
 )
 from code_rook.core.llm.provider_presets import get_provider_preset
+from code_rook.core.llm.route_registry import legacy_config_route
+from code_rook.core.llm.route_store import RouteStore
 
 _DEFAULT_CONFIG_PATH = Path("~/.coderook/config.toml").expanduser()
 _SECTION_PATTERN = re.compile(r"(?m)^\s*\[\[?[^\]\r\n]+\]\]?\s*(?:#.*)?$")
@@ -274,13 +276,16 @@ def print_llm_status(config: CodeRookConfig) -> None:
     print(f"api key:  {key_source if resolve_api_key(config.llm) else '(missing)'}")
 
 
-# 执行手动配置命令并提示 Core 重启要求
+# 执行手动配置命令并将结果激活为显式 route，无需重启 Core
 def cmd_configure(config: CodeRookConfig) -> None:
     if not sys.stdin.isatty():
         raise SystemExit("Interactive terminal required for `coderook configure`.")
     updated = configure_llm(config)
-    from code_rook.cli.commands.core import ensure_core_running, stop_core
-
-    if stop_core():
-        ensure_core_running(updated)
-        print("Core 已使用新配置重新启动。")
+    route = legacy_config_route(updated.llm)
+    routes = RouteStore()
+    if any(current.id == route.id for current in routes.list()):
+        routes.update(route)
+        routes.set_active(route.id)
+    else:
+        routes.add(route, activate=True)
+    print(f"活动 route 已更新：{route.id}/{route.model}")

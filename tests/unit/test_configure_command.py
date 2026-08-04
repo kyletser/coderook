@@ -8,6 +8,7 @@ from dotenv import dotenv_values
 
 from code_rook.cli.commands import configure as configure_module
 from code_rook.core.config import CodeRookConfig, LlmConfig
+from code_rook.core.llm.route_store import RouteStore
 
 
 # 功能：验证写入 llm 配置时会替换旧表且保留前后其他 TOML 小节
@@ -193,3 +194,30 @@ def test_save_provider_config_uses_builtin_preset(
     assert 'default_model = "deepseek-v4-pro"' in content
     assert 'base_url = "https://api.deepseek.com/chat/completions"' in content
     assert "deepseek-secret" not in content
+
+
+# 功能：验证 coderook configure 将向导结果激活为显式 route 且不重启 Core
+# 设计：替换交互向导和 RouteStore 边界，调用真实命令后检查活动 route 与模型
+def test_cmd_configure_activates_route_without_core_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    routes = RouteStore(tmp_path / "routes.json")
+    updated = CodeRookConfig(
+        llm=LlmConfig(
+            provider="deepseek",
+            default_model="deepseek-test",
+            base_url="https://api.deepseek.com/chat/completions",
+            api_key_env="DEEPSEEK_API_KEY",
+        )
+    )
+    monkeypatch.setattr(configure_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(configure_module, "configure_llm", lambda _config: updated)
+    monkeypatch.setattr(configure_module, "RouteStore", lambda: routes)
+
+    configure_module.cmd_configure(CodeRookConfig())
+
+    active = routes.active()
+    assert active is not None
+    assert active.id == "legacy-deepseek"
+    assert active.model == "deepseek-test"

@@ -107,3 +107,53 @@ def test_priority_chain_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     cfg = get_config()
 
     assert cfg.port == 8000
+
+
+# 功能：验证项目 .coderook 配置不能选择 provider、endpoint 或 credential 引用
+# 设计：参数化三类敏感键并从真实项目路径加载，断言在环境变量覆盖前即 fail closed
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("provider", '"openai"'),
+        ("base_url", '"https://attacker.example/v1"'),
+        ("api_key_env", '"SECRET_KEY"'),
+        ("active_route_id", '"foreign-route"'),
+    ],
+)
+def test_project_config_cannot_override_route_security(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    project_config = tmp_path / ".coderook" / "config.toml"
+    project_config.parent.mkdir()
+    project_config.write_text(f"[llm]\n{key} = {value}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CODEROOK_CONFIG", raising=False)
+
+    with pytest.raises(SystemExit, match=r"project \[llm\] cannot set"):
+        get_config()
+
+
+# 功能：验证项目配置仍可设置非安全敏感的模型偏好和普通运行参数
+# 设计：同一项目 TOML 只写 default_model 与端口，断言允许加载以避免过度限制
+def test_project_config_allows_non_sensitive_preferences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_config = tmp_path / ".coderook" / "config.toml"
+    project_config.parent.mkdir()
+    project_config.write_text(
+        '[core]\nport = 7555\n\n[llm]\ndefault_model = "project-model"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CODEROOK_CONFIG", raising=False)
+    monkeypatch.delenv("CODEROOK_PORT", raising=False)
+    monkeypatch.delenv("CODEROOK_LLM_DEFAULT_MODEL", raising=False)
+
+    config = get_config()
+
+    assert config.port == 7555
+    assert config.llm.default_model == "project-model"

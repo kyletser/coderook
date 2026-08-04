@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import AnyHttpUrl
 
 from code_rook.core.config import LlmConfig
 from code_rook.core.llm import factory as factory_module
 from code_rook.core.llm.openai_compatible import OpenAICompatibleProvider
 from code_rook.core.llm.provider import AnthropicProvider
+from code_rook.core.llm.routes import ProviderRoute
 
 
 # 功能：验证 DeepSeek、OpenAI 和硅基流动都路由到 OpenAI-compatible 实现
@@ -49,3 +51,35 @@ def test_factory_keeps_anthropic_native_provider(
     )
 
     assert isinstance(result, AnthropicProvider)
+
+
+# 功能：验证 route factory 仅按 wire_format 选适配器，不读取模型名前缀
+# 设计：给 Claude 名称配置 openai_chat、给 GPT 名称配置 anthropic_messages，断言协议仍服从 route
+def test_route_factory_does_not_infer_wire_format_from_model_name() -> None:
+    openai_wire = ProviderRoute(
+        id="odd-openai",
+        provider="openai-compatible",
+        wire_format="openai_chat",
+        base_url=AnyHttpUrl("https://gateway.example/v1/chat/completions"),
+        model="claude-looking-model",
+        credential_ref="file:odd-openai",
+    )
+    anthropic_wire = ProviderRoute(
+        id="odd-anthropic",
+        provider="anthropic-compatible",
+        wire_format="anthropic_messages",
+        base_url=AnyHttpUrl("https://gateway.example"),
+        model="gpt-looking-model",
+        credential_ref="file:odd-anthropic",
+    )
+
+    openai_provider = factory_module.create_provider_for_route(openai_wire, "key-a")
+    anthropic_provider = factory_module.create_provider_for_route(
+        anthropic_wire,
+        "key-b",
+    )
+
+    assert isinstance(openai_provider, OpenAICompatibleProvider)
+    assert openai_provider._model == "claude-looking-model"
+    assert isinstance(anthropic_provider, AnthropicProvider)
+    assert anthropic_provider._model == "gpt-looking-model"

@@ -26,4 +26,3 @@ Output:
 """
 allowed_tools = []
 restrict = "read_only"
-model = "claude-sonnet-4-6"

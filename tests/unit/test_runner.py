@@ -12,6 +12,8 @@ from code_rook.core.authority import AuthoritySnapshot, RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.route_registry import ResolvedRoute
+from code_rook.core.llm.routes import get_route_preset
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.runner import AgentRunner
@@ -625,3 +627,36 @@ async def test_plan_mode_enforces_read_only_registry_and_restores_authority(
     }
     assert "## Plan Mode" in provider.system
     assert permission_manager.get_authority_snapshot(session.id) == original_authority
+
+
+# 功能：验证 Runner 发布实际 route receipt 事件且事件序列化不包含密钥正文
+# 设计：给注入 provider 的最短成功 run 同时传入 ResolvedRoute，收集事件并核对所有 receipt 字段
+async def test_runner_publishes_redacted_route_receipt(tmp_path: Path) -> None:
+    events: list[BaseModel] = []
+
+    # 收集 Runner 发布的所有事件
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    route = get_route_preset("openai", model="gpt-route-test")
+    resolved = ResolvedRoute(
+        route=route,
+        receipt=route.receipt("keyring"),
+        credential="route-secret",
+    )
+    runner = AgentRunner(
+        _config(),
+        provider=_EndTurnProvider(),  # type: ignore[arg-type]
+        extra_handlers=[collect],
+        runs_dir=tmp_path,
+    )
+
+    outcome = await runner.run_and_capture("hello", resolved_route=resolved)
+
+    selected = next(event for event in events if event.type == "llm.route_selected")  # type: ignore[attr-defined]
+    assert outcome.status == "success"
+    assert selected.route_id == route.id  # type: ignore[attr-defined]
+    assert selected.wire_format == route.wire_format  # type: ignore[attr-defined]
+    assert selected.base_url_origin == "https://api.openai.com"  # type: ignore[attr-defined]
+    assert selected.credential_source == "keyring"  # type: ignore[attr-defined]
+    assert "route-secret" not in selected.model_dump_json()

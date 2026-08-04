@@ -127,6 +127,17 @@ class LlmModelSelectedEvent(BaseModel):
     ts: str
 
 
+class LlmRouteSelectedEvent(BaseModel):
+    type: Literal["llm.route_selected"] = "llm.route_selected"
+    run_id: str
+    route_id: str
+    wire_format: str
+    base_url_origin: str
+    model: str
+    credential_source: Literal["keyring", "file", "env", "missing"]
+    ts: str
+
+
 class LlmRetryEvent(BaseModel):
     type: Literal["llm.retry"] = "llm.retry"
     run_id: str
@@ -380,6 +391,7 @@ Event = Annotated[
     | LlmReasoningEvent
     | LlmUsageEvent
     | LlmModelSelectedEvent
+    | LlmRouteSelectedEvent
     | LlmRetryEvent
     | LogLineEvent
     | SessionCreatedEvent

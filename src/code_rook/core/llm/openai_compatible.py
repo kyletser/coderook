@@ -177,19 +177,40 @@ class OpenAICompatibleProvider:
         run_id: str,
         step: int,
     ) -> dict[str, Any]:
+        data: dict[str, Any] | None = None
+        failure: str | None = None
         try:
             response = await client.post(self._base_url, json=payload, headers=headers)
             response.raise_for_status()
-            return dict(response.json())
+            raw = response.json()
+            if isinstance(raw, dict):
+                data = dict(raw)
+            else:
+                failure = "OpenAI-compatible provider returned an invalid response"
         except httpx.HTTPStatusError as exc:
             log.error(
-                "openai-compatible request failed run_id=%s step=%d status=%s body=%s",
+                "openai-compatible request failed run_id=%s step=%d status=%s",
                 run_id,
                 step,
                 exc.response.status_code,
-                exc.response.text[:1000],
             )
-            raise
+            failure = (
+                "OpenAI-compatible request failed "
+                f"(HTTP {exc.response.status_code})"
+            )
+        except httpx.HTTPError:
+            log.error(
+                "openai-compatible transport failed run_id=%s step=%d",
+                run_id,
+                step,
+            )
+            failure = "OpenAI-compatible request failed"
+        except ValueError:
+            failure = "OpenAI-compatible provider returned invalid JSON"
+        if failure is not None:
+            raise RuntimeError(failure)
+        assert data is not None
+        return data
 
 
 def _to_openai_tools(tool_schemas: list[dict[str, object]]) -> list[dict[str, object]]:

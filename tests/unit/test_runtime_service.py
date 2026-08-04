@@ -12,6 +12,7 @@ from code_rook.core.authority import (
 )
 from code_rook.core.bus.events import RuntimeEventAppendedEvent
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runner import RunOutcome
 from code_rook.core.runtime.models import ThreadStatus, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
@@ -170,6 +171,35 @@ async def test_runtime_service_publishes_durable_events(tmp_path: Path) -> None:
         "turn.started",
         "turn.completed",
     ]
+
+
+# 功能：验证 turn 启动时把实际 RouteReceipt 同时写入 TurnRecord 与 durable event
+# 设计：使用包含 origin 和凭据来源的冻结 receipt，往返读取数据库并核对事件 payload 无密钥字段
+async def test_start_turn_persists_actual_route_receipt(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-route",
+        mode="chat",
+        status="active",
+        title="route",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+    receipt = RouteReceipt(
+        route_id="openai-work",
+        wire_format="openai_responses",
+        base_url_origin="https://api.openai.com",
+        model="gpt-test",
+        credential_source="keyring",
+    )
+
+    await service.start_turn(session, "run-route", "hello", route=receipt)
+
+    persisted = store.get_turn("run-route")
+    event = store.list_events(session.id)[0]
+    assert persisted.route == receipt
+    assert event.payload["route"] == receipt.model_dump(mode="json")
+    assert "api_key" not in event.model_dump_json()
 
 
 # 功能：验证 turn 启动时冻结 session 的 mode、authority、trust、sandbox 和 action scope

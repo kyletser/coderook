@@ -10,7 +10,7 @@ from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
-from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
+from code_rook.core.bus.events import LlmRouteSelectedEvent, RunFinishedEvent, RunStartedEvent
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.config import CodeRookConfig
@@ -20,7 +20,8 @@ from code_rook.core.events.writer import EventWriter
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
-from code_rook.core.llm.factory import create_llm_provider
+from code_rook.core.llm.factory import create_llm_provider, create_provider_for_route
+from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 from code_rook.core.loop import AgentLoop
 from code_rook.core.lsp import PythonDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
@@ -70,6 +71,7 @@ class AgentRunner:
         workspace_root: Path | None = None,
         subagent_registry: BackgroundTaskRegistry | None = None,
         interaction_manager: InteractionManager | None = None,
+        route_registry: RouteRegistry | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -93,6 +95,7 @@ class AgentRunner:
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
         self._interaction_manager = interaction_manager
+        self._route_registry = route_registry
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
@@ -110,6 +113,7 @@ class AgentRunner:
             background_registry=self._background_registry,
             interaction_manager=self._interaction_manager,
             mcp_manager=self._mcp_manager,
+            route_registry=self._route_registry,
         )
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
@@ -127,6 +131,7 @@ class AgentRunner:
         tool_whitelist: list[str] | None = None,
         checkpoint_store: CheckpointStore | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        resolved_route: ResolvedRoute | None = None,
     ) -> ToolRegistry:
         return self._tool_assembly.build(
             task_manager,
@@ -157,6 +162,7 @@ class AgentRunner:
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        resolved_route: ResolvedRoute | None = None,
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         if session is not None and store is not None:
@@ -228,7 +234,31 @@ class AgentRunner:
 
             cancelled = False
             try:
-                provider: LLMProvider = self._provider or create_llm_provider(self._config.llm)
+                route_binding = resolved_route
+                if route_binding is None and self._route_registry is not None:
+                    route_binding = self._route_registry.resolve()
+                if self._provider is not None:
+                    provider: LLMProvider = self._provider
+                elif route_binding is not None:
+                    provider = create_provider_for_route(
+                        route_binding.route,
+                        route_binding.credential,
+                    )
+                else:
+                    provider = create_llm_provider(self._config.llm)
+                if route_binding is not None:
+                    receipt = route_binding.receipt
+                    await bus.publish(
+                        LlmRouteSelectedEvent(
+                            run_id=run_id,
+                            route_id=receipt.route_id,
+                            wire_format=receipt.wire_format,
+                            base_url_origin=receipt.base_url_origin,
+                            model=receipt.model,
+                            credential_source=receipt.credential_source,
+                            ts=_now(),
+                        )
+                    )
                 if self._trace is not None:
                     provider = TracingProvider(
                         provider,

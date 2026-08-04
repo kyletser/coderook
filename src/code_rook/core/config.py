@@ -121,10 +121,25 @@ def get_config() -> CodeRookConfig:
                     data = tomllib.load(f)
             except tomllib.TOMLDecodeError as e:
                 raise SystemExit(f"Config parse error ({config_path}): {e}") from e
+            if not explicit and config_path == Path(".coderook/config.toml"):
+                _reject_project_route_settings(data, config_path)
             _apply_toml(config, data)
 
     _apply_env(config)
     return config
+
+
+# 拒绝项目配置选择 provider、外部端点或凭据引用，防止仓库内容重定向密钥
+def _reject_project_route_settings(data: dict[str, Any], path: Path) -> None:
+    llm = data.get("llm")
+    if not isinstance(llm, dict):
+        return
+    forbidden = {"provider", "base_url", "api_key_env", "active_route_id"} & set(llm)
+    if forbidden:
+        names = ", ".join(sorted(forbidden))
+        raise SystemExit(
+            f"Config error ({path}): project [llm] cannot set route security keys: {names}"
+        )
 
 
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程

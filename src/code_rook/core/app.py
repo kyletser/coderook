@@ -72,7 +72,7 @@ from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, Handl
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.events.bus import EventBus
 from code_rook.core.interaction import InteractionManager
-from code_rook.core.llm.factory import create_llm_provider
+from code_rook.core.llm.route_registry import RouteRegistry
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.permissions.manager import PermissionManager
@@ -108,6 +108,7 @@ class CoreApp:
         self._running_runs: set[asyncio.Task[Any]] = set()
         self._sessions: SessionManager | None = None
         self._runtime: RuntimeService | None = None
+        self._route_registry: RouteRegistry | None = None
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
         self._background_registry = BackgroundJobRegistry(self._bus)
@@ -550,7 +551,7 @@ class CoreApp:
         )
         await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
         assert self._config is not None
-        compact_provider = create_llm_provider(self._config.llm)
+        self._route_registry = RouteRegistry(self._config.llm)
 
         self._mcp_manager = McpServerManager()
         if self._config.mcp.servers:
@@ -571,12 +572,13 @@ class CoreApp:
                 background_registry=self._background_registry,
                 subagent_registry=self._subagent_registry,
                 interaction_manager=self._interaction_manager,
+                route_registry=self._route_registry,
             ),
             bus=self._bus,
-            provider=compact_provider,
             subagent_registry=self._subagent_registry,
             runtime_service=self._runtime,
             interaction_manager=self._interaction_manager,
+            route_registry=self._route_registry,
         )
 
         server = SocketServer(

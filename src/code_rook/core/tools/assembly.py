@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
@@ -58,6 +59,9 @@ from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
 
+if TYPE_CHECKING:
+    from code_rook.core.llm.route_registry import RouteRegistry
+
 
 class RuntimeToolAssembly:
     # 保存跨 run 复用的工具依赖，集中管理根 Agent 的工具表装配
@@ -76,6 +80,7 @@ class RuntimeToolAssembly:
         background_registry: BackgroundJobRegistry | None,
         interaction_manager: InteractionManager | None,
         mcp_manager: McpServerManager | None,
+        route_registry: RouteRegistry | None,
     ) -> None:
         self._boundary = workspace_boundary
         self._artifact_store = artifact_store
@@ -89,6 +94,7 @@ class RuntimeToolAssembly:
         self._background_registry = background_registry
         self._interaction_manager = interaction_manager
         self._mcp_manager = mcp_manager
+        self._route_registry = route_registry
 
     # 根据本次 run 的动态依赖构建完整且受 Mode/白名单裁剪的工具目录
     def build(
@@ -207,6 +213,7 @@ class RuntimeToolAssembly:
                         depth=0,
                         workspace_boundary=self._boundary,
                         task_manager=task_manager,
+                        route_registry=self._route_registry,
                     )
                 )
             agent_result_tool = AgentResultTool(self._task_registry)

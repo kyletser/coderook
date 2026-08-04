@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from code_rook.core.authority import SandboxCapability, ToolAction
+from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.migrations import (
     CURRENT_SCHEMA_VERSION,
     connect_database,
@@ -144,7 +145,11 @@ def _turn_from_row(row: sqlite3.Row) -> TurnRecord:
             ToolAction(action)
             for action in _load_json_list(row["allowed_actions_json"])
         ),
-        route=_load_json_dict(row["route_json"]),
+        route=(
+            RouteReceipt.model_validate(_load_json_dict(row["route_json"]))
+            if row["route_json"] is not None
+            else None
+        ),
         usage=_load_json_dict(row["usage_json"]) or {},
         error=_load_json_dict(row["error_json"]),
         boot_id=row["boot_id"],
@@ -343,7 +348,11 @@ class RuntimeStore:
                         _dump_json(
                             [action.value for action in sorted(record.allowed_actions)]
                         ),
-                        _dump_json(record.route),
+                        _dump_json(
+                            record.route.model_dump(mode="json")
+                            if record.route is not None
+                            else None
+                        ),
                         _dump_json(record.usage),
                         _dump_json(record.error),
                         record.boot_id,

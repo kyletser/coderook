@@ -13,9 +13,11 @@ from code_rook.cli.commands.configure import (
     switch_llm_model,
 )
 from code_rook.cli.commands.core import CoreLaunchError, ensure_core_running
-from code_rook.core.config import get_config
+from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.llm.credentials import llm_is_configured
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
+from code_rook.core.llm.route_registry import legacy_config_route
+from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.transport.auth import IpcTokenError, read_ipc_token
 from code_rook.tui.app import CodeRookTuiApp, ConfigSwitch, ModelSwitch
@@ -53,9 +55,22 @@ def _ensure_llm_configured() -> None:
     configure_llm(config)
 
 
+# 将旧 LLM 配置一次性迁移为显式活动 route，保留原凭据引用而不复制密钥正文
+def _ensure_route_configured(
+    config: CodeRookConfig,
+    route_store: RouteStore | None = None,
+) -> None:
+    store = route_store or RouteStore()
+    if store.list():
+        return
+    store.add(legacy_config_route(config.llm), activate=True)
+
+
 # 创建并运行 TUI；配置或模型切换动作返回入口处理
 def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     config = get_config()
+    routes = RouteStore()
+    active_route = routes.active()
     _setup_logging(config.logging.level)
     if not args.no_auto_core:
         try:
@@ -72,9 +87,14 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         replay_run_id=args.replay,
         resume_session_id=args.resume,
         auth_token=auth_token,
-        provider=config.llm.provider,
-        model=config.llm.default_model,
-        models=list_models(config.llm.provider, config.llm.default_model),
+        provider=active_route.id if active_route is not None else config.llm.provider,
+        model=active_route.model if active_route is not None else config.llm.default_model,
+        models=list_models(
+            active_route.id if active_route is not None else config.llm.provider,
+            active_route.model if active_route is not None else config.llm.default_model,
+        ),
+        route=active_route.id if active_route is not None else "",
+        route_store=routes,
     )
     return app.run()
 
@@ -102,6 +122,7 @@ def main() -> None:
     args = parser.parse_args()
 
     _ensure_llm_configured()
+    _ensure_route_configured(get_config())
     while True:
         action = _run_tui(args)
         if isinstance(action, ModelSwitch):

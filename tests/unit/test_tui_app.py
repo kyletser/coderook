@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,10 @@ from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
 from code_rook.core.authority import RuntimeMode
+from code_rook.core.llm.doctor import ProviderDoctorResult
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
+from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.routes import get_route_preset
 from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
     ChatTextArea,
@@ -504,10 +508,11 @@ def test_config_switch_repr_hides_api_key() -> None:
     assert "secret-test-key" not in repr(action)
 
 
-# 功能：验证 /config 在当前页面完成 Provider、Key 探测和模型选择全流程
-# 设计：禁用真实 socket 并替换 Models API，使用真实按键驱动三个界面后检查 ConfigSwitch
+# 功能：验证 /config 在当前页面完成 Provider、Key 探测、模型选择和 route 持久化
+# 设计：注入临时 RouteStore 与凭据 stub，使用真实按键驱动三个界面并检查无需退出 TUI
 async def test_inline_config_flow_returns_verified_selection(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     async def fake_discover(provider: object, api_key: str) -> list[str]:
         assert api_key == "verified-key"
@@ -522,11 +527,20 @@ async def test_inline_config_flow_returns_verified_selection(
             self._session_id = "session-inline"
             self.query_one("#prompt", ChatTextArea).focus()
 
+    class _Credentials:
+        # 返回稳定凭据引用并避免测试访问操作系统 keyring
+        def save(self, route_id: str, api_key: str) -> str:
+            assert api_key == "verified-key"
+            return f"file:{route_id}"
+
+    routes = RouteStore(tmp_path / "routes.json")
     app = ConfigHarness(
         "127.0.0.1",
         9999,
         provider="openai",
         model="gpt-5.6-sol",
+        route_store=routes,
+        credential_store=_Credentials(),  # type: ignore[arg-type]
     )
     async with app.run_test(size=(110, 26)) as pilot:
         await pilot.pause()
@@ -547,13 +561,12 @@ async def test_inline_config_flow_returns_verified_selection(
         await pilot.press("down", "enter")
         await pilot.pause()
 
-    assert app.return_value == ConfigSwitch(
-        provider="openai",
-        api_key="verified-key",
-        model="gpt-5.6-terra",
-        models=("gpt-5.6-sol", "gpt-5.6-terra"),
-        session_id="session-inline",
-    )
+    assert app.return_value is None
+    assert routes.active() is not None
+    assert routes.active().id == "openai"  # type: ignore[union-attr]
+    assert routes.active().model == "gpt-5.6-terra"  # type: ignore[union-attr]
+    assert app._route == "openai"
+    assert app._model == "gpt-5.6-terra"
 
 
 # 功能：验证完整输入 /model 后第一次 Enter 直接执行而不是只确认补全
@@ -651,6 +664,8 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     items = dict(app._build_slash_items())  # type: ignore[attr-defined]
 
     assert items["model"] == "show or switch the active model"
+    assert items["provider"] == "show or switch the active provider route"
+    assert items["doctor"] == "diagnose the active provider route"
     assert items["copy"] == "copy the latest assistant reply"
     assert items["plan"] == "analyze read-only and review a plan before implementation"
     assert items["permissions"] == "review or change the permission mode"
@@ -658,6 +673,76 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["diff"] == "show current workspace changes"
     assert items["rewind"] == "restore files from a safe checkpoint"
     assert items["context"] == "show context size and usage"
+
+
+# 功能：验证 TUI 的 Provider 与模型切换直接更新同一用户级 RouteStore
+# 设计：注入两个临时 route 后调用界面动作，断言活动项和模型无需重启 Core 即刻变化
+def test_tui_route_and_model_switch_update_route_store(tmp_path: Path) -> None:
+    routes = RouteStore(tmp_path / "routes.json")
+    routes.add(get_route_preset("anthropic"), activate=True)
+    routes.add(get_route_preset("openai"))
+    app = CodeRookTuiApp("127.0.0.1", 9999, route_store=routes)
+    appended: list[Widget] = []
+    states: list[str] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._update_header = lambda state: states.append(state)  # type: ignore[method-assign]
+
+    app._select_provider_route("openai")
+    app._select_route_model("gpt-route-test")
+
+    active = routes.active()
+    assert active is not None
+    assert active.id == "openai"
+    assert active.model == "gpt-route-test"
+    assert app._route == "openai"
+    assert app._model == "gpt-route-test"
+    assert states == ["ready", "ready"]
+    assert len(appended) == 2
+
+
+# 功能：验证 TUI doctor 显示分类和凭据来源，但不显示任何 API key 正文
+# 设计：注入固定诊断器与凭据 stub，调用真实展示方法并检查渲染文本和输入恢复
+async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:
+    class _Credentials:
+        # 返回包含测试密钥的解析结果，验证展示层不会读取 value
+        def resolve(self, _credential_ref: str) -> object:
+            from code_rook.core.llm.credentials import CredentialResolution
+
+            return CredentialResolution(value="top-secret", source="file")
+
+    class _Doctor:
+        # 返回固定成功分类，避免测试访问真实网络
+        async def check(self, _route: object, _credential: object) -> ProviderDoctorResult:
+            return ProviderDoctorResult(
+                status="ok",
+                category="ok",
+                route_id="openai",
+                message="route is ready",
+                credential_source="file",
+                http_status=200,
+            )
+
+    routes = RouteStore(tmp_path / "routes.json")
+    routes.add(get_route_preset("openai"), activate=True)
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        route_store=routes,
+        credential_store=_Credentials(),  # type: ignore[arg-type]
+        provider_doctor=_Doctor(),  # type: ignore[arg-type]
+    )
+    appended: list[Static] = []
+    restored: list[bool] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: restored.append(True)  # type: ignore[method-assign]
+
+    await app._show_provider_doctor()
+
+    rendered = "\n".join(str(widget.render()) for widget in appended)
+    assert "route is ready" in rendered
+    assert "credential=file" in rendered
+    assert "top-secret" not in rendered
+    assert restored == [True]
 
 
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
@@ -1865,3 +1950,28 @@ def test_unknown_event_silently_ignored() -> None:
 
     app._handle_event({"type": "some.unknown.type", "run_id": "r", "ts": "t"})
     assert appended == []
+
+
+# 功能：验证实际 LLM route 事件更新 TUI 的 route、model 和运行状态
+# 设计：直接投递不含密钥的 receipt 事件并截获 header 刷新，避免依赖真实 daemon
+def test_route_selected_event_updates_observable_header_state() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999, model="old-model")
+    states: list[str] = []
+    app._update_header = lambda state: states.append(state)  # type: ignore[method-assign]
+
+    app._handle_event(
+        {
+            "type": "llm.route_selected",
+            "run_id": "run-1",
+            "route_id": "openai-work",
+            "wire_format": "openai_responses",
+            "base_url_origin": "https://api.openai.com",
+            "model": "gpt-test",
+            "credential_source": "keyring",
+            "ts": "t",
+        }
+    )
+
+    assert app._route == "openai-work"
+    assert app._model == "gpt-test"
+    assert states == ["running"]

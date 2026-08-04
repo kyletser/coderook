@@ -28,6 +28,7 @@ from code_rook.core.checkpoints import CheckpointError, CheckpointStore
 from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.events.bus import EventBus
 from code_rook.core.interaction import InteractionManager
+from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import TurnStatus
 from code_rook.core.runtime.service import RuntimeService
@@ -40,6 +41,7 @@ from code_rook.core.workspace import WorkspaceBoundary
 
 if TYPE_CHECKING:
     from code_rook.core.llm.base import LLMProvider
+    from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
     from code_rook.core.runner import AgentRunner
     from code_rook.core.subagent.registry import BackgroundTaskRegistry
 
@@ -73,6 +75,7 @@ class SessionManager:
         subagent_registry: BackgroundTaskRegistry | None = None,
         runtime_service: RuntimeService | None = None,
         interaction_manager: InteractionManager | None = None,
+        route_registry: RouteRegistry | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
@@ -81,6 +84,7 @@ class SessionManager:
         self._subagent_registry = subagent_registry
         self._runtime = runtime_service
         self._interaction_manager = interaction_manager
+        self._route_registry = route_registry
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
@@ -150,6 +154,13 @@ class SessionManager:
             if session.status == "closed":
                 raise HandlerError(SESSION_CLOSED, "session already closed")
 
+            resolved_route: ResolvedRoute | None = None
+            if self._route_registry is not None:
+                try:
+                    resolved_route = self._route_registry.resolve()
+                except RouteResolutionError as exc:
+                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
             if session.status in ("waiting_for_input", "interrupted"):
                 await self._bus.publish(SessionResumedEvent(session_id=sid, ts=_now()))
 
@@ -177,8 +188,9 @@ class SessionManager:
                     session,
                     run_id,
                     content,
-                runtime_mode=runtime_mode,
-            )
+                    runtime_mode=runtime_mode,
+                    route=(resolved_route.receipt if resolved_route is not None else None),
+                )
 
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
             goal = content
@@ -203,7 +215,7 @@ class SessionManager:
                     )
 
             runner = self._runner_factory()
-            runner_task = asyncio.create_task(
+            run_coroutine = (
                 runner.run_and_capture(
                     goal,
                     run_id=run_id,
@@ -212,7 +224,21 @@ class SessionManager:
                     system_prompt_override=system_prompt_override,
                     tool_whitelist=tool_whitelist,
                     runtime_mode=runtime_mode,
-                ),
+                    resolved_route=resolved_route,
+                )
+                if resolved_route is not None
+                else runner.run_and_capture(
+                    goal,
+                    run_id=run_id,
+                    session=session,
+                    store=self._store,
+                    system_prompt_override=system_prompt_override,
+                    tool_whitelist=tool_whitelist,
+                    runtime_mode=runtime_mode,
+                )
+            )
+            runner_task = asyncio.create_task(
+                run_coroutine,
                 name=f"run:{run_id}",
             )
             active = _ActiveRun(
@@ -363,7 +389,19 @@ class SessionManager:
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
-        if self._provider is None:
+        provider = self._provider
+        if self._route_registry is not None:
+            from code_rook.core.llm.factory import create_provider_for_route
+
+            try:
+                resolved_route = self._route_registry.resolve()
+            except RouteResolutionError as exc:
+                raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            provider = create_provider_for_route(
+                resolved_route.route,
+                resolved_route.credential,
+            )
+        if provider is None:
             raise HandlerError(-32020, "provider not available for compaction")
         async with lock:
             from code_rook.core.bus.commands import SessionCompactResult
@@ -371,7 +409,7 @@ class SessionManager:
             messages = self._store.read_messages(sid)
             session_dir = self._store.session_dir(sid)
             compactor = Compactor(self._bus, session_dir, sid, store=self._store)
-            result = await compactor.compact_messages(messages, self._provider, focus=focus)
+            result = await compactor.compact_messages(messages, provider, focus=focus)
             if result is None:
                 raise HandlerError(-32021, "compaction failed or not beneficial")
             await compactor.commit(

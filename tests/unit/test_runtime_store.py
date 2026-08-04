@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from code_rook.core.authority import AuthorityProfile, ToolAction, WorkspaceTrust
+from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.migrations import _apply_v1, _apply_v2
 from code_rook.core.runtime.models import (
     ThreadRecord,
@@ -142,7 +143,13 @@ def test_thread_and_turn_roundtrip(tmp_path: Path) -> None:
         id="turn-1",
         thread_id=thread.id,
         status=TurnStatus.RUNNING,
-        route={"id": "route-1"},
+        route=RouteReceipt(
+            route_id="route-1",
+            wire_format="openai_chat",
+            base_url_origin="https://api.example.test",
+            model="test-model",
+            credential_source="file",
+        ),
         usage={"input_tokens": 12},
         boot_id="boot-1",
         created_at=now,

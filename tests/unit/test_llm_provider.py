@@ -398,3 +398,30 @@ async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
         "type": "thinking",
         "thinking": "I should inspect the workspace first.",
     }]
+
+
+# 功能：验证 OpenAI-compatible 的日志和异常都不会包含响应正文或 API key
+# 设计：服务端在 401 正文回显密钥，同时检查 caplog、异常字符串及异常链均已脱敏
+async def test_openai_compatible_http_error_is_fully_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 返回带密钥正文的认证失败响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request, text="invalid provider-secret")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="provider-secret",
+            client=client,
+        )
+        with pytest.raises(RuntimeError) as captured:
+            await provider.chat([], [], EventBus(), "run-redacted")
+
+    assert "HTTP 401" in str(captured.value)
+    assert "provider-secret" not in str(captured.value)
+    assert "provider-secret" not in caplog.text
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None

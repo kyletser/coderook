@@ -125,20 +125,22 @@ async def test_daemon_level_registry_preserves_tasks() -> None:
     assert len(reg.all()) == 1
 
 
-# 功能：内建 reviewer profile 的 model 字段非空且与 loader 一致
-# 设计：加载 reviewer → 断言 model == "claude-sonnet-4-6"（TOML 中原值）
-def test_reviewer_profile_has_model() -> None:
+# 功能：验证内建 reviewer 不把 Anthropic 模型强加给任意活动 route
+# 设计：加载 reviewer 并断言 model 与 route 均为空，使子 Agent 默认继承父 route
+def test_reviewer_profile_inherits_parent_route() -> None:
     profile = AgentProfileLoader().load("reviewer")
     assert profile is not None
-    assert profile.model == "claude-sonnet-4-6"
+    assert profile.model == ""
+    assert profile.route == ""
 
 
-# 功能：内建 executor profile 的 model 字段非空
-# 设计：executor 也用带 model profile
-def test_executor_profile_has_model() -> None:
+# 功能：验证内建 executor 默认继承父 route 而不发生模型名前缀隐式切换
+# 设计：加载 executor 并检查 route/model 均为空，保证 OpenAI 父 route 不会收到 Claude 模型
+def test_executor_profile_inherits_parent_route() -> None:
     profile = AgentProfileLoader().load("executor")
     assert profile is not None
-    assert profile.model == "claude-sonnet-4-6"
+    assert profile.model == ""
+    assert profile.route == ""
 
 
 # 功能：BackgroundTaskRegistry.cancel_all 清理所有注册任务

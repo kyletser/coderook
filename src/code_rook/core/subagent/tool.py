@@ -11,7 +11,11 @@ from pydantic import BaseModel, ConfigDict
 from code_rook.core.agents.loader import AgentProfile, AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
-from code_rook.core.bus.events import SubagentFinishedEvent, SubagentStartedEvent
+from code_rook.core.bus.events import (
+    LlmRouteSelectedEvent,
+    SubagentFinishedEvent,
+    SubagentStartedEvent,
+)
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -57,6 +61,7 @@ from code_rook.core.worktree import WorktreeError, WorktreeManager
 
 if TYPE_CHECKING:
     from code_rook.core.llm.base import LLMProvider
+    from code_rook.core.llm.route_registry import RouteRegistry
     from code_rook.core.permissions.manager import PermissionManager
     from code_rook.core.task.manager import TaskManager
 
@@ -131,6 +136,7 @@ class SpawnAgentTool(BaseTool):
         depth: int = 0,
         workspace_boundary: WorkspaceBoundary | None = None,
         task_manager: TaskManager | None = None,
+        route_registry: RouteRegistry | None = None,
     ) -> None:
         self._provider = provider
         self._parent_bus = parent_bus
@@ -143,6 +149,7 @@ class SpawnAgentTool(BaseTool):
         self._depth = depth
         self._workspace_boundary = workspace_boundary or WorkspaceBoundary.current()
         self._task_manager = task_manager
+        self._route_registry = route_registry
         self._profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         self._skill_loader = SkillLoader(self._workspace_boundary.root)
         profiles = self._profile_loader.list_all()
@@ -240,24 +247,65 @@ class SpawnAgentTool(BaseTool):
         task_manager = self._task_manager or TaskManager(
             self._runs_dir / child_run_id / ".tasks"
         )
+        child_provider = self._provider
+        route_event: LlmRouteSelectedEvent | None = None
+        if profile and profile.route:
+            from code_rook.core.llm.factory import create_provider_for_route
+            from code_rook.core.llm.route_registry import RouteResolutionError
+            from code_rook.core.llm.routes import ProviderRoute
+
+            if self._route_registry is None:
+                return ToolResult(
+                    content="Profile route registry is unavailable.",
+                    is_error=True,
+                    error_type="runtime_error",
+                )
+            try:
+                resolved_route = self._route_registry.resolve(profile.route)
+            except RouteResolutionError as exc:
+                return ToolResult(
+                    content=str(exc),
+                    is_error=True,
+                    error_type="runtime_error",
+                )
+            pinned_route = resolved_route.route
+            if profile.model:
+                route_payload = pinned_route.model_dump(mode="python")
+                route_payload["model"] = profile.model
+                pinned_route = ProviderRoute.model_validate(route_payload)
+            child_provider = create_provider_for_route(
+                pinned_route,
+                resolved_route.credential,
+            )
+            receipt = pinned_route.receipt(resolved_route.receipt.credential_source)
+            route_event = LlmRouteSelectedEvent(
+                run_id=child_run_id,
+                route_id=receipt.route_id,
+                wire_format=receipt.wire_format,
+                base_url_origin=receipt.base_url_origin,
+                model=receipt.model,
+                credential_source=receipt.credential_source,
+                ts=_now(),
+            )
+        elif profile and profile.model:
+            _parent_provider = self._provider
+            _child_model = profile.model
+
+            class _ModelOverrideProvider:
+                # 将 profile 模型覆盖注入父 provider，保持其显式 wire format 不变
+                async def chat(self, *a: Any, **kw: Any) -> Any:
+                    return await _parent_provider.chat(*a, model=_child_model, **kw)
+
+            child_provider = _ModelOverrideProvider()
+
         child_registry = self._build_child_registry(
             child_bus,
             child_run_id,
             profile,
             child_boundary,
             task_manager,
+            child_provider,
         )
-        # 若 profile 指定 model，包装 provider 在每次 chat 时注入 model kwarg
-        child_provider = self._provider
-        if profile and profile.model:
-            _parent_provider = self._provider
-            _child_model = profile.model
-
-            class _ModelOverrideProvider:
-                async def chat(self, *a: Any, **kw: Any) -> Any:
-                    return await _parent_provider.chat(*a, model=_child_model, **kw)
-
-            child_provider = _ModelOverrideProvider()
 
         child_loop = AgentLoop(
             child_provider,
@@ -272,6 +320,8 @@ class SpawnAgentTool(BaseTool):
             diagnostics_client=PythonDiagnosticsClient(child_boundary),
         )
 
+        if route_event is not None:
+            await self._parent_bus.publish(route_event)
         await self._parent_bus.publish(
             SubagentStartedEvent(
                 run_id=child_run_id,
@@ -369,6 +419,7 @@ class SpawnAgentTool(BaseTool):
         profile: AgentProfile | None,
         boundary: WorkspaceBoundary,
         task_manager: TaskManager,
+        provider: LLMProvider | None = None,
     ) -> ToolRegistry:
         allowed: set[str] | None = (
             set(profile.allowed_tools) if profile and profile.allowed_tools else None
@@ -469,7 +520,7 @@ class SpawnAgentTool(BaseTool):
 
         if self._depth < 1:
             nested = SpawnAgentTool(
-                provider=self._provider,
+                provider=provider or self._provider,
                 parent_bus=child_bus,
                 parent_run_id=child_run_id,
                 permission_manager=self._permission_manager,
@@ -480,6 +531,7 @@ class SpawnAgentTool(BaseTool):
                 depth=self._depth + 1,
                 workspace_boundary=boundary,
                 task_manager=task_manager,
+                route_registry=self._route_registry,
             )
             if _allowed("spawn_agent"):
                 registry.register(nested)

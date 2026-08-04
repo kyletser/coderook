@@ -3365,6 +3365,77 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+### LlmRouteSelectedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `route_id` | `string` | yes |
+| `wire_format` | `string` | yes |
+| `base_url_origin` | `string` | yes |
+| `model` | `string` | yes |
+| `credential_source` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "llm.route_selected",
+      "default": "llm.route_selected",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "route_id": {
+      "title": "Route Id",
+      "type": "string"
+    },
+    "wire_format": {
+      "title": "Wire Format",
+      "type": "string"
+    },
+    "base_url_origin": {
+      "title": "Base Url Origin",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "credential_source": {
+      "enum": [
+        "keyring",
+        "file",
+        "env",
+        "missing"
+      ],
+      "title": "Credential Source",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "route_id",
+    "wire_format",
+    "base_url_origin",
+    "model",
+    "credential_source",
+    "ts"
+  ],
+  "title": "LlmRouteSelectedEvent",
+  "type": "object"
+}
+```
+
 ### LlmTokenEvent
 
 | Field | Type | Required |

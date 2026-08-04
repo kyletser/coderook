@@ -122,21 +122,28 @@ class AnthropicProvider:
                         text_parts.append(text)
                     final_message = await stream.get_final_message()
                 break  # success
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as exc:
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
                 if attempt == _MAX_STREAM_RETRIES:
                     log.error(
-                        "stream failed after %d attempts run_id=%s step=%d: %s",
-                        _MAX_STREAM_RETRIES, run_id, step, exc,
+                        "stream failed after %d attempts run_id=%s step=%d",
+                        _MAX_STREAM_RETRIES,
+                        run_id,
+                        step,
                     )
-                    raise
+                    break
                 delay = _RETRY_BACKOFF_S[attempt - 1]
                 log.warning(
-                    "stream dropped (attempt %d/%d) run_id=%s step=%d: %s — retrying in %.0fs",
-                    attempt, _MAX_STREAM_RETRIES, run_id, step, exc, delay,
+                    "stream dropped (attempt %d/%d) run_id=%s step=%d; retrying in %.0fs",
+                    attempt,
+                    _MAX_STREAM_RETRIES,
+                    run_id,
+                    step,
+                    delay,
                 )
                 await asyncio.sleep(delay)
 
-        assert final_message is not None
+        if final_message is None:
+            raise RuntimeError("Anthropic stream failed after retries")
 
         usage = final_message.usage
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0

@@ -12,7 +12,16 @@ from code_rook.cli.commands.core import (
     cmd_core_status,
     cmd_core_stop,
 )
+from code_rook.cli.commands.doctor import cmd_doctor
 from code_rook.cli.commands.ping import cmd_ping
+from code_rook.cli.commands.provider import (
+    cmd_model_list,
+    cmd_provider_add,
+    cmd_provider_edit,
+    cmd_provider_list,
+    cmd_provider_remove,
+    cmd_provider_use,
+)
 from code_rook.cli.commands.run import cmd_run
 from code_rook.cli.commands.session import (
     cmd_session_delete,
@@ -44,6 +53,80 @@ def main() -> None:
     subparsers.add_parser("ping", help="Ping the core daemon")
     subparsers.add_parser("configure", aliases=["config"], help="Configure the LLM connection")
     subparsers.add_parser("config-status", help="Show the active LLM configuration")
+    doctor_parser = subparsers.add_parser("doctor", help="Diagnose a provider route")
+    doctor_parser.add_argument("route_id", nargs="?", help="Configured route ID")
+    doctor_parser.add_argument("--json", action="store_true", help="Print JSON result")
+
+    provider_parser = subparsers.add_parser("provider", help="Manage provider routes")
+    provider_sub = provider_parser.add_subparsers(dest="provider_command")
+    provider_sub.add_parser("list", help="List configured provider routes")
+    add_provider = provider_sub.add_parser("add", help="Add a provider route")
+    add_provider.add_argument("route_id")
+    add_provider.add_argument(
+        "--preset",
+        choices=(
+            "anthropic",
+            "openai",
+            "openai-compatible",
+            "anthropic-compatible",
+            "opencode-zen",
+        ),
+    )
+    add_provider.add_argument(
+        "--provider-kind",
+        choices=(
+            "anthropic",
+            "openai",
+            "openai-compatible",
+            "anthropic-compatible",
+            "opencode-zen",
+        ),
+    )
+    add_provider.add_argument(
+        "--wire-format",
+        choices=("openai_chat", "openai_responses", "anthropic_messages"),
+    )
+    add_provider.add_argument("--base-url")
+    add_provider.add_argument("--model")
+    add_provider.add_argument("--credential-ref")
+    add_provider.add_argument("--set-key", action="store_true")
+    add_provider.add_argument("--activate", action="store_true")
+
+    edit_provider = provider_sub.add_parser("edit", help="Edit a provider route")
+    edit_provider.add_argument("route_id")
+    edit_provider.add_argument(
+        "--provider-kind",
+        choices=(
+            "anthropic",
+            "openai",
+            "openai-compatible",
+            "anthropic-compatible",
+            "opencode-zen",
+        ),
+    )
+    edit_provider.add_argument(
+        "--wire-format",
+        choices=("openai_chat", "openai_responses", "anthropic_messages"),
+    )
+    edit_provider.add_argument("--base-url")
+    edit_provider.add_argument("--model")
+    edit_provider.add_argument("--credential-ref")
+    edit_provider.add_argument("--set-key", action="store_true")
+    edit_provider.add_argument("--activate", action="store_true")
+
+    remove_provider = provider_sub.add_parser("remove", help="Remove a provider route")
+    remove_provider.add_argument("route_id")
+    remove_provider.add_argument("--delete-credential", action="store_true")
+    use_provider = provider_sub.add_parser("use", help="Select the active provider route")
+    use_provider.add_argument("route_id")
+    test_provider = provider_sub.add_parser("test", help="Test a provider route")
+    test_provider.add_argument("route_id", nargs="?")
+    test_provider.add_argument("--json", action="store_true")
+
+    model_parser = subparsers.add_parser("model", help="Inspect route models")
+    model_sub = model_parser.add_subparsers(dest="model_command")
+    list_models_parser = model_sub.add_parser("list", help="List configured route models")
+    list_models_parser.add_argument("--route", dest="route_id")
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an active agent run")
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
@@ -115,6 +198,52 @@ def main() -> None:
         cmd_configure(config)
     elif args.command == "config-status":
         print_llm_status(config)
+    elif args.command == "doctor":
+        cmd_doctor(config, args.route_id, as_json=args.json)
+    elif args.command == "provider":
+        if args.provider_command == "list":
+            cmd_provider_list(config)
+        elif args.provider_command == "add":
+            cmd_provider_add(
+                args.route_id,
+                preset=args.preset,
+                provider=args.provider_kind,
+                wire_format=args.wire_format,
+                base_url=args.base_url,
+                model=args.model,
+                credential_ref=args.credential_ref,
+                set_key=args.set_key,
+                activate=args.activate,
+            )
+        elif args.provider_command == "edit":
+            cmd_provider_edit(
+                args.route_id,
+                provider=args.provider_kind,
+                wire_format=args.wire_format,
+                base_url=args.base_url,
+                model=args.model,
+                credential_ref=args.credential_ref,
+                set_key=args.set_key,
+                activate=args.activate,
+            )
+        elif args.provider_command == "remove":
+            cmd_provider_remove(
+                args.route_id,
+                delete_credential=args.delete_credential,
+            )
+        elif args.provider_command == "use":
+            cmd_provider_use(args.route_id)
+        elif args.provider_command == "test":
+            cmd_doctor(config, args.route_id, as_json=args.json)
+        else:
+            provider_parser.print_help()
+            sys.exit(1)
+    elif args.command == "model":
+        if args.model_command == "list":
+            cmd_model_list(config, route_id=args.route_id)
+        else:
+            model_parser.print_help()
+            sys.exit(1)
     elif args.command == "ping":
         cmd_ping(config)
     elif args.command == "cancel":

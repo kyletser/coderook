@@ -20,11 +20,15 @@ from textual.widgets import Input, Label, Markdown, Static, TextArea
 
 from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.doctor import ProviderDoctor
 from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
     ProviderPreset,
     discover_models,
 )
+from code_rook.core.llm.route_store import RouteStore, RouteStoreError
+from code_rook.core.llm.routes import ProviderRoute
 from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
@@ -1740,6 +1744,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         provider: str = "",
         model: str = "",
         models: list[str] | None = None,
+        route: str = "",
+        route_store: RouteStore | None = None,
+        credential_store: CredentialStore | None = None,
+        provider_doctor: ProviderDoctor | None = None,
     ) -> None:
         super().__init__()
         self._host = host
@@ -1748,8 +1756,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._resume_session_id = resume_session_id
         self._auth_token = auth_token
         self._provider = provider
+        self._route = route
         self._model = model
         self._models = models or ([model] if model else [])
+        self._route_store = route_store or RouteStore()
+        self._credential_store = credential_store or CredentialStore()
+        self._provider_doctor = provider_doctor or ProviderDoctor()
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
         self._discovered_config_models: tuple[str, ...] = ()
@@ -1801,7 +1813,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         items: list[tuple[str, str]] = [
             ("sessions", "open saved session picker"),
             ("new", "start a new chat session"),
+            ("provider", "show or switch the active provider route"),
             ("model", "show or switch the active model"),
+            ("doctor", "diagnose the active provider route"),
             ("config", "change LLM API, model, or key"),
             ("compact", "compress context window"),
             ("copy", "copy the latest assistant reply"),
@@ -2153,6 +2167,40 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 exclusive=False,
             )
             return
+        if content == "/provider":
+            event.text_area.text = ""
+            self._show_provider_routes()
+            return
+        if content.startswith("/provider "):
+            event.text_area.text = ""
+            if self._busy:
+                self._append(
+                    Static(
+                        "[yellow]请先等待或取消当前任务再切换 Provider[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            self._select_provider_route(content.removeprefix("/provider ").strip())
+            return
+        if content == "/doctor":
+            event.text_area.text = ""
+            if self._busy:
+                self._append(
+                    Static(
+                        "[yellow]请先等待或取消当前任务再运行诊断[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            event.text_area.disabled = True
+            event.text_area.border_title = "正在诊断 Provider"
+            self.run_worker(
+                self._show_provider_doctor(),
+                name="provider_doctor",
+                exclusive=False,
+            )
+            return
         if content == "/model":
             event.text_area.text = ""
             if self._busy:
@@ -2181,7 +2229,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if selected.startswith("add "):
                 selected = selected.removeprefix("add ").strip()
             if selected:
-                self.exit(ModelSwitch(model=selected, session_id=self._session_id))
+                self._select_route_model(selected)
             else:
                 self._append(
                     Static(
@@ -2682,6 +2730,153 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         message.picker.remove()
         await self._switch_session(message.session_id)
 
+    # 在 transcript 中展示用户级 route 列表和活动项，不显示 endpoint 路径或凭据正文
+    def _show_provider_routes(self) -> None:
+        routes = self._route_store.list()
+        active = self._route_store.active()
+        if not routes:
+            self._append(
+                Static(
+                    "[yellow]尚未配置 Provider route，请使用 /config 添加。[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+        lines = ["[bold cyan]Provider routes[/bold cyan]"]
+        for route in routes:
+            marker = "[green]●[/green]" if active is not None and route.id == active.id else "○"
+            lines.append(
+                f"{marker} [bold]{escape(route.id)}[/bold]  "
+                f"[dim]{escape(route.wire_format)} · {escape(route.model)}[/dim]"
+            )
+        lines.append("[dim]切换：/provider <route-id>[/dim]")
+        self._append(Static("\n".join(lines), classes="log-line"))
+
+    # 切换后续 turn 使用的活动 route，并立即刷新 TUI 顶栏
+    def _select_provider_route(self, route_id: str) -> None:
+        if not route_id:
+            self._show_provider_routes()
+            return
+        try:
+            route = self._route_store.set_active(route_id)
+        except RouteStoreError as exc:
+            self._append(Static(f"[red]{escape(str(exc))}[/red]", classes="log-line"))
+            return
+        self._route = route.id
+        self._provider = route.id
+        self._model = route.model
+        self._models = [route.model]
+        self._update_header("ready")
+        self._append(
+            Static(
+                f"[green]活动 route[/green]  {escape(route.id)}/{escape(route.model)}",
+                classes="log-line",
+            )
+        )
+
+    # 更新活动 route 的模型字段，保留 provider、wire、endpoint 和凭据引用
+    def _select_route_model(self, model: str) -> None:
+        selected = model.strip()
+        if not selected:
+            return
+        active = self._route_store.active()
+        if active is None:
+            self._append(
+                Static(
+                    "[yellow]尚无活动 route，请先使用 /config 配置 Provider。[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+        payload = active.model_dump(mode="python")
+        payload["model"] = selected
+        updated = ProviderRoute.model_validate(payload)
+        self._route_store.update(updated)
+        self._route = updated.id
+        self._model = updated.model
+        if selected not in self._models:
+            self._models.append(selected)
+        self._update_header("ready")
+        self._append(
+            Static(
+                f"[green]活动模型[/green]  {escape(updated.id)}/{escape(updated.model)}",
+                classes="log-line",
+            )
+        )
+
+    # 对活动 route 执行最小真实探测，并展示脱敏分类结果
+    async def _show_provider_doctor(self) -> None:
+        try:
+            route = self._route_store.active()
+            if route is None:
+                self._append(
+                    Static(
+                        "[yellow]尚无活动 route，请先使用 /config 配置 Provider。[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            credential = self._credential_store.resolve(route.credential_ref)
+            result = await self._provider_doctor.check(route, credential)
+            color = "green" if result.status == "ok" else "red"
+            status = escape(result.status)
+            category = escape(result.category)
+            message = escape(result.message)
+            self._append(
+                Static(
+                    f"[bold cyan]Provider doctor[/bold cyan]  [{color}]{status}[/{color}]  "
+                    f"{category}\n[dim]{message} · credential={result.credential_source}[/dim]",
+                    classes="log-line",
+                )
+            )
+        finally:
+            self._restore_ready_prompt()
+
+    # 将已探测的内置 Provider 选择保存为 route，并在当前 TUI 内立即生效
+    def _save_config_route(self, provider: ProviderPreset, api_key: str, model: str) -> None:
+        provider_kind = (
+            "anthropic"
+            if provider.id == "anthropic"
+            else "openai"
+            if provider.id == "openai"
+            else "openai-compatible"
+        )
+        wire_format = (
+            "anthropic_messages" if provider.anthropic_api else "openai_chat"
+        )
+        credential_ref = self._credential_store.save(provider.id, api_key)
+        route = ProviderRoute.model_validate(
+            {
+                "id": provider.id,
+                "provider": provider_kind,
+                "wire_format": wire_format,
+                "base_url": provider.chat_url or "https://api.anthropic.com",
+                "model": model,
+                "credential_ref": credential_ref,
+                "supports_prompt_cache": provider.anthropic_api,
+            }
+        )
+        if any(item.id == route.id for item in self._route_store.list()):
+            self._route_store.update(route)
+            self._route_store.set_active(route.id)
+        else:
+            self._route_store.add(route, activate=True)
+        self._provider = provider.id
+        self._route = route.id
+        self._model = route.model
+        self._models = list(self._discovered_config_models)
+        self._pending_config_key = None
+        self._discovered_config_models = ()
+        self._config_provider = None
+        self._update_header("ready")
+        self._append(
+            Static(
+                f"[green]Provider 已配置[/green]  {escape(route.id)}/{escape(route.model)}",
+                classes="log-line",
+            )
+        )
+        self._restore_ready_prompt()
+
     # 关闭模型选择器并恢复聊天输入框
     async def on_model_picker_dismissed(self, message: ModelPicker.Dismissed) -> None:
         message.picker.remove()
@@ -2690,24 +2885,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._discovered_config_models = ()
         self._restore_ready_prompt()
 
-    # 选择模型后退出 TUI，由入口保存配置、重启 Core 并恢复会话
+    # 选择模型后直接更新用户级 route，当前页面和下一 turn 立即生效
     async def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
         message.picker.remove()
         if self._config_provider is not None and self._pending_config_key is not None:
-            self.exit(
-                ConfigSwitch(
-                    provider=self._config_provider.id,
-                    api_key=self._pending_config_key,
-                    model=message.model,
-                    models=self._discovered_config_models,
-                    session_id=self._session_id,
-                )
+            self._save_config_route(
+                self._config_provider,
+                self._pending_config_key,
+                message.model,
             )
             return
         if message.model == self._model:
             self._restore_ready_prompt()
             return
-        self.exit(ModelSwitch(model=message.model, session_id=self._session_id))
+        self._select_route_model(message.model)
+        self._restore_ready_prompt()
 
     # 关闭 Provider 选择器并恢复聊天输入
     async def on_provider_picker_dismissed(self, message: ProviderPicker.Dismissed) -> None:
@@ -3091,7 +3283,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except NoMatches:
             return
         session = f"  [dim]{self._session_id}[/dim]" if self._session_id else ""
-        model = f"  [cyan]{escape(self._model)}[/cyan]" if self._model else ""
+        route_label = "/".join(part for part in (self._route, self._model) if part)
+        model = f"  [cyan]{escape(route_label)}[/cyan]" if route_label else ""
         permission_labels = {
             "ask": "ask",
             "accept_edits": "accept edits",
@@ -3273,7 +3466,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
         self._break_llm()
 
-        if t == "llm.retry":
+        if t == "llm.route_selected":
+            self._route = str(event.get("route_id") or "")
+            self._model = str(event.get("model") or "")
+            self._update_header("running")
+
+        elif t == "llm.retry":
             kind = str(event.get("kind") or "retry")
             attempt = int(event.get("attempt") or 0)
             self._append(

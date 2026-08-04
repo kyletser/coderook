@@ -77,6 +77,7 @@ def test_toml_parsed(tmp_path: Path) -> None:
 description = "测试角色"
 system_prompt = "你是测试助手。"
 allowed_tools = ["read_file", "bash"]
+route = "openai-work"
 model = "claude-sonnet-4-6"
 """
     p = tmp_path / "tester.toml"
@@ -88,6 +89,7 @@ model = "claude-sonnet-4-6"
     assert profile.system_prompt == "你是测试助手。"
     assert "read_file" in profile.allowed_tools
     assert "bash" in profile.allowed_tools
+    assert profile.route == "openai-work"
     assert profile.model == "claude-sonnet-4-6"
 
 

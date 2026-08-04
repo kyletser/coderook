@@ -14,6 +14,7 @@ from code_rook.core.authority.models import (
     ToolAction,
     WorkspaceTrust,
 )
+from code_rook.core.llm.routes import RouteReceipt
 
 
 class ThreadStatus(StrEnum):
@@ -76,7 +77,7 @@ class TurnRecord(BaseModel):
     allowed_actions: frozenset[ToolAction] = Field(
         default_factory=_all_tool_actions
     )
-    route: dict[str, JsonValue] | None = None
+    route: RouteReceipt | None = None
     usage: dict[str, JsonValue] = Field(default_factory=dict)
     error: dict[str, JsonValue] | None = None
     boot_id: str | None = None

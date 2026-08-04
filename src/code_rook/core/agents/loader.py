@@ -11,6 +11,7 @@ class AgentProfile:
     description: str
     system_prompt: str
     allowed_tools: list[str] = field(default_factory=list)
+    route: str = ""
     model: str = ""
     # 角色配置可选的访问限制策略，目前支持 "read_only"：仅允许副作用为 NONE 的工具
     restrict: str = ""
@@ -68,6 +69,7 @@ class AgentProfileLoader:
             description=agent.get("description", ""),
             system_prompt=agent.get("system_prompt", "").strip(),
             allowed_tools=agent.get("allowed_tools", []),
+            route=agent.get("route", ""),
             model=agent.get("model", ""),
             restrict=agent.get("restrict", ""),
         )

@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm import factory as llm_factory
+from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.route_registry import RouteRegistry
+from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.routes import get_route_preset
 from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
@@ -54,6 +60,20 @@ def _make_tool(
         workspace_boundary=WorkspaceBoundary(tmp_path),
     )
     return tool, registry, bus
+
+
+# 在临时项目中写入带 route pin 的 Agent profile
+def _write_routed_profile(tmp_path: Path, route_id: str) -> None:
+    profile_dir = tmp_path / ".coderook" / "agents"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "routed.toml").write_text(
+        "[agent]\n"
+        'description = "Routed agent"\n'
+        'system_prompt = "Use the configured route."\n'
+        f'route = "{route_id}"\n'
+        'model = "gpt-profile"\n',
+        encoding="utf-8",
+    )
 
 
 # 功能：前台模式下 spawn_agent 应阻塞直到子 agent 完成并返回其结果
@@ -246,3 +266,107 @@ async def test_child_loop_uses_shared_todo_state(tmp_path: Path) -> None:
 
     assert result.content == "after reminder"
     assert provider.chat.await_count == 2
+
+
+# 功能：验证 Agent profile 的 route pin 使用用户 RouteStore 中的显式 route 和凭据
+# 设计：替换 provider factory 后运行真实 SpawnAgentTool，核对模型覆盖、route event 与父 provider 零调用
+async def test_profile_route_pin_uses_configured_user_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROFILE_API_KEY", "profile-secret")
+    _write_routed_profile(tmp_path, "work")
+    route_store = RouteStore(tmp_path / "routes.json")
+    route_store.add(
+        get_route_preset("openai").model_copy(
+            update={"id": "work", "credential_ref": "env:PROFILE_API_KEY"}
+        ),
+        activate=True,
+    )
+    route_registry = RouteRegistry(
+        CodeRookConfig().llm,
+        route_store=route_store,
+        credential_store=CredentialStore(tmp_path / "credentials.json"),
+    )
+    parent_provider = _make_provider("parent")
+    routed_provider = _make_provider("routed")
+    factory_calls: list[tuple[str, str, str]] = []
+
+    # 捕获 profile route 解析后的显式 wire、模型和凭据
+    def fake_factory(route: object, credential: str) -> Any:
+        factory_calls.append((route.wire_format, route.model, credential))  # type: ignore[attr-defined]
+        return routed_provider
+
+    monkeypatch.setattr(llm_factory, "create_provider_for_route", fake_factory)
+    bus = EventBus()
+    events: list[object] = []
+
+    # 收集 child route receipt 事件
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)  # type: ignore[arg-type]
+    tool = SpawnAgentTool(
+        provider=parent_provider,
+        parent_bus=bus,
+        parent_run_id="parent-run",
+        permission_manager=None,
+        max_steps=5,
+        task_registry=BackgroundTaskRegistry(),
+        runs_dir=tmp_path,
+        session_id="sess-test",
+        workspace_boundary=WorkspaceBoundary(tmp_path),
+        route_registry=route_registry,
+    )
+
+    result = await tool.invoke(
+        {
+            "description": "routed child",
+            "prompt": "work",
+            "subagent_type": "routed",
+        }
+    )
+
+    assert not result.is_error
+    assert result.content == "routed"
+    assert factory_calls == [("openai_chat", "gpt-profile", "profile-secret")]
+    parent_provider.chat.assert_not_awaited()
+    selected = next(event for event in events if event.type == "llm.route_selected")  # type: ignore[attr-defined]
+    assert selected.route_id == "work"  # type: ignore[attr-defined]
+    assert selected.model == "gpt-profile"  # type: ignore[attr-defined]
+    assert "profile-secret" not in selected.model_dump_json()  # type: ignore[attr-defined]
+
+
+# 功能：验证 profile 引用不存在的用户 route 时在启动 child 前 fail closed
+# 设计：项目 profile 固定 missing route，断言返回结构化错误且父 provider 从未被调用
+async def test_profile_route_pin_rejects_unknown_route(tmp_path: Path) -> None:
+    _write_routed_profile(tmp_path, "missing")
+    parent_provider = _make_provider("parent")
+    tool = SpawnAgentTool(
+        provider=parent_provider,
+        parent_bus=EventBus(),
+        parent_run_id="parent-run",
+        permission_manager=None,
+        max_steps=5,
+        task_registry=BackgroundTaskRegistry(),
+        runs_dir=tmp_path,
+        session_id="sess-test",
+        workspace_boundary=WorkspaceBoundary(tmp_path),
+        route_registry=RouteRegistry(
+            CodeRookConfig().llm,
+            route_store=RouteStore(tmp_path / "routes.json"),
+            credential_store=CredentialStore(tmp_path / "credentials.json"),
+        ),
+    )
+
+    result = await tool.invoke(
+        {
+            "description": "routed child",
+            "prompt": "work",
+            "subagent_type": "routed",
+        }
+    )
+
+    assert result.is_error
+    assert "profile route is not configured: missing" in result.content
+    parent_provider.chat.assert_not_awaited()
