@@ -2534,8 +2534,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else:
                 markers = {
                     "pending": "[ ]",
-                    "in_progress": "[>]",
+                    "ready": "[ ]",
+                    "running": "[>]",
+                    "blocked": "[-]",
                     "completed": "[x]",
+                    "failed": "[!]",
+                    "cancelled": "[-]",
+                    "in_progress": "[>]",
                 }
                 lines = ["[bold cyan]Tasks[/bold cyan]"]
                 for task in tasks:

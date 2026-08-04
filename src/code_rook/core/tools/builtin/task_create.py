@@ -30,6 +30,16 @@ class TaskCreateTool(BaseTool):
                 "items": {"type": "integer"},
                 "description": "IDs of tasks that must be completed before this one.",
             },
+            "acceptance_criteria": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Verifiable conditions required before completion.",
+            },
+            "gates": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Named review or verification gates for this task.",
+            },
         },
         "required": ["subject"],
     }
@@ -44,8 +54,18 @@ class TaskCreateTool(BaseTool):
         description = str(params.get("description") or "")
         raw_blocked: list[object] = list(params.get("blocked_by") or [])  # type: ignore[call-overload]
         blocked_by = [int(str(x)) for x in raw_blocked]
+        raw_acceptance: list[object] = list(
+            params.get("acceptance_criteria") or []  # type: ignore[call-overload]
+        )
+        raw_gates: list[object] = list(params.get("gates") or [])  # type: ignore[call-overload]
         try:
-            task = self._manager.create(subject, description, blocked_by)
+            task = self._manager.create(
+                subject,
+                description,
+                blocked_by,
+                acceptance_criteria=[str(item) for item in raw_acceptance],
+                gates=[str(item) for item in raw_gates],
+            )
             return ToolResult(content=json.dumps(task.to_dict(), ensure_ascii=False))
         except ValueError as exc:
             return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")

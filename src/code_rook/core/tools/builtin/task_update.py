@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 from code_rook.core.task.manager import TaskManager
-from code_rook.core.task.model import TaskStatus
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
@@ -12,8 +11,8 @@ class TaskUpdateTool(BaseTool):
     side_effect = ToolSideEffect.EXTERNAL_WRITE
     description = (
         "Update a task's status or dependency list. "
-        "Set status to 'in_progress' when starting work on a task, "
-        "'completed' when finished (automatically clears it from other tasks' blocked_by). "
+        "Set status to 'running' when starting work and a terminal status when finished. "
+        "Dependencies remain in the audit record while blocked tasks become ready automatically. "
         "Returns the updated task as JSON."
     )
     input_schema: dict[str, object] = {
@@ -25,7 +24,16 @@ class TaskUpdateTool(BaseTool):
             },
             "status": {
                 "type": "string",
-                "enum": ["pending", "in_progress", "completed"],
+                "enum": [
+                    "pending",
+                    "ready",
+                    "running",
+                    "blocked",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "in_progress",
+                ],
                 "description": "New status for the task.",
             },
             "add_blocked_by": {
@@ -49,7 +57,7 @@ class TaskUpdateTool(BaseTool):
     # 更新任务并返回 JSON 字符串
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         task_id = int(str(params["task_id"]))
-        status: TaskStatus | None = params.get("status")  # type: ignore[assignment]
+        status = str(params["status"]) if params.get("status") is not None else None
         raw_add: list[object] = list(params.get("add_blocked_by") or [])  # type: ignore[call-overload]
         raw_rem: list[object] = list(params.get("remove_blocked_by") or [])  # type: ignore[call-overload]
         add_blocked = [int(str(x)) for x in raw_add]

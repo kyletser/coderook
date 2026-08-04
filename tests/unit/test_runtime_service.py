@@ -20,6 +20,7 @@ from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session.manager import SessionManager
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
+from code_rook.core.task.manager import TaskManager
 
 
 class _Runner:
@@ -171,6 +172,42 @@ async def test_runtime_service_publishes_durable_events(tmp_path: Path) -> None:
         "turn.started",
         "turn.completed",
     ]
+
+
+# 功能：验证 Task timeline 在 daemon 重启后仍能从 runtime event 查询
+# 设计：启动真实 turn 并通过 TaskManager sink 写事件，再重建 store 查询持久 SQLite
+async def test_task_timeline_projects_to_durable_runtime_events(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-task",
+        mode="chat",
+        status="active",
+        title="task",
+        created_at="2026-07-30T00:00:00Z",
+        updated_at="2026-07-30T00:00:00Z",
+    )
+    await service.start_turn(session, "run-task", "work")
+    manager = TaskManager(
+        tmp_path / "tasks",
+        event_sink=service.task_event_sink(session.id, "run-task"),
+    )
+
+    manager.create("durable")
+    manager.claim(1, "executor")
+    manager.add_artifact(1, name="report", uri="artifact://report")
+
+    restarted_store = RuntimeStore(store.path)
+    task_events = [
+        event
+        for event in restarted_store.list_events(session.id)
+        if event.type.startswith("task.")
+    ]
+    assert [event.type for event in task_events] == [
+        "task.created",
+        "task.claimed",
+        "task.artifact_added",
+    ]
+    assert all(event.payload["task_id"] == 1 for event in task_events)
 
 
 # 功能：验证 turn 启动时把实际 RouteReceipt 同时写入 TurnRecord 与 durable event

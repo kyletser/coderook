@@ -34,6 +34,7 @@ from code_rook.core.runtime.store import (
 
 if TYPE_CHECKING:
     from code_rook.core.session.model import Session
+    from code_rook.core.task.models import TaskTimelineEntry
 
 _SESSION_TO_THREAD_STATUS = {
     "active": ThreadStatus.RUNNING,
@@ -169,6 +170,34 @@ class RuntimeService:
     # 异步查询 thread 当前事件高水位
     async def latest_event_seq(self, thread_id: str) -> int:
         return await asyncio.to_thread(self._store.latest_event_seq, thread_id)
+
+    # 构造 Task timeline 到当前 thread/turn 的持久 runtime event 投影
+    def task_event_sink(
+        self,
+        thread_id: str,
+        turn_id: str,
+    ) -> Callable[[TaskTimelineEntry], None]:
+        # 在 task 文件成功保存后同步追加事件，并异步通知进程内订阅者
+        def receive(entry: TaskTimelineEntry) -> None:
+            event = self._store.append_event(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                event_type=entry.event,
+                payload={
+                    "task_id": entry.task_id,
+                    "timeline_seq": entry.seq,
+                    "actor": entry.actor,
+                    "details": entry.details,
+                },
+                ts=_parse_time(entry.at),
+            )
+            if self._bus is not None:
+                asyncio.get_running_loop().create_task(
+                    self._publish_runtime_event(event),
+                    name=f"runtime-event:{thread_id}:{event.seq}",
+                )
+
+        return receive
 
     # 恢复其他 daemon boot 遗留的活动 turn 并发布持久事件
     async def recover_stale_turns(self, ts: datetime) -> list[RuntimeEventRecord]:

@@ -29,6 +29,7 @@ from code_rook.core.memory import MemoryStore, load_context_file
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import RUNS_DIR, new_run_id
+from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
@@ -72,6 +73,7 @@ class AgentRunner:
         subagent_registry: BackgroundTaskRegistry | None = None,
         interaction_manager: InteractionManager | None = None,
         route_registry: RouteRegistry | None = None,
+        runtime_service: RuntimeService | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -96,6 +98,7 @@ class AgentRunner:
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
         self._interaction_manager = interaction_manager
         self._route_registry = route_registry
+        self._runtime = runtime_service
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
@@ -186,7 +189,12 @@ class AgentRunner:
                 + recalled_context
             ).strip()
 
-        task_manager = TaskManager(run_path / ".tasks")
+        task_event_sink = (
+            self._runtime.task_event_sink(session.id, run_id)
+            if self._runtime is not None and session is not None
+            else None
+        )
+        task_manager = TaskManager(run_path / ".tasks", event_sink=task_event_sink)
         checkpoint_store = CheckpointStore(
             run_path / ".checkpoints",
             self._workspace_boundary,

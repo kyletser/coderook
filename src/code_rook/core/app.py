@@ -573,6 +573,7 @@ class CoreApp:
                 subagent_registry=self._subagent_registry,
                 interaction_manager=self._interaction_manager,
                 route_registry=self._route_registry,
+                runtime_service=self._runtime,
             ),
             bus=self._bus,
             subagent_registry=self._subagent_registry,

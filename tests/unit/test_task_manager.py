@@ -7,14 +7,14 @@ import pytest
 from code_rook.core.task.manager import TaskManager
 
 
-# 功能：验证 create 写入 JSON 文件并返回正确的 Task 对象
-# 设计：用 tmp_path 隔离文件系统，断言文件存在且字段值正确
+# 功能：验证 create 写入 JSON 文件并让无依赖任务进入 ready
+# 设计：用 tmp_path 隔离文件系统，同时断言 V2 初始状态和持久文件
 def test_create_writes_file(tmp_path: Path) -> None:
     mgr = TaskManager(tmp_path)
     task = mgr.create("do something")
     assert task.id == 1
     assert task.subject == "do something"
-    assert task.status == "pending"
+    assert task.status == "ready"
     assert (tmp_path / "task_1.json").exists()
 
 
@@ -53,23 +53,25 @@ def test_get_nonexistent_raises(tmp_path: Path) -> None:
         mgr.get(999)
 
 
-# 功能：验证 update 修改 status 并写回文件
-# 设计：create 后 update status="in_progress"，重新 get 断言状态已变更
+# 功能：验证旧版 in_progress 输入会迁移成 running 并写回文件
+# 设计：经兼容 facade 更新旧状态名，重新读取后只允许出现 V2 状态
 def test_update_status(tmp_path: Path) -> None:
     mgr = TaskManager(tmp_path)
     mgr.create("work")
     mgr.update(1, status="in_progress")
-    assert mgr.get(1).status == "in_progress"
+    assert mgr.get(1).status == "running"
 
 
-# 功能：验证 update status="completed" 会从其他任务的 blocked_by 中清除该 ID
-# 设计：创建任务 1，再创建被 1 阻塞的任务 2，完成任务 1 后断言任务 2 的 blocked_by 为空
-def test_update_completed_clears_dependency(tmp_path: Path) -> None:
+# 功能：验证依赖完成后下游变为 ready 且依赖历史不会丢失
+# 设计：完成上游后重新读取下游，同时断言状态刷新与 dependencies 审计边均保留
+def test_update_completed_readies_dependency(tmp_path: Path) -> None:
     mgr = TaskManager(tmp_path)
     mgr.create("step 1")
     mgr.create("step 2", blocked_by=[1])
     mgr.update(1, status="completed")
-    assert mgr.get(2).blocked_by == []
+    downstream = mgr.get(2)
+    assert downstream.status == "ready"
+    assert downstream.dependencies == [1]
 
 
 # 功能：验证 update add_blocked_by 正确追加依赖
@@ -137,9 +139,10 @@ def test_claim_assigns_owner_and_rejects_second_claim(tmp_path: Path) -> None:
 
     claimed = mgr.claim(1, "reviewer", "review-wt")
 
-    assert claimed.status == "in_progress"
+    assert claimed.status == "running"
     assert claimed.owner == "reviewer"
     assert claimed.worktree == "review-wt"
+    assert claimed.attempts[0].status == "running"
     with pytest.raises(ValueError, match="cannot claim"):
         mgr.claim(1, "executor")
 
@@ -153,3 +156,64 @@ def test_claim_rejects_blocked_task(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"blocked by \[1\]"):
         mgr.claim(2, "executor")
+
+
+# 功能：验证 daemon 等价重启后 timeline、attempt 和 artifact 均可查询
+# 设计：用第二个 TaskManager 读取同一目录，覆盖 R6 的持久恢复验收路径
+def test_restart_restores_timeline_attempt_and_artifact(tmp_path: Path) -> None:
+    first = TaskManager(tmp_path)
+    first.create("durable work", acceptance_criteria=["tests pass"])
+    first.claim(1, "executor", "wt-1")
+    first.add_artifact(
+        1,
+        name="report",
+        uri="artifact://sha256/abc",
+        digest="sha256:abc",
+        media_type="text/markdown",
+    )
+
+    restored = TaskManager(tmp_path).get(1)
+
+    assert restored.acceptance_criteria == ["tests pass"]
+    assert len(restored.attempts) == 1
+    assert restored.attempts[0].owner_worker == "executor"
+    assert restored.artifacts[0].digest == "sha256:abc"
+    assert [entry.event for entry in restored.timeline] == [
+        "task.created",
+        "task.claimed",
+        "task.artifact_added",
+    ]
+
+
+# 功能：验证未通过 gate 的任务不能完成，通过并记录证据后才可完成
+# 设计：先断言 fail-closed，再设置 gate 证据并完成，覆盖 gate 的完整状态转换
+def test_gate_blocks_completion_until_passed(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+    manager.create("guarded work", gates=["unit-tests"])
+
+    with pytest.raises(ValueError, match="gates that have not passed"):
+        manager.update(1, status="completed")
+
+    manager.set_gate(1, "unit-tests", passed=True, evidence="pytest: 12 passed")
+    completed = manager.update(1, status="completed")
+
+    assert completed.status == "completed"
+    assert completed.gates[0].status == "passed"
+    assert completed.gates[0].evidence == "pytest: 12 passed"
+
+
+# 功能：验证任务 timeline 事件只在任务文件保存成功后发送
+# 设计：收集 event sink 回调并读取对应文件，防止写入失败产生不可追溯幽灵事件
+def test_event_sink_observes_persisted_task(tmp_path: Path) -> None:
+    observed: list[tuple[str, bool]] = []
+
+    # 在回调触发时确认所属任务文件已经存在
+    def receive(entry: object) -> None:
+        task_id = getattr(entry, "task_id")
+        event = getattr(entry, "event")
+        observed.append((event, (tmp_path / f"task_{task_id}.json").exists()))
+
+    manager = TaskManager(tmp_path, event_sink=receive)
+    manager.create("persist first")
+
+    assert observed == [("task.created", True)]
