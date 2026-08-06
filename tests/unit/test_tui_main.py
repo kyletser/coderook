@@ -133,7 +133,7 @@ def test_tui_main_switches_model_and_resumes_session(
     monkeypatch.setattr(
         core_commands,
         "stop_core",
-        lambda: calls.append(("core", "stop")),
+        lambda *_args: calls.append(("core", "stop")),
     )
 
     tui_main.main()
@@ -182,7 +182,7 @@ def test_tui_main_saves_discovered_provider_config(
     monkeypatch.setattr(
         core_commands,
         "stop_core",
-        lambda: calls.append(("core", "stop")),
+        lambda *_args: calls.append(("core", "stop")),
     )
 
     tui_main.main()

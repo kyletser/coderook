@@ -176,6 +176,7 @@ class OpenAIResponsesProvider:
             "instructions": system or "",
             "max_output_tokens": 8192,
             "store": False,
+            "stream": True,
         }
         tools = _to_responses_tools(tool_schemas)
         if tools:
@@ -187,15 +188,15 @@ class OpenAIResponsesProvider:
         }
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                data = await self._post(client, payload, headers)
+                data, streamed = await self._post(client, payload, headers, bus, run_id)
         else:
-            data = await self._post(self._client, payload, headers)
+            data, streamed = await self._post(self._client, payload, headers, bus, run_id)
         text, tool_calls, reasoning = _parse_output(data.get("output"))
         if reasoning:
             await bus.publish(
                 LlmReasoningEvent(run_id=run_id, content=reasoning, ts=_now())
             )
-        if text and not tool_calls:
+        if text and not tool_calls and not streamed:
             await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
         usage = data.get("usage", {})
         usage_value = usage if isinstance(usage, dict) else {}
@@ -220,6 +221,9 @@ class OpenAIResponsesProvider:
             stop_reason="tool_use" if tool_calls else "end_turn",
             tool_calls=tool_calls,
             text=text,
+            thinking_blocks=(
+                [{"type": "thinking", "thinking": reasoning}] if reasoning else []
+            ),
             usage=UsageStats(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -228,17 +232,26 @@ class OpenAIResponsesProvider:
             ),
         )
 
-    # 发送单次有界 HTTP 请求，并将外部错误转换为不含响应正文的安全异常
+    # 发送流式请求；SSE 增量解析，非 SSE 响应降级为整体 JSON（兼容注入的测试 client）
     async def _post(
         self,
         client: httpx.AsyncClient,
         payload: dict[str, object],
         headers: dict[str, str],
-    ) -> dict[str, Any]:
+        bus: EventBus,
+        run_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        data: Any = None
         try:
-            response = await client.post(self._base_url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            async with client.stream(
+                "POST", self._base_url, json=payload, headers=headers
+            ) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" in content_type.lower():
+                    return await self._consume_sse(response, bus, run_id)
+                raw = await response.aread()
+                data = json.loads(raw)
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(
                 f"OpenAI Responses request failed (HTTP {exc.response.status_code})"
@@ -247,4 +260,95 @@ class OpenAIResponsesProvider:
             raise RuntimeError("OpenAI Responses request failed") from exc
         if not isinstance(data, dict):
             raise RuntimeError("OpenAI Responses returned an invalid response object")
-        return data
+        return data, False
+
+    # 解析 Responses SSE 事件流；completed 事件给出完整响应，缺失时用增量累积兜底
+    async def _consume_sse(
+        self,
+        response: httpx.Response,
+        bus: EventBus,
+        run_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        completed: dict[str, Any] | None = None
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        calls: dict[str, dict[str, str]] = {}
+        async for line in response.aiter_lines():
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
+                continue
+            data_raw = stripped[5:].strip()
+            if data_raw == "[DONE]":
+                break
+            try:
+                event = json.loads(data_raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "response.output_text.delta":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    text_parts.append(delta)
+                    await bus.publish(
+                        LlmTokenEvent(run_id=run_id, token=delta, ts=_now())
+                    )
+            elif event_type == "response.reasoning_summary_text.delta":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    reasoning_parts.append(delta)
+            elif event_type == "response.output_item.added":
+                item = event.get("item")
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    slot = calls.setdefault(
+                        str(item.get("id") or ""),
+                        {"call_id": "", "name": "", "arguments": ""},
+                    )
+                    slot["call_id"] = str(item.get("call_id") or "")
+                    slot["name"] = str(item.get("name") or "")
+            elif event_type == "response.function_call_arguments.delta":
+                key = str(event.get("item_id") or event.get("output_index") or "")
+                slot = calls.setdefault(
+                    key, {"call_id": "", "name": "", "arguments": ""}
+                )
+                delta = event.get("delta")
+                if isinstance(delta, str):
+                    slot["arguments"] += delta
+            elif event_type == "response.completed":
+                full = event.get("response")
+                if isinstance(full, dict):
+                    completed = full
+            elif event_type == "response.failed":
+                raise RuntimeError("OpenAI Responses request failed")
+        if completed is not None:
+            return completed, True
+        output: list[dict[str, Any]] = []
+        for slot in calls.values():
+            output.append(
+                {
+                    "type": "function_call",
+                    "call_id": slot["call_id"],
+                    "name": slot["name"],
+                    "arguments": slot["arguments"],
+                }
+            )
+        if text_parts:
+            output.append(
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "".join(text_parts)}
+                    ],
+                }
+            )
+        if reasoning_parts:
+            output.append(
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "".join(reasoning_parts)}
+                    ],
+                }
+            )
+        return {"output": output, "usage": {}}, True

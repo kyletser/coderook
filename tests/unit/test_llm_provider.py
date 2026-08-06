@@ -521,3 +521,68 @@ async def test_openai_compatible_rejects_partial_tool_arguments() -> None:
             await provider.chat([], [], EventBus(), "run-partial")
 
     assert '{"path":' not in str(captured.value)
+
+
+# 功能：SSE 流式响应被增量解析，正文逐块发布 token 事件并正确合并工具调用分片
+# 设计：MockTransport 返回 text/event-stream 正文，含两个文本块、reasoning、按 index 拼接的
+# 工具参数分片与流内 usage；断言 token 事件顺序、合并后的工具入参、thinking 保留与 usage 来源
+async def test_openai_compatible_streams_sse_chunks() -> None:
+    sse_lines = [
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"lo"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+        '"type":"function","function":{"name":"echo","arguments":""}}]}}]}',
+        "",
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        '"function":{"arguments":"{\\"msg\\":"}}]}}]}',
+        "",
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+        '"function":{"arguments":"\\"hi\\"}"}}]}}],'
+        '"usage":{"prompt_tokens":7,"completion_tokens":3}}',
+        "",
+        "data: [DONE]",
+        "",
+    ]
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content="\n".join(sse_lines).encode("utf-8"),
+        )
+
+    events: list[BaseModel] = []
+    bus = EventBus()
+
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        response = await provider.chat([], [], bus, "run-sse")
+
+    tokens = [
+        event.token
+        for event in events
+        if type(event).__name__ == "LlmTokenEvent"
+    ]
+    assert tokens == ["Hel", "lo"]
+    assert response.text == "Hello"
+    assert response.tool_calls[0].name == "echo"
+    assert response.tool_calls[0].input == {"msg": "hi"}
+    assert response.thinking_blocks == [{"type": "thinking", "thinking": "think"}]
+    assert response.usage is not None
+    assert response.usage.input_tokens == 7
+    assert response.usage.output_tokens == 3

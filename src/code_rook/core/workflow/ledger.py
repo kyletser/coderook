@@ -12,6 +12,7 @@ from code_rook.core.workflow.graph import (
     GraphNodeKind,
     WorkflowEvent,
     WorkGraphState,
+    apply_workflow_event,
     reduce_workflow_events,
 )
 from code_rook.core.workflow.models import WorkflowSpec
@@ -32,6 +33,8 @@ class WorkflowLedger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        # workflow_id -> (已回放到的 seq, 对应 Work Graph 快照)，供增量重建
+        self._graph_cache: dict[str, tuple[int, WorkGraphState]] = {}
         self._initialize()
 
     # 打开启用 foreign key、WAL 和 busy timeout 的 SQLite 连接
@@ -184,10 +187,15 @@ class WorkflowLedger:
 
     # 按 seq 读取全部 durable WorkflowEvent
     def events(self, workflow_id: str) -> list[WorkflowEvent]:
+        return self.events_after(workflow_id, 0)
+
+    # 读取 seq 大于游标的 durable WorkflowEvent（workflow 不存在时报错）
+    def events_after(self, workflow_id: str, after_seq: int) -> list[WorkflowEvent]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM workflow_events WHERE workflow_id = ? ORDER BY seq",
-                (workflow_id,),
+                "SELECT * FROM workflow_events WHERE workflow_id = ? AND seq > ? "
+                "ORDER BY seq",
+                (workflow_id, after_seq),
             ).fetchall()
         if not rows and not self.exists(workflow_id):
             raise WorkflowLedgerError(f"workflow not found: {workflow_id}")
@@ -220,9 +228,22 @@ class WorkflowLedger:
             ).fetchone()
         return row is not None
 
-    # 从 ledger 事件离线重建当前 Work Graph
+    # 从 ledger 事件重建当前 Work Graph；基于缓存增量重放，避免每次全量 reduce
     def graph(self, workflow_id: str) -> WorkGraphState:
-        return reduce_workflow_events(workflow_id, self.events(workflow_id))
+        with self._lock:
+            cached = self._graph_cache.get(workflow_id)
+            after_seq = cached[0] if cached is not None else 0
+            new_events = self.events_after(workflow_id, after_seq)
+            if cached is None:
+                state = reduce_workflow_events(workflow_id, new_events)
+                last_seq = new_events[-1].seq if new_events else 0
+            else:
+                state = cached[1]
+                for event in new_events:
+                    state = apply_workflow_event(state, event)
+                last_seq = new_events[-1].seq if new_events else cached[0]
+            self._graph_cache[workflow_id] = (last_seq, state)
+            return state
 
     # 将 crash 遗留的 running 节点和 workflow 标记为 interrupted，完成节点保持不变
     def recover_interrupted(self, workflow_id: str) -> WorkGraphState:

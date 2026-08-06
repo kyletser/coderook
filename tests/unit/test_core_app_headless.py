@@ -146,3 +146,13 @@ async def test_session_authority_change_rejected_while_turn_is_busy() -> None:
             {"session_id": session.id, "mode": "plan"}
         )
     assert manager.get_authority_snapshot(session.id).mode == RuntimeMode.ACT
+
+
+# 功能：core.shutdown handler 置位停机事件并返回确认
+# 设计：直接调用 handler 断言事件从 unset 变 set，覆盖 IPC 优雅停机的触发路径
+async def test_shutdown_handler_sets_event() -> None:
+    app = CoreApp()
+    app._shutdown_event = asyncio.Event()
+    result = await app._shutdown_handler({"reason": "test"})  # type: ignore[attr-defined]
+    assert result.shutting_down is True
+    assert app._shutdown_event.is_set()

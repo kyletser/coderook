@@ -40,6 +40,12 @@ def ipc_token(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
+# 读取 daemon 自动生成并强制使用的 HTTP API bearer token
+def api_token(running_daemon: subprocess.Popen[bytes], daemon_home: Path) -> str:
+    return (daemon_home / ".coderook" / "api-token").read_text(encoding="utf-8").strip()
+
+
+@pytest.fixture
 # 创建隔离的 daemon 用户目录，避免集成测试读写开发机状态
 def daemon_home(tmp_path: Path) -> Path:
     home = tmp_path / "home"

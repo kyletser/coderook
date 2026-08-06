@@ -17,11 +17,14 @@ from pydantic import BaseModel
 import code_rook
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.api import HttpApiServer, RuntimeApiService
+from code_rook.core.api.auth import load_or_create_api_token
 from code_rook.core.authority import RuntimeMode, ToolAction, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
+    CoreShutdownCommand,
+    CoreShutdownResult,
     EventReplayCommand,
     EventReplayResult,
     EventSubscribeCommand,
@@ -108,6 +111,7 @@ from code_rook.core.bus.commands import (
 )
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.config import CodeRookConfig, get_config
+from code_rook.core.daemon_lock import DaemonLock, DaemonLockError
 from code_rook.core.events.bus import EventBus
 from code_rook.core.fleet import (
     FleetProfile,
@@ -155,6 +159,8 @@ class CoreApp:
     def __init__(self) -> None:
         self._start_time = time.monotonic()
         self._bus = EventBus()
+        self._daemon_lock: DaemonLock | None = None
+        self._shutdown_event: asyncio.Event | None = None
         self._broadcaster: IpcEventBroadcaster | None = None
         self._trace: TraceWriter | None = None
         self._config: CodeRookConfig | None = None
@@ -220,6 +226,14 @@ class CoreApp:
             uptime_ms=int((time.monotonic() - self._start_time) * 1000),
             received_at=datetime.datetime.now(datetime.UTC).isoformat(),
         )
+
+    # 处理 core.shutdown 请求：触发有序关闭流程并立即返回确认
+    async def _shutdown_handler(self, params: dict[str, Any]) -> CoreShutdownResult:
+        CoreShutdownCommand.model_validate(params)
+        logger.info("shutdown requested via IPC")
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+        return CoreShutdownResult()
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
     async def _trace_event_handler(self, event: BaseModel) -> None:
@@ -654,14 +668,14 @@ class CoreApp:
         payload = json.loads(result.content)
         return WorkspaceDiffResult(payload=payload)
 
-    # 返回当前会话最近一次 run 的安全恢复点列表
+    # 返回当前会话指定（默认最近一次）run 的安全恢复点列表
     async def _session_checkpoints_handler(
         self,
         params: dict[str, Any],
     ) -> SessionCheckpointsResult:
         assert self._sessions is not None
         cmd = SessionCheckpointsCommand.model_validate(params)
-        run_id, checkpoints = self._sessions.list_checkpoints(cmd.session_id)
+        run_id, checkpoints = self._sessions.list_checkpoints(cmd.session_id, cmd.run_id)
         return SessionCheckpointsResult(run_id=run_id, checkpoints=checkpoints)
 
     # 恢复用户明确选择的 checkpoint 并返回受影响文件
@@ -671,7 +685,7 @@ class CoreApp:
     ) -> SessionRewindResult:
         assert self._sessions is not None
         cmd = SessionRewindCommand.model_validate(params)
-        result = self._sessions.rewind(cmd.session_id, cmd.checkpoint_id)
+        result = self._sessions.rewind(cmd.session_id, cmd.checkpoint_id, cmd.run_id)
         return SessionRewindResult.model_validate(result)
 
     # 返回当前会话的上下文大小和运行概览
@@ -831,6 +845,12 @@ class CoreApp:
         require_loopback_host(self._config.host)
         setup_logging(self._config)
 
+        self._daemon_lock = DaemonLock(Path("~/.coderook/core.lock").expanduser())
+        try:
+            self._daemon_lock.acquire()
+        except DaemonLockError as exc:
+            raise SystemExit(str(exc)) from None
+
         ipc_token = load_or_create_ipc_token(
             Path(self._config.ipc_token_file).expanduser()
         )
@@ -933,6 +953,11 @@ class CoreApp:
             hooks=self._hooks,
         )
         self._runtime_api = RuntimeApiService(self._runtime, self._sessions)
+        self._bus.subscribe(self._runtime_api.notify_runtime_event)
+        if not self._config.api.token:
+            self._config.api.token = load_or_create_api_token(
+                Path("~/.coderook/api-token").expanduser()
+            )
         self._http_api = HttpApiServer(
             self._config.api.host,
             self._config.api.port,
@@ -948,6 +973,7 @@ class CoreApp:
             auth_token=ipc_token,
         )
         server.register("core.ping", self._ping_handler)
+        server.register("core.shutdown", self._shutdown_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("run.cancel", self._run_cancel_handler)
         server.register("run.steer", self._run_steer_handler)
@@ -1003,6 +1029,7 @@ class CoreApp:
 
         loop = asyncio.get_running_loop()
         shutdown = asyncio.Event()
+        self._shutdown_event = shutdown
         try:
             loop.add_signal_handler(signal.SIGINT, shutdown.set)
             loop.add_signal_handler(signal.SIGTERM, shutdown.set)
@@ -1038,6 +1065,8 @@ class CoreApp:
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()
+        if self._daemon_lock is not None:
+            self._daemon_lock.release()
 
 
 # 同步入口：启动 CoreApp 事件循环

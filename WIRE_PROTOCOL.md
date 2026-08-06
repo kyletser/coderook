@@ -4631,6 +4631,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
+| `run_id` | `string | null` | no |
 
 ```json
 {
@@ -4644,6 +4645,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "session_id": {
       "title": "Session Id",
       "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
     }
   },
   "required": [
@@ -4697,6 +4710,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
 | `checkpoint_id` | `string` | yes |
+| `run_id` | `string | null` | no |
 
 ```json
 {
@@ -4714,6 +4728,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "checkpoint_id": {
       "title": "Checkpoint Id",
       "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
     }
   },
   "required": [

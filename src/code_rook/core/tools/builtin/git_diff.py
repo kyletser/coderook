@@ -129,11 +129,12 @@ class GitDiffTool(BaseTool):
                 root_result.stderr or "workspace is not a Git repository",
             )
         repository = Path(root_result.stdout.decode("utf-8", errors="replace").strip()).resolve()
-        if repository != self._boundary.root:
+        if not self._boundary.root.resolve().is_relative_to(repository):
             raise GitDiffError(
                 "repository_outside_workspace",
-                "Git repository root must match the workspace root",
+                "Git repository root must contain the workspace root",
             )
+        workspace_prefix = self._boundary.root.resolve().relative_to(repository).as_posix()
 
         has_head = (
             await self._git_run(
@@ -159,6 +160,12 @@ class GitDiffTool(BaseTool):
         if status_result.truncated:
             raise GitDiffError("git_status_too_large", "git status exceeded the metadata limit")
         files = _parse_status(status_result.stdout, request.scope)
+        for file_info in files:
+            file_info["path"] = _relativize(str(file_info["path"]), workspace_prefix)
+            if file_info.get("original_path"):
+                file_info["original_path"] = _relativize(
+                    str(file_info["original_path"]), workspace_prefix
+                )
 
         diff_outputs: list[_GitOutput] = []
         for diff_args in _diff_arg_sets(request.scope, has_head, path_arg):
@@ -182,6 +189,9 @@ class GitDiffTool(BaseTool):
             if output.truncated:
                 raise GitDiffError("git_numstat_too_large", "git numstat exceeded its limit")
             _merge_stats(stats, _parse_numstat(output.stdout))
+        stats = {
+            _relativize(path, workspace_prefix): counts for path, counts in stats.items()
+        }
         for file_info in files:
             additions, deletions = stats.get(str(file_info["path"]), (None, None))
             file_info["additions"] = additions
@@ -268,6 +278,15 @@ def _diff_args(
         args.append("HEAD")
     args.extend(("--", path))
     return args
+
+
+def _relativize(path: str, workspace_prefix: str) -> str:
+    if workspace_prefix == ".":
+        return path
+    needle = workspace_prefix + "/"
+    if path.startswith(needle):
+        return path[len(needle) :]
+    return path
 
 
 def _diff_arg_sets(

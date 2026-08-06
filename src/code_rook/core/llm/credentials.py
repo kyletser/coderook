@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Protocol
@@ -9,7 +10,10 @@ import keyring
 from pydantic import BaseModel, ConfigDict
 
 from code_rook.core.config import LlmConfig
+from code_rook.core.llm.kinds import SUPPORTED_LEGACY_PROVIDERS
 from code_rook.core.llm.routes import CredentialSource
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_CREDENTIALS_PATH = "~/.coderook/credentials.json"
 _KEYRING_SERVICE = "coderook"
@@ -168,8 +172,13 @@ class CredentialStore:
             try:
                 self._backend.set_password(_KEYRING_SERVICE, route_id, secret)
                 return f"keyring:{route_id}"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "OS keyring unavailable for route %s (%s); "
+                    "falling back to the credentials file",
+                    route_id,
+                    exc,
+                )
         data = _load_credentials(self.path)
         route_values = dict(data.get("route_credentials", {}))
         route_values[route_id] = secret
@@ -219,14 +228,7 @@ def resolve_api_key(config: LlmConfig, path: Path | None = None) -> str | None:
 # 判断当前 LLM 配置是否具备启动所需的模型、端点和密钥
 def llm_is_configured(config: LlmConfig, path: Path | None = None) -> bool:
     provider = normalize_provider(config.provider)
-    supported = {
-        "anthropic",
-        "deepseek",
-        "openai",
-        "openai_compatible",
-        "siliconflow",
-    }
-    if provider not in supported:
+    if provider not in SUPPORTED_LEGACY_PROVIDERS:
         return False
     if not config.default_model.strip() or resolve_api_key(config, path) is None:
         return False

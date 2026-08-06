@@ -1854,7 +1854,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("mode", "show or change Plan, Act, or Operate mode"),
             ("permissions", "review or change the permission mode"),
             ("trust", "show, grant, or revoke workspace trust"),
-            ("sandbox", "show the real OS isolation capability"),
+            ("sandbox", "show the detected (advisory-only) OS isolation capability"),
             ("tasks", "show tasks from the latest run"),
             ("workers", "show all durable workers and Fleet workers"),
             ("workflow", "list, start, or inspect durable workflows"),
@@ -2681,12 +2681,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         available = bool(self._sandbox.get("available", False))
         kind = escape(str(self._sandbox.get("kind", "none")))
         reason = escape(str(self._sandbox.get("reason", "unavailable")))
-        state = "available" if available else "unavailable"
+        state = "detected" if available else "not detected"
         color = "green" if available else "yellow"
         self._append(
             Static(
                 f"[bold cyan]Sandbox[/bold cyan]  [{color}]{state}[/{color}]"
-                f"  [dim]{kind}: {reason}[/dim]",
+                f"  [dim]{kind}: {reason}[/dim]\n"
+                "[dim]仅为能力探测（advisory）：当前不会实际隔离命令执行，"
+                "安全依赖审批链与工作区边界。[/dim]",
                 classes="log-line",
             )
         )

@@ -144,7 +144,7 @@ def main() -> None:
             break
         from code_rook.cli.commands.core import stop_core
 
-        stop_core()
+        stop_core(current)
         if args.no_auto_core:
             raise SystemExit(
                 "配置已保存；请手动重启 Core 后再次运行 coderook-tui --no-auto-core。"

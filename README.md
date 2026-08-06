@@ -38,7 +38,7 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 | 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
 | 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
 | 多 Agent | 角色模型覆盖、只读 reviewer、共享任务板、跨 turn 后台任务和 Git worktree 隔离 |
-| 扩展机制 | Skills、MCP 工具接入、UserPromptSubmit/PreToolUse/PostToolUse/Stop 异步 Hooks |
+| 扩展机制 | Skills、MCP 工具接入、11 个生命周期 Hooks（兼容 UserPromptSubmit/PreToolUse/PostToolUse/Stop 旧名） |
 | 可观测性 | TUI 实时事件、token 水位、工具与审批状态、压缩指标、events.jsonl 和脱敏 Trace |
 
 ## 快速开始
@@ -143,7 +143,7 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 | `/mode plan\|act\|operate` | 独立查看或切换工作模式，`Tab` 循环 |
 | `/permissions ask\|auto-review\|full-access` | 独立查看或切换权限姿态，`Shift+Tab` 循环 |
 | `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
-| `/sandbox status` | 查看真实 OS 隔离能力 |
+| `/sandbox status` | 查看 OS 隔离能力探测结果（advisory，当前不实施进程隔离） |
 | `/skills list\|show\|install\|remove\|audit` | 管理带 provenance 和 digest 校验的 Skills |
 | `/skill_name` | 调用已安装 Skill |
 | `Ctrl+Q` | 退出 TUI |
@@ -221,18 +221,35 @@ src/code_rook/
 ├── tui/                 # Textual 终端界面
 └── core/
     ├── bus/             # 类型化命令、事件与 JSON-RPC envelope
-    ├── transport/       # TCP NDJSON server/client 与认证
-    ├── compact/         # 上下文预算、结构化摘要和协议校验
-    ├── tools/           # 工具注册、调用、权限与内置工具
+    ├── transport/       # TCP NDJSON server/client、IPC token 认证与事件广播
+    ├── api/             # 手写 HTTP runtime API（threads/turns/SSE）
+    ├── llm/             # 路由、凭证、Anthropic/OpenAI 兼容 provider 与 doctor
+    ├── tools/           # 工具注册、调用、权限与内置工具（含 action families）
+    ├── permissions/     # 六层权限决策与策略持久化
+    ├── authority/       # 授权矩阵与沙箱能力探测（advisory）
+    ├── loop.py          # 异步 Agent 主循环（runner/context/interaction 同层）
     ├── session/         # 会话、transcript、导出和恢复
+    ├── runtime/         # SQLite durable 投影（threads/turns/items/events）
+    ├── compact/         # 上下文预算、结构化摘要和协议校验
+    ├── checkpoints/     # 文件变更检查点与 rewind
+    ├── artifacts/       # 内容寻址产物存储
     ├── memory/          # 项目长期记忆
     ├── background/      # daemon 级后台任务
-    ├── task/            # 多 Agent 任务状态
-    ├── worktree/        # Git worktree 生命周期
+    ├── task/            # run 级任务板（多 Agent 共享）
+    ├── goal/            # daemon 级目标控制面（预算与证据）
     ├── subagent/        # 持久 Worker、写入声明、租约、预算与统一 agent actions
+    ├── fleet/           # 跨进程 worker 调度与进程协议
+    ├── workflow/        # 声明式工作流 IR、事件溯源账本与执行器
+    ├── turn/            # 读缓存、重复守卫与流看门狗
     ├── hooks/           # 异步生命周期扩展点
-    ├── skills/          # Skill 加载
-    └── mcp/             # MCP server 管理
+    ├── skills/          # Skill 加载与完整性校验
+    ├── agents/          # planner/executor/reviewer 角色 profile
+    ├── mcp/             # MCP server 管理（客户端方向）
+    ├── worktree/        # Git worktree 生命周期
+    ├── editing/         # 文件编辑引擎与事务
+    ├── patching/        # unified diff 引擎
+    ├── trace/           # 脱敏 trace 记录
+    └── receipts/        # Turn 收据离线重建
 ```
 
 ## 开发与验证
@@ -251,11 +268,11 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-当前测试基线为 `635 passed, 3 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、action-family、上下文压缩、会话恢复、记忆、后台任务、品牌迁移和 worktree 管理。
+当前测试基线为 `841 passed, 4 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、action-family、上下文压缩、会话恢复、记忆、后台任务、品牌迁移、worktree 管理、daemon 单写者锁、SSE 流式与 HTTP API 认证。
 
 ## 设计文档
 
-- [技术架构](TECH_ARCHITECTURE.md)
+- [功能架构](docs/FUNCTIONAL_ARCHITECTURE.md)
 - [Wire Protocol](WIRE_PROTOCOL.md)
 - [运行手册](RUNBOOK.md)
 - [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)

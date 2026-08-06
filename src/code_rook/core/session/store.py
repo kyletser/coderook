@@ -350,6 +350,18 @@ class SessionStore:
             rows.append((line_no, row))
         return rows
 
+    # 扫描 transcript，按 run_id 收集最早与最晚时间戳（ISO 字符串可直接字典序比较）
+    def run_time_ranges(self, sid: str) -> dict[str, tuple[str, str]]:
+        ranges: dict[str, tuple[str, str]] = {}
+        for _, row in self._read_rows(sid):
+            run_id = row.get("run_id")
+            ts = row.get("ts")
+            if not isinstance(run_id, str) or not isinstance(ts, str) or not ts:
+                continue
+            first, last = ranges.get(run_id, (ts, ts))
+            ranges[run_id] = (min(first, ts), max(last, ts))
+        return ranges
+
     def _block_ids(self, sid: str) -> set[str]:
         cached = self._known_block_ids.get(sid)
         if cached is not None:

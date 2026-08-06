@@ -65,3 +65,22 @@ async def test_subscribers_called_in_order() -> None:
 async def test_no_subscribers_publish_is_noop() -> None:
     bus = EventBus()
     await bus.publish(_FakeEvent(value="x"))  # should not raise
+
+
+# 功能：某订阅者抛异常时不中断后续订阅者
+# 设计：首个 handler 抛 RuntimeError，断言第二个 handler 仍收到事件，验证异常隔离
+async def test_failing_subscriber_does_not_block_others() -> None:
+    bus = EventBus()
+    received: list[BaseModel] = []
+
+    async def broken(event: BaseModel) -> None:
+        raise RuntimeError("boom")
+
+    async def handler(event: BaseModel) -> None:
+        received.append(event)
+
+    bus.subscribe(broken)
+    bus.subscribe(handler)
+    event = _FakeEvent(value="isolated")
+    await bus.publish(event)
+    assert received == [event]

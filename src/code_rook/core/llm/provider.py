@@ -51,6 +51,7 @@ class AnthropicProvider:
         *,
         api_key: str | None = None,
         base_url: str = "",
+        context_window: int | None = None,
     ) -> None:
         self._client: Any
         if client is None:
@@ -67,6 +68,7 @@ class AnthropicProvider:
         else:
             self._client = client
         self._model = model
+        self._context_window = context_window
 
     # 流式调用 Anthropic API，逐 token 发布事件并返回 LlmResponse；网络中断时自动重试
     async def chat(
@@ -148,7 +150,8 @@ class AnthropicProvider:
         usage = final_message.usage
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_create: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        context_pct = usage.input_tokens / _context_window(resolved_model)
+        window = self._context_window or _context_window(resolved_model)
+        context_pct = usage.input_tokens / window
 
         await bus.publish(
             LlmUsageEvent(

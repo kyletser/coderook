@@ -177,7 +177,7 @@ class GitTool(BaseTool):
             parallel_policy=ParallelPolicy.SAFE,
         )
 
-    # 校验 Git 仓库根目录必须与 workspace 完全一致
+    # 校验 Git 仓库根包含 workspace（允许 monorepo 子目录作为工作区）
     async def _ensure_repository(self) -> ToolResult | None:
         output = await self._run(["rev-parse", "--show-toplevel"])
         if output.return_code != 0:
@@ -187,9 +187,9 @@ class GitTool(BaseTool):
                 error_type="runtime_error",
             )
         repository = Path(output.stdout.strip()).resolve()
-        if repository != self._boundary.root:
+        if not self._boundary.root.resolve().is_relative_to(repository):
             return ToolResult(
-                "Git repository root must match the workspace root",
+                "Git repository root must contain the workspace root",
                 is_error=True,
                 error_type="permission_denied",
             )

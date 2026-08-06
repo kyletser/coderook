@@ -285,9 +285,13 @@ async def invoke_tool(
         error_message: str | None = None
 
         try:
-            result = await asyncio.wait_for(
-                tool.invoke(dict(tool_call.input)), timeout=timeout
-            )
+            effective_timeout = timeout if tool.timeout_s is None else tool.timeout_s
+            if effective_timeout > 0:
+                result = await asyncio.wait_for(
+                    tool.invoke(dict(tool_call.input)), timeout=effective_timeout
+                )
+            else:
+                result = await tool.invoke(dict(tool_call.input))
             result = await _apply_output_policy(
                 result,
                 resolved_call.spec.output_policy,

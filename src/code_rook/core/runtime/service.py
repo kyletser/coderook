@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -78,10 +78,16 @@ class RuntimeService:
         self._write_lock = asyncio.Lock()
         self._pending_writes: set[asyncio.Task[None]] = set()
 
-    # 幂等导入历史 session 及其 run 索引
-    async def bootstrap_sessions(self, sessions: list[Session]) -> None:
+    # 幂等导入历史 session 及其 run 索引，可用 transcript 时间戳恢复真实 turn 时间
+    async def bootstrap_sessions(
+        self,
+        sessions: list[Session],
+        turn_times: Mapping[str, tuple[str, str]] | None = None,
+    ) -> None:
         async with self._write_lock:
-            await asyncio.to_thread(self._bootstrap_sessions_sync, sessions)
+            await asyncio.to_thread(
+                self._bootstrap_sessions_sync, sessions, turn_times
+            )
 
     # 创建或同步单个 session 的 thread 投影
     async def sync_session(self, session: Session) -> ThreadRecord:
@@ -280,8 +286,15 @@ class RuntimeService:
         if persisted is not None:
             await self._publish_runtime_event(persisted)
 
-    # 同步批量导入历史 session
-    def _bootstrap_sessions_sync(self, sessions: list[Session]) -> None:
+    # 同步批量导入历史 session；优先采用 transcript 真实时间戳恢复 turn 时间
+    def _bootstrap_sessions_sync(
+        self,
+        sessions: list[Session],
+        turn_times: Mapping[str, tuple[str, str]] | None = None,
+    ) -> None:
+        times = turn_times or {}
+        had_threads = bool(self._store.list_threads())
+        imported_count = 0
         for session in sessions:
             self._sync_session_sync(session)
             for index, run_id in enumerate(session.run_ids):
@@ -291,17 +304,36 @@ class RuntimeService:
                     and index == len(session.run_ids) - 1
                 ):
                     status = TurnStatus.INTERRUPTED
+                range_ts = times.get(run_id)
+                created_at = (
+                    _parse_time(range_ts[0])
+                    if range_ts is not None
+                    else _parse_time(session.created_at)
+                )
+                updated_at = (
+                    _parse_time(range_ts[1])
+                    if range_ts is not None
+                    else _parse_time(session.updated_at)
+                )
                 imported = TurnRecord(
                     id=run_id,
                     thread_id=session.id,
                     status=status,
-                    created_at=_parse_time(session.created_at),
-                    updated_at=_parse_time(session.updated_at),
+                    created_at=created_at,
+                    updated_at=updated_at,
                 )
                 try:
                     self._store.create_turn(imported)
+                    imported_count += 1
                 except RecordAlreadyExistsError:
                     continue
+        if not had_threads and imported_count:
+            logger.warning(
+                "runtime projection rebuilt from file ledger: imported %d turn(s) "
+                "across %d session(s)",
+                imported_count,
+                len(sessions),
+            )
 
     # 同步创建或更新 session 的 thread 与兼容 facade
     def _sync_session_sync(self, session: Session) -> ThreadRecord:

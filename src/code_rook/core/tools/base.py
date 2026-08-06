@@ -56,6 +56,8 @@ class BaseTool(ABC):
         {ToolCaller.MODEL, ToolCaller.INTERNAL}
     )
     spec_override: ClassVar[ToolSpec | None] = None
+    # 工具级超时覆盖：None 沿用调用方默认；0 表示不限时（交互式等待场景）
+    timeout_s: ClassVar[float | None] = None
 
     def can_retry(self, error_type: str) -> bool:
         if self.retry_policy == ToolRetryPolicy.IDEMPOTENT:

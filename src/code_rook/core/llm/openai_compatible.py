@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -41,6 +42,16 @@ def _context_window(model: str) -> int:
     return _MODEL_CONTEXT_WINDOWS.get(model, 128_000)
 
 
+@dataclass
+class _StreamResult:
+    text: str
+    reasoning: str
+    raw_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
+    streamed: bool = False
+
+
 class OpenAICompatibleProvider:
     def __init__(
         self,
@@ -50,6 +61,7 @@ class OpenAICompatibleProvider:
         api_key_env: str,
         api_key: str | None = None,
         use_max_completion_tokens: bool = False,
+        context_window: int | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -61,6 +73,7 @@ class OpenAICompatibleProvider:
         self._base_url = base_url
         self._api_key = resolved_key
         self._use_max_completion_tokens = use_max_completion_tokens
+        self._context_window = context_window
         self._client = client
 
     async def chat(
@@ -103,6 +116,8 @@ class OpenAICompatibleProvider:
             "max_completion_tokens" if self._use_max_completion_tokens else "max_tokens"
         )
         payload[max_tokens_field] = 8192
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
         tools = _to_openai_tools(tool_schemas)
         if tools:
             payload["tools"] = tools
@@ -115,15 +130,13 @@ class OpenAICompatibleProvider:
 
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                data = await self._post(client, payload, headers, run_id, step)
+                result = await self._post(client, payload, headers, bus, run_id, step)
         else:
-            data = await self._post(self._client, payload, headers, run_id, step)
+            result = await self._post(self._client, payload, headers, bus, run_id, step)
 
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        text = str(message.get("content") or "")
-        reasoning = str(message.get("reasoning_content") or "")
-        tool_calls = _parse_tool_calls(message.get("tool_calls") or [])
+        text = result.text
+        reasoning = result.reasoning
+        tool_calls = _parse_tool_calls(result.raw_tool_calls)
         if reasoning:
             await bus.publish(
                 LlmReasoningEvent(
@@ -132,15 +145,16 @@ class OpenAICompatibleProvider:
                     ts=_now(),
                 )
             )
-        if text and not tool_calls:
+        if text and not tool_calls and not result.streamed:
             await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
 
-        usage_raw = data.get("usage") or {}
+        usage_raw = result.usage
         input_tokens = int(usage_raw.get("prompt_tokens") or usage_raw.get("input_tokens") or 0)
         output_tokens = int(
             usage_raw.get("completion_tokens") or usage_raw.get("output_tokens") or 0
         )
-        context_pct = input_tokens / _context_window(resolved_model)
+        window = self._context_window or _context_window(resolved_model)
+        context_pct = input_tokens / window
         await bus.publish(
             LlmUsageEvent(
                 run_id=run_id,
@@ -158,9 +172,7 @@ class OpenAICompatibleProvider:
             tool_calls=tool_calls,
             text=text,
             thinking_blocks=(
-                [{"type": "thinking", "thinking": reasoning}]
-                if reasoning and tool_calls
-                else []
+                [{"type": "thinking", "thinking": reasoning}] if reasoning else []
             ),
             usage=UsageStats(
                 input_tokens=input_tokens,
@@ -174,19 +186,26 @@ class OpenAICompatibleProvider:
         client: httpx.AsyncClient,
         payload: dict[str, object],
         headers: dict[str, str],
+        bus: EventBus,
         run_id: str,
         step: int,
-    ) -> dict[str, Any]:
+    ) -> _StreamResult:
         data: dict[str, Any] | None = None
         failure: str | None = None
         try:
-            response = await client.post(self._base_url, json=payload, headers=headers)
-            response.raise_for_status()
-            raw = response.json()
-            if isinstance(raw, dict):
-                data = dict(raw)
-            else:
-                failure = "OpenAI-compatible provider returned an invalid response"
+            async with client.stream(
+                "POST", self._base_url, json=payload, headers=headers
+            ) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" in content_type.lower():
+                    return await self._consume_sse(response, bus, run_id)
+                raw = await response.aread()
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    data = dict(parsed)
+                else:
+                    failure = "OpenAI-compatible provider returned an invalid response"
         except httpx.HTTPStatusError as exc:
             log.error(
                 "openai-compatible request failed run_id=%s step=%d status=%s",
@@ -210,7 +229,112 @@ class OpenAICompatibleProvider:
         if failure is not None:
             raise RuntimeError(failure)
         assert data is not None
-        return data
+        return self._from_full_response(data)
+
+    # 解析 SSE 增量块：正文实时投影为 token 事件，reasoning 与工具调用片段累积合并
+    async def _consume_sse(
+        self,
+        response: httpx.Response,
+        bus: EventBus,
+        run_id: str,
+    ) -> _StreamResult:
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_acc: dict[int, dict[str, str]] = {}
+        usage: dict[str, Any] = {}
+        finish_reason: str | None = None
+        async for line in response.aiter_lines():
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
+                continue
+            data_raw = stripped[5:].strip()
+            if data_raw == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            chunk_usage = chunk.get("usage")
+            if isinstance(chunk_usage, dict) and chunk_usage:
+                usage = chunk_usage
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            first = choices[0]
+            if not isinstance(first, dict):
+                continue
+            raw_finish = first.get("finish_reason")
+            if isinstance(raw_finish, str):
+                finish_reason = raw_finish
+            delta = first.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                text_parts.append(content)
+                await bus.publish(
+                    LlmTokenEvent(run_id=run_id, token=content, ts=_now())
+                )
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                reasoning_parts.append(reasoning)
+            raw_calls = delta.get("tool_calls")
+            if isinstance(raw_calls, list):
+                for raw_call in raw_calls:
+                    if not isinstance(raw_call, dict):
+                        continue
+                    raw_index = raw_call.get("index")
+                    index = int(raw_index) if isinstance(raw_index, int) else 0
+                    slot = tool_acc.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    call_id = raw_call.get("id")
+                    if isinstance(call_id, str) and call_id:
+                        slot["id"] = call_id
+                    function = raw_call.get("function")
+                    if isinstance(function, dict):
+                        name = function.get("name")
+                        if isinstance(name, str) and name:
+                            slot["name"] = name
+                        arguments = function.get("arguments")
+                        if isinstance(arguments, str):
+                            slot["arguments"] += arguments
+        raw_tool_calls: list[dict[str, Any]] = [
+            {
+                "id": slot["id"],
+                "function": {"name": slot["name"], "arguments": slot["arguments"]},
+            }
+            for _, slot in sorted(tool_acc.items())
+        ]
+        return _StreamResult(
+            text="".join(text_parts),
+            reasoning="".join(reasoning_parts),
+            raw_tool_calls=raw_tool_calls,
+            usage=usage,
+            finish_reason=finish_reason,
+            streamed=True,
+        )
+
+    # 从非流式完整响应提取正文、reasoning、工具调用与 usage
+    def _from_full_response(self, data: dict[str, Any]) -> _StreamResult:
+        choices = data.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices else {}
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            message = {}
+        usage = data.get("usage")
+        raw_finish = choice.get("finish_reason") if isinstance(choice, dict) else None
+        raw_calls = message.get("tool_calls")
+        return _StreamResult(
+            text=str(message.get("content") or ""),
+            reasoning=str(message.get("reasoning_content") or ""),
+            raw_tool_calls=list(raw_calls) if isinstance(raw_calls, list) else [],
+            usage=usage if isinstance(usage, dict) else {},
+            finish_reason=raw_finish if isinstance(raw_finish, str) else None,
+            streamed=False,
+        )
 
 
 def _to_openai_tools(tool_schemas: list[dict[str, object]]) -> list[dict[str, object]]:

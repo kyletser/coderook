@@ -11,6 +11,7 @@ from code_rook.core.llm.credentials import (
     CredentialStore,
     normalize_provider,
 )
+from code_rook.core.llm.kinds import OPENAI_CHAT_PROVIDERS
 from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import ProviderRoute, RouteReceipt
 
@@ -33,7 +34,7 @@ def legacy_config_route(config: LlmConfig) -> ProviderRoute:
         provider_kind = "anthropic"
         wire_format = "anthropic_messages"
         base_url = config.base_url or "https://api.anthropic.com"
-    elif provider in {"deepseek", "openai", "openai_compatible", "siliconflow"}:
+    elif provider in OPENAI_CHAT_PROVIDERS:
         provider_kind = "openai" if provider == "openai" else "openai-compatible"
         wire_format = "openai_chat"
         base_url = config.base_url

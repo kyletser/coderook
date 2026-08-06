@@ -477,3 +477,43 @@ async def test_bus_events_and_final_message_are_durable(tmp_path: Path) -> None:
     assert receipt.workers[0]["worker_run_id"] == "worker-1"
     assert len([item for item in items if item.kind.value == "tool_result"]) == 1
     assert items[-1].payload == {"role": "assistant", "content": "已完成。"}
+
+
+# 功能：run_time_ranges 按 run_id 聚合 transcript 行的最早与最晚时间戳
+# 设计：写入两条不同 run 的消息行，断言 min/max 聚合正确且缺失 run_id 的行被跳过
+def test_run_time_ranges_collects_min_max(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = Session(
+        id="sess-times",
+        mode="chat",
+        status="closed",
+        title="Times",
+        created_at="2026-08-01T00:00:00Z",
+        updated_at="2026-08-01T02:00:00Z",
+    )
+    store.write_meta(session)
+    store.append_message(session.id, "user", "first", run_id="run-a")
+    store.append_message(session.id, "user", "second", run_id="run-b")
+    ranges = store.run_time_ranges(session.id)
+    assert set(ranges) == {"run-a", "run-b"}
+    assert ranges["run-a"][0] <= ranges["run-a"][1]
+
+
+# 功能：bootstrap 传入 transcript 时间戳时恢复真实 turn 时间
+# 设计：session 元数据时间故意与 transcript 时间不同，断言 turn 采用后者而非坍缩到 session 时间
+async def test_bootstrap_restores_transcript_timestamps(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    session = Session(
+        id="sess-stamps",
+        mode="chat",
+        status="closed",
+        title="Stamps",
+        created_at="2026-08-01T00:00:00Z",
+        updated_at="2026-08-01T00:00:00Z",
+        run_ids=["run-real"],
+    )
+    turn_times = {"run-real": ("2026-08-02T10:00:00Z", "2026-08-02T10:30:00Z")}
+    await service.bootstrap_sessions([session], turn_times)
+    turn = await service.get_turn("run-real")
+    assert turn.created_at.isoformat().startswith("2026-08-02T10:00:00")
+    assert turn.updated_at.isoformat().startswith("2026-08-02T10:30:00")

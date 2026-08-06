@@ -38,6 +38,8 @@ class AskUserQuestionTool(BaseTool):
     }
     params_model = AskUserQuestionParams
     side_effect = ToolSideEffect.NONE
+    # 阻塞等待人类回答，豁免默认工具超时
+    timeout_s = 0.0
 
     # 初始化结构化提问工具的会话与运行标识
     def __init__(

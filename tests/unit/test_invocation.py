@@ -199,3 +199,45 @@ async def test_tool_and_approval_hooks_follow_execution_order() -> None:
 
     assert not result.is_error
     assert seen == ["before", "approval", "after"]
+
+
+class _UnlimitedSleepTool(BaseTool):
+    name = "unlimited_sleep"
+    description = "Sleeps briefly without timeout"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}, "required": []}
+    timeout_s = 0.0
+
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        await asyncio.sleep(0.05)
+        return ToolResult(content="done")
+
+
+class _ShortTimeoutTool(BaseTool):
+    name = "short_timeout"
+    description = "Sleeps longer than its own timeout"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}, "required": []}
+    timeout_s = 0.01
+
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        await asyncio.sleep(1.0)
+        return ToolResult(content="done")
+
+
+# 功能：timeout_s=0 的工具豁免调用方超时限制
+# 设计：调用方传 0.01s 超时，工具睡 0.05s 仍成功，证明无限时覆盖生效而非被 wait_for 杀掉
+async def test_tool_timeout_zero_disables_caller_timeout() -> None:
+    registry = ToolRegistry()
+    registry.register(_UnlimitedSleepTool())
+    result, _ = await _run(registry, _call("unlimited_sleep"), timeout=0.01)
+    assert not result.is_error
+    assert result.content == "done"
+
+
+# 功能：工具级 timeout_s 覆盖调用方更宽松的超时
+# 设计：调用方给 5s 但工具自带 0.01s，睡 1s 必触发 timeout 错误，证明覆盖双向生效
+async def test_tool_timeout_overrides_caller_timeout() -> None:
+    registry = ToolRegistry()
+    registry.register(_ShortTimeoutTool())
+    result, _ = await _run(registry, _call("short_timeout"), timeout=5.0)
+    assert result.is_error
+    assert result.error_type == "timeout"

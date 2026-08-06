@@ -277,7 +277,15 @@ class HttpApiServer:
                     writer.write(b": keepalive\n\n")
                     await writer.drain()
                     last_heartbeat = time.monotonic()
-                await asyncio.wait({disconnected}, timeout=0.2)
+                wake = asyncio.create_task(
+                    self._service.wait_for_change(0.5), name="api-sse-wake"
+                )
+                await asyncio.wait(
+                    {disconnected, wake}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not wake.done():
+                    wake.cancel()
+                    await asyncio.gather(wake, return_exceptions=True)
         finally:
             disconnected.cancel()
             await asyncio.gather(disconnected, return_exceptions=True)

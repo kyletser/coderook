@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Coroutine
 from typing import Any, cast
 
 import code_rook
 from code_rook.core.authority import RuntimeMode
+from code_rook.core.bus.events import RuntimeEventAppendedEvent
 from code_rook.core.receipts.models import TurnReceipt
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import (
@@ -29,6 +31,22 @@ class RuntimeApiService:
         self._runtime = runtime
         self._sessions = sessions
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._event_changed = asyncio.Condition()
+
+    # 作为 EventBus 订阅者：新的 durable 事件落盘后唤醒全部等待者
+    async def notify_runtime_event(self, event: Any) -> None:
+        if not isinstance(event, RuntimeEventAppendedEvent):
+            return
+        async with self._event_changed:
+            self._event_changed.notify_all()
+
+    # 挂起等待新的 runtime 事件通知，超时自动返回（供 SSE 与 create_turn 使用）
+    async def wait_for_change(self, timeout: float) -> None:
+        async with self._event_changed:
+            try:
+                await asyncio.wait_for(self._event_changed.wait(), timeout=timeout)
+            except TimeoutError:
+                return
 
     # 跟踪 API 启动的后台 turn 并记录未被读取的异常
     def _track(self, coroutine: Coroutine[Any, Any, Any], name: str) -> asyncio.Task[Any]:
@@ -77,13 +95,17 @@ class RuntimeApiService:
             ),
             name=f"api-turn:{run_id}",
         )
-        for _ in range(2_000):
+        deadline = time.monotonic() + 2.0
+        while True:
             try:
                 return await self._runtime.get_turn(run_id)
             except RecordNotFoundError:
                 if task.done():
                     await task
-                await asyncio.sleep(0.001)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await self.wait_for_change(min(remaining, 0.1))
         raise TimeoutError("turn did not enter durable runtime within two seconds")
 
     # 中断当前活动 turn

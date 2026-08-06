@@ -105,7 +105,11 @@ class SessionManager:
         async with self._runtime_bootstrap_lock:
             if self._runtime_bootstrapped:
                 return
-            await self._runtime.bootstrap_sessions(list(self._sessions.values()))
+            sessions = list(self._sessions.values())
+            turn_times: dict[str, tuple[str, str]] = {}
+            for session in sessions:
+                turn_times.update(self._store.run_time_ranges(session.id))
+            await self._runtime.bootstrap_sessions(sessions, turn_times)
             self._runtime_bootstrapped = True
 
     # 从磁盘恢复会话索引；active 表示 daemon 在一次 run 中退出，恢复为 interrupted
@@ -519,10 +523,12 @@ class SessionManager:
         tasks.sort(key=lambda task: task.id)
         return run_id, [task.to_dict() for task in tasks]
 
-    # 返回最近一次 run 的 checkpoint 元数据，不创建任何缺失目录
-    def list_checkpoints(self, sid: str) -> tuple[str | None, list[dict[str, Any]]]:
+    # 返回指定（默认最近一次）run 的 checkpoint 元数据，不创建任何缺失目录
+    def list_checkpoints(
+        self, sid: str, run_id: str | None = None
+    ) -> tuple[str | None, list[dict[str, Any]]]:
         session = self._get_session(sid)
-        run_id = session.run_ids[-1] if session.run_ids else None
+        run_id = self._resolve_run_id(session, run_id)
         if run_id is None:
             return None, []
         root = self._store.runs_dir(sid) / run_id / ".checkpoints"
@@ -541,14 +547,17 @@ class SessionManager:
         ]
         return run_id, checkpoints
 
-    # 安全恢复最近一次 run 中用户明确选择的 checkpoint
-    def rewind(self, sid: str, checkpoint_id: str) -> dict[str, Any]:
+    # 安全恢复指定（默认最近一次）run 中用户明确选择的 checkpoint
+    def rewind(
+        self, sid: str, checkpoint_id: str, run_id: str | None = None
+    ) -> dict[str, Any]:
         session = self._get_session(sid)
         if self._locks[sid].locked():
             raise HandlerError(SESSION_BUSY, "session busy")
-        if not session.run_ids:
+        run_id = self._resolve_run_id(session, run_id)
+        if run_id is None:
             raise HandlerError(INVALID_PARAMS, "session has no run checkpoints")
-        root = self._store.runs_dir(sid) / session.run_ids[-1] / ".checkpoints"
+        root = self._store.runs_dir(sid) / run_id / ".checkpoints"
         try:
             outcome = CheckpointStore(root, WorkspaceBoundary.current()).rewind(
                 checkpoint_id
@@ -564,6 +573,14 @@ class SessionManager:
             "restored": outcome.restored,
             "already_restored": outcome.already_restored,
         }
+
+    # 解析目标 run_id：为空取最近一次 run，非空则校验属于该 session
+    def _resolve_run_id(self, session: Session, run_id: str | None) -> str | None:
+        if run_id is None:
+            return session.run_ids[-1] if session.run_ids else None
+        if run_id not in session.run_ids:
+            raise HandlerError(INVALID_PARAMS, f"unknown run_id for session: {run_id}")
+        return run_id
 
     # 返回当前 transcript 的消息数、确定性 token 估算和 run 概览
     def context_info(self, sid: str) -> dict[str, Any]:

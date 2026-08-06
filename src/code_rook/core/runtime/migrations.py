@@ -12,11 +12,12 @@ class RuntimeMigrationError(RuntimeError):
     pass
 
 
-# 创建启用外键和并发等待的 SQLite 连接
+# 创建启用外键、WAL 和并发等待的 SQLite 连接
 def open_database(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path, timeout=5.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 

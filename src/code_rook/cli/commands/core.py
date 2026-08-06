@@ -136,15 +136,45 @@ def _running_pid() -> int | None:
         return None
 
 
-# 停止由 CodeRook 启动并记录 PID 的 Core，等待进程退出后返回是否执行了停止
-def stop_core(timeout_s: float = 5.0) -> bool:
+# 经 IPC 请求 daemon 有序关闭；连接或认证失败时抛出由调用方降级处理
+async def _request_shutdown(config: CodeRookConfig) -> None:
+    client = SocketClient.from_config(config)
+    await client.connect()
+    loop_task = asyncio.create_task(client.run_event_loop())
+    try:
+        await asyncio.wait_for(
+            client.send_command("core.shutdown", {"reason": "cli stop"}),
+            timeout=3.0,
+        )
+    finally:
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+        await client.close()
+
+
+# 停止 Core：优先 IPC 优雅关闭，失败回退 SIGTERM；等待进程退出后返回是否执行了停止
+def stop_core(config: CodeRookConfig | None = None, timeout_s: float = 5.0) -> bool:
     pid = _running_pid()
     if pid is None:
         return False
-    os.kill(pid, signal.SIGTERM)
+    graceful = False
+    if config is not None:
+        try:
+            asyncio.run(_request_shutdown(config))
+            graceful = True
+        except (ConnectionRefusedError, OSError, IpcTokenError, IpcError, TimeoutError):
+            graceful = False
+    if not graceful:
+        os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout_s
     while _pid_exists(pid) and time.monotonic() < deadline:
         time.sleep(0.05)
+    if graceful and _pid_exists(pid):
+        # 优雅关闭超时仍未退出，回退强制终止以避免残留进程
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + timeout_s
+        while _pid_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
     _PID_FILE.unlink(missing_ok=True)
     return True
 
@@ -178,19 +208,19 @@ def cmd_core_start(config: CodeRookConfig) -> None:
         print(f"already running  ({config.host}:{config.port})")
 
 
-# 向 daemon 发送 SIGTERM 停止进程，若未运行则提示
+# 优先经 IPC 有序停止 daemon，未运行时提示
 def cmd_core_stop(config: CodeRookConfig) -> None:
     pid = _running_pid()
     if pid is None:
         print("not running")
         return
-    stop_core()
+    stop_core(config)
     print(f"stopped  pid={pid}")
 
 
 # 重启后台 Core，使磁盘上的最新配置立即生效
 def cmd_core_restart(config: CodeRookConfig) -> None:
-    stopped = stop_core()
+    stopped = stop_core(config)
     try:
         started = ensure_core_running(config)
     except CoreLaunchError as exc:

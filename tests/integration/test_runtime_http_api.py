@@ -9,15 +9,24 @@ from code_rook.core.transport.socket_client import SocketClient
 
 
 # 功能：验证真实 daemon 的 HTTP 与 IPC 客户端读取同一个 durable thread 投影
-# 设计：HTTP 创建 thread 后分别经 HTTP list 和 IPC session.list 查询相同 id，覆盖双入口一致性
+# 设计：HTTP 创建 thread 后分别经 HTTP list 和 IPC session.list 查询相同 id，覆盖双入口一致性；
+# 同时断言无 Bearer token 的请求被 401 拒绝，覆盖强制认证
 async def test_http_and_ipc_share_durable_threads(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
     api_port: int,
     ipc_token: str,
+    api_token: str,
 ) -> None:
     async with httpx.AsyncClient(
         base_url=f"http://127.0.0.1:{api_port}",
+        timeout=5.0,
+    ) as anonymous:
+        denied = await anonymous.get("/v1/threads")
+        assert denied.status_code == 401
+    async with httpx.AsyncClient(
+        base_url=f"http://127.0.0.1:{api_port}",
+        headers={"Authorization": f"Bearer {api_token}"},
         timeout=5.0,
     ) as http:
         created = await http.post(

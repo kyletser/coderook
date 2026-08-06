@@ -137,15 +137,22 @@ async def test_git_diff_rejects_non_repository(tmp_path: Path) -> None:
     assert _payload(result.content)["error"]["code"] == "not_git_repository"
 
 
-async def test_git_diff_rejects_repository_root_outside_workspace(tmp_path: Path) -> None:
+# 功能：workspace 为 Git 仓库子目录（monorepo 场景）时应允许 diff
+# 设计：在仓库根下建子目录作 workspace，写入子目录内文件并断言 diff 成功且只报告该子树
+async def test_git_diff_allows_monorepo_subdirectory_workspace(tmp_path: Path) -> None:
     _init_repo(tmp_path)
-    workspace = tmp_path / "subdir"
-    workspace.mkdir()
+    workspace = tmp_path / "packages" / "app"
+    workspace.mkdir(parents=True)
+    (workspace / "inner.txt").write_text("scoped\n", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside\n", encoding="utf-8")
 
     result = await GitDiffTool(workspace_root=workspace).invoke({})
+    data = _payload(result.content)
 
-    assert result.is_error
-    assert _payload(result.content)["error"]["code"] == "repository_outside_workspace"
+    assert not result.is_error
+    paths = [file["path"] for file in data["files"]]
+    assert "inner.txt" in paths
+    assert "outside.txt" not in paths
 
 
 async def test_git_diff_handles_unborn_repository(tmp_path: Path) -> None:

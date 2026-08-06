@@ -481,7 +481,10 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
     assert len(block_ids) == len(set(block_ids)) == 3
 
 
-async def test_cancelled_runner_recovers_incremental_transcript_tail(tmp_path: Path) -> None:
+# 功能：取消运行中的 run 时为未执行的 tool_use 补合成结果，transcript 保持协议闭环
+# 设计：bash 工具执行到一半被 cancel，断言 read_messages 含 assistant(tool_use) 与 Skipped tool_result，
+# 且尾部已平衡不产生 thread_interrupted 归档，验证孤儿补偿在取消路径同样生效
+async def test_cancelled_runner_fills_skipped_tool_results(tmp_path: Path) -> None:
     from code_rook.core.session.model import Session
     from code_rook.core.session.store import SessionStore
 
@@ -535,10 +538,25 @@ async def test_cancelled_runner_recovers_incremental_transcript_tail(tmp_path: P
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert store.read_messages("sess-1") == [
-        {"role": "user", "content": "run a command"}
+    # 孤儿补偿后取消会补合成 Skipped 结果，transcript 保持协议闭环而非被截断
+    messages = store.read_messages("sess-1")
+    assert messages[0] == {"role": "user", "content": "run a command"}
+    tool_use_blocks = [
+        block
+        for block in messages[1]["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_use"
     ]
-    assert list(store.session_dir("sess-1").glob("thread_interrupted_run-1_*.jsonl"))
+    assert tool_use_blocks and tool_use_blocks[0]["id"] == "bash-1"
+    tool_result_blocks = [
+        block
+        for block in messages[2]["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    assert tool_result_blocks and tool_result_blocks[0]["tool_use_id"] == "bash-1"
+    assert tool_result_blocks[0]["is_error"] is True
+    assert "Skipped" in str(tool_result_blocks[0]["content"])
+    # 尾部已平衡，无需恢复归档
+    assert not list(store.session_dir("sess-1").glob("thread_interrupted_run-1_*.jsonl"))
 
 
 # 功能：daemon 级 registry 下 runner 结束不取消后台子任务（生命周期由 daemon 管理）

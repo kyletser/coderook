@@ -3,6 +3,7 @@ from __future__ import annotations
 from code_rook.core.config import LlmConfig
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.credentials import normalize_provider, resolve_api_key
+from code_rook.core.llm.kinds import OPENAI_CHAT_PROVIDERS
 from code_rook.core.llm.openai_compatible import OpenAICompatibleProvider
 from code_rook.core.llm.openai_responses import OpenAIResponsesProvider
 from code_rook.core.llm.provider import AnthropicProvider
@@ -16,6 +17,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             route.model,
             api_key=credential,
             base_url=str(route.base_url).rstrip("/"),
+            context_window=route.context_window,
         )
     if route.wire_format == "openai_chat":
         return OpenAICompatibleProvider(
@@ -24,6 +26,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             api_key_env="",
             api_key=credential,
             use_max_completion_tokens=route.provider == "openai",
+            context_window=route.context_window,
         )
     if route.wire_format == "openai_responses":
         return OpenAIResponsesProvider(
@@ -50,7 +53,7 @@ def create_llm_provider(config: LlmConfig) -> LLMProvider:
             api_key=api_key,
             base_url=config.base_url,
         )
-    if provider in {"deepseek", "openai", "openai_compatible", "siliconflow"}:
+    if provider in OPENAI_CHAT_PROVIDERS:
         return OpenAICompatibleProvider(
             config.default_model,
             base_url=config.base_url,

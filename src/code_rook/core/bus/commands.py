@@ -39,6 +39,15 @@ class CoreAuthenticateResult(BaseModel):
     authenticated: Literal[True] = True
 
 
+class CoreShutdownCommand(BaseModel):
+    type: Literal["core.shutdown"] = "core.shutdown"
+    reason: str = ""
+
+
+class CoreShutdownResult(BaseModel):
+    shutting_down: Literal[True] = True
+
+
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
     goal: str
@@ -463,6 +472,7 @@ class WorkspaceDiffResult(BaseModel):
 class SessionCheckpointsCommand(BaseModel):
     type: Literal["session.checkpoints"] = "session.checkpoints"
     session_id: str
+    run_id: str | None = None
 
 
 class SessionCheckpointsResult(BaseModel):
@@ -474,6 +484,7 @@ class SessionRewindCommand(BaseModel):
     type: Literal["session.rewind"] = "session.rewind"
     session_id: str
     checkpoint_id: str
+    run_id: str | None = None
 
 
 class SessionRewindResult(BaseModel):
@@ -515,6 +526,7 @@ class TurnInspectResult(BaseModel):
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     CoreAuthenticateCommand
+    | CoreShutdownCommand
     | PingCommand
     | AgentRunCommand
     | RunCancelCommand

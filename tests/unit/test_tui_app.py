@@ -1666,8 +1666,9 @@ async def test_trust_and_sandbox_commands_are_independent() -> None:
     assert "Workspace trust" in output
     assert "trusted" in output
     assert "Sandbox" in output
-    assert "unavailable" in output
+    assert "not detected" in output
     assert "windows_none" in output
+    assert "advisory" in output
 
 
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式

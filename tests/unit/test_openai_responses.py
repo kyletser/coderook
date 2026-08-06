@@ -159,3 +159,70 @@ async def test_responses_provider_redacts_http_error_body() -> None:
 
     assert "HTTP 401" in message
     assert "secret-key" not in message
+
+
+# 功能：Responses SSE 流增量解析，正文逐块发 token，completed 事件给出 usage 与 reasoning
+# 设计：MockTransport 返回 text/event-stream 正文（文本增量 + reasoning 增量 + completed 事件），
+# 断言 token 事件顺序、正文拼接、thinking_blocks 保留与 usage 来源
+async def test_responses_provider_streams_sse_events() -> None:
+    completed_payload = json.dumps(
+        {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Hey"}],
+                },
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "plan"}],
+                },
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        },
+        ensure_ascii=False,
+    )
+    sse_lines = [
+        'data: {"type":"response.output_text.delta","delta":"He"}',
+        "",
+        'data: {"type":"response.output_text.delta","delta":"y"}',
+        "",
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"plan"}',
+        "",
+        f'data: {{"type":"response.completed","response":{completed_payload}}}',
+        "",
+    ]
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content="\n".join(sse_lines).encode("utf-8"),
+        )
+
+    events: list[object] = []
+    bus = EventBus()
+
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAIResponsesProvider(
+            "gpt-test",
+            base_url="https://api.example/v1/responses",
+            api_key="secret-key",
+            client=client,
+        )
+        result = await provider.chat([], [], bus, "run-sse")
+
+    tokens = [
+        getattr(event, "token")
+        for event in events
+        if type(event).__name__ == "LlmTokenEvent"
+    ]
+    assert tokens == ["He", "y"]
+    assert result.text == "Hey"
+    assert result.thinking_blocks == [{"type": "thinking", "thinking": "plan"}]
+    assert result.usage is not None
+    assert result.usage.input_tokens == 5

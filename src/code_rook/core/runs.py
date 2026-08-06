@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-RUNS_DIR = Path("runs")
+RUNS_DIR = Path("~/.coderook/runs").expanduser()
 
 
 # 返回指定 run_id 对应的目录路径

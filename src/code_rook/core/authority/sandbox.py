@@ -7,7 +7,8 @@ from collections.abc import Callable
 from code_rook.core.authority.models import SandboxCapability
 
 
-# 探测当前平台真实可用的 OS 命令隔离后端
+# 探测当前平台的 OS 隔离后端可用性（advisory）：结果仅作为权限快照与回执中的
+# 元数据呈现，CodeRook 目前不会用它实际包裹任何子进程，强制防线是权限审批链
 def detect_sandbox_capability(
     *,
     platform: str | None = None,

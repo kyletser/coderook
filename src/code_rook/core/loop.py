@@ -389,7 +389,7 @@ class AgentLoop:
 
             if not self._is_no_content(response):
                 context.clear_transient_context()
-                return response
+                return self._normalize_stop_reason(response)
             if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
                 raise NoContentResponseError(
                     "provider returned no text, reasoning, or tool calls"
@@ -405,6 +405,17 @@ class AgentLoop:
                     ts=_now(),
                 )
             )
+
+    # 归一化非标准 stop_reason：带工具调用统一为 tool_use（max_tokens 除外），
+    # 无工具调用的未知值（如兼容后端的 "stop"）统一为 end_turn，防止循环空转到 max_steps
+    def _normalize_stop_reason(self, response: LlmResponse) -> LlmResponse:
+        if response.tool_calls and response.stop_reason == "max_tokens":
+            return response
+        if response.tool_calls:
+            response.stop_reason = "tool_use"
+        elif response.stop_reason != "end_turn":
+            response.stop_reason = "end_turn"
+        return response
 
     # 计算 system prompt：context 已加载 base 后追加 todos 软状态摘要（若有）
     def _render_system(self, context: ExecutionContext) -> str:
@@ -744,7 +755,7 @@ class AgentLoop:
         return False
 
     # 执行一轮 tool_use 序列：连续的 can_parallel 工具组成一批用 asyncio.gather 并发，
-    # 副作用工具按模型给定顺序串行；任一批中若出现 permission_required 立即停并跳过后续
+    # 副作用工具按模型给定顺序串行；任一批中若出现 permission_required 立即停并为后续补合成结果
     async def _run_act_phase(
         self,
         tool_calls: list[ToolCallBlock],
@@ -753,51 +764,84 @@ class AgentLoop:
         block_count = len(tool_calls)
         i = 0
         n = len(tool_calls)
-        while i < n:
-            await self._cancellation_checkpoint()
-            j = i
-            batch_claims: list[ResourceClaim] = []
-            # 收集从 i 开始连续的并行工具，构造一个批
-            while j < n:
-                claims = self._parallel_claims(tool_calls[j])
-                if claims is None or not self._can_join_parallel_batch(
-                    claims,
-                    batch_claims,
-                ):
-                    break
-                batch_claims.extend(claims)
-                j += 1
-            batch = tool_calls[i:j]
+        try:
+            while i < n:
+                await self._cancellation_checkpoint()
+                j = i
+                batch_claims: list[ResourceClaim] = []
+                # 收集从 i 开始连续的并行工具，构造一个批
+                while j < n:
+                    claims = self._parallel_claims(tool_calls[j])
+                    if claims is None or not self._can_join_parallel_batch(
+                        claims,
+                        batch_claims,
+                    ):
+                        break
+                    batch_claims.extend(claims)
+                    j += 1
+                batch = tool_calls[i:j]
 
-            if not batch:
-                # 当前 tool_calls[i] 不可并行（副作用或未知工具），单独串行执行
-                tc = tool_calls[i]
-                result = await self._invoke_one(tc, context)
-                if await self._record_result(i, block_count, tc, result, context):
-                    return
-                i += 1
-                continue
+                if not batch:
+                    # 当前 tool_calls[i] 不可并行（副作用或未知工具），单独串行执行
+                    tc = tool_calls[i]
+                    result = await self._invoke_one(tc, context)
+                    if await self._record_result(i, block_count, tc, result, context):
+                        self._fill_skipped_tool_results(
+                            tool_calls, i + 1, block_count, context
+                        )
+                        return
+                    i += 1
+                    continue
 
-            if len(batch) == 1:
-                results: list[ToolResult] = [await self._invoke_one(batch[0], context)]
-            else:
-                results = await self._invoke_parallel_batch(batch, context)
+                if len(batch) == 1:
+                    results: list[ToolResult] = [await self._invoke_one(batch[0], context)]
+                else:
+                    results = await self._invoke_parallel_batch(batch, context)
 
-            should_stop = False
-            for k, tc in enumerate(batch):
-                should_stop = (
-                    await self._record_result(
-                        i + k,
-                        block_count,
-                        tc,
-                        results[k],
-                        context,
+                should_stop = False
+                for k, tc in enumerate(batch):
+                    should_stop = (
+                        await self._record_result(
+                            i + k,
+                            block_count,
+                            tc,
+                            results[k],
+                            context,
+                        )
+                        or should_stop
                     )
-                    or should_stop
+                if should_stop:
+                    self._fill_skipped_tool_results(tool_calls, j, block_count, context)
+                    return
+                i = j
+        except asyncio.CancelledError:
+            self._fill_skipped_tool_results(tool_calls, i, block_count, context)
+            raise
+
+    # 为提前终止而未执行的 tool_use 追加合成错误结果，保证 transcript 中 tool 协议闭环
+    def _fill_skipped_tool_results(
+        self,
+        tool_calls: list[ToolCallBlock],
+        start_index: int,
+        block_count: int,
+        context: ExecutionContext,
+    ) -> None:
+        for idx in range(start_index, len(tool_calls)):
+            tc = tool_calls[idx]
+            error = (
+                "Skipped: this tool call was not executed because the run "
+                "terminated early."
+            )
+            context.add_tool_result(tc.id, error, is_error=True)
+            if self._transcript is not None:
+                self._transcript.append_tool_result(
+                    context.step,
+                    tc.id,
+                    error,
+                    is_error=True,
+                    block_index=idx,
+                    block_count=block_count,
                 )
-            if should_stop:
-                return
-            i = j
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, context: ExecutionContext) -> None:

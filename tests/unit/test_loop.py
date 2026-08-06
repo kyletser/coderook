@@ -480,3 +480,71 @@ async def test_context_overflow_compacts_and_recovers(tmp_path: Path) -> None:
     assert context.status == "success"
     assert context.result == "recovered"
     assert provider.calls == 3
+
+
+# 功能：未知 stop_reason（如兼容后端的 "stop"）且无工具调用时按 end_turn 成功收尾
+# 设计：直接构造 stop_reason="stop" 的响应，断言不空转到 max_steps 而是正常终止
+async def test_unknown_stop_reason_without_tools_ends_turn() -> None:
+    provider = _MockProvider([LlmResponse(stop_reason="stop", text="done")])
+    loop, _ = _make_loop(provider)
+    ctx = _ctx()
+    await loop.run(ctx)
+    assert ctx.status == "success"
+    assert ctx.step == 1
+
+
+# 功能：未知 stop_reason 带工具调用时按 tool_use 执行工具
+# 设计：首响应 "stop" + echo 调用，次响应 end_turn；断言工具确实被执行且 run 成功
+async def test_unknown_stop_reason_with_tools_runs_act_phase() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(stop_reason="stop", tool_calls=[_tc()]),
+            LlmResponse(stop_reason="end_turn", text="done"),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    loop, bus = _make_loop(provider, registry)
+    events = await _events(bus)
+    ctx = _ctx()
+    await loop.run(ctx)
+    assert ctx.status == "success"
+    assert any(type(e).__name__ == "ToolCallFinishedEvent" for e in events)
+
+
+class _PermissionRequiredTool(BaseTool):
+    name = "deny_fast"
+    description = "Returns permission_required error"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}, "required": []}
+
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        return ToolResult(content="denied", is_error=True, error_type="permission_required")
+
+
+# 功能：act 阶段因 permission_required 提前终止时为后续工具补合成 tool_result
+# 设计：同批两个工具，首个返回 permission_required；断言 run 失败且第二个 tool_use 也有配对结果，无孤儿
+async def test_aborted_act_phase_fills_skipped_tool_results() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[_tc("deny_fast", {}, "d1"), _tc("echo", {"msg": "x"}, "e1")],
+            ),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(_PermissionRequiredTool())
+    registry.register(_EchoTool())
+    loop, _ = _make_loop(provider, registry)
+    ctx = _ctx()
+    await loop.run(ctx)
+    assert ctx.status == "failed"
+    tool_result_ids = [
+        block.get("tool_use_id")
+        for message in ctx.messages
+        if message.get("role") == "user"
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    assert "d1" in tool_result_ids
+    assert "e1" in tool_result_ids
