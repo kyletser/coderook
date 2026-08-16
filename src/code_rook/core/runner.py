@@ -25,7 +25,7 @@ from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 from code_rook.core.loop import AgentLoop
 from code_rook.core.lsp import PythonDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
-from code_rook.core.memory import MemoryStore, load_context_file
+from code_rook.core.memory import MemoryStore, load_context_file, load_project_instructions
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import RUNS_DIR, new_run_id
@@ -180,7 +180,7 @@ class AgentRunner:
         run_path.mkdir(parents=True, exist_ok=True)
 
         global_ctx = load_context_file(Path("~/.coderook/context.md").expanduser())
-        project_ctx = load_context_file(Path(".coderook/context.md"))
+        project_ctx = load_project_instructions(self._workspace_boundary.root)
         recalled = self._memory_store.search(goal, limit=5)
         recalled_context = self._memory_store.format_context(recalled)
         if recalled_context:

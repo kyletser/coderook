@@ -30,6 +30,7 @@ from code_rook.core.tools.builtin.task_create import TaskCreateTool
 from code_rook.core.tools.builtin.task_get import TaskGetTool
 from code_rook.core.tools.builtin.task_list import TaskListTool
 from code_rook.core.tools.builtin.task_update import TaskUpdateTool
+from code_rook.core.tools.builtin.web import WebFetchTool, WebSearchTool
 from code_rook.core.tools.builtin.worktree import (
     WorktreeCreateTool,
     WorktreeListTool,
@@ -64,6 +65,8 @@ __all__ = [
     "TaskGetTool",
     "TaskListTool",
     "TaskUpdateTool",
+    "WebFetchTool",
+    "WebSearchTool",
     "WriteFileTool",
     "WorktreeCreateTool",
     "WorktreeListTool",

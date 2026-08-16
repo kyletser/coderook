@@ -129,6 +129,8 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
         "git_diff": ("scope", "path"),
         "grep": ("pattern", "path", "glob"),
         "bash": ("command",),
+        "web_fetch": ("url",),
+        "web_search": ("query",),
         "note_save": ("content",),
         "task_claim": ("task_id", "owner"),
         "task_create": ("subject",),
@@ -165,6 +167,8 @@ _TOOL_ACTIONS: dict[str, tuple[str, str]] = {
     "task_create": ("正在创建任务", "已创建任务"),
     "task_list": ("正在加载任务", "已加载任务"),
     "task_update": ("正在更新任务", "已更新任务"),
+    "web_fetch": ("正在抓取网页", "已抓取网页"),
+    "web_search": ("正在搜索网页", "已搜索网页"),
     "write_file": ("正在写入", "已写入"),
 }
 
@@ -218,6 +222,10 @@ def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
         return _preview(target, 110)
     if tool_name == "checkpoint_rewind":
         return _preview(str(params.get("checkpoint_id", "")), 110)
+    if tool_name == "web_fetch":
+        return _preview(str(params.get("url", "")), 110)
+    if tool_name == "web_search":
+        return _preview(str(params.get("query", "")), 110)
     if tool_name.startswith("background_"):
         value = params.get("command", params.get("job_id", ""))
         return _preview(str(value), 110)

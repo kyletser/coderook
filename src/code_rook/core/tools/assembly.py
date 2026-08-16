@@ -44,6 +44,8 @@ from code_rook.core.tools.builtin import (
     TaskGetTool,
     TaskListTool,
     TaskUpdateTool,
+    WebFetchTool,
+    WebSearchTool,
     WorktreeCreateTool,
     WorktreeListTool,
     WorktreeRemoveTool,
@@ -261,6 +263,9 @@ class RuntimeToolAssembly:
         ):
             if _ok(worktree_tool):
                 registry.register(worktree_tool)
+        for web_tool in (WebFetchTool(), WebSearchTool()):
+            if _ok(web_tool):
+                registry.register(web_tool)
         search_tool = ToolSearchTool(registry)
         if _ok(search_tool):
             registry.register(search_tool)

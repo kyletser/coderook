@@ -360,7 +360,7 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 ### 8.1 Run 启动（runner.py `run_and_capture`）
 
 1. 生成 `run_id`（`YYYYMMDD-HHMMSS-<6hex>`）；session run 从 SessionStore 读完整历史与 notes，run 目录落在 session runs 目录
-2. 注入三层上下文：`~/.coderook/context.md`（全局）+ `.coderook/context.md`（项目）+ **memory 自动召回**（按 goal 词法检索 top5，拼入项目上下文）
+2. 注入三层上下文：`~/.coderook/context.md`（全局）+ 项目级指令文件（按 `AGENTS.md` → `CLAUDE.md` → `.coderook/context.md` 顺序拼接并标注来源，2026-08 起兼容行业标准）+ **memory 自动召回**（按 goal 词法检索 top5，拼入项目上下文）
 3. 创建 run 级 `TaskManager`（`.tasks`）与 `CheckpointStore`（`.checkpoints`）
 4. 组装 `ExecutionContext`（历史消息、notes、运行时上下文、能力上下文、RuntimeMode）
 5. `EventWriter` 订阅 bus，全量事件落 `events.jsonl`（replay 用）
