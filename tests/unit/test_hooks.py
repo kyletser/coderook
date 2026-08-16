@@ -186,10 +186,11 @@ def _process_exists(pid: int) -> bool:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-        return str(pid) in result.stdout
+        return str(pid) in (result.stdout or "")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -67,6 +67,54 @@ def _params_str(params: dict[str, Any]) -> str:
     return json.dumps(params, ensure_ascii=False, indent=2)
 
 
+_INPUT_HISTORY_LIMIT = 500
+
+
+# 返回用户级输入历史文件路径
+def _input_history_path() -> Path:
+    return Path.home() / ".coderook" / "tui-history.jsonl"
+
+
+# 从磁盘加载最近的输入历史，坏行静默跳过
+def _load_input_history(limit: int = _INPUT_HISTORY_LIMIT) -> list[str]:
+    try:
+        lines = _input_history_path().read_text(encoding="utf-8").splitlines()[-limit:]
+    except OSError:
+        return []
+    history: list[str] = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            text = str(item.get("text", ""))
+            if text:
+                history.append(text)
+    return history
+
+
+# 将一条输入追加到历史文件，写入失败时静默跳过
+def _save_input_history_entry(text: str) -> None:
+    if not text.strip():
+        return
+    path = _input_history_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+# 从首条用户消息派生简洁会话标题；斜杠命令不作为标题来源
+def _derive_session_title(text: str, max_len: int = 20) -> str:
+    cleaned = " ".join(text.split())
+    if not cleaned or cleaned.startswith("/"):
+        return ""
+    return _preview(cleaned, max_len)
+
+
 # 从工具参数中提取最适合摘要展示的关键字段
 def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) -> str:
     keys_by_tool = {
@@ -1184,6 +1232,7 @@ class SessionPicker(Static):
         super().__init__("")
         self._sessions = sessions
         self._current_session_id = current_session_id
+        self._filter = ""
         self._cursor = next(
             (
                 index
@@ -1195,15 +1244,35 @@ class SessionPicker(Static):
 
     def on_mount(self) -> None:
         self.border_title = " Sessions "
-        self.border_subtitle = " ↑↓ move   Enter open   Esc close "
+        self.border_subtitle = " 输入即过滤   ↑↓ move   Enter open   Esc close "
         self.update(self._render_ui())
         self.focus()
 
+    # 按过滤串筛选会话，匹配标题、ID 或状态的子串（不区分大小写）
+    def _filtered_sessions(self) -> list[dict[str, Any]]:
+        query = self._filter.strip().casefold()
+        if not query:
+            return self._sessions
+        return [
+            session
+            for session in self._sessions
+            if query in str(session.get("title", "")).casefold()
+            or query in str(session.get("session_id", "")).casefold()
+            or query in str(session.get("status", "")).casefold()
+        ]
+
     def _render_ui(self) -> str:
         if not self._sessions:
-            return "[dim]No saved chat sessions.[/dim]"
+            return "[dim]没有保存的 chat 会话。[/dim]"
+        filtered = self._filtered_sessions()
+        self._cursor = min(self._cursor, max(0, len(filtered) - 1))
         lines: list[str] = []
-        for index, session in enumerate(self._sessions):
+        if self._filter:
+            lines.append(
+                f"[dim]过滤：{escape(self._filter)}"
+                f"  命中 {len(filtered)}/{len(self._sessions)}[/dim]"
+            )
+        for index, session in enumerate(filtered):
             session_id = escape(str(session.get("session_id", "")))
             title = escape(_preview(str(session.get("title", "")) or "Untitled", 38))
             status = escape(str(session.get("status", "")))
@@ -1218,20 +1287,38 @@ class SessionPicker(Static):
                 lines.append(
                     f"  [#c6cad0]{title}[/#c6cad0]  [dim]{status}  {session_id}[/dim]{current}"
                 )
+        if not filtered:
+            lines.append("[dim]没有匹配的会话，退格修改过滤词[/dim]")
         return "\n".join(lines)
 
     def on_key(self, event: events.Key) -> None:
-        if event.key in ("up", "k") and self._sessions:
+        if event.key == "backspace":
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._sessions)
+            self._filter = self._filter[:-1]
             self.update(self._render_ui())
-        elif event.key in ("down", "j") and self._sessions:
+            return
+        if (
+            event.character
+            and len(event.character) == 1
+            and event.is_printable
+            and event.key not in ("up", "down", "enter", "escape", "tab")
+        ):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._sessions)
+            self._filter += event.character
             self.update(self._render_ui())
-        elif event.key == "enter" and self._sessions:
+            return
+        filtered = self._filtered_sessions()
+        if event.key == "up" and filtered:
             event.stop()
-            session_id = str(self._sessions[self._cursor].get("session_id", ""))
+            self._cursor = (self._cursor - 1) % len(filtered)
+            self.update(self._render_ui())
+        elif event.key == "down" and filtered:
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(filtered)
+            self.update(self._render_ui())
+        elif event.key == "enter" and filtered:
+            event.stop()
+            session_id = str(filtered[self._cursor].get("session_id", ""))
             if session_id:
                 self.post_message(self.Selected(self, session_id))
         elif event.key == "escape":
@@ -1621,6 +1708,57 @@ class ChatTextArea(TextArea):
     class CycleMode(Message):
         pass
 
+    # 初始化输入历史状态，支持空输入时 ↑/↓ 回溯最近提交
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        self._history_draft: str = ""
+
+    # 设置可回溯的输入历史列表并重置回溯状态
+    def set_history(self, history: list[str]) -> None:
+        self._history = list(history)
+        self._history_index = None
+        self._history_draft = ""
+
+    # 记录一条提交输入：连续去重后写入用户级历史文件
+    def record_history(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned or (self._history and self._history[-1] == cleaned):
+            return
+        self._history.append(cleaned)
+        if len(self._history) > _INPUT_HISTORY_LIMIT:
+            self._history = self._history[-_INPUT_HISTORY_LIMIT:]
+        self._history_index = None
+        self._history_draft = ""
+        _save_input_history_entry(cleaned)
+
+    # 回溯到更早的历史输入；首次进入回溯时保存当前草稿
+    def _history_up(self) -> None:
+        if not self._history:
+            return
+        if self._history_index is None:
+            self._history_index = len(self._history) - 1
+            self._history_draft = self.text
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return
+        self.text = self._history[self._history_index]
+        self.move_cursor(self.document.end)
+
+    # 前进到更新的历史输入，越过最新一条时恢复草稿并退出回溯
+    def _history_down(self) -> None:
+        if self._history_index is None:
+            return
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            self.text = self._history[self._history_index]
+        else:
+            self._history_index = None
+            self.text = self._history_draft
+        self.move_cursor(self.document.end)
+
     # 文本变化时检测 / 前缀，通知宿主 App 更新自动补全弹窗
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         text = self.text
@@ -1680,6 +1818,20 @@ class ChatTextArea(TextArea):
                 event.prevent_default()
                 self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
+        if (
+            key == "up"
+            and popup is None
+            and (not self.text or self._history_index is not None)
+        ):
+            event.stop()
+            event.prevent_default()
+            self._history_up()
+            return
+        if key == "down" and popup is None and self._history_index is not None:
+            event.stop()
+            event.prevent_default()
+            self._history_down()
+            return
         if key == "tab":
             event.stop()
             event.prevent_default()
@@ -1710,6 +1862,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     BINDINGS = [
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
+        Binding(
+            "ctrl+end",
+            "scroll_log_end",
+            "跳回日志底部",
+            show=False,
+            priority=True,
+        ),
         Binding(
             "tab",
             "cycle_runtime_mode",
@@ -1755,12 +1914,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         "[bold cyan]"
         " ██████╗ ██████╗ ██████╗ ███████╗    ██████╗  ██████╗  ██████╗ ██╗  ██╗\n"
         "██╔════╝██╔═══██╗██╔══██╗██╔════╝    ██╔══██╗██╔═══██╗██╔═══██╗██║ ██╔╝\n"
-        "██║     ██║   ██║██║  ██║█████╗      ██████╔╝██║   ██║██║   ██║█████╔╝ \n"
-        "██║     ██║   ██║██║  ██║██╔══╝      ██╔══██╗██║   ██║██║   ██║██╔═██╗ \n"
+        "██║     ██║   ██╗██║  ██║█████╗      ██████╔╝██║   ██╗██║   ██║█████╔╝ \n"
+        "██║     ██║   ██║██║  ██║██╔══╝      ██╔══██╗██║   ██╗██║   ██║██╔═██╗ \n"
         "╚██████╗╚██████╔╝██████╔╝███████╗    ██║  ██║╚██████╔╝╚██████╔╝██║  ██╗\n"
         " ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝"
         "[/bold cyan]\n"
-        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  拖选后 Ctrl+C 复制"
+        "[dim]  输入消息开始对话  ·  /help 查看键位与命令  ·  拖选后 Ctrl+C 复制"
         "  ·  Ctrl+Q 退出[/dim]"
     )
 
@@ -1806,9 +1965,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._session_id: str | None = None
         self._active_run_id: str | None = None
         self._cancel_requested = False
+        self._cancel_armed = False
         self._busy = False
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
+        self._header_state = "connecting"
+        self._session_title = ""
+        self._titled = False
+        self._first_user_text = ""
         self._authority_preset = "ask"
         self._input_runtime_mode = RuntimeMode.ACT
         self._workspace_trust = WorkspaceTrust.UNTRUSTED
@@ -1834,35 +1998,41 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     def on_mount(self) -> None:
         self._slash_items = self._build_slash_items()
         self._append(Static(self._BANNER, id="banner"))
-        self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
+        prompt.set_history(_load_input_history())
         prompt.disabled = True
         prompt.border_title = _PROMPT_CONNECTING
+        self.run_worker(self._socket_loop(), exclusive=True, name="socket")
 
     # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
     def _build_slash_items(self) -> list[tuple[str, str]]:
         items: list[tuple[str, str]] = [
-            ("sessions", "open saved session picker"),
-            ("new", "start a new chat session"),
-            ("provider", "show or switch the active provider route"),
-            ("model", "show or switch the active model"),
-            ("doctor", "diagnose the active provider route"),
-            ("config", "change LLM API, model, or key"),
-            ("compact", "compress context window"),
-            ("copy", "copy the latest assistant reply"),
-            ("plan", "analyze read-only and review a plan before implementation"),
-            ("mode", "show or change Plan, Act, or Operate mode"),
-            ("permissions", "review or change the permission mode"),
-            ("trust", "show, grant, or revoke workspace trust"),
-            ("sandbox", "show the detected (advisory-only) OS isolation capability"),
-            ("tasks", "show tasks from the latest run"),
-            ("workers", "show all durable workers and Fleet workers"),
-            ("workflow", "list, start, or inspect durable workflows"),
-            ("diff", "show current workspace changes"),
-            ("rewind", "restore files from a safe checkpoint"),
-            ("context", "show context size and usage"),
-            ("turn", "inspect route, usage, tools, approvals, and receipt"),
-            ("skills", "list, show, install, remove, or audit skills"),
+            ("help", "显示键位与全部命令"),
+            ("sessions", "打开会话选择器（输入即过滤）"),
+            ("new", "新建会话"),
+            ("rename", "重命名当前会话：/rename <标题>"),
+            ("fork", "复制当前会话为分支：/fork [标题]"),
+            ("export", "导出当前会话：/export [md|json]"),
+            ("delete", "删除当前会话（需 --yes 确认）"),
+            ("provider", "查看或切换 Provider route"),
+            ("model", "查看或切换模型"),
+            ("doctor", "诊断活动 Provider route"),
+            ("config", "更换 LLM API、模型或密钥"),
+            ("compact", "手动压缩上下文"),
+            ("copy", "复制上一条回复"),
+            ("plan", "只读规划并审阅后再实施：/plan [任务]"),
+            ("mode", "查看或切换工作模式：plan|act|operate"),
+            ("permissions", "查看或切换权限模式"),
+            ("trust", "查看或授予/撤销工作区信任"),
+            ("sandbox", "查看 OS 隔离能力（仅探测）"),
+            ("tasks", "查看最近一次 run 的任务"),
+            ("workers", "查看全部持久 Worker 与 Fleet"),
+            ("workflow", "查看、启动或检查 workflow"),
+            ("diff", "查看工作区改动"),
+            ("rewind", "从安全恢复点回滚文件"),
+            ("context", "查看上下文占用与用量"),
+            ("turn", "检查 route、用量、审批与收据"),
+            ("skills", "列出、查看、安装或删除 skills"),
         ]
         try:
             loader = SkillLoader()
@@ -1976,6 +2146,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def action_quit(self) -> None:
         self.exit()
 
+    # 将日志视图跳回底部，恢复自动跟随
+    def action_scroll_log_end(self) -> None:
+        log_view = self.query_one("#log-view", VerticalScroll)
+        log_view.scroll_end(animate=False)
+
     async def action_cancel_run(self) -> None:
         if (
             self._client is None
@@ -1983,6 +2158,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             or not self._busy
             or self._cancel_requested
         ):
+            return
+        if not self._cancel_armed:
+            self._cancel_armed = True
+            self._append(
+                Static(
+                    "[yellow]再次 Ctrl+C 确认取消当前任务 · Ctrl+Q 退出 TUI[/yellow]",
+                    classes="log-line",
+                )
+            )
             return
         run_id = self._active_run_id
         self._cancel_requested = True
@@ -2019,6 +2203,30 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     def action_copy_selection(self) -> None:
         if not self._copy_selected_text():
             self._copy_last_response()
+
+    # 在日志中渲染键位说明和全部内建斜杠命令，作为 TUI 内的帮助面板
+    def _show_help(self) -> None:
+        keys = [
+            ("Enter", "发送消息；Shift/Alt+Enter 或 Ctrl+J 换行"),
+            ("↑ / ↓", "空输入时回溯输入历史，再按 ↑ 更早、↓ 更新"),
+            ("Tab", "循环工作模式 Act → Operate → Plan"),
+            ("Shift+Tab", "循环权限姿态 ask → accept edits → full access"),
+            ("Ctrl+C", "复制拖选文本；无选择时第一次按下提示、再按一次取消当前任务"),
+            ("Ctrl+Shift+C", "复制选择；无选择时复制上一条回复"),
+            ("Ctrl+End", "日志跳回底部（上滚暂停自动跟随后恢复）"),
+            ("Ctrl+Q", "退出 TUI（会话保留，可 resume）"),
+        ]
+        lines = ["[bold cyan]键位[/bold cyan]"]
+        for key, desc in keys:
+            lines.append(f"  [bold]{key}[/bold]  {escape(desc)}")
+        lines.append("[bold cyan]命令[/bold cyan]")
+        for name, desc in self._slash_items:
+            lines.append(f"  [cyan]/{name}[/cyan]  [dim]{escape(desc)}[/dim]")
+        lines.append(
+            "[dim]输入 / 后可用 ↑↓ 浏览、Tab 补全；"
+            "未匹配内建命令的 /名称 会作为 skill 发送给 Agent[/dim]"
+        )
+        self._append(Static("\n".join(lines), classes="log-line"))
 
     # 在 TUI 本地执行 /skills list/show/install/remove/audit，并要求变更操作显式确认
     def _handle_skills_command(self, content: str) -> None:
@@ -2150,6 +2358,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         content = event.value.strip()
         if not content:
             return
+        event.text_area.record_history(content)
         if self._pending_question_id is not None and self._answering_question:
             event.text_area.text = ""
             event.text_area.disabled = True
@@ -2187,6 +2396,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if content == "/skills" or content.startswith("/skills "):
             event.text_area.text = ""
             self._handle_skills_command(content)
+            return
+        if content == "/help":
+            event.text_area.text = ""
+            self._show_help()
             return
         if content == "/permissions":
             event.text_area.text = ""
@@ -2301,6 +2514,81 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     exclusive=False,
                 )
             return
+        if content == "/rename" or content.startswith("/rename "):
+            event.text_area.text = ""
+            title = content.removeprefix("/rename").strip()
+            if not title:
+                self._append(
+                    Static("[yellow]用法：/rename <新标题>[/yellow]", classes="log-line")
+                )
+            elif self._client is not None and self._session_id is not None and not self._busy:
+                event.text_area.disabled = True
+                event.text_area.border_title = "正在重命名会话"
+                self.run_worker(
+                    self._do_rename_session(title),
+                    name="rename_session",
+                    exclusive=False,
+                )
+            return
+        if content == "/fork" or content.startswith("/fork "):
+            event.text_area.text = ""
+            if self._client is None or self._session_id is None or self._busy:
+                self._append(
+                    Static("[yellow]Core 未连接或任务运行中，稍后再试[/yellow]", classes="log-line")
+                )
+                return
+            title = content.removeprefix("/fork").strip()
+            event.text_area.disabled = True
+            event.text_area.border_title = "正在复制会话"
+            self.run_worker(
+                self._do_fork_session(title),
+                name="fork_session",
+                exclusive=False,
+            )
+            return
+        if content == "/export" or content.startswith("/export "):
+            event.text_area.text = ""
+            if self._client is None or self._session_id is None:
+                self._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+                return
+            fmt = content.removeprefix("/export").strip().lower()
+            if fmt not in {"", "md", "json", "markdown"}:
+                self._append(
+                    Static("[yellow]用法：/export [md|json][/yellow]", classes="log-line")
+                )
+                return
+            event.text_area.disabled = True
+            event.text_area.border_title = "正在导出会话"
+            self.run_worker(
+                self._do_export_session(fmt),
+                name="export_session",
+                exclusive=False,
+            )
+            return
+        if content == "/delete" or content.startswith("/delete "):
+            event.text_area.text = ""
+            if self._client is None or self._session_id is None or self._busy:
+                self._append(
+                    Static("[yellow]Core 未连接或任务运行中，稍后再试[/yellow]", classes="log-line")
+                )
+                return
+            if "--yes" not in content:
+                self._append(
+                    Static(
+                        f"[yellow]将删除当前会话 {escape(self._session_id)} 及其全部历史，"
+                        "确认请输入 /delete --yes[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            event.text_area.disabled = True
+            event.text_area.border_title = "正在删除会话"
+            self.run_worker(
+                self._do_delete_session(),
+                name="delete_session",
+                exclusive=False,
+            )
+            return
         workflow_command = content == "/workflow" or content.startswith("/workflow ")
         turn_command = content == "/turn" or content.startswith("/turn ")
         if (
@@ -2364,7 +2652,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._busy:
                 self._append(
                     Static(
-                        "[yellow]请先等待或取消当前任务再切换 Provider[/yellow]",
+                        "[yellow]当前任务运行中，结束后再切换 Provider"
+                        "（Ctrl+C 可取消任务）[/yellow]",
                         classes="log-line",
                     )
                 )
@@ -2376,7 +2665,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._busy:
                 self._append(
                     Static(
-                        "[yellow]请先等待或取消当前任务再运行诊断[/yellow]",
+                        "[yellow]当前任务运行中，结束后再运行诊断（Ctrl+C 可取消任务）[/yellow]",
                         classes="log-line",
                     )
                 )
@@ -2394,7 +2683,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._busy:
                 self._append(
                     Static(
-                        "[yellow]请先等待或取消当前任务再切换模型[/yellow]",
+                        "[yellow]当前任务运行中，结束后再切换模型（Ctrl+C 可取消任务）[/yellow]",
                         classes="log-line",
                     )
                 )
@@ -2408,7 +2697,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._busy:
                 self._append(
                     Static(
-                        "[yellow]请先等待或取消当前任务再切换模型[/yellow]",
+                        "[yellow]当前任务运行中，结束后再切换模型（Ctrl+C 可取消任务）[/yellow]",
                         classes="log-line",
                     )
                 )
@@ -2431,7 +2720,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._busy:
                 self._append(
                     Static(
-                        "[yellow]请先等待或取消当前任务再修改 LLM 配置[/yellow]",
+                        "[yellow]当前任务运行中，结束后再修改 LLM 配置"
+                        "（Ctrl+C 可取消任务）[/yellow]",
                         classes="log-line",
                     )
                 )
@@ -2454,7 +2744,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self.run_worker(self._do_compact(), name="compact", exclusive=False)
             return
         if self._client is None or self._session_id is None or self._busy:
-            self._append(Static("[yellow]agent busy or disconnected[/yellow]", classes="log-line"))
+            self._append(
+                Static("[yellow]Agent 忙碌或未连接，请稍后再试[/yellow]", classes="log-line")
+            )
             return
         self._begin_message(event.text_area, content, requested_mode)
 
@@ -2468,6 +2760,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         visible_content: str | None = None,
     ) -> None:
         self._busy = True
+        self._cancel_armed = False
         prompt.text = ""
         prompt.disabled = False
         prompt.read_only = False
@@ -2477,6 +2770,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else _PROMPT_RUNNING
         )
         shown = visible_content if visible_content is not None else content
+        if visible_content is None and not self._first_user_text:
+            self._first_user_text = content
         visible = (
             f"[bold cyan]Plan[/bold cyan]  {escape(shown)}"
             if runtime_mode == RuntimeMode.PLAN
@@ -3039,7 +3334,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         try:
             result = await self._client.send_command(
                 "session.list",
-                {"include_closed": True, "limit": 10},
+                {"include_closed": True, "limit": 50},
             )
             sessions = [
                 session
@@ -3298,6 +3593,115 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(Static(f"[red]session create error: {exc}[/red]", classes="log-line"))
             self._restore_ready_prompt()
 
+    # 重命名当前会话并同步本地标题状态；自动标题模式不输出提示行
+    async def _do_rename_session(self, title: str, *, announce: bool = True) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.rename",
+                {"session_id": self._session_id, "title": title},
+            )
+            session = result.get("session", {})
+            self._session_title = str(session.get("title", "") or title)
+            self._titled = True
+            if announce:
+                self._append(
+                    Static(
+                        f"[green]会话已重命名[/green]  {escape(self._session_title)}",
+                        classes="log-line",
+                    )
+                )
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]rename error: {exc}[/red]", classes="log-line"))
+        finally:
+            if announce:
+                self._restore_ready_prompt()
+
+    # 复制当前会话为分支并切换到新会话
+    async def _do_fork_session(self, title: str) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.fork",
+                {"session_id": self._session_id, "title": title},
+            )
+            session = result.get("session", {})
+            forked_id = str(session.get("session_id", ""))
+            if not forked_id:
+                raise ValueError("fork 结果缺少 session_id")
+            await self._switch_session(forked_id)
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._append(Static(f"[red]fork error: {exc}[/red]", classes="log-line"))
+            self._restore_ready_prompt()
+
+    # 导出当前会话到工作区文件
+    async def _do_export_session(self, fmt: str) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        format_name = "json" if fmt == "json" else "markdown"
+        try:
+            result = await self._client.send_command(
+                "session.export",
+                {"session_id": self._session_id, "format": format_name},
+            )
+            filename = str(result.get("filename", ""))
+            content = str(result.get("content", ""))
+            suffix = "json" if format_name == "json" else "md"
+            target = Path.cwd() / (
+                filename or f"coderook-session-{self._session_id}.{suffix}"
+            )
+            target.write_text(content, encoding="utf-8")
+            self._append(
+                Static(
+                    f"[green]会话已导出[/green]  {escape(str(target))}",
+                    classes="log-line",
+                )
+            )
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]export error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 删除当前会话并自动新建空会话
+    async def _do_delete_session(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        session_id = self._session_id
+        try:
+            await self._client.send_command("session.delete", {"session_id": session_id})
+            self._append(
+                Static(
+                    f"[green]会话已删除[/green]  {escape(session_id)}",
+                    classes="log-line",
+                )
+            )
+            await self._create_and_switch_session()
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]delete error: {exc}[/red]", classes="log-line"))
+            self._restore_ready_prompt()
+
+    # 首个 run 成功后按首条用户消息自动生成会话标题
+    def _maybe_autotitle_session(self) -> None:
+        if (
+            self._titled
+            or not self._first_user_text
+            or self._client is None
+            or self._session_id is None
+        ):
+            return
+        title = _derive_session_title(self._first_user_text)
+        if not title:
+            return
+        self._titled = True
+        self._session_title = title
+        self.run_worker(
+            self._do_rename_session(title, announce=False),
+            name="autotitle_session",
+            exclusive=False,
+        )
+
     async def _switch_session(self, session_id: str) -> None:
         if self._client is None:
             return
@@ -3305,13 +3709,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._restore_ready_prompt()
             return
         try:
-            await self._client.send_command("session.resume", {"session_id": session_id})
-            await self._load_session(session_id, resume=True)
+            resumed = await self._client.send_command("session.resume", {"session_id": session_id})
+            info = resumed.get("session", {})
+            title = str(info.get("title", "")) if isinstance(info, dict) else ""
+            await self._load_session(session_id, resume=True, title=title)
         except (IpcError, RuntimeError, OSError) as exc:
             self._append(Static(f"[red]session switch error: {exc}[/red]", classes="log-line"))
             self._restore_ready_prompt()
 
-    async def _load_session(self, session_id: str, *, resume: bool) -> None:
+    async def _load_session(
+        self,
+        session_id: str,
+        *,
+        resume: bool,
+        title: str | None = None,
+    ) -> None:
         if self._client is None:
             return
         self._clear_plan_review()
@@ -3325,6 +3737,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._session_id = session_id
         self._resume_session_id = session_id
         self._history_loaded = True
+        self._session_title = title or ""
+        self._titled = bool(title and title != "Untitled")
+        self._first_user_text = ""
         await self._refresh_authority()
         label = "resumed" if resume else "new session"
         self._append(
@@ -3508,11 +3923,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except Exception:
             log.exception("on_permission_select_decided failed tool_use_id=%s", tool_use_id)
 
-    # 向日志视图追加一个 widget 并滚动到底部
+    # 向日志视图追加一个 widget；用户上滚离开底部时暂停自动跟随
     def _append(self, widget: Widget) -> None:
         log_view = self.query_one("#log-view", VerticalScroll)
+        follow = log_view.is_vertical_scroll_end
         log_view.mount(widget)
-        log_view.scroll_end(animate=False)
+        if follow:
+            log_view.scroll_end(animate=False)
 
     # 将恢复会话的历史消息转换为简洁的 TUI 块，工具结果仍由 Core 历史保留
     def _append_history(self, messages: list[dict[str, Any]]) -> None:
@@ -3596,11 +4013,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except Exception:
             return None
 
-    # 生成 context 占用率的彩色进度条字符串
-    def _render_ctx_bar(self, pct: float) -> str:
-        filled = int(pct * 20)
-        bar = "█" * filled + "░" * (20 - filled)
-        label = f"ctx:{pct * 100:.1f}%"
+    # 生成 context 占用率的彩色进度条字符串，宽度可配以适配顶栏
+    def _render_ctx_bar(self, pct: float, width: int = 20) -> str:
+        width = max(4, width)
+        filled = int(pct * width)
+        bar = "█" * filled + "░" * (width - filled)
+        label = f"ctx:{pct * 100:.0f}%"
         if pct >= 0.85:
             color = "bold red"
         elif pct >= 0.70:
@@ -3609,8 +4027,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             color = "dim"
         return f"[{color}]{label} {bar}[/{color}]"
 
-    # 根据连接和运行状态刷新顶部标题
+    # 根据连接和运行状态刷新顶部标题，并常驻显示 context 水位
     def _update_header(self, state: str) -> None:
+        self._header_state = state
         try:
             header = self.query_one("#header", Label)
         except NoMatches:
@@ -3629,6 +4048,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         trust_color = "green" if self._workspace_trust == WorkspaceTrust.TRUSTED else "yellow"
         trust = f"  [{trust_color}]{self._workspace_trust.value}[/{trust_color}]"
+        ctx = f"  {self._render_ctx_bar(self._last_context_pct, width=10)}"
         color = {
             "ready": "green",
             "running": "yellow",
@@ -3640,7 +4060,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}{model}{mode}{permission}{trust}  [{color}]{state}[/{color}]"
+            f"{session}{model}{mode}{permission}{trust}{ctx}  [{color}]{state}[/{color}]"
         )
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
@@ -3706,12 +4126,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     self._session_id = str(created["session_id"])
                     self._resume_session_id = self._session_id
                     self._history_loaded = True
+                    self._session_title = ""
+                    self._titled = False
+                    self._first_user_text = ""
                     log.info("session created session_id=%s", self._session_id)
                 else:
                     resumed = await client.send_command(
                         "session.resume", {"session_id": self._resume_session_id}
                     )
+                    resumed_info = resumed.get("session", {})
+                    resumed_title = (
+                        str(resumed_info.get("title", ""))
+                        if isinstance(resumed_info, dict)
+                        else ""
+                    )
                     self._session_id = str(resumed["session"]["session_id"])
+                    self._session_title = resumed_title
+                    self._titled = bool(resumed_title and resumed_title != "Untitled")
                     log.info("session resumed session_id=%s", self._session_id)
                     if not self._history_loaded:
                         history = await client.send_command(
@@ -3795,6 +4226,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 return
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
+            self._update_header(self._header_state)
             return
 
         self._break_llm()
@@ -3809,7 +4241,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             attempt = int(event.get("attempt") or 0)
             self._append(
                 Static(
-                    f"[dim]retrying model response  {escape(kind)} #{attempt}[/dim]",
+                    f"[dim]正在重试模型响应  {escape(kind)} #{attempt}[/dim]",
                     classes="log-line",
                 )
             )
@@ -3828,6 +4260,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         elif t == "session.waiting_for_input":
             self._busy = False
             self._cancel_requested = False
+            self._cancel_armed = False
             self._clear_user_question()
             prompt = self._prompt()
             if prompt is not None:
@@ -3910,6 +4343,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._busy = False
             self._active_run_id = None
             self._cancel_requested = False
+            self._cancel_armed = False
             self._clear_user_question()
             prompt = self._prompt()
             if prompt is not None:
@@ -3935,6 +4369,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._active_run_id = run_id
             self._current_steps.pop(run_id, None)
             self._cancel_requested = False
+            self._cancel_armed = False
 
         elif t == "skill.invoked":
             skill_name = event.get("skill_name", "")
@@ -4063,7 +4498,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self._tool_step_groups.pop(group_key, None)
             self._active_run_id = None
             self._cancel_requested = False
+            self._cancel_armed = False
             if status == "success":
+                self._maybe_autotitle_session()
                 return
             if reason == "cancelled":
                 self._append(Static(
@@ -4136,6 +4573,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             if tool_use_id in self._pending_permission_blocks:
                 perm_block = self._pending_permission_blocks.pop(tool_use_id)
+                denied_tool = escape(perm_block._tool_name)
+                self._append(
+                    Static(
+                        f"[yellow]审批超时或连接断开，{denied_tool} 已按拒绝处理[/yellow]",
+                        classes="log-line",
+                    )
+                )
                 perm_block.remove()
                 try:
                     select = self.query_one(PermissionSelect)

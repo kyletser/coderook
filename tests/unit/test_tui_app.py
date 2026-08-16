@@ -674,25 +674,29 @@ async def test_partial_slash_command_enter_only_completes() -> None:
         assert app.selected == ["model"]
 
 
-# 功能：验证 TUI 内建命令包含模型选择入口
+# 功能：验证 TUI 内建命令包含模型选择、帮助与会话管理入口
 # 设计：直接读取候选列表，避免依赖 socket 连接或完整界面挂载
 def test_tui_builtin_commands_include_model_picker() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     items = dict(app._build_slash_items())  # type: ignore[attr-defined]
 
-    assert items["model"] == "show or switch the active model"
-    assert items["provider"] == "show or switch the active provider route"
-    assert items["doctor"] == "diagnose the active provider route"
-    assert items["copy"] == "copy the latest assistant reply"
-    assert items["plan"] == "analyze read-only and review a plan before implementation"
-    assert items["permissions"] == "review or change the permission mode"
-    assert items["tasks"] == "show tasks from the latest run"
-    assert items["workers"] == "show all durable workers and Fleet workers"
-    assert items["workflow"] == "list, start, or inspect durable workflows"
-    assert items["diff"] == "show current workspace changes"
-    assert items["rewind"] == "restore files from a safe checkpoint"
-    assert items["context"] == "show context size and usage"
-    assert items["skills"] == "list, show, install, remove, or audit skills"
+    assert items["help"] == "显示键位与全部命令"
+    assert items["model"] == "查看或切换模型"
+    assert items["provider"] == "查看或切换 Provider route"
+    assert items["doctor"] == "诊断活动 Provider route"
+    assert items["rename"] == "重命名当前会话：/rename <标题>"
+    assert items["fork"] == "复制当前会话为分支：/fork [标题]"
+    assert items["export"] == "导出当前会话：/export [md|json]"
+    assert items["delete"] == "删除当前会话（需 --yes 确认）"
+    assert items["plan"] == "只读规划并审阅后再实施：/plan [任务]"
+    assert items["permissions"] == "查看或切换权限模式"
+    assert items["tasks"] == "查看最近一次 run 的任务"
+    assert items["workers"] == "查看全部持久 Worker 与 Fleet"
+    assert items["workflow"] == "查看、启动或检查 workflow"
+    assert items["diff"] == "查看工作区改动"
+    assert items["rewind"] == "从安全恢复点回滚文件"
+    assert items["context"] == "查看上下文占用与用量"
+    assert items["skills"] == "列出、查看、安装或删除 skills"
 
 
 # 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录
@@ -793,12 +797,14 @@ async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:
     assert restored == [True]
 
 
+# 功能：验证 TUI 内建命令包含会话选择器与新建会话入口
+# 设计：直接读取候选列表的描述文本，不挂载界面也不依赖 socket
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     items = dict(app._build_slash_items())  # type: ignore[attr-defined]
 
-    assert items["sessions"] == "open saved session picker"
-    assert items["new"] == "start a new chat session"
+    assert items["sessions"] == "打开会话选择器（输入即过滤）"
+    assert items["new"] == "新建会话"
 
 
 # 功能：验证 _preview 超出长度时截断并追加省略号
@@ -1348,6 +1354,10 @@ async def test_input_submit_appends_user_turn_and_keeps_prompt_for_steering() ->
             self.disabled = False
             self.border_title = ""
             self.text = "hello"
+
+        # 输入历史记录在真实 ChatTextArea 上，fake 桩无需落盘
+        def record_history(self, _text: str) -> None:
+            return None
 
     class _FakeEvent:
         def __init__(self, area: _FakeArea) -> None:

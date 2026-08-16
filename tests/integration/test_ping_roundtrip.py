@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 
+import code_rook
 from code_rook.core.bus.envelope import AUTH_REQUIRED
 
 
@@ -62,7 +63,7 @@ async def test_ping_returns_pong(
     assert resp["jsonrpc"] == "2.0"
     assert resp["id"] == "test-1"
     assert "result" in resp
-    assert resp["result"]["server_version"] == "0.0.1"
+    assert resp["result"]["server_version"] == code_rook.__version__
     assert resp["result"]["uptime_ms"] >= 0
     assert "received_at" in resp["result"]
 
