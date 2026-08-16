@@ -35,7 +35,10 @@ class DiagnosticsReport(BaseModel):
     def render_context(self) -> str:
         if not self.diagnostics:
             return ""
-        lines = ["## Transient Python Diagnostics"]
+        title = f"## Transient Diagnostics ({self.tool})" if self.tool else (
+            "## Transient Diagnostics"
+        )
+        lines = [title]
         for item in self.diagnostics:
             rule = f" [{item.rule}]" if item.rule else ""
             lines.append(

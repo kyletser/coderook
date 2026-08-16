@@ -122,6 +122,7 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
         "checkpoint_list": (),
         "checkpoint_rewind": ("checkpoint_id",),
         "read_file": ("path",),
+        "read_image": ("path",),
         "edit_file": ("path",),
         "write_file": ("path",),
         "list_dir": ("path", "max_depth"),
@@ -162,6 +163,7 @@ _TOOL_ACTIONS: dict[str, tuple[str, str]] = {
     "memory_search": ("正在搜索项目记忆", "已搜索项目记忆"),
     "note_save": ("正在保存笔记", "已保存笔记"),
     "read_file": ("正在读取", "已读取"),
+    "read_image": ("正在读取图片", "已读取图片"),
     "spawn_agent": ("正在启动子代理", "已启动子代理"),
     "task_claim": ("正在认领任务", "已认领任务"),
     "task_create": ("正在创建任务", "已创建任务"),
@@ -213,7 +215,7 @@ def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
         return _preview(str(params.get("job_id", "background job")), 110)
     if tool_name == "bash":
         return _preview(str(params.get("command", "")), 110)
-    if tool_name in {"read_file", "edit_file", "write_file", "list_dir"}:
+    if tool_name in {"read_file", "edit_file", "write_file", "list_dir", "read_image"}:
         return _preview(str(params.get("path", ".")), 110)
     if tool_name in {"glob", "grep"}:
         pattern = str(params.get("pattern", ""))
@@ -4123,6 +4125,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         "skill.*",
                         "plan.*",
                         "user_question.*",
+                        "lsp.*",
                     ],
                     "scope": "global",
                 }
@@ -4601,6 +4604,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         p.read_only = False
                         p.border_title = _PROMPT_READY
                         p.focus()
+
+        elif t == "lsp.diagnostics":
+            status = str(event.get("status", ""))
+            tool = escape(str(event.get("tool", "")))
+            count = int(event.get("diagnostic_count", 0))
+            paths = ", ".join(str(p) for p in event.get("paths", [])[:3])
+            if status == "ok" and count == 0:
+                line = f"[green]诊断通过[/green]  [dim]{tool} · {escape(paths)}[/dim]"
+            elif status == "ok":
+                line = (
+                    f"[yellow]诊断发现 {count} 条问题[/yellow]  "
+                    f"[dim]{tool} · {escape(paths)}[/dim]"
+                )
+            else:
+                error = escape(str(event.get("error", ""))[:120])
+                line = f"[dim]诊断降级 {status} · {tool} · {error}[/dim]"
+            self._append(Static(line, classes="log-line"))
 
         elif t == "log.line":
             level = event.get("level", "INFO")

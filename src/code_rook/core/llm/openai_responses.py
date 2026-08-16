@@ -35,12 +35,25 @@ def _to_responses_input(messages: list[dict[str, object]]) -> list[dict[str, obj
         if not isinstance(content, list):
             continue
         text_parts: list[str] = []
+        image_parts: list[dict[str, object]] = []
         for block in content:
             if not isinstance(block, dict):
                 continue
             block_type = block.get("type")
             if block_type == "text" and isinstance(block.get("text"), str):
                 text_parts.append(str(block["text"]))
+            elif block_type == "image":
+                source = block.get("source")
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    media_type = str(source.get("media_type", ""))
+                    data = str(source.get("data", ""))
+                    if media_type and data:
+                        image_parts.append(
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{media_type};base64,{data}",
+                            }
+                        )
             elif block_type == "tool_use":
                 items.append(
                     {
@@ -62,8 +75,15 @@ def _to_responses_input(messages: list[dict[str, object]]) -> list[dict[str, obj
                         "output": str(block.get("content", "")),
                     }
                 )
-        if text_parts:
-            items.append({"role": role, "content": "".join(text_parts)})
+        if text_parts or image_parts:
+            if image_parts:
+                parts: list[dict[str, object]] = [
+                    {"type": "input_text", "text": "".join(text_parts)}
+                ]
+                parts.extend(image_parts)
+                items.append({"role": role, "content": parts})
+            else:
+                items.append({"role": role, "content": "".join(text_parts)})
     return items
 
 

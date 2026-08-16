@@ -53,6 +53,8 @@ class ExecutionContext:
     runtime_mode: RuntimeMode = RuntimeMode.ACT
     working_set: WorkingSet = field(default_factory=WorkingSet)
     transient_context: str = ""
+    # 工具产生的待发送图片块，随下一次模型请求注入后清空
+    pending_images: list[dict[str, Any]] = field(default_factory=list)
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
 
@@ -136,6 +138,10 @@ class ExecutionContext:
     # 保存只在下一次有效模型响应前可见的临时诊断上下文
     def set_transient_context(self, content: str) -> None:
         self.transient_context = content.strip()
+
+    # 登记一张随下一次模型请求发送的图片块
+    def add_pending_image(self, image_block: dict[str, Any]) -> None:
+        self.pending_images.append(image_block)
 
     # 清除已经交付给模型的临时上下文，避免永久污染后续历史
     def clear_transient_context(self) -> None:

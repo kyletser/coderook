@@ -31,7 +31,7 @@ from code_rook.core.events.writer import EventWriter
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.loop import AgentLoop
-from code_rook.core.lsp import PythonDiagnosticsClient
+from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import new_run_id
 from code_rook.core.skills.loader import SkillLoader
@@ -585,7 +585,7 @@ class SpawnAgentTool(BaseTool):
             artifact_store=ArtifactStore(
                 child_boundary.root / ".coderook" / "artifacts"
             ),
-            diagnostics_client=PythonDiagnosticsClient(child_boundary),
+            diagnostics_client=WorkspaceDiagnosticsClient(child_boundary),
             hooks=self._hooks,
             interaction_manager=self._interaction_manager,
         )

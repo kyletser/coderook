@@ -25,7 +25,7 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
-from code_rook.core.lsp import PythonDiagnosticsClient
+from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.prefix_fingerprint import PrefixFingerprintTracker
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.invocation import invoke_tool
@@ -252,7 +252,7 @@ class AgentLoop:
         stuck_guard: StuckGuard | None = None,
         read_guard: ReadRepeatGuard | None = None,
         retry_backoff_s: float = 0.5,
-        diagnostics_client: PythonDiagnosticsClient | None = None,
+        diagnostics_client: WorkspaceDiagnosticsClient | None = None,
         prefix_tracker: PrefixFingerprintTracker | None = None,
     ) -> None:
         if retry_backoff_s < 0:
@@ -346,64 +346,89 @@ class AgentLoop:
             )
         )
 
-        while True:
-            # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
-            async def _attempt(monitored_bus: EventBus) -> LlmResponse:
-                return await self._provider.chat(
-                    messages=context.messages,
-                    tool_schemas=tool_schemas,
-                    bus=monitored_bus,
-                    run_id=context.run_id,
-                    step=context.step,
-                    system=system_prompt,
-                )
+        flushed_images = self._flush_pending_images(context)
+        try:
+            while True:
+                # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
+                async def _attempt(monitored_bus: EventBus) -> LlmResponse:
+                    return await self._provider.chat(
+                        messages=context.messages,
+                        tool_schemas=tool_schemas,
+                        bus=monitored_bus,
+                        run_id=context.run_id,
+                        step=context.step,
+                        system=system_prompt,
+                    )
 
-            try:
-                response = await self._watchdog.run(_attempt, self._bus)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if (
-                    transient_retries >= _MAX_TRANSIENT_RETRIES
-                    or not self._is_transient_error(exc)
-                ):
+                try:
+                    response = await self._watchdog.run(_attempt, self._bus)
+                except asyncio.CancelledError:
                     raise
-                transient_retries += 1
+                except Exception as exc:
+                    if (
+                        transient_retries >= _MAX_TRANSIENT_RETRIES
+                        or not self._is_transient_error(exc)
+                    ):
+                        raise
+                    transient_retries += 1
+                    await self._bus.publish(
+                        LlmRetryEvent(
+                            run_id=context.run_id,
+                            step=context.step,
+                            kind="transient",
+                            attempt=transient_retries,
+                            reason=str(exc),
+                            ts=_now(),
+                        )
+                    )
+                    if self._retry_backoff_s > 0:
+                        await asyncio.sleep(
+                            self._retry_backoff_s * (2 ** (transient_retries - 1))
+                        )
+                    else:
+                        await self._cancellation_checkpoint()
+                    continue
+
+                if not self._is_no_content(response):
+                    context.clear_transient_context()
+                    return self._normalize_stop_reason(response)
+                if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
+                    raise NoContentResponseError(
+                        "provider returned no text, reasoning, or tool calls"
+                    )
+                no_content_retries += 1
                 await self._bus.publish(
                     LlmRetryEvent(
                         run_id=context.run_id,
                         step=context.step,
-                        kind="transient",
-                        attempt=transient_retries,
-                        reason=str(exc),
+                        kind="no_content",
+                        attempt=no_content_retries,
+                        reason="provider returned no text, reasoning, or tool calls",
                         ts=_now(),
                     )
                 )
-                if self._retry_backoff_s > 0:
-                    await asyncio.sleep(
-                        self._retry_backoff_s * (2 ** (transient_retries - 1))
-                    )
-                else:
-                    await self._cancellation_checkpoint()
-                continue
+        finally:
+            if flushed_images:
+                self._placeholder_flushed_images(context)
 
-            if not self._is_no_content(response):
-                context.clear_transient_context()
-                return self._normalize_stop_reason(response)
-            if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
-                raise NoContentResponseError(
-                    "provider returned no text, reasoning, or tool calls"
-                )
-            no_content_retries += 1
-            await self._bus.publish(
-                LlmRetryEvent(
-                    run_id=context.run_id,
-                    step=context.step,
-                    kind="no_content",
-                    attempt=no_content_retries,
-                    reason="provider returned no text, reasoning, or tool calls",
-                    ts=_now(),
-                )
+    # 把工具登记的图片块注入下一条 user 消息，仅随下一次模型请求发送
+    def _flush_pending_images(self, context: ExecutionContext) -> int:
+        if not context.pending_images:
+            return 0
+        blocks = list(context.pending_images)
+        context.pending_images = []
+        context.messages.append({"role": "user", "content": blocks})
+        return len(blocks)
+
+    # 请求结束后用文本占位符替换已发送的图片消息，避免 base64 永久占据历史
+    def _placeholder_flushed_images(self, context: ExecutionContext) -> None:
+        if not context.messages:
+            return
+        last = context.messages[-1]
+        if last.get("role") == "user" and isinstance(last.get("content"), list):
+            last["content"] = (
+                "[image(s) from read_image were delivered to the model with the "
+                "previous request; pixels omitted from history to save context]"
             )
 
     # 归一化非标准 stop_reason：带工具调用统一为 tool_use（max_tokens 除外），
@@ -724,6 +749,9 @@ class AgentLoop:
         context: ExecutionContext,
     ) -> bool:
         context.add_tool_result(tc.id, result.content, is_error=result.is_error)
+        if result.images:
+            for image_block in result.images:
+                context.add_pending_image(dict(image_block))
         if self._transcript is not None:
             self._transcript.append_tool_result(
                 context.step,

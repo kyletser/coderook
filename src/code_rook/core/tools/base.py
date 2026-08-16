@@ -24,6 +24,8 @@ class ToolResult:
     is_error: bool = False
     # "runtime_error" | "timeout" | "schema_error" | "permission_denied" | "conflict"
     error_type: str | None = None
+    # 可选多模态附件：Anthropic 风格 image block dict，随下一次模型请求发送
+    images: list[dict[str, object]] | None = None
 
 
 class ToolRetryPolicy(StrEnum):

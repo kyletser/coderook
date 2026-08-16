@@ -23,7 +23,7 @@ from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_llm_provider, create_provider_for_route
 from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 from code_rook.core.loop import AgentLoop
-from code_rook.core.lsp import PythonDiagnosticsClient
+from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore, load_context_file, load_project_instructions
 from code_rook.core.permissions.manager import PermissionManager
@@ -102,7 +102,7 @@ class AgentRunner:
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
-        self._diagnostics_client = PythonDiagnosticsClient(self._workspace_boundary)
+        self._diagnostics_client = WorkspaceDiagnosticsClient(self._workspace_boundary)
         self._tool_assembly = RuntimeToolAssembly(
             workspace_boundary=self._workspace_boundary,
             artifact_store=self._artifact_store,

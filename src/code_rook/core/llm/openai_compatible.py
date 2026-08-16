@@ -351,6 +351,18 @@ def _to_openai_tools(tool_schemas: list[dict[str, object]]) -> list[dict[str, ob
     ]
 
 
+# 把内部 image block 转为 OpenAI data URI，结构不完整时返回 None
+def _image_block_to_data_uri(block: dict[str, object]) -> str | None:
+    source = block.get("source")
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None
+    media_type = str(source.get("media_type", ""))
+    data = str(source.get("data", ""))
+    if not media_type or not data:
+        return None
+    return f"data:{media_type};base64,{data}"
+
+
 def _to_openai_messages(
     messages: list[dict[str, object]],
     system: str,
@@ -404,6 +416,7 @@ def _to_openai_messages(
 
         if role == "user" and isinstance(content, list):
             normal_parts: list[str] = []
+            image_parts: list[dict[str, object]] = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
@@ -417,7 +430,21 @@ def _to_openai_messages(
                     )
                 elif block.get("type") == "text":
                     normal_parts.append(str(block.get("text", "")))
-            if normal_parts:
+                elif block.get("type") == "image":
+                    data_uri = _image_block_to_data_uri(block)
+                    if data_uri is not None:
+                        image_parts.append(
+                            {"type": "image_url", "image_url": {"url": data_uri}}
+                        )
+            if image_parts:
+                user_content: list[dict[str, object]] = []
+                if normal_parts:
+                    user_content.append(
+                        {"type": "text", "text": "\n".join(normal_parts)}
+                    )
+                user_content.extend(image_parts)
+                converted.append({"role": "user", "content": user_content})
+            elif normal_parts:
                 converted.append({"role": "user", "content": "\n".join(normal_parts)})
             continue
 

@@ -38,6 +38,7 @@ from code_rook.core.tools.builtin import (
     MemorySearchTool,
     NoteSaveTool,
     ReadFileTool,
+    ReadImageTool,
     SkillTool,
     TaskClaimTool,
     TaskCreateTool,
@@ -266,6 +267,9 @@ class RuntimeToolAssembly:
         for web_tool in (WebFetchTool(), WebSearchTool()):
             if _ok(web_tool):
                 registry.register(web_tool)
+        image_tool = ReadImageTool(self._boundary)
+        if _ok(image_tool):
+            registry.register(image_tool)
         search_tool = ToolSearchTool(registry)
         if _ok(search_tool):
             registry.register(search_tool)
