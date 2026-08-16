@@ -30,6 +30,7 @@ class _StubProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         return next(self._responses)
 

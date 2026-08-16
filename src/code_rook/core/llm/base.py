@@ -18,4 +18,5 @@ class LLMProvider(Protocol):
         step: int = 0,
         system: str | None = None,
         model: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse: ...

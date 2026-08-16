@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import (
     AgentDecisionEvent,
     AgentStuckEvent,
@@ -254,6 +255,7 @@ class AgentLoop:
         retry_backoff_s: float = 0.5,
         diagnostics_client: WorkspaceDiagnosticsClient | None = None,
         prefix_tracker: PrefixFingerprintTracker | None = None,
+        escalate_plan_thinking: bool = False,
     ) -> None:
         if retry_backoff_s < 0:
             raise ValueError("retry_backoff_s must not be negative")
@@ -278,6 +280,7 @@ class AgentLoop:
         self._retry_backoff_s = retry_backoff_s
         self._diagnostics_client = diagnostics_client
         self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
+        self._escalate_plan_thinking = escalate_plan_thinking
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -358,6 +361,7 @@ class AgentLoop:
                         run_id=context.run_id,
                         step=context.step,
                         system=system_prompt,
+                        thinking=self._thinking_override_for(context),
                     )
 
                 try:
@@ -419,6 +423,12 @@ class AgentLoop:
         context.pending_images = []
         context.messages.append({"role": "user", "content": blocks})
         return len(blocks)
+
+    # PLAN 模式且 route 已启用 thinking 时返回 high 档覆盖，Act 保持 route 配置
+    def _thinking_override_for(self, context: ExecutionContext) -> str | None:
+        if self._escalate_plan_thinking and context.runtime_mode == RuntimeMode.PLAN:
+            return "high"
+        return None
 
     # 请求结束后用文本占位符替换已发送的图片消息，避免 base64 永久占据历史
     def _placeholder_flushed_images(self, context: ExecutionContext) -> None:

@@ -15,6 +15,8 @@ ProviderKind = Literal[
 ]
 WireFormat = Literal["openai_chat", "openai_responses", "anthropic_messages"]
 CredentialSource = Literal["keyring", "file", "env", "missing"]
+# 推理预算档位：off 关闭；low/medium/high 由各 wire format 映射为原生参数
+ThinkingLevel = Literal["off", "low", "medium", "high"]
 
 
 # 判断主机名是否只指向本机，供明文 HTTP 安全校验使用
@@ -51,6 +53,8 @@ class ProviderRoute(BaseModel):
     supports_tools: bool = True
     supports_parallel_tools: bool = True
     supports_prompt_cache: bool = False
+    # 推理预算档位；off 表示不请求 extended thinking / reasoning effort
+    thinking: ThinkingLevel = "off"
 
     @model_validator(mode="after")
     # 拒绝 URL 内嵌凭据及非 loopback 明文 HTTP，防止密钥被发送到不安全端点

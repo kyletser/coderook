@@ -21,6 +21,12 @@ _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 
 _MAX_STREAM_RETRIES = 3
 _RETRY_BACKOFF_S = (1.0, 2.0, 4.0)
+# thinking 档位 -> (budget_tokens, max_tokens)；max_tokens 必须大于 budget_tokens
+_THINKING_BUDGETS: dict[str, tuple[int, int]] = {
+    "low": (4_096, 12_288),
+    "medium": (8_192, 16_384),
+    "high": (16_384, 24_576),
+}
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +34,17 @@ log = logging.getLogger(__name__)
 # 返回指定模型的最大 context window token 数
 def _context_window(model: str) -> int:
     return _MODEL_CONTEXT_WINDOWS.get(model, 200_000)
+
+
+# 把 thinking 档位映射为 Anthropic 的 budget_tokens 与配套 max_tokens
+def anthropic_thinking_params(
+    thinking: str,
+) -> tuple[int, dict[str, object] | None]:
+    mapped = _THINKING_BUDGETS.get(thinking)
+    if mapped is None:
+        return 8_192, None
+    budget, max_tokens = mapped
+    return max_tokens, {"type": "enabled", "budget_tokens": budget}
 
 
 _SYSTEM_PROMPT = (
@@ -52,6 +69,7 @@ class AnthropicProvider:
         api_key: str | None = None,
         base_url: str = "",
         context_window: int | None = None,
+        thinking: str = "off",
     ) -> None:
         self._client: Any
         if client is None:
@@ -69,6 +87,7 @@ class AnthropicProvider:
             self._client = client
         self._model = model
         self._context_window = context_window
+        self._thinking = thinking
 
     # 流式调用 Anthropic API，逐 token 发布事件并返回 LlmResponse；网络中断时自动重试
     async def chat(
@@ -81,11 +100,15 @@ class AnthropicProvider:
         step: int = 0,
         system: str | None = None,
         model: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         resolved_model = model or self._model
         await bus.publish(
             LlmModelSelectedEvent(run_id=run_id, model=resolved_model, strategy="static", ts=_now())
         )
+
+        effective_thinking = thinking if thinking is not None else self._thinking
+        max_tokens, thinking_param = anthropic_thinking_params(effective_thinking)
 
         system_blocks: list[dict[str, object]] = [
             {
@@ -103,10 +126,12 @@ class AnthropicProvider:
 
         kwargs: dict[str, object] = {
             "model": resolved_model,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens,
             "system": system_blocks,
             "messages": messages,
         }
+        if thinking_param is not None:
+            kwargs["thinking"] = thinking_param
         if tools:
             kwargs["tools"] = tools
 
@@ -161,6 +186,7 @@ class AnthropicProvider:
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_create,
                 context_pct=context_pct,
+                model=resolved_model,
                 ts=_now(),
             )
         )

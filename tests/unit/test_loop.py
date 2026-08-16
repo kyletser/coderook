@@ -40,6 +40,7 @@ class _MockProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         if self._exc is not None:
             raise self._exc
@@ -149,6 +150,7 @@ async def test_steering_arriving_during_end_turn_forces_next_decision() -> None:
             *,
             step: int = 0,
             system: str | None = None,
+            thinking: str | None = None,
         ) -> LlmResponse:
             self.calls += 1
             self.seen_messages.append([dict(message) for message in messages])
@@ -450,6 +452,7 @@ async def test_context_overflow_compacts_and_recovers(tmp_path: Path) -> None:
             *,
             step: int = 0,
             system: str | None = None,
+            thinking: str | None = None,
         ) -> LlmResponse:
             self.calls += 1
             if self.calls == 1:

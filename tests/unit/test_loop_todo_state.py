@@ -31,6 +31,7 @@ class _ScriptedProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         self.seen_systems.append(system or "")
         return next(self._responses)

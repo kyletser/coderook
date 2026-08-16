@@ -80,6 +80,7 @@ class _CapturingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         self.systems.append(system or "")
         return next(self._responses)

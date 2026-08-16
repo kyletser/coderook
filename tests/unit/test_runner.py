@@ -35,6 +35,7 @@ class _EndTurnProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         return LlmResponse(stop_reason="end_turn", text="done")
 
@@ -54,6 +55,7 @@ class _LoopingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         self._call += 1
         tc = ToolCallBlock(id=f"t{self._call}", name="unknown_tool", input={})
@@ -78,6 +80,7 @@ class _CapturingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         self.messages = [dict(m) for m in messages]
         self.tool_schemas = [dict(schema) for schema in tool_schemas]
@@ -103,6 +106,7 @@ class _ForcedPlanWriteProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         self.calls += 1
         if self.calls == 1:
@@ -429,6 +433,7 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
             *,
             step: int = 0,
             system: str | None = None,
+            thinking: str | None = None,
         ) -> LlmResponse:
             self.calls += 1
             if self.calls == 1:
@@ -498,6 +503,7 @@ async def test_cancelled_runner_fills_skipped_tool_results(tmp_path: Path) -> No
             *,
             step: int = 0,
             system: str | None = None,
+            thinking: str | None = None,
         ) -> LlmResponse:
             command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
             return LlmResponse(

@@ -161,12 +161,14 @@ class OpenAIResponsesProvider:
         base_url: str,
         api_key: str,
         context_window: int | None = None,
+        thinking: str = "off",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url
         self._api_key = api_key
         self._context_window = context_window or _DEFAULT_CONTEXT_WINDOW
+        self._thinking = thinking
         self._client = client
 
     # 调用 Responses API 并把正文、reasoning summary、工具调用和 usage 投影为统一事件
@@ -180,6 +182,7 @@ class OpenAIResponsesProvider:
         step: int = 0,
         system: str | None = None,
         model: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         resolved_model = model or self._model
         await bus.publish(
@@ -190,6 +193,7 @@ class OpenAIResponsesProvider:
                 ts=_now(),
             )
         )
+        effective_thinking = thinking if thinking is not None else self._thinking
         payload: dict[str, object] = {
             "model": resolved_model,
             "input": _to_responses_input(messages),
@@ -198,6 +202,8 @@ class OpenAIResponsesProvider:
             "store": False,
             "stream": True,
         }
+        if effective_thinking in {"low", "medium", "high"}:
+            payload["reasoning"] = {"effort": effective_thinking}
         tools = _to_responses_tools(tool_schemas)
         if tools:
             payload["tools"] = tools
@@ -234,6 +240,7 @@ class OpenAIResponsesProvider:
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=0,
                 context_pct=context_pct,
+                model=resolved_model,
                 ts=_now(),
             )
         )

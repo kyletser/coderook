@@ -326,6 +326,10 @@ class AgentRunner:
                     interaction_manager=self._interaction_manager,
                     artifact_store=self._artifact_store,
                     diagnostics_client=self._diagnostics_client,
+                    escalate_plan_thinking=(
+                        route_binding is not None
+                        and route_binding.route.thinking != "off"
+                    ),
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager

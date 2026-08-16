@@ -117,6 +117,8 @@ class LlmUsageEvent(BaseModel):
     cache_read_input_tokens: int
     cache_creation_input_tokens: int
     context_pct: float = 0.0
+    # 计费模型名，供成本估算；旧事件可能缺省
+    model: str = ""
     ts: str
 
 

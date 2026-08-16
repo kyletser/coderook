@@ -18,6 +18,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             api_key=credential,
             base_url=str(route.base_url).rstrip("/"),
             context_window=route.context_window,
+            thinking=route.thinking,
         )
     if route.wire_format == "openai_chat":
         return OpenAICompatibleProvider(
@@ -27,6 +28,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             api_key=credential,
             use_max_completion_tokens=route.provider == "openai",
             context_window=route.context_window,
+            thinking=route.thinking,
         )
     if route.wire_format == "openai_responses":
         return OpenAIResponsesProvider(
@@ -34,6 +36,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             base_url=str(route.base_url).rstrip("/"),
             api_key=credential,
             context_window=route.context_window,
+            thinking=route.thinking,
         )
     raise SystemExit(f"Unsupported route wire format: {route.wire_format}")
 

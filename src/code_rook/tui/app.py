@@ -23,6 +23,13 @@ from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTru
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctor
+from code_rook.core.llm.pricing import (
+    cache_read_savings,
+    estimate_cost,
+    format_cost,
+    get_pricing,
+    load_pricing_overrides,
+)
 from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
     ProviderPreset,
@@ -1983,6 +1990,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._session_title = ""
         self._titled = False
         self._first_user_text = ""
+        # 会话级成本累计：总额、按模型分解、缓存节省、无价模型标记
+        self._cost_total: float = 0.0
+        self._cost_by_model: dict[str, float] = {}
+        self._tokens_by_model: dict[str, dict[str, int]] = {}
+        self._cache_saved_total: float = 0.0
+        self._unpriced_models: set[str] = set()
+        self._pricing_overrides = load_pricing_overrides()
         self._authority_preset = "ask"
         self._input_runtime_mode = RuntimeMode.ACT
         self._workspace_trust = WorkspaceTrust.UNTRUSTED
@@ -2041,6 +2055,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("diff", "查看工作区改动"),
             ("rewind", "从安全恢复点回滚文件"),
             ("context", "查看上下文占用与用量"),
+            ("cost", "查看本会话成本分解与缓存节省"),
             ("turn", "检查 route、用量、审批与收据"),
             ("skills", "列出、查看、安装或删除 skills"),
         ]
@@ -2747,6 +2762,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             event.text_area.text = ""
             self._copy_last_response()
             return
+        if content == "/cost":
+            event.text_area.text = ""
+            self._show_cost_breakdown()
+            return
         # 检测 /compact 指令
         if content == "/compact":
             event.text_area.text = ""
@@ -3383,11 +3402,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         lines = ["[bold cyan]Provider routes[/bold cyan]"]
         for route in routes:
             marker = "[green]●[/green]" if active is not None and route.id == active.id else "○"
+            meta = f"{route.wire_format} · {route.model}"
+            if route.thinking != "off":
+                meta += f" · thinking={route.thinking}"
             lines.append(
                 f"{marker} [bold]{escape(route.id)}[/bold]  "
-                f"[dim]{escape(route.wire_format)} · {escape(route.model)}[/dim]"
+                f"[dim]{escape(meta)}[/dim]"
             )
-        lines.append("[dim]切换：/provider <route-id>[/dim]")
+        lines.append("[dim]切换：/provider <route-id>；thinking 档位在 routes.json 中配置[/dim]")
         self._append(Static("\n".join(lines), classes="log-line"))
 
     # 切换后续 turn 使用的活动 route，并立即刷新 TUI 顶栏
@@ -3750,6 +3772,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._session_title = title or ""
         self._titled = bool(title and title != "Untitled")
         self._first_user_text = ""
+        self._reset_cost_state()
         await self._refresh_authority()
         label = "resumed" if resume else "new session"
         self._append(
@@ -4037,6 +4060,77 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             color = "dim"
         return f"[{color}]{label} {bar}[/{color}]"
 
+    # 复位会话级成本累计状态
+    def _reset_cost_state(self) -> None:
+        self._cost_total = 0.0
+        self._cost_by_model = {}
+        self._tokens_by_model = {}
+        self._cache_saved_total = 0.0
+        self._unpriced_models = set()
+
+    # 把一次 llm.usage 的用量折算为成本并累计到会话分解中
+    def _accumulate_cost(self, event: dict[str, Any]) -> None:
+        model = str(event.get("model", "") or self._model or "unknown")
+        pricing = get_pricing(model, self._pricing_overrides)
+        if pricing is None:
+            self._unpriced_models.add(model)
+            return
+        input_tokens = int(event.get("input_tokens", 0) or 0)
+        output_tokens = int(event.get("output_tokens", 0) or 0)
+        cache_read = int(event.get("cache_read_input_tokens", 0) or 0)
+        cache_write = int(event.get("cache_creation_input_tokens", 0) or 0)
+        cost = estimate_cost(
+            pricing,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+        self._cost_total += cost
+        self._cost_by_model[model] = self._cost_by_model.get(model, 0.0) + cost
+        bucket = self._tokens_by_model.setdefault(
+            model,
+            {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+        )
+        bucket["input"] += input_tokens
+        bucket["output"] += output_tokens
+        bucket["cache_read"] += cache_read
+        bucket["cache_write"] += cache_write
+        self._cache_saved_total += cache_read_savings(pricing, cache_read)
+
+    # 在日志中渲染本会话成本分解：总额、按模型、缓存节省与无价模型提示
+    def _show_cost_breakdown(self) -> None:
+        lines = ["[bold cyan]Cost[/bold cyan]  本 TUI 进程内累计"]
+        lines.append(f"  总计 [bold]{format_cost(self._cost_total)}[/bold]")
+        if self._cost_by_model:
+            for model in sorted(self._cost_by_model):
+                bucket = self._tokens_by_model[model]
+                cost = self._cost_by_model[model]
+                lines.append(
+                    f"  {escape(model)}  [bold]{format_cost(cost)}[/bold]"
+                    f"  [dim]in={bucket['input']} out={bucket['output']} "
+                    f"cache_read={bucket['cache_read']} "
+                    f"cache_write={bucket['cache_write']}[/dim]"
+                )
+        if self._cache_saved_total > 0:
+            lines.append(
+                f"  缓存命中节省约 [green]{format_cost(self._cache_saved_total)}[/green]"
+            )
+        if self._unpriced_models:
+            names = ", ".join(sorted(self._unpriced_models))
+            lines.append(
+                f"  [yellow]{escape(names)} 无单价，未计入；"
+                "可在 ~/.coderook/pricing.toml 配置[/yellow]"
+            )
+        if not self._cost_by_model and not self._unpriced_models:
+            lines.append("  [dim]本会话还没有可计费的模型用量。[/dim]")
+        lines.append(
+            "[dim]单价为内置参考价，可在 ~/.coderook/pricing.toml 用 "
+            "[models.\"<id>\"] input=3.0 output=15.0 覆盖；"
+            "子代理用量未计入本视图。[/dim]"
+        )
+        self._append(Static("\n".join(lines), classes="log-line"))
+
     # 根据连接和运行状态刷新顶部标题，并常驻显示 context 水位
     def _update_header(self, state: str) -> None:
         self._header_state = state
@@ -4059,6 +4153,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         trust_color = "green" if self._workspace_trust == WorkspaceTrust.TRUSTED else "yellow"
         trust = f"  [{trust_color}]{self._workspace_trust.value}[/{trust_color}]"
         ctx = f"  {self._render_ctx_bar(self._last_context_pct, width=10)}"
+        cost = (
+            f"  [dim]${self._cost_total:.4f}[/dim]"
+            if self._cost_total >= 0.0001
+            else ""
+        )
         color = {
             "ready": "green",
             "running": "yellow",
@@ -4070,7 +4169,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}{model}{mode}{permission}{trust}{ctx}  [{color}]{state}[/{color}]"
+            f"{session}{model}{mode}{permission}{trust}{ctx}{cost}"
+            f"  [{color}]{state}[/{color}]"
         )
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
@@ -4237,6 +4337,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 return
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
+            self._accumulate_cost(event)
             self._update_header(self._header_state)
             return
 

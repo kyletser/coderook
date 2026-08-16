@@ -6167,6 +6167,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `cache_read_input_tokens` | `integer` | yes |
 | `cache_creation_input_tokens` | `integer` | yes |
 | `context_pct` | `number` | no |
+| `model` | `string` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -6202,6 +6203,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": 0.0,
       "title": "Context Pct",
       "type": "number"
+    },
+    "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
     },
     "ts": {
       "title": "Ts",

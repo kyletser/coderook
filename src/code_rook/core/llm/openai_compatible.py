@@ -62,6 +62,7 @@ class OpenAICompatibleProvider:
         api_key: str | None = None,
         use_max_completion_tokens: bool = False,
         context_window: int | None = None,
+        thinking: str = "off",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -74,6 +75,7 @@ class OpenAICompatibleProvider:
         self._api_key = resolved_key
         self._use_max_completion_tokens = use_max_completion_tokens
         self._context_window = context_window
+        self._thinking = thinking
         self._client = client
 
     async def chat(
@@ -86,6 +88,7 @@ class OpenAICompatibleProvider:
         step: int = 0,
         system: str | None = None,
         model: str | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         resolved_model = model or self._model
         await bus.publish(
@@ -97,21 +100,31 @@ class OpenAICompatibleProvider:
             )
         )
 
-        deepseek_thinking = (
+        is_deepseek = (
             "api.deepseek.com" in self._base_url
             and resolved_model.startswith("deepseek-")
         )
+        if thinking is not None:
+            effective_thinking = thinking
+        elif self._thinking != "off":
+            effective_thinking = self._thinking
+        elif is_deepseek:
+            # 兼容旧行为：DeepSeek 域名未显式配置时保持默认高推理
+            effective_thinking = "high"
+        else:
+            effective_thinking = "off"
         payload: dict[str, object] = {
             "model": resolved_model,
             "messages": _to_openai_messages(
                 messages,
                 system or _SYSTEM_PROMPT,
-                include_reasoning=deepseek_thinking,
+                include_reasoning=effective_thinking != "off",
             ),
         }
-        if deepseek_thinking:
-            payload["thinking"] = {"type": "enabled"}
-            payload["reasoning_effort"] = "high"
+        if effective_thinking in {"low", "medium", "high"}:
+            payload["reasoning_effort"] = effective_thinking
+            if is_deepseek:
+                payload["thinking"] = {"type": "enabled"}
         max_tokens_field = (
             "max_completion_tokens" if self._use_max_completion_tokens else "max_tokens"
         )
@@ -163,6 +176,7 @@ class OpenAICompatibleProvider:
                 cache_read_input_tokens=0,
                 cache_creation_input_tokens=0,
                 context_pct=context_pct,
+                model=resolved_model,
                 ts=_now(),
             )
         )

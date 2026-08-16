@@ -244,7 +244,9 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 
 ---
 
-### 阶段 2（第 5-8 周）：智能与经济性 ⬜ 未开始（下一步，建议从 W2.1 成本核算起步）
+### 阶段 2（第 5-8 周）：智能与经济性 🔶 进行中（2026-08-17 起）
+
+> 状态：**W2.1 成本核算 ✅ 已完成**（pricing 模块：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖 + 前缀匹配；`llm.usage` 事件新增 `model` 字段；TUI 顶栏常驻累计成本、`/cost` 分解视图含缓存节省与无价模型提示；TurnReceipt 侧成本落地为顺延项）。**W2.2 thinking 预算 ✅ 已完成**（route 新增 `thinking: off|low|medium|high` 字段；Anthropic 映射 budget_tokens 并同步抬高 max_tokens、Responses 映射 `reasoning.effort`、openai_chat 映射 `reasoning_effort` 且保留 DeepSeek 域名默认高推理的兼容行为；PLAN 模式在 route 启用 thinking 时自动升 high 档——"规划用高推理、执行用配置档"；TUI `/provider` 列表显示 thinking 档位）。**W2.3/W2.4/W2.5 ⬜ 未开始**。
 
 > 目标：让重度用户"用得起、看得清、跑得完"——成本可见、推理可控、缓存可省、长任务不断。
 
