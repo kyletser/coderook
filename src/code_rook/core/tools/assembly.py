@@ -13,6 +13,7 @@ from code_rook.core.llm.base import LLMProvider
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillLoader
@@ -106,6 +107,8 @@ class RuntimeToolAssembly:
         self._mcp_manager = mcp_manager
         self._route_registry = route_registry
         self._hooks = hooks
+        # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
+        self._persistent_pool = PersistentShellPool()
 
     # 根据本次 run 的动态依赖构建完整且受 Mode/白名单裁剪的工具目录
     def build(
@@ -160,7 +163,11 @@ class RuntimeToolAssembly:
             GitDiffTool(self._boundary),
             allowed_names=allowed,
         )
-        shell = BashTool(self._boundary.root)
+        shell = BashTool(
+            self._boundary.root,
+            persistent_pool=self._persistent_pool,
+            persistent_key=session_id,
+        )
         register_run_family(registry, shell, allowed_names=allowed)
         register_bash_family(
             registry,

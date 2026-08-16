@@ -78,6 +78,15 @@ class BashTool(BaseTool):
                             "maximum": 3600 if self._start is not None else 120,
                         },
                         "background": {"type": "boolean"},
+                        "session": {
+                            "type": "string",
+                            "enum": ["isolated", "persistent"],
+                            "description": (
+                                "persistent reuses a resident shell so cwd/env/venv "
+                                "persist across calls; isolated (default) uses a fresh "
+                                "process per command."
+                            ),
+                        },
                     },
                     "required": ["command"],
                 },
