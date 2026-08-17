@@ -1,0 +1,528 @@
+"""事件渲染器：把 App 的事件分支按事件族组织为渲染函数。
+
+阶段 5 的目标是把 ``app.py`` 的 ``_handle_event_inner`` 里约 30 个事件分支按事件族
+迁出。所有渲染副作用都通过参数传入的 ``app``（类型为 ``Any``，避免循环导入）触发，
+App 只保留顶层 try/except 保护与编排，交互语义、渲染文案与消息泵交互完全不变。
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+from rich.markup import escape
+from textual.css.query import NoMatches
+from textual.widgets import Static
+
+from code_rook.tui.widgets import _preview as _preview
+from code_rook.tui.widgets.permission import PermissionBlock, PermissionSelect
+from code_rook.tui.widgets.pickers import PlanReview, UserQuestionSelect
+from code_rook.tui.widgets.stream import LLMStreamBlock, ToolCallBlock, ToolStepGroup
+
+log = logging.getLogger(__name__)
+
+_PROMPT_READY = "消息"
+_PROMPT_PERMISSION = "等待操作确认"
+_PROMPT_QUESTION = "请回答上方问题"
+
+
+# 事件渲染总入口：先处理 LLM 流式前段，统一换块，再按事件族分派
+def render_event(app: Any, event: dict[str, Any]) -> None:
+    if _render_llm_front(app, event):
+        return
+    app._break_llm()
+    _render_rest(app, event)
+
+
+# 处理 LLM 流式前段事件（命中则返回 True，调用方跳过 break_llm 换块）
+def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
+    t = event.get("type", "")
+    if t == "llm.reasoning":
+        content = str(event.get("content") or "")
+        app._break_llm()
+        if content.strip():
+            reasoning_block = LLMStreamBlock()
+            reasoning_block.append_token(content)
+            reasoning_block.set_kind("reasoning")
+            reasoning_block.finalize_markdown()
+            app._append(reasoning_block)
+        return True
+
+    if t == "llm.token":
+        token = event.get("token", "")
+        if app._current_llm is None:
+            llm_block = LLMStreamBlock()
+            app._append(llm_block)
+            app._current_llm = llm_block
+        app._current_llm.append_token(token)
+        return True
+
+    if t == "agent.decision":
+        intent = str(event.get("intent") or "execute")
+        if app._current_llm is not None:
+            app._current_llm.set_kind("answer" if intent == "respond" else intent)
+        app._break_llm()
+        return True
+
+    if t == "llm.usage":
+        run_id = event.get("run_id", "")
+        if run_id in app._subagent_run_ids:
+            return True
+        pct = float(event.get("context_pct") or 0.0)
+        app._last_context_pct = pct
+        app._accumulate_cost(event)
+        app._update_header(app._header_state)
+        return True
+
+    return False
+
+
+# 处理 LLM 尾部与 agent 类事件，渲染顶栏与重试/卡住的提示行
+def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "llm.route_selected":
+        app._route = str(event.get("route_id") or "")
+        app._model = str(event.get("model") or "")
+        app._update_header("running")
+
+    elif t == "llm.retry":
+        kind = str(event.get("kind") or "retry")
+        attempt = int(event.get("attempt") or 0)
+        app._append(
+            Static(
+                f"[dim]正在重试模型响应  {escape(kind)} #{attempt}[/dim]",
+                classes="log-line",
+            )
+        )
+
+    elif t == "agent.stuck":
+        tool_name = escape(str(event.get("tool_name") or "tool"))
+        repeat_count = int(event.get("repeat_count") or 0)
+        app._append(
+            Static(
+                f"[yellow]stopped repeated action[/yellow]  "
+                f"[bold]{tool_name}[/bold]  [dim]{repeat_count} identical results[/dim]",
+                classes="log-line",
+            )
+        )
+
+
+# 处理会话生命周期事件：等待输入、被中断、已关闭
+def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "session.waiting_for_input":
+        app._busy = False
+        app._cancel_requested = False
+        app._cancel_armed = False
+        app._clear_user_question()
+        prompt = app._prompt()
+        if prompt is not None:
+            prompt.disabled = app._plan_review_pending
+            prompt.read_only = False
+            if app._plan_review_pending:
+                prompt.border_title = "审阅上方计划"
+            else:
+                prompt.border_title = _PROMPT_READY
+                prompt.focus()
+        app._update_header("plan ready" if app._plan_review_pending else "ready")
+
+    elif t == "session.interrupted":
+        app._busy = False
+        app._active_run_id = None
+        app._cancel_requested = False
+        app._cancel_armed = False
+        app._clear_user_question()
+        prompt = app._prompt()
+        if prompt is not None:
+            prompt.disabled = False
+            prompt.read_only = False
+            prompt.border_title = "任务已取消"
+            prompt.focus()
+        app._update_header("interrupted")
+
+    elif t == "session.closed":
+        app._busy = False
+        app._cancel_requested = False
+        app._clear_user_question()
+        prompt = app._prompt()
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.read_only = False
+            prompt.border_title = "会话已关闭"
+        app._update_header("disconnected")
+
+
+# 处理计划事件：挂载计划审阅面板或追加更新日志
+def _render_plan(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "plan.ready":
+        run_id = str(event.get("run_id", ""))
+        session_id = str(event.get("session_id", ""))
+        if session_id != app._session_id:
+            return
+        app._plan_review_pending = True
+        app._plan_session_id = session_id
+        app._plan_request = str(event.get("request", ""))
+        try:
+            app.query_one(PlanReview).remove()
+        except NoMatches:
+            pass
+        prompt = app._prompt()
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.border_title = "审阅上方计划"
+        app.mount(PlanReview(run_id), before="#prompt")
+        app._update_header("plan ready")
+
+    elif t == "plan.updated":
+        raw_plan = event.get("plan", [])
+        plan = raw_plan if isinstance(raw_plan, list) else []
+        markers = {
+            "pending": "[ ]",
+            "in_progress": "[>]",
+            "completed": "[x]",
+        }
+        lines = ["[bold cyan]Plan updated[/bold cyan]"]
+        explanation = str(event.get("explanation", "")).strip()
+        if explanation:
+            lines.append(f"[dim]{escape(explanation)}[/dim]")
+        for item in plan:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status", "pending"))
+            marker = markers.get(status, "[ ]")
+            lines.append(f"{marker} {escape(str(item.get('step', '')))}")
+        app._append(Static("\n".join(lines), classes="log-line"))
+
+
+# 处理结构化用户问题，挂载问题选择面板
+def _render_user_question(app: Any, event: dict[str, Any]) -> None:
+    session_id = str(event.get("session_id", ""))
+    if session_id != app._session_id:
+        return
+    question_id = str(event.get("question_id", ""))
+    app._pending_question_id = question_id
+    app._answering_question = False
+    try:
+        app.query_one(UserQuestionSelect).remove()
+    except NoMatches:
+        pass
+    prompt = app._prompt()
+    if prompt is not None:
+        prompt.disabled = True
+        prompt.border_title = _PROMPT_QUESTION
+    app.mount(
+        UserQuestionSelect(
+            question_id,
+            str(event.get("question", "")),
+            str(event.get("header", "Question")),
+            [str(option) for option in event.get("options", [])],
+            bool(event.get("multi_select", False)),
+        ),
+        before="#prompt",
+    )
+    app._update_header("question")
+
+
+# 处理 run 生命周期事件：开始记录状态、结束清理并渲染结果
+def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "run.started":
+        run_id = str(event.get("run_id", ""))
+        app._active_run_id = run_id
+        app._current_steps.pop(run_id, None)
+        app._cancel_requested = False
+        app._cancel_armed = False
+
+    elif t == "run.finished":
+        status = event.get("status", "")
+        steps = event.get("steps", 0)
+        step_label = "step" if steps == 1 else "steps"
+        reason = event.get("reason") or ""
+        run_id = str(event.get("run_id", ""))
+        app._current_steps.pop(run_id, None)
+        for group_key in [
+            key for key in app._tool_step_groups if key[0] == run_id
+        ]:
+            app._tool_step_groups.pop(group_key, None)
+        app._active_run_id = None
+        app._cancel_requested = False
+        app._cancel_armed = False
+        if status == "success":
+            app._maybe_autotitle_session()
+            return
+        if reason == "cancelled":
+            app._append(Static(
+                f"[yellow]–[/yellow] [dim]Cancelled after {steps} {step_label}[/dim]",
+                classes="run-err",
+            ))
+        else:
+            detail = f"  [dim]{reason}[/dim]" if reason else ""
+            app._append(Static(
+                f"[red]×[/red] [dim]Failed after {steps} {step_label}[/dim]{detail}",
+                classes="run-err",
+            ))
+
+
+# 处理技能调用、子代理起止与后台任务的日志类事件
+def _render_stage(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "skill.invoked":
+        skill_name = event.get("skill_name", "")
+        arguments = event.get("arguments", "")
+        args_preview = _preview(arguments, 80) if arguments else ""
+        args_part = f"  [dim]{args_preview}[/dim]" if args_preview else ""
+        app._append(Static(
+            f"[bold cyan]/{skill_name}[/bold cyan]{args_part}",
+            classes="log-line",
+        ))
+
+    elif t == "subagent.started":
+        run_id = event.get("run_id", "")
+        description = event.get("description", "")
+        app._subagent_run_ids[run_id] = description
+        app._subagent_start_times[run_id] = time.monotonic()
+        short_id = run_id[:8] if len(run_id) >= 8 else run_id
+        app._append(Static(
+            f"[dim]┌─[/dim] [cyan]{_preview(description, 72)}[/cyan]  [dim]{short_id}[/dim]",
+            classes="log-line",
+        ))
+
+    elif t == "subagent.finished":
+        run_id = event.get("run_id", "")
+        status = event.get("status", "")
+        description = app._subagent_run_ids.pop(
+            run_id, event.get("description", "")
+        )
+        start = app._subagent_start_times.pop(run_id, None)
+        elapsed = (
+            f"  [dim]{time.monotonic() - start:.1f}s[/dim]"
+            if start is not None
+            else ""
+        )
+        desc_part = f"[cyan]{_preview(description, 72)}[/cyan]{elapsed}"
+        if status == "success":
+            app._append(Static(
+                f"[dim]└─[/dim] [bold green]done[/bold green] {desc_part}",
+                classes="log-line",
+            ))
+        else:
+            app._append(Static(
+                f"[dim]└─[/dim] [bold red]failed[/bold red] {desc_part}",
+                classes="log-line",
+            ))
+
+    elif t == "background.started":
+        job_id = str(event.get("job_id", ""))
+        command = _preview(str(event.get("command", "")), 76)
+        app._append(
+            Static(
+                f"[dim]background[/dim]  [cyan]{job_id}[/cyan]  [dim]{command}[/dim]",
+                classes="log-line",
+            )
+        )
+
+    elif t == "background.finished":
+        job_id = str(event.get("job_id", ""))
+        status = str(event.get("status", ""))
+        marker = "[bold green]done[/bold green]" if status == "completed" else (
+            "[bold red]failed[/bold red]"
+        )
+        app._append(
+            Static(
+                f"{marker} [cyan]{job_id}[/cyan]  [dim]{status}[/dim]",
+                classes="log-line",
+            )
+        )
+
+
+# 处理 step 起止事件，维护步号索引
+def _render_step(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "step.started":
+        run_id = str(event.get("run_id", ""))
+        if run_id in app._subagent_run_ids:
+            return
+        app._current_steps[run_id] = int(event.get("step") or 0)
+
+    elif t == "step.finished":
+        run_id = str(event.get("run_id", ""))
+        step = int(event.get("step") or app._current_steps.get(run_id, 0))
+        app._tool_step_groups.pop((run_id, step), None)
+        if app._current_steps.get(run_id) == step:
+            app._current_steps.pop(run_id, None)
+
+
+# 处理工具调用的开始/完成/失败，驱动步骤分组与结果回填
+def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "tool.call_started":
+        tool_use_id = str(event.get("tool_use_id", ""))
+        tool_name = str(event.get("tool_name", ""))
+        raw_params = event.get("params") or {}
+        params = raw_params if isinstance(raw_params, dict) else {}
+        run_id = str(event.get("run_id", ""))
+        tc_block = ToolCallBlock(tool_name, params)
+        if run_id in app._subagent_run_ids:
+            tc_block.styles.padding = (0, 2, 0, 6)
+            app._append(tc_block)
+        else:
+            step = app._current_steps.get(run_id, 0)
+            group_key = (run_id, step)
+            group = app._tool_step_groups.get(group_key)
+            if group is None:
+                group = ToolStepGroup(step)
+                app._tool_step_groups[group_key] = group
+                group.add_tool(tc_block)
+                app._append(group)
+            else:
+                group.add_tool(tc_block)
+        app._pending_tool_blocks[tool_use_id] = tc_block
+
+    elif t == "tool.call_finished":
+        tool_use_id = str(event.get("tool_use_id", ""))
+        elapsed_ms = int(event.get("elapsed_ms") or 0)
+        output = str(event.get("output") or "")
+        if tool_use_id in app._pending_tool_blocks:
+            tc_done = app._pending_tool_blocks.pop(tool_use_id)
+            tc_done.set_result(output, elapsed_ms)
+
+    elif t == "tool.call_failed":
+        tool_use_id = str(event.get("tool_use_id", ""))
+        elapsed_ms = int(event.get("elapsed_ms") or 0)
+        error_msg = str(event.get("error_message") or "")
+        if event.get("terminal") is False:
+            return
+        if tool_use_id in app._pending_tool_blocks:
+            tc_done = app._pending_tool_blocks.pop(tool_use_id)
+            tc_done.set_result(error_msg, elapsed_ms, is_error=True)
+
+
+# 处理上下文压缩、权限审批、LSP 诊断与日志等杂项事件
+def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
+    if t == "context.compacted":
+        orig = event.get("original_tokens", 0)
+        summary = event.get("summary_tokens", 0)
+        compacted = event.get("compacted_tokens", 0)
+        retained_messages = event.get("retained_messages", 0)
+        retained_tokens = event.get("retained_tokens", 0)
+        quality = float(event.get("quality_score", 0.0))
+        trigger = event.get("trigger", "auto")
+        summary_path = str(event.get("summary_path", ""))
+        if int(orig) > 0:
+            app._last_context_pct *= int(compacted) / int(orig)
+        else:
+            app._last_context_pct = 0.0
+        app._append(Static(
+            f"[bold cyan]Context compacted[/bold cyan]"
+            f"  [dim]trigger={trigger}  original≈{orig} → compacted≈{compacted}  "
+            f"summary={summary}  retained={retained_messages} msgs/{retained_tokens} tokens  "
+            f"quality={quality:.0%}[/dim]",
+            classes="log-line",
+        ))
+        if summary_path:
+            app._append(Static(
+                f"[dim]  summary file: {summary_path}[/dim]",
+                classes="log-line",
+            ))
+
+    elif t == "permission.requested":
+        tool_use_id = str(event.get("tool_use_id", ""))
+        tool_name = str(event.get("tool_name", ""))
+        param_preview = str(event.get("param_preview", ""))
+        raw_params = event.get("params", {})
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            _focused_repr = repr(app.focused)
+        except Exception:
+            _focused_repr = "?"
+        log.info(
+            "permission.requested tool=%s id=%s  app.focused=%s",
+            tool_name, tool_use_id, _focused_repr,
+        )
+        perm_block = PermissionBlock(tool_use_id, tool_name, param_preview)
+        app._pending_permission_blocks[tool_use_id] = perm_block
+        prompt = app._prompt()
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.border_title = _PROMPT_PERMISSION
+        app._append(perm_block)
+        select = PermissionSelect(tool_use_id, tool_name, param_preview, params)
+        app._mount_permission_select(select)
+        log.debug(
+            "PermissionSelect mounted before #prompt  pending=%d",
+            len(app._pending_permission_blocks),
+        )
+
+    elif t == "permission.denied":
+        # 处理超时或断连等非用户交互触发的 deny，失败结果由工具行统一展示。
+        tool_use_id = str(event.get("tool_use_id", ""))
+        if tool_use_id in app._pending_permission_blocks:
+            perm_block = app._pending_permission_blocks.pop(tool_use_id)
+            denied_tool = escape(perm_block._tool_name)
+            app._append(
+                Static(
+                    f"[yellow]审批超时或连接断开，{denied_tool} 已按拒绝处理[/yellow]",
+                    classes="log-line",
+                )
+            )
+            perm_block.remove()
+            try:
+                select = app.query_one(PermissionSelect)
+                select.remove()
+            except Exception:
+                pass
+            if not app._pending_permission_blocks:
+                p = app._prompt()
+                if p is not None:
+                    p.disabled = False
+                    p.read_only = False
+                    p.border_title = _PROMPT_READY
+                    p.focus()
+
+    elif t == "lsp.diagnostics":
+        status = str(event.get("status", ""))
+        tool = escape(str(event.get("tool", "")))
+        count = int(event.get("diagnostic_count", 0))
+        paths = ", ".join(str(p) for p in event.get("paths", [])[:3])
+        if status == "ok" and count == 0:
+            line = f"[green]诊断通过[/green]  [dim]{tool} · {escape(paths)}[/dim]"
+        elif status == "ok":
+            line = (
+                f"[yellow]诊断发现 {count} 条问题[/yellow]  "
+                f"[dim]{tool} · {escape(paths)}[/dim]"
+            )
+        else:
+            error = escape(str(event.get("error", ""))[:120])
+            line = f"[dim]诊断降级 {status} · {tool} · {error}[/dim]"
+        app._append(Static(line, classes="log-line"))
+
+    elif t == "log.line":
+        level = event.get("level", "INFO")
+        color = (
+            "bold red"
+            if level == "ERROR"
+            else ("yellow" if level == "WARNING" else "dim")
+        )
+        app._append(Static(
+            f"[{color}]{level}[/{color}]  "
+            f"[dim]{event.get('source', '')}[/dim]  {event.get('message', '')}",
+            classes="log-line",
+        ))
+
+
+# 在 break_llm 之后按事件族分派剩余渲染分支
+def _render_rest(app: Any, event: dict[str, Any]) -> None:
+    t = event.get("type", "")
+    if t.startswith("llm.") or t == "agent.stuck":
+        _render_llm_tail(app, t, event)
+    elif t.startswith("session."):
+        _render_session(app, t, event)
+    elif t.startswith("plan."):
+        _render_plan(app, t, event)
+    elif t == "user_question.asked":
+        _render_user_question(app, event)
+    elif t.startswith("run."):
+        _render_run(app, t, event)
+    elif t.startswith(("skill.", "subagent.", "background.")):
+        _render_stage(app, t, event)
+    elif t.startswith("step."):
+        _render_step(app, t, event)
+    elif t.startswith("tool."):
+        _render_tool(app, t, event)
+    else:
+        _render_misc(app, t, event)
