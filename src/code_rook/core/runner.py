@@ -330,6 +330,7 @@ class AgentRunner:
                         route_binding is not None
                         and route_binding.route.thinking != "off"
                     ),
+                    auto_step_continues=self._config.agent.max_step_continues,
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager

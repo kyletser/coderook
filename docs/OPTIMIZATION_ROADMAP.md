@@ -244,9 +244,9 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 
 ---
 
-### 阶段 2（第 5-8 周）：智能与经济性 🔶 进行中（2026-08-17 起）
+### 阶段 2（第 5-8 周）：智能与经济性 🔶 进行中（2026-08-17）
 
-> 状态：**W2.1 成本核算 ✅ 已完成**（pricing 模块：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖 + 前缀匹配；`llm.usage` 事件新增 `model` 字段；TUI 顶栏常驻累计成本、`/cost` 分解视图含缓存节省与无价模型提示；TurnReceipt 侧成本落地为顺延项）。**W2.2 thinking 预算 ✅ 已完成**（route 新增 `thinking: off|low|medium|high` 字段；Anthropic 映射 budget_tokens 并同步抬高 max_tokens、Responses 映射 `reasoning.effort`、openai_chat 映射 `reasoning_effort` 且保留 DeepSeek 域名默认高推理的兼容行为；PLAN 模式在 route 启用 thinking 时自动升 high 档——"规划用高推理、执行用配置档"；TUI `/provider` 列表显示 thinking 档位）。**W2.3/W2.4/W2.5 ⬜ 未开始**。
+> 状态：**W2.1 成本核算 ✅**（pricing 模块：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖 + 前缀匹配；`llm.usage` 事件新增 `model` 字段；TUI 顶栏常驻累计成本、`/cost` 分解视图含缓存节省与无价模型提示；TurnReceipt 侧成本落地为顺延项）。**W2.2 thinking 预算 ✅**（route 新增 `thinking: off|low|medium|high`；Anthropic 映射 budget_tokens 并同步抬高 max_tokens、Responses 映射 `reasoning.effort`、openai_chat 映射 `reasoning_effort` 且保留 DeepSeek 域名默认高推理兼容；PLAN 模式在 route 启用 thinking 时自动升 high 档；TUI `/provider` 显示档位）。**W2.3 缓存深化 ✅ 部分完成**（Anthropic 增量缓存断点 + OpenAI cached_tokens 节省展示）。**W2.5 步数续跑 ✅**（交互 ask 续跑 ≤3 段 + `[agent] max_step_continues` 自动续段）。**W2.4 ⬜ 未开始**；W2.5b 子代理预算硬顶为顺延项。
 
 > 目标：让重度用户"用得起、看得清、跑得完"——成本可见、推理可控、缓存可省、长任务不断。
 
@@ -398,6 +398,18 @@ uv build && uv run python scripts/smoke_wheel.py dist
 - 计划外收获：图片"只随下一次请求发送、之后占位"的机制防止 base64 永久占据历史与计费；web 工具重定向逐请求校验补齐了 SSRF 的重定向绕过面。
 - 顺延项（已并入后续阶段或转为独立小项）：TUI 粘贴图片（低优先级）、Go/Rust 诊断接入、持久 shell 与 BackgroundJobRegistry 整合、常驻增量 LSP。
 - 下一步：阶段 2 从 W2.1 成本核算起步（model_catalog 单价表 + /cost + 常驻显示），随后 W2.2 thinking 预算。
+
+### 5.5 暂停点记录（2026-08-17 已清账 ✅）
+
+W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
+
+- **续段配额翻倍 bug**：`loop.py::_try_continue_past_max_steps` 首次触达时固定 `_initial_max_steps`，续段按固定初始配额追加（2→4→6→8），不再随上限翻倍。
+- **`provider.py::with_incremental_cache_breakpoint` 类型错误**：`content` 经 `isinstance(raw, list)` 收窄后重建块列表，移除全部 ignore 注释。
+
+**W2.5 ✅ 已完成**：步数耗尽时交互模式经结构化提问续跑（上限 3 段，选项"继续执行/就此停止"），`[agent] max_step_continues`（env `CODEROOK_MAX_STEP_CONTINUES`）配置自动续段数供 headless 使用。
+**W2.3 ✅ 部分完成**：Anthropic 增量缓存断点（最后一个 tool_result 块打 ephemeral 标记，受 route `supports_prompt_cache` 开关控制）；OpenAI cached_tokens 节省展示已由 W2.1 /cost 覆盖。
+
+**随后待办**：W2.4（rule_based/cost_budget 路由实装 + /model 下一 turn 生效）；W2.5b 子代理 token_budget 硬顶（顺延项）；阶段 3 沙箱起步。
 
 ---
 

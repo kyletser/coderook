@@ -141,6 +141,8 @@ _TODO_END_TURN_REMINDER = (
 )
 # 连续最多推迟次数；超过即视为模型不再推进 todos，放弃阻拦让其结束
 _MAX_TODO_DEFERS = 3
+# 交互模式经结构化提问最多允许的步数续段次数，防止无限续跑
+_MAX_ASK_STEP_CONTINUES = 3
 _MAX_TRANSIENT_RETRIES = 2
 _MAX_NO_CONTENT_RETRIES = 2
 _CONTENT_HASH_RE = re.compile(
@@ -256,6 +258,7 @@ class AgentLoop:
         diagnostics_client: WorkspaceDiagnosticsClient | None = None,
         prefix_tracker: PrefixFingerprintTracker | None = None,
         escalate_plan_thinking: bool = False,
+        auto_step_continues: int = 0,
     ) -> None:
         if retry_backoff_s < 0:
             raise ValueError("retry_backoff_s must not be negative")
@@ -281,6 +284,9 @@ class AgentLoop:
         self._diagnostics_client = diagnostics_client
         self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
         self._escalate_plan_thinking = escalate_plan_thinking
+        self._auto_step_continues = max(0, auto_step_continues)
+        self._step_continues_used = 0
+        self._initial_max_steps: int | None = None
         self._reactive_compaction_attempted = False
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
@@ -429,6 +435,39 @@ class AgentLoop:
         if self._escalate_plan_thinking and context.runtime_mode == RuntimeMode.PLAN:
             return "high"
         return None
+
+    # 步数耗尽时尝试续跑：先消耗自动续段配额，再经结构化提问征求用户；失败返回 False
+    async def _try_continue_past_max_steps(self, context: ExecutionContext) -> bool:
+        # 首次触达时固定初始配额，续段按固定段追加而不是随上限翻倍
+        if self._initial_max_steps is None:
+            self._initial_max_steps = max(1, context.max_steps)
+        budget = self._initial_max_steps
+        if self._step_continues_used < self._auto_step_continues:
+            self._step_continues_used += 1
+            context.max_steps += budget
+            return True
+        if (
+            self._interaction_manager is not None
+            and self._session_id
+            and self._step_continues_used
+            < self._auto_step_continues + _MAX_ASK_STEP_CONTINUES
+        ):
+            answer = await self._interaction_manager.ask(
+                run_id=context.run_id,
+                session_id=self._session_id,
+                question=(
+                    f"已达到本 run 的步数上限（{context.step} 步），任务尚未完成。"
+                    f"是否继续执行最多 {budget} 步？"
+                ),
+                header="步数上限",
+                options=["继续执行", "就此停止"],
+                multi_select=False,
+            )
+            if answer.strip() == "继续执行":
+                self._step_continues_used += 1
+                context.max_steps += budget
+                return True
+        return False
 
     # 请求结束后用文本占位符替换已发送的图片消息，避免 base64 永久占据历史
     def _placeholder_flushed_images(self, context: ExecutionContext) -> None:
@@ -1018,7 +1057,8 @@ class AgentLoop:
                     context.result = response.text or ""
                     context.mark_success()
             elif not context.is_done() and context.step >= context.max_steps:
-                context.mark_failed("exceeded_max_steps")
+                if not await self._try_continue_past_max_steps(context):
+                    context.mark_failed("exceeded_max_steps")
 
             # 工具结果追加完毕（messages 末尾为 user）后检查压缩，仅在 run 继续时触发
             # 此时压缩结果 [user_summary, assistant_ack] 对下一次 LLM 调用是合法输入

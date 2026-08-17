@@ -33,6 +33,8 @@ class LoggingConfig:
 @dataclass
 class AgentConfig:
     max_steps: int = _DEFAULT_MAX_STEPS
+    # 步数耗尽时的自动续段数（每段追加 max_steps 步）；交互模式另有 ask 续跑
+    max_step_continues: int = 0
 
 
 @dataclass
@@ -210,7 +212,10 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
         agent = data["agent"]
         if not isinstance(agent, dict):
             raise SystemExit("Config error: [agent] must be a table")
-        unknown_agent: set[str] = set(agent.keys()) - {"max_steps"}
+        unknown_agent: set[str] = set(agent.keys()) - {
+            "max_steps",
+            "max_step_continues",
+        }
         if unknown_agent:
             raise SystemExit(f"Unknown [agent] keys: {', '.join(sorted(unknown_agent))}")
         if "max_steps" in agent:
@@ -218,6 +223,13 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             if not isinstance(val, int) or val <= 0:
                 raise SystemExit("Config error: agent.max_steps must be a positive integer")
             config.agent.max_steps = val
+        if "max_step_continues" in agent:
+            continues = agent["max_step_continues"]
+            if not isinstance(continues, int) or continues < 0:
+                raise SystemExit(
+                    "Config error: agent.max_step_continues must be a non-negative integer"
+                )
+            config.agent.max_step_continues = continues
 
     if "llm" in data:
         llm = data["llm"]

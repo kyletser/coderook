@@ -47,6 +47,33 @@ def anthropic_thinking_params(
     return max_tokens, {"type": "enabled", "budget_tokens": budget}
 
 
+# 在最后一个含 tool_result 的 user 消息末块追加增量 cache breakpoint
+def with_incremental_cache_breakpoint(
+    messages: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    result = list(messages)
+    for position in range(len(result) - 1, -1, -1):
+        message = result[position]
+        if message.get("role") != "user":
+            continue
+        raw_content = message.get("content")
+        if not isinstance(raw_content, list) or not raw_content:
+            continue
+        blocks: list[object] = list(raw_content)
+        last = blocks[-1]
+        if (
+            isinstance(last, dict)
+            and last.get("type") == "tool_result"
+            and "cache_control" not in last
+        ):
+            new_last = dict(last)
+            new_last["cache_control"] = {"type": "ephemeral"}
+            blocks[-1] = new_last
+            result[position] = {**message, "content": blocks}
+        return result
+    return result
+
+
 _SYSTEM_PROMPT = (
     "You are a helpful AI assistant. "
     "Use the available tools to complete the user's goal. "
@@ -70,6 +97,7 @@ class AnthropicProvider:
         base_url: str = "",
         context_window: int | None = None,
         thinking: str = "off",
+        supports_prompt_cache: bool = True,
     ) -> None:
         self._client: Any
         if client is None:
@@ -88,6 +116,7 @@ class AnthropicProvider:
         self._model = model
         self._context_window = context_window
         self._thinking = thinking
+        self._supports_prompt_cache = supports_prompt_cache
 
     # 流式调用 Anthropic API，逐 token 发布事件并返回 LlmResponse；网络中断时自动重试
     async def chat(
@@ -109,6 +138,11 @@ class AnthropicProvider:
 
         effective_thinking = thinking if thinking is not None else self._thinking
         max_tokens, thinking_param = anthropic_thinking_params(effective_thinking)
+        request_messages = (
+            with_incremental_cache_breakpoint(messages)
+            if self._supports_prompt_cache
+            else messages
+        )
 
         system_blocks: list[dict[str, object]] = [
             {
@@ -128,7 +162,7 @@ class AnthropicProvider:
             "model": resolved_model,
             "max_tokens": max_tokens,
             "system": system_blocks,
-            "messages": messages,
+            "messages": request_messages,
         }
         if thinking_param is not None:
             kwargs["thinking"] = thinking_param
