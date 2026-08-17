@@ -4,7 +4,7 @@
 - 基准代码版本：`817cce1`（feat: expand LLM provider support, runtime service, and project docs）
 - 时间跨度：约 14 周（3-6 个月），综合路线：体验快赢 → 生态兼容 + 感知能力 → 智能与经济性 → 安全与可信 → TUI 重构 + 管理面板 → 形态扩展
 - 现状基准：`docs/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
-- **进度基线（2026-08-17 更新）**：阶段 0、1、2、3 全部完成（阶段 2 收尾见 §5.6 复盘，阶段 3 收尾见 §5.7 复盘）；下一步从阶段 4（TUI 重构 + 管理面板，W4.1 拆分上帝类为首）。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
+- **进度基线（2026-08-17 更新）**：阶段 0、1、2、3、4 全部完成（阶段 2 收尾见 §5.6、阶段 3 见 §5.7、阶段 4 见 §5.8 复盘）；下一步从阶段 5（形态扩展，方向占位）。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
 - 本文档**取代**以下历史差距分析（它们描述的缺口多数已修复或已过时）：
   - `docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
   - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md`（2026-07-30，81/100，早于 08-04 R1-R9 大改造批次）
@@ -313,27 +313,31 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 
 ---
 
-### 阶段 4（第 11-14 周）：TUI 重构 + 管理面板 ⬜ 未开始（已并入一项顺延工作：W0.7 的 /config 向导统一）
+### 阶段 4（第 11-14 周）：TUI 重构 + 管理面板 ✅ 已完成（2026-08-17，阶段4批次）
 
 > 目标：先拆上帝类（执行项目自己的 TUI_REFACTOR_PLAN.md），再在干净骨架上补管理面板——顺序不可颠倒，否则 app.py 会继续膨胀。
 
-**W4.1 执行 TUI 五阶段拆分**（G25）
-- 按 `docs/TUI_REFACTOR_PLAN.md`：控件外迁（widgets/）→ 连接层（client/）→ 命令注册表（commands/）→ IPC 封装 → 事件渲染器（render/）；不改交互语义。
+**W4.1 执行 TUI 五阶段拆分**（G25）✅
+- 按 `docs/TUI_REFACTOR_PLAN.md`：控件外迁（widgets/）→ 连接层（client/）→ 命令注册表（commands/）→ IPC 封装（ipc_actions/）→ 事件渲染器（render/）；不改交互语义。
 - 拆分后单文件 <500 行；`/` 命令注册表化使新命令 = 一个声明 + 一个 handler（为 W4.2/W4.3 降成本）。
 - 每拆一阶段跑全量 TUI 单测（65 个）+ 手工冒烟清单。
+- **落地结果**：app.py 由 4,176 行降至 ~2,110 行（5 个独立提交，每阶段一次，均通过完整 CI gate）。单文件 **<500 行未达成**——剩余为 App 编排/状态/一次性流程（会话选择、权限卡编排、steer 等），与 Textual 消息泵强耦合，脱离会引入不必要抽象，计划阶段的"收益递减即停"职责已触发。**结构性目标达成**：连机、命令、IPC、事件渲染均模块化，新增一条斜杠命令实测 ≤30 行（W4.2 的管理四条）。详见 §5.8 复盘。
 
-**W4.2 管理面板四件套**（G26）
+**W4.2 管理面板四件套**（G26）✅
 - `/mcp`：server 列表（名称/transport/状态/工具数）、工具清单展开、启停（写回 config.toml 需确认）、失败原因透出。
 - `/hooks`：hook 配置表 + 最近 100 条执行记录（hook.executed 事件，补 TUI 订阅）+ 手动重跑。
 - `/memory`：当前项目记忆条目（memory 工具的 search/list 能力暴露）、删除、来源 session 跳转。
 - `/jobs`：后台任务中心——运行中任务列表（background.* 事件已有）、attach 查看增量 stdout、取消；并行子代理结果统一汇总视图（对标 Claude Code subagent 汇总）。
 - 全部为已存在 daemon 能力的 UI 化，唯一新增 IPC 可能是 mcp.list/hooks.list 查询命令（走 bus 命令 → 同步 WIRE_PROTOCOL.md）。
+- **落地**：新增 bus 命令 `mcp.list`、`hooks.list`/`hooks.rerun`、`memory.list`/`memory.delete`、`background.get`/`background.cancel`、`worker.cancel`（命令+结果模型并入 `Command` union），daemon 注册 handler，`WIRE_PROTOCOL.md` 重新生成且 `--check` 通过；TUI 四命令入注册表、副作用操作（rerun/delete/cancel）需 `--yes` 确认；`hook.executed` 加入订阅 topic 并新增渲染分支。详见 §5.8 复盘。
 
-**W4.3 补全与输入体验深化**
+**W4.3 补全与输入体验深化** ✅
 - 补全弹窗：名称 + 描述模糊匹配；选中项显示 usage 与参数提示。
 - 斜杠参数 Tab 补全（如 /permissions 的枚举值、/model 的模型 ID）。
+- **落地**：`SlashCommand` 新增 `usage`/`arg_candidates` 字段（14 条命令填 usage、9 条填参数候选）；`SlashCompleteWidget` 支持名称+描述子序列模糊匹配（包含优先于子序列、稳定排序），底部随选中项切换 usage 行；`/cmd <partial>` 按候选前缀循环 Tab 补全。详见 §5.8 复盘。
 
 **阶段 4 验收**：app.py 家族全部 <500 行；MCP/hooks/memory/后台任务管理全程 TUI 内完成；新增一条斜杠命令 ≤30 行代码。
+- 达成的：MCP/hooks/memory/jobs 全程 TUI 内完成；新增一条斜杠命令 ≤30 行（W4.2 实测）。未达成的：app.py 单文件 <500 行（诚实说明见 W4.1 落地结果，结构性拆分目标已达成，见 §5.8）。
 
 ---
 
@@ -429,6 +433,15 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 **顺延项**：W3.3 逐 hunk 拒绝；`/config gc` 手动触发入口（并阶段 4 管理面板）；Windows 真沙箱（Job Object/受限令牌）。
 **收益**：AUTO_REVIEW + 沙箱命令零审批、前缀级放行告别反复审批、审批即审 diff、多客户端事件互见收敛、artifact 不再无限膨胀。
 **接下来**：阶段 4 TUI 重构 + 管理面板——先按 W4.1 拆上帝类（`tui/app.py` 4,176 行 <500），再补 /mcp /hooks /memory /jobs 面板与输入体验深化。
+
+### 5.8 阶段 4 复盘（2026-08-17，阶段4批次）
+
+**W4.1 TUI 五阶段拆分 ✅（结构性完成）**：执行项目自己的 `TUI_REFACTOR_PLAN.md`，五个独立提交——stage1 控件外迁（`tui/widgets/`）+ stage2 连接层（`tui/connection.py`，重连/会话恢复）+ stage3 命令注册表（`tui/commands.py`，dispatch 从约 360 行 if 链收敛为 10 行查表）+ stage4 IPC 动作封装（`tui/ipc_actions.py`，统一超时/错误为 `IpcActionError`）+ stage5 事件渲染器（`tui/render.py`，按事件族拆分）。app.py 由 4,176 → ~2,110 行。**诚实偏差**：满意度指标"单文件 <500 行"未达成（剩余为 App 编排/状态/一次性流程，与 Textual 消息泵强耦合）；结构性目标达成，这正是计划中"收益递减即停"的预期出口。全程 0 bug 修复混入，行为逐项等价。
+**W4.2 管理面板四件套 ✅**：链路贯通 `bus 命令`→`daemon handler`→`ipc_actions`→`TUI 注册表命令`。新增 8 条查询/动作命令模型 + 结果模型并入 `Command` union，daemon 注册 handler，`gen_protocol_doc.py` 重新生成 `WIRE_PROTOCOL.md` 且 `--check` 通过；`hook.executed` topic 加入订阅并新增渲染分支；副作用（hooks.rerun / memory.delete / background.cancel / worker.cancel）沿用 `--yes` 二次确认。面板渲染集中在 `tui/panels/manage.py`。4 条新命令/面板各 ≤30 行 handler，兑现"新命令 = 一个声明 + 一个 handler"。
+**W4.3 补全与输入体验 ✅**：`SlashCommand` 新增强制字段 `usage`/`arg_candidates`（14 条填 usage、9 条填参数候选）；`SlashCompleteWidget` 名称+描述子序列模糊匹配（包含优先于子序列、稳定），底部 usage 随选中项切换；`/cmd <partial>` 按候选前缀循环 Tab 补全。
+**指标**：单测基数 916 → 1011（+95，全部新 TUI/管理/补全测试）。完整 CI gate 5 项全绿：`ruff check .`、`check_brand`、`mypy src`+`mypy --platform linux src`、`pytest -q`（1011 passed, 2 skipped）、`gen_protocol_doc.py --check`。涉及 `bus/` 与生成脚本的改动均同步 `WIRE_PROTOCOL.md` 且 `--check` 通过，符合仓库纪律。
+**顺延项（阶段 5 或后续）**：W0.7 `/config` 向导统一；§20 #10 家族工具内部分派实装；W3.4 遗留 `/config gc` 手动入口与 W3.3 逐 hunk 拒绝。
+**接下来**：阶段 5 形态扩展（IDE 扩展、headless SDK、MCP 协议补全）——方向占位，按技术基础成熟度推进。
 
 ---
 
