@@ -43,9 +43,11 @@ from code_rook.core.skills.manager import (
 )
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
+from code_rook.tui import ipc_actions
 from code_rook.tui.clipboard import copy_to_windows_clipboard
 from code_rook.tui.commands import BUILTIN_SLASH_COMMANDS, match_slash_command
 from code_rook.tui.connection import TuiConnection
+from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
     render_turn_inspector,
     render_workflow_graph,
@@ -710,10 +712,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         self._append(Static("[dim]compacting context...[/dim]", classes="log-line"))
         try:
-            result = await self._client.send_command(
-                "session.compact",
-                {"session_id": self._session_id, "focus": ""},
-            )
+            result = await ipc_actions.compact(self._client, self._session_id)
             summary_tokens = result.get("summary_tokens", 0)
             saved_tokens = result.get("saved_tokens", 0)
             retained_messages = result.get("retained_messages", 0)
@@ -738,8 +737,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     f"[dim]  summary file: {summary_path}[/dim]",
                     classes="log-line",
                 ))
-        except (IpcError, RuntimeError, OSError) as e:
-            self._append(Static(f"[red]compact error: {e}[/red]", classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]compact error: {exc}[/red]", classes="log-line"))
 
     def _restore_ready_prompt(self) -> None:
         prompt = self._prompt()
@@ -777,9 +776,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _refresh_authority(self) -> None:
         if self._client is None or self._session_id is None:
             return
-        result = await self._client.send_command(
-            "session.get_authority",
-            {"session_id": self._session_id},
+        result = await ipc_actions.get_authority_snapshot(
+            self._client, self._session_id
         )
         self._apply_authority_snapshot(dict(result.get("snapshot", {})))
 
@@ -799,17 +797,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         _name, profile, label, _detail = selected
         try:
             if self._client is not None and self._session_id is not None:
-                result = await self._client.send_command(
-                    "session.set_authority",
-                    {
-                        "session_id": self._session_id,
-                        "profile": profile.value,
-                    },
+                result = await ipc_actions.set_authority(
+                    self._client,
+                    self._session_id,
+                    profile=profile.value,
                 )
                 self._apply_authority_snapshot(dict(result.get("snapshot", {})))
             else:
                 self._authority_preset = preset
-        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+        except IpcActionError as exc:
             self._append(
                 Static(f"[red]permission mode error: {escape(str(exc))}[/red]", classes="log-line")
             )
@@ -836,14 +832,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     ) -> None:
         try:
             if self._client is not None and self._session_id is not None:
-                result = await self._client.send_command(
-                    "session.set_authority",
-                    {"session_id": self._session_id, "mode": mode.value},
+                result = await ipc_actions.set_authority(
+                    self._client,
+                    self._session_id,
+                    mode=mode.value,
                 )
                 self._apply_authority_snapshot(dict(result.get("snapshot", {})))
             else:
                 self._input_runtime_mode = mode
-        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+        except IpcActionError as exc:
             self._append(
                 Static(f"[red]runtime mode error: {escape(str(exc))}[/red]", classes="log-line")
             )
@@ -863,17 +860,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _set_workspace_trust(self, trust: WorkspaceTrust) -> None:
         try:
             if self._client is not None and self._session_id is not None:
-                result = await self._client.send_command(
-                    "session.set_authority",
-                    {
-                        "session_id": self._session_id,
-                        "workspace_trust": trust.value,
-                    },
+                result = await ipc_actions.set_authority(
+                    self._client,
+                    self._session_id,
+                    workspace_trust=trust.value,
                 )
                 self._apply_authority_snapshot(dict(result.get("snapshot", {})))
             else:
                 self._workspace_trust = trust
-        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+        except IpcActionError as exc:
             self._append(
                 Static(f"[red]workspace trust error: {escape(str(exc))}[/red]", classes="log-line")
             )
@@ -928,11 +923,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None or self._session_id is None:
             return
         try:
-            result = await self._client.send_command(
-                "session.tasks",
-                {"session_id": self._session_id},
-            )
-            tasks = list(result.get("tasks", []))
+            result = await ipc_actions.get_tasks(self._client, self._session_id)
+            tasks = list(result)
             if not tasks:
                 body = "[dim]当前会话最近一次 run 没有任务。[/dim]"
             else:
@@ -962,7 +954,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     )
                 body = "\n".join(lines)
             self._append(Static(body, classes="log-line"))
-        except (IpcError, RuntimeError, OSError) as exc:
+        except IpcActionError as exc:
             self._append(Static(f"[red]tasks error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -972,10 +964,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None or self._session_id is None:
             return
         try:
-            result = await self._client.send_command(
-                "worker.list",
-                {"limit": 50},
-            )
+            result = await ipc_actions.get_workers(self._client)
             workers = list(result.get("workers", []))
             if not workers:
                 body = "[dim]当前没有持久 Worker。[/dim]"
@@ -1009,7 +998,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                         lines.append(f"    [dim]{escape(_preview(summary, 140))}[/dim]")
                 body = "\n".join(lines)
             self._append(Static(body, classes="log-line"))
-        except (IpcError, RuntimeError, OSError) as exc:
+        except IpcActionError as exc:
             self._append(Static(f"[red]workers error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -1020,19 +1009,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         try:
             if workflow_id:
-                result = await self._client.send_command(
-                    "workflow.get",
-                    {"workflow_id": workflow_id},
+                result = await ipc_actions.get_workflow(
+                    self._client, workflow_id
                 )
                 body = render_workflow_graph(dict(result.get("workflow", {})))
             else:
-                result = await self._client.send_command(
-                    "workflow.list",
-                    {"limit": 50},
-                )
+                result = await ipc_actions.list_workflows(self._client)
                 body = render_workflow_list(list(result.get("workflows", [])))
             self._append(Static(body, classes="log-line"))
-        except (IpcError, RuntimeError, OSError) as exc:
+        except IpcActionError as exc:
             self._append(Static(f"[red]workflow error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -1048,9 +1033,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if format_name not in {"json", "toml"}:
                 raise ValueError("workflow file must use .json or .toml")
             source = path.read_text(encoding="utf-8")
-            result = await self._client.send_command(
-                "workflow.start",
-                {"source": source, "format": format_name},
+            result = await ipc_actions.start_workflow(
+                self._client,
+                source,
+                format_name,
             )
             workflow_id = escape(str(result.get("workflow_id", "")))
             self._append(
@@ -1059,7 +1045,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     classes="log-line",
                 )
             )
-        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+        except (IpcActionError, ValueError) as exc:
             self._append(
                 Static(f"[red]workflow start error: {exc}[/red]", classes="log-line")
             )
@@ -1071,10 +1057,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None:
             return
         try:
-            result = await self._client.send_command(
-                "workspace.diff",
-                {"scope": "all", "path": "."},
-            )
+            result = await ipc_actions.get_diff(self._client)
             payload = dict(result.get("payload", {}))
             if "error" in payload:
                 error = dict(payload["error"])
@@ -1111,7 +1094,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self._append(Markdown(f"```diff\n{safe_diff}\n```"))
             elif not files:
                 self._append(Static("[dim]工作区没有改动。[/dim]", classes="log-line"))
-        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+        except (IpcActionError, ValueError, TypeError) as exc:
             self._append(Static(f"[red]diff error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -1121,13 +1104,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None or self._session_id is None:
             return
         try:
-            result = await self._client.send_command(
-                "session.checkpoints",
-                {"session_id": self._session_id},
-            )
             checkpoints = [
                 dict(item)
-                for item in result.get("checkpoints", [])
+                for item in await ipc_actions.list_checkpoints(
+                    self._client, self._session_id
+                )
                 if item.get("status") == "ready"
             ]
             if not checkpoints:
@@ -1137,7 +1118,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self._restore_ready_prompt()
                 return
             self.mount(CheckpointPicker(checkpoints), before="#prompt")
-        except (IpcError, RuntimeError, OSError) as exc:
+        except IpcActionError as exc:
             self._append(Static(f"[red]rewind error: {exc}[/red]", classes="log-line"))
             self._restore_ready_prompt()
 
@@ -1159,12 +1140,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._restore_ready_prompt()
             return
         try:
-            result = await self._client.send_command(
-                "session.rewind",
-                {
-                    "session_id": self._session_id,
-                    "checkpoint_id": message.checkpoint_id,
-                },
+            result = await ipc_actions.rewind(
+                self._client,
+                self._session_id,
+                message.checkpoint_id,
             )
             restored = [str(path) for path in result.get("restored", [])]
             unchanged = [str(path) for path in result.get("already_restored", [])]
@@ -1177,7 +1156,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     classes="log-line",
                 )
             )
-        except (IpcError, RuntimeError, OSError) as exc:
+        except IpcActionError as exc:
             self._append(Static(f"[red]rewind error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -1187,10 +1166,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None or self._session_id is None:
             return
         try:
-            result = await self._client.send_command(
-                "session.context",
-                {"session_id": self._session_id},
-            )
+            result = await ipc_actions.get_context(self._client, self._session_id)
             last_run = result.get("last_run_id") or "-"
             usage = dict(result.get("usage", {}))
             working_set = [str(path) for path in result.get("working_set", [])]
@@ -1214,7 +1190,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     classes="log-line",
                 )
             )
-        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+        except (IpcActionError, ValueError, TypeError) as exc:
             self._append(Static(f"[red]context error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
@@ -1228,21 +1204,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if not resolved_id:
                 if self._session_id is None:
                     raise ValueError("no current session")
-                context = await self._client.send_command(
-                    "session.context",
-                    {"session_id": self._session_id},
+                context = await ipc_actions.get_context(
+                    self._client, self._session_id
                 )
                 resolved_id = str(context.get("last_run_id") or "")
             if not resolved_id:
                 raise ValueError("current session has no turn")
-            result = await self._client.send_command(
-                "turn.inspect",
-                {"turn_id": resolved_id},
-            )
+            result = await ipc_actions.inspect_turn(self._client, resolved_id)
             self._append(
                 Static(render_turn_inspector(dict(result)), classes="log-line")
             )
-        except (IpcError, RuntimeError, OSError, ValueError, TypeError) as exc:
+        except (IpcActionError, ValueError, TypeError) as exc:
             self._append(Static(f"[red]turn error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
