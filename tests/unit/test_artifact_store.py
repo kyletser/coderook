@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from code_rook.core.artifacts import (
     ArtifactNotFoundError,
     ArtifactStore,
 )
+from code_rook.core.artifacts.store import scan_referenced_artifact_shas
 from code_rook.core.tools.artifact import ArtifactReadTool
 
 
@@ -71,3 +73,53 @@ async def test_artifact_read_tool_returns_bounded_structured_result(tmp_path: Pa
     corrupt = await tool.invoke({"handle": reference.handle})
     assert corrupt.is_error
     assert json.loads(corrupt.content)["error"]["code"] == "artifact_corrupt"
+
+
+# ── GC（W3.4 #17） ────────────────────────────────────────────────────────────
+
+# 功能：list_gc_candidates 只列出超过保留龄且未被 keep 引用的 artifact
+# 设计：固定 now 使 mtime 判定可复现；写两份 artifact 后调整 mtime 分新旧，再传 keep 保引用
+async def test_gc_candidates_respect_age_and_keep(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    old = (await store.put("old content")).sha256
+    fresh = (await store.put("fresh content")).sha256
+    old_path, fresh_path = (tmp_path / "artifacts" / s for s in (old, fresh))
+    now = 2_000_000_000.0
+    os.utime(old_path, (now - 40 * 86400, now - 40 * 86400))
+    os.utime(fresh_path, (now - 1 * 86400, now - 1 * 86400))
+
+    candidates = store.list_gc_candidates(days=30, now=now)
+    assert [p.name for p in candidates] == [old]
+    kept = store.list_gc_candidates(days=30, now=now, keep={old})
+    assert kept == []
+
+
+# 功能：dry_run 不清除，非 dry_run 只删除候选并返回清单
+# 设计：先 dry_run 断言文件仍在，再以同样 now 执行删除断言目录中只剩 keep 引用项
+async def test_gc_dry_run_then_delete(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    a = (await store.put("a")).sha256
+    b = (await store.put("b")).sha256
+    paths = {tmp_path / "artifacts" / s for s in (a, b)}
+    now = 2_000_000_000.0
+    for p in paths:
+        os.utime(p, (now - 40 * 86400, now - 40 * 86400))
+
+    assert store.gc(days=30, now=now, dry_run=True) == sorted(paths, key=lambda p: p.name)
+    assert all(p.exists() for p in paths)
+    removed = store.gc(days=30, now=now, dry_run=False)
+    assert {p.name for p in removed} == {a, b}
+    assert not store._root.exists() or list(store._root.iterdir()) == []
+
+
+# 功能：scan_referenced_artifact_shas 从文本中提取全部 artifact 引用作为 keep 集
+# 设计：写含两个引用的文件，断言返回集合精确匹配，供 GC 前计算保留项
+def test_scan_referenced_artifact_shas_extracts_refs(tmp_path: Path) -> None:
+    file = tmp_path / "session.jsonl"
+    sha = "ab" * 32
+    other = "cd" * 32
+    file.write_text(
+        f'{{"handle":"artifact:{sha}"}}\n{{"ref":"artifact:{other}"}}\n',
+        encoding="utf-8",
+    )
+    assert scan_referenced_artifact_shas([file]) == {sha, other}

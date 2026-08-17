@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import shlex
@@ -597,6 +598,23 @@ class ToolStepGroup(Widget):
         header.update(self._header())
 
 
+# 从 old/new 文本构造带 ---/+++/@@/-/+ 的统一 diff 文本；内容相同返回空
+def _render_inline_diff(old_text: str, new_text: str) -> str:
+    old_lines = old_text.splitlines() or [""]
+    new_lines = new_text.splitlines() or [""]
+    if old_lines == new_lines:
+        return ""
+    return "\n".join(
+        difflib.unified_diff(old_lines, new_lines, lineterm="")
+    )
+
+
+# 新文件写内容的前缀预览：每行加 + 号，形似 diff 的新增块
+def _render_new_file_diff(content: str) -> str:
+    lines = content.splitlines() or [""]
+    return "\n".join(f"+ {line}" for line in lines)
+
+
 class PermissionSelect(Static):
     """Compact inline approval prompt with full high-risk request context."""
 
@@ -628,6 +646,7 @@ class PermissionSelect(Static):
         "a": "always_allow","2": "always_allow",
         "n": "deny_once",   "3": "deny_once",
         "d": "always_deny", "4": "always_deny",
+        "p": "always_allow_pattern",
     }
 
     # 用户作出权限决策时发布，携带工具 ID 和决策字符串
@@ -653,6 +672,16 @@ class PermissionSelect(Static):
         self._param_preview = param_preview
         self._params = params or {}
         self._cursor = 0
+        # 仅 bash 追加"始终允许此命令模式"选项；其余工具保持原样
+        self._choices = (
+            self._CHOICES
+            + (
+                ("always_allow_pattern", "Always allow pattern", "5",
+                 "remember this command prefix, see W3.2"),
+            )
+            if tool_name == "bash"
+            else self._CHOICES
+        )
 
     def on_mount(self) -> None:
         self.update(self._render_ui())
@@ -712,6 +741,20 @@ class PermissionSelect(Static):
         }
         return labels.get(self._tool_name, f"use {self._tool_name}")
 
+    # 依据编辑类工具参数生成嵌卡 diff 预览；无可呈现内容时返回空串
+    def _diff_preview(self) -> str:
+        t = self._tool_name
+        if t == "edit_file":
+            old_t = str(self._params.get("old_text", ""))
+            new_t = str(self._params.get("new_text", ""))
+            diff = _render_inline_diff(old_t, new_t)
+            return diff if diff else ""
+        if t == "write_file":
+            return _render_new_file_diff(str(self._params.get("content", "")))
+        if t == "apply_patch":
+            return str(self._params.get("patch", ""))
+        return ""
+
     @staticmethod
     def _safe_lines(value: str) -> list[str]:
         sanitized = "".join(
@@ -735,8 +778,17 @@ class PermissionSelect(Static):
             lines.append(
                 f"[#56606d]│[/#56606d] [#e1e7ef]{escape(value_line)}[/#e1e7ef]"
             )
+        diff = self._diff_preview()
+        if diff:
+            diff_lines = self._safe_lines(diff)
+            lines.append("")
+            lines.append("[bold #7d8794]DIFF[/bold #7d8794]")
+            for diff_line in diff_lines[:50]:
+                lines.append(f"[#56606d]·[/#56606d] {escape(diff_line)}")
+            if len(diff_lines) > 50:
+                lines.append("[dim]⋯ diff truncated, approve/deny to continue[/dim]")
         lines.extend(("", "[bold white]Allow this action?[/bold white]"))
-        for i, (_, label, key_hint, description) in enumerate(self._CHOICES):
+        for i, (_, label, key_hint, description) in enumerate(self._choices):
             if i == self._cursor:
                 lines.append(
                     f"[bold #79c7d3]❯[/bold #79c7d3] "
@@ -763,15 +815,15 @@ class PermissionSelect(Static):
         key = event.key
         if key in ("up", "k"):
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._CHOICES)
+            self._cursor = (self._cursor - 1) % len(self._choices)
             self.update(self._render_ui())
         elif key in ("down", "j"):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._CHOICES)
+            self._cursor = (self._cursor + 1) % len(self._choices)
             self.update(self._render_ui())
         elif key == "enter":
             event.stop()
-            self._pick(self._CHOICES[self._cursor][0])
+            self._pick(self._choices[self._cursor][0])
         elif key == "escape":
             event.stop()
             self._pick("deny_once")
@@ -793,6 +845,7 @@ class PermissionBlock(Static):
     _LABEL_MAP: dict[str, str] = {
         "allow_once": "allowed once",
         "always_allow": "always allowed",
+        "always_allow_pattern": "always allowed (pattern)",
         "deny_once": "denied",
         "always_deny": "always denied",
         "timeout": "timed out",
@@ -828,7 +881,7 @@ class PermissionBlock(Static):
             return
         self._resolved = True
         self.remove_class("permission-pending")
-        allowed = decision in ("allow_once", "always_allow")
+        allowed = decision in ("allow_once", "always_allow", "always_allow_pattern")
         icon = "[bold green]allowed[/bold green]" if allowed else "[bold red]denied[/bold red]"
         label = self._LABEL_MAP.get(decision, decision)
         tool_name = escape(self._tool_name)

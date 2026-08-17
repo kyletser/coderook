@@ -12,6 +12,7 @@ from code_rook.core.processes import (
     create_shell_process,
     terminate_process_tree,
 )
+from code_rook.core.sandbox.planner import SandboxPlan, wrap_sandbox_command
 from code_rook.core.tools.base import BaseTool, ToolResult
 
 _DEFAULT_TIMEOUT = 60
@@ -69,10 +70,13 @@ class BashTool(BaseTool):
         *,
         persistent_pool: PersistentShellPool | None = None,
         persistent_key: str = "",
+        sandbox_plan: SandboxPlan | None = None,
     ) -> None:
         self._cwd = cwd
         self._persistent_pool = persistent_pool
         self._persistent_key = persistent_key
+        # 本会话施加的真实 OS 沙箱计划；degraded 或空时按原样执行（仅审计）
+        self._sandbox_plan = sandbox_plan
 
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -90,10 +94,15 @@ class BashTool(BaseTool):
             )
         return await self._run_isolated(p.command, p.timeout)
 
-    # 走一次性子进程的原有执行路径
+    # 走一次性子进程的原有执行路径；有真实沙箱时对命令施加 OS 包裹
     async def _run_isolated(self, command: str, timeout: int) -> ToolResult:
+        wrapped = (
+            wrap_sandbox_command(self._sandbox_plan, command)
+            if self._sandbox_plan is not None
+            else command
+        )
         try:
-            proc = await create_shell_process(command, self._cwd)
+            proc = await create_shell_process(wrapped, self._cwd)
             try:
                 stdout_bytes, _ = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout

@@ -164,6 +164,30 @@ async def test_runtime_event_matches_inner_topic_and_thread_scope() -> None:
     assert writer.write.call_count == 1  # type: ignore[attr-defined]
 
 
+# 功能：global 订阅不再收到带 thread 归属的事件，避免多客户端 thread 事件互见（§20 #18）
+# 设计：global 订阅 thread 事件断言零写入，而同一 thread 事件被 thread: 作用域订阅接收，证明隔离有效
+async def test_scope_global_excludes_thread_events() -> None:
+    broadcaster = IpcEventBroadcaster()
+    global_writer = _make_writer()
+    thread_writer = _make_writer()
+    broadcaster.subscribe(global_writer, topics=["**"], scope="global")
+    broadcaster.subscribe(thread_writer, topics=["**"], scope="thread:thread-1")
+
+    await broadcaster.handle(
+        RuntimeEventAppendedEvent(
+            thread_id="thread-1",
+            turn_id="turn-1",
+            seq=1,
+            event_type="turn.started",
+            payload={},
+            ts="2026-01-01T00:00:00Z",
+        )
+    )
+
+    global_writer.write.assert_not_called()  # type: ignore[attr-defined]
+    thread_writer.write.assert_called_once()  # type: ignore[attr-defined]
+
+
 # 功能：验证 runtime 回放期间实时事件被缓冲，并在历史高水位后按 seq 去重衔接
 # 设计：先缓冲重复 seq=1 和新 seq=2，再回放 seq=1，完成阶段应只追加 seq=2
 async def test_runtime_replay_buffers_and_deduplicates_live_events() -> None:

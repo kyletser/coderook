@@ -18,6 +18,10 @@ from code_rook.core.authority import (
     detect_sandbox_capability,
     evaluate_action,
 )
+from code_rook.core.permissions.command_pattern import (
+    command_pattern_key,
+    matches_command_pattern,
+)
 from code_rook.core.permissions.policy import (
     DEFAULT_POLICIES,
     PermissionDecision,
@@ -29,6 +33,12 @@ from code_rook.core.permissions.storage import (
     load_authority_profile,
     load_policy_file,
     save_policy_file,
+)
+from code_rook.core.sandbox.planner import (
+    SandboxPlan,
+    SandboxTier,
+    plan_sandbox,
+    tier_for_auto_review,
 )
 from code_rook.core.tools.spec import ApprovalRequirement
 
@@ -152,6 +162,15 @@ class PermissionManager:
     def clear_authority_snapshot(self, session_id: str) -> None:
         self._session_authorities.pop(session_id, None)
 
+    # 依据 authority 快照决定是否给 shell 施加真实 OS 沙箱；非 AUTO_REVIEW 或无后端时返回 None
+    def shell_sandbox_plan(self, session_id: str, workspace: str) -> SandboxPlan | None:
+        snap = self.get_authority_snapshot(session_id)
+        if snap.profile != AuthorityProfile.AUTO_REVIEW:
+            return None
+        if tier_for_auto_review(snap.sandbox) == SandboxTier.NONE:
+            return None
+        return plan_sandbox(snap.sandbox, SandboxTier.WORKSPACE_WRITE, workspace)
+
     # 设置 headless session 的兼容权限模式
     def set_session_mode(
         self,
@@ -250,6 +269,17 @@ class PermissionManager:
                 )
                 return cached == "allow", f"auto_{cached}"
 
+            # Tier 4b: 命令前缀级 always（首 token 解析，见 W3.2）——bash 专属；
+            # 前缀模式只落在 _persistent_always（串键），session 缓存仅存整键故不参与前缀匹配
+            prefix_hit = self._match_prefix(self._persistent_always, policy_name, command)
+            if prefix_hit is not None:
+                logger.debug(
+                    "permission: command-prefix cache hit command=%s decision=%s",
+                    command,
+                    prefix_hit,
+                )
+                return prefix_hit == "allow", "auto_always_prefix"
+
         if approval_requirement == ApprovalRequirement.NEVER:
             return True, "auto_allow"
 
@@ -267,6 +297,18 @@ class PermissionManager:
             and authority_decision == AuthorityDecision.ALLOW
         ):
             return True, "authority_allow"
+
+        # 权限闭环（W3.1）：AUTO_REVIEW + OS 沙箱可用时，bash 在沙箱内自动放行；
+        # 沙箱不可用（降级）则回落后续 ASK 路径，deny_patterns 在 Tier 1 已不可绕过
+        if (
+            not force_approval
+            and policy_name == "bash"
+            and command
+            and self.get_authority_snapshot(session_id).profile
+            == AuthorityProfile.AUTO_REVIEW
+            and self.get_authority_snapshot(session_id).sandbox.available
+        ):
+            return True, "authority_sandbox_allow"
 
         if not outside_cwd and not force_approval:
             # Tier 5: allow_patterns（bash only）
@@ -337,7 +379,16 @@ class PermissionManager:
                 future.cancel()
             raise
 
-        allowed = self._apply_response(raw, session_id, permission_key)
+        allowed = self._apply_response(
+            raw,
+            session_id,
+            permission_key,
+            prefix_key=(
+                f"{policy_name}:{command_pattern_key(command)}"
+                if policy_name == "bash" and command
+                else ""
+            ),
+        )
         return allowed, raw
 
     # 处理客户端返回的审批决策，resolve 对应 Future
@@ -349,52 +400,67 @@ class PermissionManager:
         if not req.future.done():
             req.future.set_result(decision)
 
+    # 在给定缓存中查找命中 command 的命令前缀规则，返回缓存值或 None
+    @staticmethod
+    def _match_prefix(
+        cache: dict[str, str], policy_name: str, command: str
+    ) -> str | None:
+        if not command or policy_name != "bash":
+            return None
+        prefix = f"{policy_name}:"
+        for key, value in cache.items():
+            if key.startswith(prefix) and matches_command_pattern(
+                command, key[len(prefix):]
+            ):
+                return value
+        return None
+
     # 应用审批决策，更新 session + persistent 缓存，返回是否放行
-    def _apply_response(self, decision: str, session_id: str, permission_key: str) -> bool:
-        allow = decision in ("allow_once", "always_allow")
+    def _apply_response(
+        self,
+        decision: str,
+        session_id: str,
+        permission_key: str,
+        *,
+        prefix_key: str = "",
+    ) -> bool:
+        allow = decision in ("allow_once", "always_allow", "always_allow_pattern")
+        if decision == "always_allow_pattern":
+            if not prefix_key:
+                return False
+            self._store_always(prefix_key, "allow", session_id)
+            return True
         if decision == "always_allow":
-            self._session_always[(session_id, permission_key)] = "allow"
-            self._persistent_always[permission_key] = "allow"
-            logger.info(
-                "permission: always allow tool=%s policy_file=%s persistent=%s",
-                permission_key, self._policy_file, self._persistent_always,
-            )
-            if self._policy_file is not None:
-                try:
-                    save_policy_file(
-                        self._persistent_always,
-                        self._policy_file,
-                        authority_profile=self._default_authority.profile,
-                    )
-                    logger.info("permission: policy.toml written path=%s", self._policy_file)
-                except Exception:
-                    logger.exception(
-                        "permission: failed to write policy.toml path=%s", self._policy_file
-                    )
-            else:
-                logger.warning("permission: policy_file is None, skipping persistence")
+            self._store_always(permission_key, "allow", session_id)
         elif decision == "always_deny":
-            self._session_always[(session_id, permission_key)] = "deny"
-            self._persistent_always[permission_key] = "deny"
-            logger.info(
-                "permission: always deny tool=%s policy_file=%s persistent=%s",
-                permission_key, self._policy_file, self._persistent_always,
-            )
-            if self._policy_file is not None:
-                try:
-                    save_policy_file(
-                        self._persistent_always,
-                        self._policy_file,
-                        authority_profile=self._default_authority.profile,
-                    )
-                    logger.info("permission: policy.toml written path=%s", self._policy_file)
-                except Exception:
-                    logger.exception(
-                        "permission: failed to write policy.toml path=%s", self._policy_file
-                    )
-            else:
-                logger.warning("permission: policy_file is None, skipping persistence")
+            self._store_always(permission_key, "deny", session_id)
         return allow
+
+    # 写入持久 always 缓存并回写 policy 文件（session 键按 permission_key 缓存）
+    def _store_always(
+        self, key: str, value: str, session_id: str, permission_key: str | None = None
+    ) -> None:
+        self._persistent_always[key] = value
+        if permission_key is not None:
+            self._session_always[(session_id, permission_key)] = value
+        logger.info(
+            "permission: always %s key=%s policy_file=%s",
+            value, key, self._policy_file,
+        )
+        if self._policy_file is not None:
+            try:
+                save_policy_file(
+                    self._persistent_always,
+                    self._policy_file,
+                    authority_profile=self._default_authority.profile,
+                )
+                logger.info("permission: policy.toml written path=%s", self._policy_file)
+            except Exception:
+                logger.exception(
+                    "permission: failed to write policy.toml path=%s", self._policy_file
+                )
+        else:
+            logger.warning("permission: policy_file is None, skipping persistence")
 
     # 客户端断连时拒绝该 session 所有待审批请求，防止 Future 永久挂起
     def cancel_session(self, session_id: str, reason: str = "client_disconnected") -> None:

@@ -14,6 +14,7 @@ from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
+from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillLoader
@@ -110,6 +111,15 @@ class RuntimeToolAssembly:
         # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
         self._persistent_pool = PersistentShellPool()
 
+    # 依据权限管理层计算当前 session 应施加的 OS 沙箱计划（无权限管理器则返回 None）
+    def _shell_sandbox_plan(self, session_id: str) -> SandboxPlan | None:
+        if self._permission_manager is None or not session_id:
+            return None
+        return self._permission_manager.shell_sandbox_plan(
+            session_id,
+            str(self._boundary.root),
+        )
+
     # 根据本次 run 的动态依赖构建完整且受 Mode/白名单裁剪的工具目录
     def build(
         self,
@@ -167,6 +177,7 @@ class RuntimeToolAssembly:
             self._boundary.root,
             persistent_pool=self._persistent_pool,
             persistent_key=session_id,
+            sandbox_plan=self._shell_sandbox_plan(session_id),
         )
         register_run_family(registry, shell, allowed_names=allowed)
         register_bash_family(

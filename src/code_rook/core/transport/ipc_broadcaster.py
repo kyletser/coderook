@@ -192,6 +192,7 @@ class IpcEventBroadcaster:
         return any(fnmatch.fnmatch(event_type, pattern) for pattern in topics)
 
     # 检查事件标识是否匹配 global、run 或 thread 订阅范围
+    # global 只兜底真正全局事件（无 thread 归属），避免多客户端 thread 事件互见（§20 #18）
     @staticmethod
     def _matches_scope(
         run_id: str | None,
@@ -199,7 +200,7 @@ class IpcEventBroadcaster:
         scope: str,
     ) -> bool:
         if scope == "global":
-            return True
+            return thread_id is None
         if scope.startswith("run:"):
             return run_id == scope[4:]
         if scope.startswith("thread:"):

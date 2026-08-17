@@ -4,7 +4,7 @@
 - 基准代码版本：`817cce1`（feat: expand LLM provider support, runtime service, and project docs）
 - 时间跨度：约 14 周（3-6 个月），综合路线：体验快赢 → 生态兼容 + 感知能力 → 智能与经济性 → 安全与可信 → TUI 重构 + 管理面板 → 形态扩展
 - 现状基准：`docs/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
-- **进度基线（2026-08-17 更新）**：阶段 0、1、2 全部完成（阶段 2 收尾见 §5.6 复盘）；下一步从阶段 3（安全与可信，W3.1 沙箱为首）。各工作项状态见正文 ✅/⏸/⬜ 标注与 §5.6 复盘记录。
+- **进度基线（2026-08-17 更新）**：阶段 0、1、2、3 全部完成（阶段 2 收尾见 §5.6 复盘，阶段 3 收尾见 §5.7 复盘）；下一步从阶段 4（TUI 重构 + 管理面板，W4.1 拆分上帝类为首）。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
 - 本文档**取代**以下历史差距分析（它们描述的缺口多数已修复或已过时）：
   - `docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
   - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md`（2026-07-30，81/100，早于 08-04 R1-R9 大改造批次）
@@ -281,11 +281,13 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 
 ---
 
-### 阶段 3（第 8-11 周）：安全与可信 ⬜ 未开始
+### 阶段 3（第 8-11 周）：安全与可信 ✅ 已完成（2026-08-17，阶段3批次）
+
+> 状态：W3.1-W3.4 全部落地。**Windows 上真实沙箱按设计降级为"原样执行 + 诚实标注"**（无 bwrap/seatbelt 后端），Linux/macOS 走真实包裹；W3.3 落地为"内嵌完整 diff 预览 + 接受/拒绝全部"第一版（逐 hunk 拒绝留待后续）；W3.4 的 §20 #10（家族工具内部分派绕过调用管线）按计划仅做设计评审、实装放阶段 4。详见 §5.7 复盘。
 
 > 目标：把"权限模型设计领先但强制力落后"的错位补齐——真沙箱 + 前缀放行，让 AUTO_REVIEW 姿态下的审批疲劳归零。对标 Codex 的沙箱三档是本阶段的锚。
 
-**W3.1 真实 OS 级沙箱执行**（G22）⭐ 本阶段核心
+**W3.1 真实 OS 级沙箱执行**（G22）⭐ 本阶段核心 ✅
 - Linux：bwrap 包裹（read-only：只读挂载工作区；workspace-write：可写工作区 + 临时目录；禁网络可选）；bwrap 缺失时降级当前行为并在 /sandbox 标注。
 - macOS：sandbox-exec profile（同两档语义）。
 - Windows：Job Object + 受限令牌 + 路径 ACL（最简实现：阻断工作区外写入）；实现难度最高，允许降级为"路径写入审计 + 提示"，但必须诚实标注（延续 advisory 的诚实化传统）。
@@ -293,18 +295,18 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 - 位置：`core/permissions/`（决策流接入沙箱判定）、新 `core/sandbox/`（执行包裹）、`core/tools/builtin/bash.py`（执行路径）。
 - 验收：AUTO_REVIEW 下 `rm -rf /tmp/x`（工作区外）触发审批，工作区内 `uv run pytest` 零审批；跨平台 CI 各有一档可用。
 
-**W3.2 命令前缀级 always-allow**（G23）
+**W3.2 命令前缀级 always-allow**（G23）✅
 - policy key 从 `Tool.action` 扩展支持前缀模式：`Bash.run:uv run pytest*`、`Bash.run:git status`（fnmatch 语义）；审批卡新增"始终允许此命令模式"选项（第四选项 d→新增选项，重新排布 y/a/n/d/m）。
 - outside-cwd 启发式修复：`cd <workspace 内子目录>` 不再触发强制 ASK（当前误报）。
 - 验收：`git status` 一生只批一次；前缀匹配有单元测试覆盖注入场景（`uv run pytest; rm -rf /` 不得命中 `uv run pytest*` 的前缀——用首 token 解析而非纯 fnmatch）。
 
-**W3.3 结构化 diff 审阅**（G24）
+**W3.3 结构化 diff 审阅**（G24）✅ 第一版
 - edit/apply_patch 的权限卡内嵌 diff 视图（复用 /diff 的渲染），第一版：查看完整 diff + 接受全部/拒绝全部；第二版：逐 hunk 接受/拒绝（拒绝的 hunk 转为反馈注入下一轮）。
 - 对标：Claude Code diff 审批、CodeBuddy Craft 的改动确认、Codex review mode。
 
-**W3.4 §20 遗留清理**
-- 全局订阅 scope 多客户端事件互见（§20 #18）：scope 校验收紧到连接级。
-- artifact/blob GC（§20 #17）：按年龄+引用计数的保留策略，`/config gc` 手动触发 + 30 天默认清理，删除前展示清单。
+**W3.4 §20 遗留清理** ✅
+- 全局订阅 scope 多客户端事件互见（§20 #18）：scope 校验收紧到连接级——global 订阅不再收到带 thread 归属的事件，杜绝多客户端 thread 事件互见。
+- artifact/blob GC（§20 #17）：`ArtifactStore.gc()` 按年龄 + 引用计数保留策略，dry_run 默认开启先展示清单后删除，`scan_referenced_artifact_shas()` 从会话文件提取引用集合；30 天默认清理。手动触发入口 `/config gc` 并入阶段 4 管理面板。
 - 家族工具内部分派绕过调用管线（§20 #10）：本阶段只做设计评审，实装放阶段 4 后（涉及 family 适配层重构，与 TUI 重构解耦）。
 
 **阶段 3 验收**：一次 30 分钟真实任务中审批次数 ≤3（当前常态为 10+）；恶意/误操作命令在沙箱档位下无法写出工作区；diff 审阅可逐块拒绝。
@@ -417,6 +419,16 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 **W2.5b 子代理 token_budget 硬顶 ✅**：预算到顶由根目标预算账本（`registry.py`）判定位移并置活跃上下文 `budget_limited`；终态回写 `WorkerStatus.BUDGET_LIMITED`；当被中断导致结果为空时，`tool.py` 用 `synthesize_budget_summary` 合成含 `budget_exhausted` 标记的收尾回执，父上下文拿到结论性而非空结果。现有 `test_agent_budget_exhaustion_stops_worker` 扩展断言该标记。
 **收益**：成本可见（$）、推理档位可控、缓存可省、长任务续跑不静默失败、`/model` 即时切换、子代理预算硬顶不再产生空结果。
 **接下来**：阶段 3 安全与可信——W3.1 真实 OS 沙箱 + 权限闭环为首要。
+
+### 5.7 阶段 3 复盘（2026-08-17，commit 阶段3批次）
+
+**W3.1 真实 OS 沙箱 + 权限闭环 ✅**：新增 `core/sandbox/planner.py`（`SandboxTier` 三档 + `SandboxPlan` + `plan_sandbox` 构建 bwrap/seatbelt 包装 + `tier_for_auto_review`）；bash 执行路径在 AUTO_REVIEW 且沙箱可用时用 `wrap_sandbox_command` 施加 OS 包裹，无后端则按设计降级为"原样执行 + 诚实标注"；`PermissionManager` 新增权限闭环（auto_review+sandbox → `authority_sandbox_allow`）与 `shell_sandbox_plan()`，由 `RuntimeToolAssembly._shell_sandbox_plan` 注入 BashTool。Windows 本机测试覆盖降级路径，bwrap/seatbelt 走结构断言单测。
+**W3.2 命令前缀级 always-allow ✅（顺带修复）**：前缀匹配中 session 缓存（tuple 键）参与前缀遍历会导致崩溃——前缀模式实际只写 `_persistent_always`（串键），修正为仅对持久缓存做前缀匹配。
+**W3.3 结构化 diff 审阅 ✅ 第一版**：审批卡内嵌完整 diff 预览（edit 用 `difflib.unified_diff`、write 用 + 前缀预览、apply_patch 直显 patch），截断 50 行 + 提示，接受/拒绝全部沿用原决策层级；逐 hunk 拒绝为第二版（顺延）。
+**W3.4 §20 清理 ✅**：global 订阅 scope 收紧到连接级（不再收 thread 归属事件，防多客户端互见）；`ArtifactStore.gc()`/`list_gc_candidates()`/`scan_referenced_artifact_shas()` 落地年龄 + 引用留存，dry_run 默认开启。§20 #10（family 内部分派）按计划仅设计评审。
+**顺延项**：W3.3 逐 hunk 拒绝；`/config gc` 手动触发入口（并阶段 4 管理面板）；Windows 真沙箱（Job Object/受限令牌）。
+**收益**：AUTO_REVIEW + 沙箱命令零审批、前缀级放行告别反复审批、审批即审 diff、多客户端事件互见收敛、artifact 不再无限膨胀。
+**接下来**：阶段 4 TUI 重构 + 管理面板——先按 W4.1 拆上帝类（`tui/app.py` 4,176 行 <500），再补 /mcp /hooks /memory /jobs 面板与输入体验深化。
 
 ---
 

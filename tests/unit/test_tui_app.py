@@ -105,6 +105,30 @@ def test_permission_panel_shows_full_bash_command() -> None:
     assert command in render(panel._render_ui()).plain
 
 
+# 功能：edit_file 审批卡内嵌 old→new 的 diff 预览（W3.3）
+# 设计：用两文本实例化审批面板，断言渲染文本含 DIFF 头与 +/- 行，验证审阅信息进卡
+def test_permission_panel_embeds_edit_diff_preview() -> None:
+    panel = PermissionSelect(
+        "tool-1",
+        "edit_file",
+        "path='/ws/a.py'",
+        {"path": "/ws/a.py", "old_text": "x = 1", "new_text": "x = 2"},
+    )
+    plain = render(panel._render_ui()).plain
+    assert "DIFF" in plain
+    assert "-x = 1" in plain
+    assert "+x = 2" in plain
+
+
+# 功能：非编辑类工具或不含 old/new 时审批卡不出现 diff 段
+# 设计：bash 审批不含 diff 信息，断言无 DIFF 头，避免无关工具误带审阅块
+def test_permission_panel_no_diff_for_bash() -> None:
+    panel = PermissionSelect(
+        "tool-1", "bash", "command='git status'", {"command": "git status"}
+    )
+    assert "DIFF" not in render(panel._render_ui()).plain
+
+
 # 功能：验证待审批摘要与决策结果文案保持一致
 # 设计：直接检查纯文本生成结果，不依赖挂载 App 或 IPC
 def test_permission_block_uses_pending_and_decision_labels() -> None:

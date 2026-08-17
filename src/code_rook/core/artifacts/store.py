@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _MAX_READ_BYTES = 50_000
+_ARTIFACT_REF_RE = re.compile(rb"artifact:[0-9a-f]{64}")
 
 
 class ArtifactError(RuntimeError):
@@ -139,3 +141,66 @@ class ArtifactStore:
         limit: int = 20_000,
     ) -> ArtifactSlice:
         return await asyncio.to_thread(self._read_sync, sha256, offset, limit)
+
+    # 列出可按"年龄 + 引用保留"清理的候选 artifact（仅计算，不删除）
+    def list_gc_candidates(
+        self,
+        *,
+        days: int = 30,
+        keep: set[str] | None = None,
+        now: float | None = None,
+    ) -> list[Path]:
+        if not self._root.is_dir():
+            return []
+        retention = days * 24 * 3600
+        cutoff = (now if now is not None else time.time()) - retention
+        kept = keep or set()
+        candidates: list[Path] = []
+        for item in self._root.iterdir():
+            if not item.is_file() or not _SHA256_RE.fullmatch(item.name):
+                continue
+            if item.name in kept:
+                continue
+            try:
+                if item.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            candidates.append(item)
+        return candidates
+
+    # 执行 artifact GC；dry_run 只返回候选不清除，默认开启以先展示清单
+    def gc(
+        self,
+        *,
+        days: int = 30,
+        keep: set[str] | None = None,
+        dry_run: bool = True,
+        now: float | None = None,
+    ) -> list[Path]:
+        candidates = self.list_gc_candidates(days=days, keep=keep, now=now)
+        if dry_run:
+            return candidates
+        removed: list[Path] = []
+        for path in candidates:
+            try:
+                path.unlink()
+                removed.append(path)
+            except OSError:
+                continue
+        return removed
+
+
+# 从一批文本/会话文件中提取全部被引用的 artifact sha256，供 GC 的 keep 集合使用
+def scan_referenced_artifact_shas(paths: list[Path]) -> set[str]:
+    referenced: set[str] = set()
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        for match in _ARTIFACT_REF_RE.findall(data):
+            referenced.add(match.decode("ascii").removeprefix("artifact:"))
+    return referenced

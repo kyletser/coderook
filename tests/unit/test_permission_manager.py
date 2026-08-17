@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from code_rook.core.authority import AuthorityProfile
+from code_rook.core.authority import AuthorityProfile, SandboxCapability
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
 from code_rook.core.permissions.storage import (
@@ -683,3 +683,148 @@ async def test_permission_timeout_cleans_up_pending() -> None:
     # 超时后迟到的 respond 不应 crash
     mgr.respond("t_late", "allow_once")  # should be noop
     assert "t_late" not in mgr._pending
+
+
+# ── command-prefix always (W3.2) ─────────────────────────────────────────────
+
+# 功能：respond("always_allow_pattern") 存入前缀规则后，合法尾参命令命中并放行
+# 设计：bash 前缀键为"完整批准的首命令 + 通配符 *"，二次带额外尾参的命令命中即 auto_allow
+async def test_always_allow_pattern_hits_legal_args() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _approve_pattern() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("tP1", "always_allow_pattern")
+
+    task = asyncio.create_task(_approve_pattern())
+    r1, _ = await mgr.check_and_wait(
+        tool_use_id="tP1", tool_name="bash",
+        params={"command": "uv run pytest -k unit"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+    assert r1 is True
+    assert "bash:uv run pytest -k unit*" in mgr._persistent_always
+
+    r2, d2 = await mgr.check_and_wait(
+        tool_use_id="tP2", tool_name="bash",
+        params={"command": "uv run pytest -k unit --ff"}, session_id="s2",
+        event_emitter=emitter,
+    )
+    assert r2 is True
+    assert d2 == "auto_always_prefix"
+    assert len(emitted) == 1  # 第二次命中前缀缓存，不再 ASK
+
+
+# 功能：命令串接注入不得命中已批准的前缀，仍走 ASK 审批
+# 设计：`uv run pytest; rm -rf /` 首命令虽匹配但带 ; 串接，必须拒绝自动放行、继续询问
+async def test_always_allow_pattern_rejects_chained_injection() -> None:
+    mgr = _make_manager()
+    mgr._persistent_always["bash:uv run pytest*"] = "allow"
+    emitted, emitter = await _collect_emitted()
+
+    task = asyncio.create_task(
+        mgr.check_and_wait(
+            tool_use_id="tP3", tool_name="bash",
+            params={"command": "uv run pytest; rm -rf /"}, session_id="s1",
+            event_emitter=emitter,
+        )
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # 尚未审批：应处于挂起（ASK）而非自动放行
+    assert "tP3" in mgr._pending
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# 功能：前缀规则仅在确切首命令对齐时命中，无关的子串命令不误放行
+# 设计：已批准 `bash:pytest*`，`uv run pytest` 因 pytest 不在首 token 而不命中
+async def test_always_allow_pattern_requires_leading_alignment() -> None:
+    mgr = _make_manager()
+    mgr._persistent_always["bash:pytest*"] = "allow"
+    emitted, emitter = await _collect_emitted()
+
+    task = asyncio.create_task(
+        mgr.check_and_wait(
+            tool_use_id="tP4", tool_name="bash",
+            params={"command": "uv run pytest"}, session_id="s1",
+            event_emitter=emitter,
+        )
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert "tP4" in mgr._pending  # 不命中前缀，走 ASK
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# ── W3.1 沙箱闭环 ────────────────────────────────────────────────────────────
+
+# 功能：AUTO_REVIEW + 沙箱可用时 bash 命令免审批直接放行（决策码 authority_sandbox_allow）
+# 设计：注入带可用 bwrap 沙箱的 authority 快照，断言不发出任何审批事件且返回授权语义
+async def test_auto_review_with_sandbox_auto_allows_bash() -> None:
+    mgr = _make_manager()
+    current = mgr.get_authority_snapshot("s-sbx")
+    mgr.set_authority_snapshot(
+        "s-sbx",
+        current.model_copy(
+            update={
+                "profile": AuthorityProfile.AUTO_REVIEW,
+                "sandbox": SandboxCapability(
+                    available=True, kind="linux_bwrap", reason="ok"
+                ),
+            }
+        ),
+    )
+    emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="t-sbx",
+        tool_name="bash",
+        params={"command": "uv run pytest"},
+        session_id="s-sbx",
+        event_emitter=emitter,
+        action="shell",
+    )
+    assert allowed is True
+    assert decision == "authority_sandbox_allow"
+    assert emitted == []
+
+
+# 功能：AUTO_REVIEW 但无可用沙箱时 shell_sandbox_plan 返回 None，不包裹命令
+# 设计：这是"沙箱失败→回落审批"的伴随判定：无后端就不该 wrapper，闭环交由 ASK 兜底
+def test_shell_sandbox_plan_none_without_autoreview_or_backend() -> None:
+    mgr = _make_manager()
+    assert mgr.shell_sandbox_plan("splain", "/ws") is None
+    current = mgr.get_authority_snapshot("s-auto")
+    mgr.set_authority_snapshot(
+        "s-auto",
+        current.model_copy(update={"profile": AuthorityProfile.AUTO_REVIEW}),
+    )
+    assert mgr.shell_sandbox_plan("s-auto", "/ws") is None
+
+
+# 功能：AUTO_REVIEW + 可用 bwrap 时 shell_sandbox_plan 返回非降级的 workspace_write 计划
+# 设计：验证计划真实可用（degraded=False）且 wrapper 以 bwrap 起头，恰与闭环放行对齐
+def test_shell_sandbox_plan_returns_wrapper_when_available() -> None:
+    mgr = _make_manager()
+    current = mgr.get_authority_snapshot("s-ok")
+    mgr.set_authority_snapshot(
+        "s-ok",
+        current.model_copy(
+            update={
+                "profile": AuthorityProfile.AUTO_REVIEW,
+                "sandbox": SandboxCapability(
+                    available=True, kind="linux_bwrap", reason="ok"
+                ),
+            }
+        ),
+    )
+    plan = mgr.shell_sandbox_plan("s-ok", "/proj")
+    assert plan is not None
+    assert plan.degraded is False
+    assert plan.wrapper and plan.wrapper[0] == "bwrap"
