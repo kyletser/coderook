@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import shlex
@@ -45,6 +44,7 @@ from code_rook.core.skills.manager import (
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui.clipboard import copy_to_windows_clipboard
+from code_rook.tui.connection import TuiConnection
 from code_rook.tui.panels import (
     render_turn_inspector,
     render_workflow_graph,
@@ -261,7 +261,37 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         prompt.set_history(_load_input_history())
         prompt.disabled = True
         prompt.border_title = _PROMPT_CONNECTING
-        self.run_worker(self._socket_loop(), exclusive=True, name="socket")
+        self._connection = TuiConnection(
+            self,
+            self._handle_event,
+            host=self._host,
+            port=self._port,
+            auth_token=self._auth_token,
+        )
+        self.run_worker(self._connection.run(), exclusive=True, name="socket")
+
+    # 连接建立并完成会话恢复后：还原输入框状态与顶栏
+    def _mark_connected(self) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.disabled = self._plan_review_pending
+            prompt.read_only = False
+            if self._plan_review_pending:
+                prompt.border_title = "审阅上方计划"
+            elif self._input_runtime_mode == RuntimeMode.PLAN:
+                prompt.border_title = _PROMPT_PLAN
+            else:
+                prompt.border_title = _PROMPT_READY
+                prompt.focus()
+        self._update_header("plan ready" if self._plan_review_pending else "ready")
+
+    # 连接断开后：禁用输入框并提示正在重试
+    def _mark_disconnected(self) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.read_only = False
+            prompt.border_title = "连接已断开 · 正在重试"
 
     # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
     def _build_slash_items(self) -> list[tuple[str, str]]:
@@ -2407,126 +2437,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             f"{session}{model}{mode}{permission}{trust}{ctx}{cost}"
             f"  [{color}]{state}[/{color}]"
         )
-
-    # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
-    async def _socket_loop(self) -> None:
-        header = self.query_one("#header", Label)
-
-        while True:
-            client = SocketClient(self._host, self._port, auth_token=self._auth_token)
-            self._client = None
-            try:
-                await client.connect()
-            except (ConnectionRefusedError, OSError):
-                log.warning("connection refused %s:%s, retrying", self._host, self._port)
-                self._update_header("disconnected")
-                await asyncio.sleep(2)
-                continue
-            except IpcError as exc:
-                log.error("IPC authentication failed: %s", exc)
-                header.update(f"[bold]CodeRook[/bold]  [red]authentication failed: {exc}[/red]")
-                await asyncio.sleep(2)
-                continue
-
-            log.info("connected to %s:%s", self._host, self._port)
-            self._client = client
-            self._update_header("connecting")
-            loop_task = asyncio.create_task(client.run_event_loop())
-
-            async def on_event(event: dict[str, Any]) -> None:
-                self._handle_event(event)
-
-            client.on_event(on_event)
-
-            try:
-                loop_task.add_done_callback(
-                    lambda t: log.error("loop_task failed: %s", t.exception())
-                    if not t.cancelled() and t.exception() is not None
-                    else None
-                )
-                params: dict[str, Any] = {
-                    "topics": [
-                        "session.*",
-                        "run.*",
-                        "step.*",
-                        "agent.*",
-                        "tool.*",
-                        "llm.token",
-                        "llm.usage",
-                        "log.*",
-                        "permission.*",
-                        "context.*",
-                        "subagent.*",
-                        "skill.*",
-                        "plan.*",
-                        "user_question.*",
-                        "lsp.*",
-                    ],
-                    "scope": "global",
-                }
-                if self._replay_run_id is not None:
-                    params["replay_from_run"] = self._replay_run_id
-                await client.send_command("event.subscribe", params)
-                if self._resume_session_id is None:
-                    created = await client.send_command("session.create", {"mode": "chat"})
-                    self._session_id = str(created["session_id"])
-                    self._resume_session_id = self._session_id
-                    self._history_loaded = True
-                    self._session_title = ""
-                    self._titled = False
-                    self._first_user_text = ""
-                    log.info("session created session_id=%s", self._session_id)
-                else:
-                    resumed = await client.send_command(
-                        "session.resume", {"session_id": self._resume_session_id}
-                    )
-                    resumed_info = resumed.get("session", {})
-                    resumed_title = (
-                        str(resumed_info.get("title", ""))
-                        if isinstance(resumed_info, dict)
-                        else ""
-                    )
-                    self._session_id = str(resumed["session"]["session_id"])
-                    self._session_title = resumed_title
-                    self._titled = bool(resumed_title and resumed_title != "Untitled")
-                    log.info("session resumed session_id=%s", self._session_id)
-                    if not self._history_loaded:
-                        history = await client.send_command(
-                            "session.get_history", {"session_id": self._session_id}
-                        )
-                        self._append_history(history.get("messages", []))
-                        self._history_loaded = True
-                await self._refresh_authority()
-                prompt = self._prompt()
-                if prompt is not None:
-                    prompt.disabled = self._plan_review_pending
-                    prompt.read_only = False
-                    if self._plan_review_pending:
-                        prompt.border_title = "审阅上方计划"
-                    elif self._input_runtime_mode == RuntimeMode.PLAN:
-                        prompt.border_title = _PROMPT_PLAN
-                    else:
-                        prompt.border_title = _PROMPT_READY
-                        prompt.focus()
-                self._update_header("plan ready" if self._plan_review_pending else "ready")
-                await loop_task
-            except IpcError as e:
-                header.update(f"[bold]CodeRook[/bold]  [red]subscribe error: {e}[/red]")
-            finally:
-                if not loop_task.done():
-                    loop_task.cancel()
-                self._client = None
-                self._session_id = None
-                prompt = self._prompt()
-                if prompt is not None:
-                    prompt.disabled = True
-                    prompt.read_only = False
-                    prompt.border_title = "连接已断开 · 正在重试"
-                self._break_llm()
-                await client.close()
-
-            self._update_header("disconnected")
-            await asyncio.sleep(2)
 
     # 根据事件 type 路由到对应渲染逻辑；捕获异常防止 socket loop 因单个事件崩溃
     def _handle_event(self, event: dict[str, Any]) -> None:
