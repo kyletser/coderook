@@ -41,7 +41,15 @@ class AgentConfig:
 class LlmConfig:
     provider: str = _DEFAULT_LLM_PROVIDER  # "anthropic" | "openai_compatible"
     default_model: str = _DEFAULT_MODEL
-    router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
+    router: str = "static"  # "static" | "rule_based" | "cost_budget"
+    # rule_based：PLAN 模式选用的高推理路由 id（空则沿用活动路由）
+    router_plan_route: str = ""
+    # rule_based：ACT/默认模式选用的路由 id（空则沿用活动路由）
+    router_act_route: str = ""
+    # cost_budget：单 run 累计成本超限阈值（USD）；<=0 表示不启用
+    router_cost_budget: float = 0.0
+    # cost_budget：超限后降档到的廉价路由 id（空则沿用活动路由）
+    router_cost_fallback: str = ""
     base_url: str = ""
     api_key_env: str = "ANTHROPIC_API_KEY"
 
@@ -239,6 +247,10 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             "provider",
             "default_model",
             "router",
+            "router_plan_route",
+            "router_act_route",
+            "router_cost_budget",
+            "router_cost_fallback",
             "base_url",
             "api_key_env",
         }
@@ -259,6 +271,26 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             if not isinstance(val, str):
                 raise SystemExit("Config error: llm.router must be a string")
             config.llm.router = val
+        if "router_plan_route" in llm:
+            val = llm["router_plan_route"]
+            if not isinstance(val, str):
+                raise SystemExit("Config error: llm.router_plan_route must be a string")
+            config.llm.router_plan_route = val
+        if "router_act_route" in llm:
+            val = llm["router_act_route"]
+            if not isinstance(val, str):
+                raise SystemExit("Config error: llm.router_act_route must be a string")
+            config.llm.router_act_route = val
+        if "router_cost_budget" in llm:
+            val = llm["router_cost_budget"]
+            if not isinstance(val, bool) and not isinstance(val, (int, float)):
+                raise SystemExit("Config error: llm.router_cost_budget must be a number")
+            config.llm.router_cost_budget = float(val)
+        if "router_cost_fallback" in llm:
+            val = llm["router_cost_fallback"]
+            if not isinstance(val, str):
+                raise SystemExit("Config error: llm.router_cost_fallback must be a string")
+            config.llm.router_cost_fallback = val
         if "base_url" in llm:
             val = llm["base_url"]
             if not isinstance(val, str):

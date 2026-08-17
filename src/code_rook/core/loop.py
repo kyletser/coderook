@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -259,6 +260,9 @@ class AgentLoop:
         prefix_tracker: PrefixFingerprintTracker | None = None,
         escalate_plan_thinking: bool = False,
         auto_step_continues: int = 0,
+        # 可选的每步路由刷新回调：返回新 provider 表示需切换（loop 接管重建后的实例），
+        # 返回 None 表示沿用当前 provider；用于 per-turn 模型切换（W2.4）
+        route_refresher: Callable[[int], Awaitable[LLMProvider | None]] | None = None,
     ) -> None:
         if retry_backoff_s < 0:
             raise ValueError("retry_backoff_s must not be negative")
@@ -285,6 +289,7 @@ class AgentLoop:
         self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
         self._escalate_plan_thinking = escalate_plan_thinking
         self._auto_step_continues = max(0, auto_step_continues)
+        self._route_refresher = route_refresher
         self._step_continues_used = 0
         self._initial_max_steps: int | None = None
         self._reactive_compaction_attempted = False
@@ -928,6 +933,12 @@ class AgentLoop:
             await self._bus.publish(
                 StepStartedEvent(run_id=context.run_id, step=context.step, ts=_now())
             )
+
+            # [per-turn] 每步前让路由刷新回调决定是否切换模型，返回非空即替换 provider
+            if self._route_refresher is not None:
+                refreshed = await self._route_refresher(context.step)
+                if refreshed is not None:
+                    self._provider = refreshed
 
             await self._apply_tool_result_budget(context)
 

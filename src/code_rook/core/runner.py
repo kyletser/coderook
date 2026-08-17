@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,12 @@ from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
-from code_rook.core.bus.events import LlmRouteSelectedEvent, RunFinishedEvent, RunStartedEvent
+from code_rook.core.bus.events import (
+    LlmRouteSelectedEvent,
+    LlmUsageEvent,
+    RunFinishedEvent,
+    RunStartedEvent,
+)
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.config import CodeRookConfig
@@ -21,7 +27,9 @@ from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_llm_provider, create_provider_for_route
+from code_rook.core.llm.pricing import estimate_cost, get_pricing
 from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
+from code_rook.core.llm.router import RoutingPolicy, select_route_id
 from code_rook.core.loop import AgentLoop
 from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
@@ -331,6 +339,13 @@ class AgentRunner:
                         and route_binding.route.thinking != "off"
                     ),
                     auto_step_continues=self._config.agent.max_step_continues,
+                    route_refresher=self._make_route_refresher(
+                        bus=bus,
+                        run_id=run_id,
+                        runtime_mode=runtime_mode,
+                        trace=self._trace,
+                        initial_binding=route_binding,
+                    ),
                 )
                 previous_authority = None
                 permission_manager = self._permission_manager
@@ -392,3 +407,97 @@ class AgentRunner:
             result=context.result,
             reason=context.reason,
         )
+
+    # 构造 per-turn 路由刷新回调：仅在配置了非 static 路由且存在 route registry 时启用；
+    # 每步根据策略选目标路由，模型或路由发生变化时重建 provider 并重新发布 route_selected 事件
+    def _make_route_refresher(
+        self,
+        *,
+        bus: EventBus,
+        run_id: str,
+        runtime_mode: RuntimeMode,
+        trace: TraceWriter | None,
+        initial_binding: ResolvedRoute | None,
+    ) -> Callable[[int], Awaitable[LLMProvider | None]] | None:
+        llm = self._config.llm
+        if self._route_registry is None or llm.router == "static":
+            return None
+        policy = RoutingPolicy(
+            strategy=llm.router,
+            plan_route_id=llm.router_plan_route,
+            act_route_id=llm.router_act_route,
+            cost_budget_usd=llm.router_cost_budget,
+            cost_fallback_route_id=llm.router_cost_fallback,
+        )
+        # 记录当前绑定键（route_id + model）与累计成本，供每步决策增量比较
+        current_key: str = self._binding_key(initial_binding)
+        accumulated_cost: float = 0.0
+
+        # 订阅 llm.usage 累加本 run 的估算成本，供 cost_budget 降档判断
+        async def _on_usage(event: object) -> None:
+            nonlocal accumulated_cost
+            if not isinstance(event, LlmUsageEvent) or event.run_id != run_id:
+                return
+            pricing = get_pricing(event.model or llm.default_model)
+            if pricing is None:
+                return
+            accumulated_cost += estimate_cost(
+                pricing,
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                cache_read_tokens=event.cache_read_input_tokens,
+                cache_write_tokens=event.cache_creation_input_tokens,
+            )
+
+        if policy.strategy == "cost_budget":
+            bus.subscribe(_on_usage)
+
+        # 在每步 provider.chat 前被 loop 调用；返回新 provider 表示需要切换
+        async def _refresh(_step: int) -> LLMProvider | None:
+            nonlocal current_key
+            registry = self._route_registry
+            if registry is None:
+                return None
+            res = registry.resolve()
+            target_route_id = select_route_id(
+                policy,
+                mode=runtime_mode,
+                step=_step,
+                cost_usd=accumulated_cost,
+            )
+            binding = res
+            if target_route_id is not None and target_route_id != res.route.id:
+                binding = registry.resolve(target_route_id)
+            new_key = f"{binding.route.id}:{binding.route.model}"
+            if new_key == current_key:
+                return None
+            current_key = new_key
+            provider = create_provider_for_route(binding.route, binding.credential)
+            if trace is not None:
+                provider = TracingProvider(
+                    provider,
+                    trace,
+                    include_payload=self._config.trace.include_llm_payload,
+                )
+            receipt = binding.receipt
+            await bus.publish(
+                LlmRouteSelectedEvent(
+                    run_id=run_id,
+                    route_id=receipt.route_id,
+                    wire_format=receipt.wire_format,
+                    base_url_origin=receipt.base_url_origin,
+                    model=receipt.model,
+                    credential_source=receipt.credential_source,
+                    ts=_now(),
+                )
+            )
+            return provider
+
+        return _refresh
+
+    # 生成初始绑定的键；无绑定（纯配置路径）用空键占位
+    @staticmethod
+    def _binding_key(binding: ResolvedRoute | None) -> str:
+        if binding is None:
+            return ""
+        return f"{binding.route.id}:{binding.route.model}"

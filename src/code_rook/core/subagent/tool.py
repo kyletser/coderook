@@ -170,6 +170,15 @@ def worker_result_payload(worker: WorkerRecord) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+# 预算耗尽时生成的收尾 SUMMARY：标注 budget_exhausted，交回父上下文的结论性回执
+def synthesize_budget_summary(status: str, reason: str, token_usage: int) -> str:
+    return (
+        f"[budget_exhausted] Worker stopped because {reason} after consuming "
+        f"{token_usage} tokens. The task was not completed; use a larger token_budget "
+        f"or reduce scope below. status={status}"
+    )
+
+
 # 从任意子运行事件提取不含参数和工具输出的简短进度摘要
 def _bounded_event_summary(event: BaseModel) -> str:
     payload = event.model_dump(mode="json")
@@ -815,11 +824,19 @@ class SpawnAgentTool(BaseTool):
                     status = WorkerStatus.INTERRUPTED
                 elif reason == "cancelled":
                     status = WorkerStatus.CANCELLED
+                # 预算耗尽时结果常为空：用合成收尾回执补足 SUMMARY，避免父上下文拿到空结果
+                summary_text = str(parsed["summary"])
+                if status == WorkerStatus.BUDGET_LIMITED and not summary_text:
+                    summary_text = synthesize_budget_summary(
+                        status.value,
+                        reason or "token budget exhausted",
+                        current.token_usage,
+                    )
                 self._task_registry.update_status(
                     run_id,
                     status,
                     reason=reason,
-                    summary=str(parsed["summary"]),
+                    summary=summary_text,
                     changes=[str(item) for item in parsed["changes"]],
                     evidence=[str(item) for item in parsed["evidence"]],
                     risks=[str(item) for item in parsed["risks"]],

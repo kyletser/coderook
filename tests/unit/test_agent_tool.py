@@ -312,6 +312,8 @@ async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
     assert worker is not None
     assert worker.status == WorkerStatus.BUDGET_LIMITED
     assert worker.token_usage == 5
+    # 预算耗尽时结果常为空，父上下文必须拿到标注 budget_exhausted 的合成收尾回执
+    assert "budget_exhausted" in worker.summary
 
 
 # 功能：followup 在模型调用进行中到达时会触发下一轮决策而不会被旧 end_turn 吞掉

@@ -4,7 +4,7 @@
 - 基准代码版本：`817cce1`（feat: expand LLM provider support, runtime service, and project docs）
 - 时间跨度：约 14 周（3-6 个月），综合路线：体验快赢 → 生态兼容 + 感知能力 → 智能与经济性 → 安全与可信 → TUI 重构 + 管理面板 → 形态扩展
 - 现状基准：`docs/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
-- **进度基线（2026-08-16 更新）**：阶段 0 与阶段 1 全部完成（提交 `21bfb24`、`034afd2`、`2c98682` 及 W1.5 批次）；下一步从阶段 2（智能与经济性）开始。各工作项状态见正文 ✅/⏸/⬜ 标注与 §5.4 复盘记录。
+- **进度基线（2026-08-17 更新）**：阶段 0、1、2 全部完成（阶段 2 收尾见 §5.6 复盘）；下一步从阶段 3（安全与可信，W3.1 沙箱为首）。各工作项状态见正文 ✅/⏸/⬜ 标注与 §5.6 复盘记录。
 - 本文档**取代**以下历史差距分析（它们描述的缺口多数已修复或已过时）：
   - `docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
   - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md`（2026-07-30，81/100，早于 08-04 R1-R9 大改造批次）
@@ -246,7 +246,7 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 
 ### 阶段 2（第 5-8 周）：智能与经济性 🔶 进行中（2026-08-17）
 
-> 状态：**W2.1 成本核算 ✅**（pricing 模块：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖 + 前缀匹配；`llm.usage` 事件新增 `model` 字段；TUI 顶栏常驻累计成本、`/cost` 分解视图含缓存节省与无价模型提示；TurnReceipt 侧成本落地为顺延项）。**W2.2 thinking 预算 ✅**（route 新增 `thinking: off|low|medium|high`；Anthropic 映射 budget_tokens 并同步抬高 max_tokens、Responses 映射 `reasoning.effort`、openai_chat 映射 `reasoning_effort` 且保留 DeepSeek 域名默认高推理兼容；PLAN 模式在 route 启用 thinking 时自动升 high 档；TUI `/provider` 显示档位）。**W2.3 缓存深化 ✅ 部分完成**（Anthropic 增量缓存断点 + OpenAI cached_tokens 节省展示）。**W2.5 步数续跑 ✅**（交互 ask 续跑 ≤3 段 + `[agent] max_step_continues` 自动续段）。**W2.4 ⬜ 未开始**；W2.5b 子代理预算硬顶为顺延项。
+> 状态：**W2.1 成本核算 ✅**（pricing 模块：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖 + 前缀匹配；`llm.usage` 事件新增 `model` 字段；TUI 顶栏常驻累计成本、`/cost` 分解视图含缓存节省与无价模型提示；TurnReceipt 侧成本落地为顺延项）。**W2.2 thinking 预算 ✅**（route 新增 `thinking: off|low|medium|high`；Anthropic 映射 budget_tokens 并同步抬高 max_tokens、Responses 映射 `reasoning.effort`、openai_chat 映射 `reasoning_effort` 且保留 DeepSeek 域名默认高推理兼容；PLAN 模式在 route 启用 thinking 时自动升 high 档；TUI `/provider` 显示档位）。**W2.3 缓存深化 ✅ 部分完成**（Anthropic 增量缓存断点 + OpenAI cached_tokens 节省展示）。**W2.4 模型路由实装 ✅**（`llm/router.py`：`rule_based` 按 PLAN/ACT 模式选路由 + `cost_budget` 按单 run 累计成本降档；`loop.py` 每步经 `route_refresher` 回调重取 active route 实现 **/model 切换下一 turn 即生效**、事件收据随之更新）。**W2.5 步数续跑 ✅**（交互 ask 续跑 ≤3 段 + `[agent] max_step_continues` 自动续段）。**W2.5b 子代理预算硬顶 ✅**（预算到顶强制收尾：上下文置 budget_limited、Worker 终态 BUDGET_LIMITED、结果为空时合成含 `budget_exhausted` 标记的收尾 SUMMARY 交回父上下文）。阶段 2 全部收尾，见 §5.6 阶段 2 复盘。
 
 > 目标：让重度用户"用得起、看得清、跑得完"——成本可见、推理可控、缓存可省、长任务不断。
 
@@ -409,7 +409,14 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 **W2.5 ✅ 已完成**：步数耗尽时交互模式经结构化提问续跑（上限 3 段，选项"继续执行/就此停止"），`[agent] max_step_continues`（env `CODEROOK_MAX_STEP_CONTINUES`）配置自动续段数供 headless 使用。
 **W2.3 ✅ 部分完成**：Anthropic 增量缓存断点（最后一个 tool_result 块打 ephemeral 标记，受 route `supports_prompt_cache` 开关控制）；OpenAI cached_tokens 节省展示已由 W2.1 /cost 覆盖。
 
-**随后待办**：W2.4（rule_based/cost_budget 路由实装 + /model 下一 turn 生效）；W2.5b 子代理 token_budget 硬顶（顺延项）；阶段 3 沙箱起步。
+**随后待办**：W2.5b 子代理 token_budget 硬顶（顺延项）；阶段 3 沙箱起步。
+
+### 5.6 阶段 2 复盘（2026-08-17，commit 阶段2批次）
+
+**W2.4 模型路由实装 + per-turn 切换 ✅**：新增 `llm/router.py`（`RoutingPolicy` + `select_route_id` + 纯问答降档启发式）；新增配置项 `llm.router_plan_route / router_act_route / router_cost_budget / router_cost_fallback`；`AgentLoop` 新增可选 `route_refresher` 回调，每步 model 请求前重取 active route——`/model` 切换下一 turn 即生效；`cost_budget` 经订阅 `llm.usage` 累积估算成本、超阈值降档到 fallback 路由，并重新发布 `LlmRouteSelectedEvent` 收据。静态/规则/预算三策略单测覆盖。
+**W2.5b 子代理 token_budget 硬顶 ✅**：预算到顶由根目标预算账本（`registry.py`）判定位移并置活跃上下文 `budget_limited`；终态回写 `WorkerStatus.BUDGET_LIMITED`；当被中断导致结果为空时，`tool.py` 用 `synthesize_budget_summary` 合成含 `budget_exhausted` 标记的收尾回执，父上下文拿到结论性而非空结果。现有 `test_agent_budget_exhaustion_stops_worker` 扩展断言该标记。
+**收益**：成本可见（$）、推理档位可控、缓存可省、长任务续跑不静默失败、`/model` 即时切换、子代理预算硬顶不再产生空结果。
+**接下来**：阶段 3 安全与可信——W3.1 真实 OS 沙箱 + 权限闭环为首要。
 
 ---
 

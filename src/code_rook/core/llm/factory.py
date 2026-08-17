@@ -19,6 +19,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             base_url=str(route.base_url).rstrip("/"),
             context_window=route.context_window,
             thinking=route.thinking,
+            supports_prompt_cache=route.supports_prompt_cache,
         )
     if route.wire_format == "openai_chat":
         return OpenAICompatibleProvider(
