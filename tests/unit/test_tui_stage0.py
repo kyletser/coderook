@@ -18,6 +18,7 @@ from code_rook.tui.app import (
     _load_input_history,
     _save_input_history_entry,
 )
+from code_rook.tui.widgets import input as widgets_input
 
 
 class _FakeClient:
@@ -41,7 +42,7 @@ def test_input_history_roundtrip_tolerates_corrupt_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     history_file = tmp_path / "tui-history.jsonl"
-    monkeypatch.setattr(tui_app_module, "_input_history_path", lambda: history_file)
+    monkeypatch.setattr(widgets_input, "_input_history_path", lambda: history_file)
 
     _save_input_history_entry("第一条输入")
     _save_input_history_entry("  ")
@@ -60,7 +61,7 @@ def test_input_history_roundtrip_tolerates_corrupt_lines(
 # 功能：验证 ↑/↓ 回溯历史：从最新向上、到底后恢复草稿
 # 设计：直接驱动 ChatTextArea 的历史方法并替换持久化函数，覆盖首入保存草稿与退出回溯两个分支
 def test_chat_text_area_history_navigation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tui_app_module, "_save_input_history_entry", lambda _text: None)
+    monkeypatch.setattr(widgets_input, "_save_input_history_entry", lambda _text: None)
     area = ChatTextArea()
     area.set_history(["旧输入", "新输入"])
 
@@ -85,7 +86,7 @@ def test_chat_text_area_history_navigation(monkeypatch: pytest.MonkeyPatch) -> N
 def test_chat_text_area_record_history_dedupes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tui_app_module, "_save_input_history_entry", lambda _text: None)
+    monkeypatch.setattr(widgets_input, "_save_input_history_entry", lambda _text: None)
     area = ChatTextArea()
 
     area.record_history("alpha")
