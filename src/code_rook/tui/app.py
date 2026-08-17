@@ -44,7 +44,11 @@ from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui import ipc_actions
 from code_rook.tui.clipboard import copy_to_windows_clipboard
-from code_rook.tui.commands import BUILTIN_SLASH_COMMANDS, match_slash_command
+from code_rook.tui.commands import (
+    BUILTIN_SLASH_COMMANDS,
+    complete_command_arg_text,
+    match_slash_command,
+)
 from code_rook.tui.connection import TuiConnection
 from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
@@ -80,6 +84,7 @@ from code_rook.tui.widgets.actions import ConfigSwitch as ConfigSwitch
 from code_rook.tui.widgets.actions import ModelSwitch as ModelSwitch
 from code_rook.tui.widgets.input import (
     ChatTextArea,
+    CompletionItem,
     ConfigApiKeyPrompt,
     SlashCompleteWidget,
     _load_input_history,
@@ -256,7 +261,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._plan_request = ""
         self._pending_question_id: str | None = None
         self._answering_question = False
-        self._slash_items: list[tuple[str, str]] = []
+        self._slash_items: list[CompletionItem] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
@@ -304,10 +309,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt.read_only = False
             prompt.border_title = "连接已断开 · 正在重试"
 
-    # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
-    def _build_slash_items(self) -> list[tuple[str, str]]:
-        items: list[tuple[str, str]] = [
-            (cmd.name, cmd.description) for cmd in BUILTIN_SLASH_COMMANDS
+    # 构建斜杠命令候选列表：内建命令（含 usage）+ 所有已注册 skill（无 usage）
+    def _build_slash_items(self) -> list[CompletionItem]:
+        items: list[CompletionItem] = [
+            CompletionItem(cmd.name, cmd.description, cmd.usage)
+            for cmd in BUILTIN_SLASH_COMMANDS
         ]
         try:
             loader = SkillLoader()
@@ -315,7 +321,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 desc = skill.description.splitlines()[0] if skill.description else ""
                 if len(desc) > 60:
                     desc = desc[:57] + "..."
-                items.append((skill.name, desc))
+                items.append(CompletionItem(skill.name, desc))
         except Exception:
             pass
         return items
@@ -402,6 +408,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if popup is not None and popup.has_selection():
             popup.select_current()
             return
+        prompt = self._prompt()
+        if prompt is not None and self._try_complete_command_arg(prompt.text):
+            return
         if self._busy or self._plan_review_pending:
             self._append(
                 Static(
@@ -416,6 +425,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 输入框在没有斜杠补全时用 Tab 请求切换工作模式
     async def on_chat_text_area_cycle_mode(self, _message: ChatTextArea.CycleMode) -> None:
         await self.action_cycle_runtime_mode()
+
+    # 输入形如 /命令 <待补参数> 时按 Tab 循环补全命令参数；返回是否发生了补全
+    def _try_complete_command_arg(self, text: str) -> bool:
+        replacement = complete_command_arg_text(text)
+        if replacement is None:
+            return False
+        prompt = self._prompt()
+        if prompt is None:
+            return False
+        prompt.text = replacement
+        prompt.move_cursor(prompt.document.end)
+        return True
 
     # 退出只断开界面，session 保留在 Core 中以便下次 resume
     async def action_quit(self) -> None:
@@ -495,8 +516,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         for key, desc in keys:
             lines.append(f"  [bold]{key}[/bold]  {escape(desc)}")
         lines.append("[bold cyan]命令[/bold cyan]")
-        for name, desc in self._slash_items:
-            lines.append(f"  [cyan]/{name}[/cyan]  [dim]{escape(desc)}[/dim]")
+        for item in self._slash_items:
+            lines.append(
+                f"  [cyan]/{item.name}[/cyan]  [dim]{escape(item.description)}[/dim]"
+            )
         lines.append(
             "[dim]输入 / 后可用 ↑↓ 浏览、Tab 补全；"
             "未匹配内建命令的 /名称 会作为 skill 发送给 Agent[/dim]"

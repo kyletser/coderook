@@ -22,6 +22,7 @@ from code_rook.tui.app import (
     ChatTextArea,
     CheckpointPicker,
     CodeRookTuiApp,
+    CompletionItem,
     ConfigApiKeyPrompt,
     ConfigSwitch,
     LLMStreamBlock,
@@ -622,7 +623,7 @@ async def test_exact_slash_command_runs_on_first_enter() -> None:
 
         # 挂载命令补全弹窗和聊天输入框
         def compose(self) -> ComposeResult:
-            yield SlashCompleteWidget([("model", "switch model")])
+            yield SlashCompleteWidget([CompletionItem("model", "switch model")])
             yield ChatTextArea(id="prompt", show_line_numbers=False)
 
         # 设置完整命令并把键盘焦点交给输入框
@@ -665,7 +666,7 @@ async def test_partial_slash_command_enter_only_completes() -> None:
 
         # 挂载命令补全弹窗和聊天输入框
         def compose(self) -> ComposeResult:
-            yield SlashCompleteWidget([("model", "switch model")])
+            yield SlashCompleteWidget([CompletionItem("model", "switch model")])
             yield ChatTextArea(id="prompt", show_line_numbers=False)
 
         # 设置部分命令、筛选候选并把键盘焦点交给输入框
@@ -702,7 +703,10 @@ async def test_partial_slash_command_enter_only_completes() -> None:
 # 设计：直接读取候选列表，避免依赖 socket 连接或完整界面挂载
 def test_tui_builtin_commands_include_model_picker() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
-    items = dict(app._build_slash_items())  # type: ignore[attr-defined]
+    items = {
+        item.name: item.description
+        for item in app._build_slash_items()  # type: ignore[attr-defined]
+    }
 
     assert items["help"] == "显示键位与全部命令"
     assert items["model"] == "查看或切换模型"
@@ -825,7 +829,10 @@ async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:
 # 设计：直接读取候选列表的描述文本，不挂载界面也不依赖 socket
 def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
-    items = dict(app._build_slash_items())  # type: ignore[attr-defined]
+    items = {
+        item.name: item.description
+        for item in app._build_slash_items()  # type: ignore[attr-defined]
+    }
 
     assert items["sessions"] == "打开会话选择器（输入即过滤）"
     assert items["new"] == "新建会话"
@@ -1711,7 +1718,7 @@ async def test_tab_keeps_slash_completion_priority() -> None:
     class SlashHarness(CodeRookTuiApp):
         # 跳过 socket 连接并聚焦输入框
         def on_mount(self) -> None:
-            self._slash_items = [("model", "switch model")]
+            self._slash_items = [CompletionItem("model", "switch model")]
             popup = SlashCompleteWidget(self._slash_items)
             self.mount(popup, before="#prompt")
             popup.set_query("mo")
@@ -1726,6 +1733,28 @@ async def test_tab_keeps_slash_completion_priority() -> None:
         await pilot.pause()
 
         assert app.query_one("#prompt", ChatTextArea).text == "/model "
+        assert app._input_runtime_mode == RuntimeMode.ACT
+
+
+# 功能：验证输入 /命令 + 前缀参数时 Tab 把参数补全为候选且只推进一次
+# 设计：复用 CodeRookTuiApp 真实 Tab 链路，防止优先级快捷键与消息路径产生双重补全
+async def test_tab_completes_command_arg() -> None:
+    class SlashArgHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框，输入 /mode 的部分参数
+        def on_mount(self) -> None:
+            self._slash_items = [CompletionItem("mode", "查看或切换工作模式", "plan|act|operate")]
+            prompt = self.query_one("#prompt", ChatTextArea)
+            prompt.text = "/mode a"
+            prompt.focus()
+
+    app = SlashArgHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.query_one("#prompt", ChatTextArea).text == "/mode act"
+        # 工作模式未被参数补全占用，仍停留在初始 Act
         assert app._input_runtime_mode == RuntimeMode.ACT
 
 

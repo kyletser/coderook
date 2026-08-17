@@ -29,12 +29,14 @@ from code_rook.tui.widgets.selectors import ModelPicker, ProviderPicker
 
 @dataclass(frozen=True)
 class SlashCommand:
-    """一个斜杠命令：名称、补全/帮助共用文案，以及是否依赖 Core 连接。"""
+    """一个斜杠命令：名称、补全/帮助共用文案、是否依赖 Core 连接，以及可选 usage 与参数补全候选。"""
 
     name: str
     description: str
     needs_connection: bool
     handler: Callable[[Any, ChatTextArea, str], Awaitable[None]]
+    usage: str = ""
+    arg_candidates: tuple[str, ...] = ()
 
 
 async def _cmd_help(app: Any, ta: ChatTextArea, content: str) -> None:
@@ -506,18 +508,54 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("new", "新建会话", True, _cmd_new),
     SlashCommand("rename", "重命名当前会话：/rename <标题>", True, _cmd_rename),
     SlashCommand("fork", "复制当前会话为分支：/fork [标题]", True, _cmd_fork),
-    SlashCommand("export", "导出当前会话：/export [md|json]", True, _cmd_export),
+    SlashCommand(
+        "export",
+        "导出当前会话：/export [md|json]",
+        True,
+        _cmd_export,
+        usage="md|json",
+        arg_candidates=("md", "json"),
+    ),
     SlashCommand("delete", "删除当前会话（需 --yes 确认）", True, _cmd_delete),
-    SlashCommand("provider", "查看或切换 Provider route", False, _cmd_provider),
-    SlashCommand("model", "查看或切换模型", False, _cmd_model),
+    SlashCommand(
+        "provider", "查看或切换 Provider route", False, _cmd_provider, usage="<route>"
+    ),
+    SlashCommand(
+        "model",
+        "查看或切换模型",
+        False,
+        _cmd_model,
+        usage="<模型 ID>|add <模型 ID>",
+    ),
     SlashCommand("doctor", "诊断活动 Provider route", False, _cmd_doctor),
     SlashCommand("config", "更换 LLM API、模型或密钥", False, _cmd_config),
     SlashCommand("compact", "手动压缩上下文", True, _cmd_compact),
     SlashCommand("copy", "复制上一条回复", False, _cmd_copy),
     SlashCommand("plan", "只读规划并审阅后再实施：/plan [任务]", False, _cmd_plan),
-    SlashCommand("mode", "查看或切换工作模式：plan|act|operate", False, _cmd_mode),
-    SlashCommand("permissions", "查看或切换权限模式", False, _cmd_permissions),
-    SlashCommand("trust", "查看或授予/撤销工作区信任", False, _cmd_trust),
+    SlashCommand(
+        "mode",
+        "查看或切换工作模式：plan|act|operate",
+        False,
+        _cmd_mode,
+        usage="plan|act|operate",
+        arg_candidates=("plan", "act", "operate"),
+    ),
+    SlashCommand(
+        "permissions",
+        "查看或切换权限模式",
+        False,
+        _cmd_permissions,
+        usage="ask|auto-review|full-access",
+        arg_candidates=("ask", "auto-review", "full-access"),
+    ),
+    SlashCommand(
+        "trust",
+        "查看或授予/撤销工作区信任",
+        False,
+        _cmd_trust,
+        usage="status|grant|revoke",
+        arg_candidates=("status", "grant", "revoke"),
+    ),
     SlashCommand("sandbox", "查看 OS 隔离能力（仅探测）", False, _cmd_sandbox),
     SlashCommand(
         "tasks", "查看最近一次 run 的任务", True, _make_viewer("tasks", "_show_tasks", True)
@@ -528,7 +566,14 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         True,
         _make_viewer("workers", "_show_workers", True),
     ),
-    SlashCommand("workflow", "查看、启动或检查 workflow", True, _cmd_workflow),
+    SlashCommand(
+        "workflow",
+        "查看、启动或检查 workflow",
+        True,
+        _cmd_workflow,
+        usage="list|get|start <path>",
+        arg_candidates=("list", "get", "start"),
+    ),
     SlashCommand(
         "diff", "查看工作区改动", True, _make_viewer("diff", "_show_diff", True)
     ),
@@ -545,12 +590,40 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         _make_viewer("context", "_show_context", True),
     ),
     SlashCommand("cost", "查看本会话成本分解与缓存节省", False, _cmd_cost),
-    SlashCommand("turn", "检查 route、用量、审批与收据", True, _cmd_turn),
-    SlashCommand("skills", "列出、查看、安装或删除 skills", False, _cmd_skills),
+    SlashCommand("turn", "检查 route、用量、审批与收据", True, _cmd_turn, usage="<turn_id>"),
+    SlashCommand(
+        "skills",
+        "列出、查看、安装或删除 skills",
+        False,
+        _cmd_skills,
+        usage="list|show|install|remove|audit",
+        arg_candidates=("list", "show", "install", "remove", "audit"),
+    ),
     SlashCommand("mcp", "查看 MCP server 状态与工具", True, _cmd_mcp),
-    SlashCommand("hooks", "查看 hook 配置与执行记录", True, _cmd_hooks),
-    SlashCommand("memory", "查看或删除项目记忆", True, _cmd_memory),
-    SlashCommand("jobs", "后台任务中心：查看/取消", True, _cmd_jobs),
+    SlashCommand(
+        "hooks",
+        "查看 hook 配置与执行记录",
+        True,
+        _cmd_hooks,
+        usage="rerun <id>",
+        arg_candidates=("rerun",),
+    ),
+    SlashCommand(
+        "memory",
+        "查看或删除项目记忆",
+        True,
+        _cmd_memory,
+        usage="delete <id>",
+        arg_candidates=("delete",),
+    ),
+    SlashCommand(
+        "jobs",
+        "后台任务中心：查看/取消",
+        True,
+        _cmd_jobs,
+        usage="show <id>",
+        arg_candidates=("show", "cancel"),
+    ),
 ]
 
 
@@ -559,4 +632,27 @@ def match_slash_command(content: str) -> SlashCommand | None:
     for cmd in BUILTIN_SLASH_COMMANDS:
         if content == f"/{cmd.name}" or content.startswith(f"/{cmd.name} "):
             return cmd
+    return None
+
+
+# 解析 /命令 <参数> 形式并按 Tab 循环补全下一个参数候选；不适用时返回 None
+def complete_command_arg_text(text: str) -> str | None:
+    if not (text.startswith("/") and " " in text):
+        return None
+    cmd = match_slash_command(text)
+    if cmd is None or not cmd.arg_candidates:
+        return None
+    candidates = cmd.arg_candidates
+    cmd_prefix = f"/{cmd.name} "
+    partial = text[len(cmd_prefix):]
+    # 已精确命中某个候选时循环进位到下一候选，实现多次 Tab 环绕
+    for i, cand in enumerate(candidates):
+        if partial and partial.lower() == cand.lower():
+            nxt = candidates[(i + 1) % len(candidates)]
+            return f"{cmd_prefix}{nxt}"
+    # 未精确命中则补全到首个前缀匹配的候选
+    lowered = partial.lower()
+    for cand in candidates:
+        if cand.lower().startswith(lowered):
+            return f"{cmd_prefix}{cand}"
     return None

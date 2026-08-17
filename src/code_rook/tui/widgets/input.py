@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,44 @@ class ConfigApiKeyPrompt(Static):
             self.post_message(self.Dismissed(self))
 
 
+@dataclass(frozen=True)
+class CompletionItem:
+    """一条补全项：命令/skill 名称、说明与可选 usage，供补全弹窗展示与筛选。"""
+
+    name: str
+    description: str
+    usage: str = ""
+
+
+# 判断 query 是否按序出现在 text 中（子序列匹配）
+def _is_subsequence(q: str, text: str) -> bool:
+    if not q:
+        return True
+    pos = 0
+    for ch in text:
+        if q[pos] == ch:
+            pos += 1
+            if pos == len(q):
+                return True
+    return False
+
+
+# 对多个字段做大小写不敏感模糊匹配，返回命中字段下标：包含优先于子序列，同级按下标保持稳定
+def _fuzzy_match(q: str, *fields: str) -> list[int]:
+    if not q:
+        return list(range(len(fields)))
+    lower_q = q.lower()
+    scored: list[tuple[int, int]] = []
+    for i, field in enumerate(fields):
+        lower_field = field.lower()
+        if lower_q in lower_field:
+            scored.append((0, i))
+        elif _is_subsequence(lower_q, lower_field):
+            scored.append((1, i))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [i for _, i in scored]
+
+
 class SlashCompleteWidget(Static):
     """斜杠命令自动补全弹出框：输入 / 时显示可用 skill 列表并支持键盘筛选与选择。"""
 
@@ -158,17 +197,28 @@ class SlashCompleteWidget(Static):
             self.skill_name = skill_name
             super().__init__()
 
-    # 初始化，接收全量 (name, description) 列表
-    def __init__(self, items: list[tuple[str, str]]) -> None:
+    # 初始化，接收全量 CompletionItem 列表
+    def __init__(self, items: list[CompletionItem]) -> None:
         super().__init__("")
-        self._all_items = items
-        self._filtered: list[tuple[str, str]] = list(items)
+        self._all_items = list(items)
+        self._filtered: list[CompletionItem] = list(items)
         self._cursor = 0
 
-    # 根据查询字符串筛选列表，重置光标并重新渲染
+    # 根据查询字符串对 name 与 description 做模糊匹配筛选，重置光标并重新渲染
     def set_query(self, query: str) -> None:
-        q = query.lower()
-        self._filtered = [(n, d) for n, d in self._all_items if not q or q in n.lower()]
+        q = (query or "").lower()
+        if not q:
+            self._filtered = list(self._all_items)
+        else:
+            scored: list[tuple[int, int, CompletionItem]] = []
+            for order, item in enumerate(self._all_items):
+                # name 命中权重最高，仅有 description 命中时按 description 参与排序
+                if _fuzzy_match(q, item.name):
+                    scored.append((0, order, item))
+                elif _fuzzy_match(q, item.description):
+                    scored.append((1, order, item))
+            scored.sort(key=lambda x: (x[0], x[1]))
+            self._filtered = [item for _, _, item in scored]
         self._cursor = min(self._cursor, max(0, len(self._filtered) - 1))
         if self.is_attached:
             self._redraw()
@@ -188,7 +238,7 @@ class SlashCompleteWidget(Static):
     # 选中当前光标项并发布 Selected 消息
     def select_current(self) -> None:
         if self._filtered:
-            self.post_message(self.Selected(self._filtered[self._cursor][0]))
+            self.post_message(self.Selected(self._filtered[self._cursor].name))
 
     # 返回当前是否有可选项
     def has_selection(self) -> bool:
@@ -196,23 +246,30 @@ class SlashCompleteWidget(Static):
 
     # 判断查询是否已经完整匹配一条命令，供 Enter 直接执行
     def has_exact_match(self, query: str) -> bool:
-        return any(name == query for name, _description in self._filtered)
+        return any(item.name == query for item in self._filtered)
 
     def on_mount(self) -> None:
         self._redraw()
 
-    # 渲染筛选后的命令列表，高亮当前光标项
+    # 渲染筛选后的命令列表并高亮当前光标项，底部固定一行显示当前选中项的 usage
     def _redraw(self) -> None:
         if not self._filtered:
             self.update("[dim]  no matching commands[/dim]")
             return
         lines: list[str] = []
-        for i, (name, desc) in enumerate(self._filtered):
-            desc_part = f"  [dim]{desc}[/dim]" if desc else ""
+        for i, item in enumerate(self._filtered):
+            desc_part = f"  [dim]{item.description}[/dim]" if item.description else ""
             if i == self._cursor:
-                lines.append(f"  [bold cyan]❯ /{name}[/bold cyan]{desc_part}")
+                lines.append(f"  [bold cyan]❯ /{item.name}[/bold cyan]{desc_part}")
             else:
-                lines.append(f"    [cyan]/{name}[/cyan]{desc_part}")
+                lines.append(f"    [cyan]/{item.name}[/cyan]{desc_part}")
+        selected = self._filtered[self._cursor]
+        # 无 usage 时回退显示该条说明，保证底部信息始终有内容
+        if selected.usage:
+            usage_part = f"usage: /{selected.name} {selected.usage}"
+        else:
+            usage_part = selected.description
+        lines.append(f"[dim]{usage_part}[/dim]")
         lines.append("[dim]  ↑↓ navigate   tab complete   enter run/complete   esc dismiss[/dim]")
         self.update("\n".join(lines))
 
