@@ -36,6 +36,8 @@ _SUBSCRIBE_TOPICS = [
     "plan.*",
     "user_question.*",
     "lsp.*",
+    "background.*",
+    "hook.executed",
 ]
 
 

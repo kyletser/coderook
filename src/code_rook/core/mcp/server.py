@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from code_rook.core.config import McpServerConfig
 from code_rook.core.mcp.client import McpClient
@@ -10,11 +11,13 @@ from code_rook.core.tools.registry import ToolRegistry
 log = logging.getLogger(__name__)
 
 
-# 管理所有 MCP server 连接的生命周期：启动、工具发现、注册、关闭
+# 管理所有 MCP server 连接的生命周期：启动、工具发现、注册、状态快照、关闭
 class McpServerManager:
     def __init__(self) -> None:
         self._clients: dict[str, McpClient] = {}
         self._tools: list[McpTool] = []
+        # 每个 server 的元数据快照：status/error/tools，便于 mcp.list 查询
+        self._states: dict[str, dict[str, Any]] = {}
 
     # 依次连接每个 MCP server，发现工具后缓存供后续 registry 使用；失败时记录日志并跳过
     async def start_all(self, servers: list[McpServerConfig]) -> None:
@@ -25,12 +28,32 @@ class McpServerManager:
                 for tool_def in tool_defs:
                     self._tools.append(McpTool(client, cfg.name, tool_def))
                 self._clients[cfg.name] = client
+                self._states[cfg.name] = {
+                    "name": cfg.name,
+                    "transport": cfg.transport,
+                    "status": "connected",
+                    "tools": [
+                        {
+                            "name": tool_def.name,
+                            "description": tool_def.description or "",
+                        }
+                        for tool_def in tool_defs
+                    ],
+                    "error": "",
+                }
                 log.info(
                     "mcp: server '%s' connected, %d tool(s) discovered",
                     cfg.name, len(tool_defs),
                 )
-            except Exception:
+            except Exception as exc:
                 log.exception("mcp: server '%s' failed to start, skipping", cfg.name)
+                self._states[cfg.name] = {
+                    "name": cfg.name,
+                    "transport": cfg.transport,
+                    "status": "failed",
+                    "tools": [],
+                    "error": str(exc)[:500],
+                }
 
     # 将所有已发现的 MCP 工具注册到指定 registry
     def register_tools(self, registry: ToolRegistry) -> None:
@@ -40,6 +63,10 @@ class McpServerManager:
     # 返回已发现的 MCP 工具列表（用于 runner 每次 run 时注入新 registry）
     def get_tools(self) -> list[McpTool]:
         return list(self._tools)
+
+    # 返回每个 server 的名称/传输/状态/工具数与失败原因快照
+    def describe(self) -> list[dict[str, Any]]:
+        return [dict(state) for state in self._states.values()]
 
     # 关闭所有 MCP 连接并终止 stdio 子进程
     async def stop_all(self) -> None:

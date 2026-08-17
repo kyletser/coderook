@@ -523,6 +523,139 @@ class TurnInspectResult(BaseModel):
     receipt: dict[str, Any]
 
 
+class McpListCommand(BaseModel):
+    type: Literal["mcp.list"] = "mcp.list"
+
+
+class McpServerInfo(BaseModel):
+    name: str
+    transport: str
+    status: str  # "connected" | "failed"
+    tool_count: int
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    error: str = ""
+
+
+class McpListResult(BaseModel):
+    servers: list[McpServerInfo] = Field(default_factory=list)
+
+
+class HooksListCommand(BaseModel):
+    type: Literal["hooks.list"] = "hooks.list"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class HookConfigInfo(BaseModel):
+    id: str
+    event: str
+    blocking: bool
+    trusted_scope: str
+    on_failure: str
+    command: list[str] = Field(default_factory=list)
+    conditions: dict[str, str] = Field(default_factory=dict)
+
+
+class HookAuditInfo(BaseModel):
+    hook_id: str
+    event: str
+    status: str
+    blocking: bool
+    elapsed_ms: int
+    blocked: bool
+    reason: str
+    exit_code: int | None = None
+    ts: str
+
+
+class HooksListResult(BaseModel):
+    configs: list[HookConfigInfo] = Field(default_factory=list)
+    audit_events: list[HookAuditInfo] = Field(default_factory=list)
+
+
+class HookRerunCommand(BaseModel):
+    type: Literal["hooks.rerun"] = "hooks.rerun"
+    hook_id: str = Field(min_length=1)
+
+
+class HookRerunResult(BaseModel):
+    hook_id: str
+    executed: bool
+    status: str = ""
+    reason: str = ""
+    ts: str = ""
+
+
+class MemoryListCommand(BaseModel):
+    type: Literal["memory.list"] = "memory.list"
+
+
+class MemoryInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    type: str
+    body: str
+    source_session_id: str
+    source_run_id: str
+    created_at: str
+    updated_at: str
+
+
+class MemoryListResult(BaseModel):
+    memories: list[MemoryInfo] = Field(default_factory=list)
+
+
+class MemoryDeleteCommand(BaseModel):
+    type: Literal["memory.delete"] = "memory.delete"
+    memory_id: str = Field(min_length=1)
+
+
+class MemoryDeleteResult(BaseModel):
+    memory_id: str
+    deleted: bool
+
+
+class BackgroundGetCommand(BaseModel):
+    type: Literal["background.get"] = "background.get"
+    job_id: str = ""
+
+
+class BackgroundJobInfo(BaseModel):
+    id: str
+    command: str
+    session_id: str
+    run_id: str
+    status: str
+    output: str
+    is_error: bool
+    created_at: str
+    finished_at: str = ""
+
+
+class BackgroundGetResult(BaseModel):
+    jobs: list[BackgroundJobInfo] = Field(default_factory=list)
+
+
+class BackgroundCancelCommand(BaseModel):
+    type: Literal["background.cancel"] = "background.cancel"
+    job_id: str = Field(min_length=1)
+
+
+class BackgroundCancelResult(BaseModel):
+    job_id: str
+    cancelled: bool
+
+
+class WorkerCancelCommand(BaseModel):
+    type: Literal["worker.cancel"] = "worker.cancel"
+    worker_id: str = Field(min_length=1)
+
+
+class WorkerCancelResult(BaseModel):
+    worker_id: str
+    status: str
+
+
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     CoreAuthenticateCommand
@@ -569,6 +702,14 @@ Command = Annotated[
     | SessionCheckpointsCommand
     | SessionRewindCommand
     | SessionContextCommand
-    | TurnInspectCommand,
+    | TurnInspectCommand
+    | McpListCommand
+    | HooksListCommand
+    | HookRerunCommand
+    | MemoryListCommand
+    | MemoryDeleteCommand
+    | BackgroundGetCommand
+    | BackgroundCancelCommand
+    | WorkerCancelCommand,
     Discriminator("type"),
 ]

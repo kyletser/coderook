@@ -5006,6 +5006,1046 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### McpListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "mcp.list",
+      "default": "mcp.list",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "McpListCommand",
+  "type": "object"
+}
+```
+
+### McpListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `servers` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "McpServerInfo": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "transport": {
+          "title": "Transport",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_count": {
+          "title": "Tool Count",
+          "type": "integer"
+        },
+        "tools": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "status",
+        "tool_count"
+      ],
+      "title": "McpServerInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "servers": {
+      "items": {
+        "$ref": "#/$defs/McpServerInfo"
+      },
+      "title": "Servers",
+      "type": "array"
+    }
+  },
+  "title": "McpListResult",
+  "type": "object"
+}
+```
+
+### McpServerInfo
+
+| Field | Type | Required |
+|---|---|---|
+| `name` | `string` | yes |
+| `transport` | `string` | yes |
+| `status` | `string` | yes |
+| `tool_count` | `integer` | yes |
+| `tools` | `array` | no |
+| `error` | `string` | no |
+
+```json
+{
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "transport": {
+      "title": "Transport",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "tool_count": {
+      "title": "Tool Count",
+      "type": "integer"
+    },
+    "tools": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "error": {
+      "default": "",
+      "title": "Error",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "transport",
+    "status",
+    "tool_count"
+  ],
+  "title": "McpServerInfo",
+  "type": "object"
+}
+```
+
+### HooksListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "hooks.list",
+      "default": "hooks.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "limit": {
+      "default": 20,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "HooksListCommand",
+  "type": "object"
+}
+```
+
+### HooksListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `configs` | `array` | no |
+| `audit_events` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "HookAuditInfo": {
+      "properties": {
+        "hook_id": {
+          "title": "Hook Id",
+          "type": "string"
+        },
+        "event": {
+          "title": "Event",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "blocking": {
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "elapsed_ms": {
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "blocked": {
+          "title": "Blocked",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hook_id",
+        "event",
+        "status",
+        "blocking",
+        "elapsed_ms",
+        "blocked",
+        "reason",
+        "ts"
+      ],
+      "title": "HookAuditInfo",
+      "type": "object"
+    },
+    "HookConfigInfo": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "event": {
+          "title": "Event",
+          "type": "string"
+        },
+        "blocking": {
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "trusted_scope": {
+          "title": "Trusted Scope",
+          "type": "string"
+        },
+        "on_failure": {
+          "title": "On Failure",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Command",
+          "type": "array"
+        },
+        "conditions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Conditions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "event",
+        "blocking",
+        "trusted_scope",
+        "on_failure"
+      ],
+      "title": "HookConfigInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "configs": {
+      "items": {
+        "$ref": "#/$defs/HookConfigInfo"
+      },
+      "title": "Configs",
+      "type": "array"
+    },
+    "audit_events": {
+      "items": {
+        "$ref": "#/$defs/HookAuditInfo"
+      },
+      "title": "Audit Events",
+      "type": "array"
+    }
+  },
+  "title": "HooksListResult",
+  "type": "object"
+}
+```
+
+### HookConfigInfo
+
+| Field | Type | Required |
+|---|---|---|
+| `id` | `string` | yes |
+| `event` | `string` | yes |
+| `blocking` | `boolean` | yes |
+| `trusted_scope` | `string` | yes |
+| `on_failure` | `string` | yes |
+| `command` | `array` | no |
+| `conditions` | `object` | no |
+
+```json
+{
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "event": {
+      "title": "Event",
+      "type": "string"
+    },
+    "blocking": {
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "trusted_scope": {
+      "title": "Trusted Scope",
+      "type": "string"
+    },
+    "on_failure": {
+      "title": "On Failure",
+      "type": "string"
+    },
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Command",
+      "type": "array"
+    },
+    "conditions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Conditions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "event",
+    "blocking",
+    "trusted_scope",
+    "on_failure"
+  ],
+  "title": "HookConfigInfo",
+  "type": "object"
+}
+```
+
+### HookAuditInfo
+
+| Field | Type | Required |
+|---|---|---|
+| `hook_id` | `string` | yes |
+| `event` | `string` | yes |
+| `status` | `string` | yes |
+| `blocking` | `boolean` | yes |
+| `elapsed_ms` | `integer` | yes |
+| `blocked` | `boolean` | yes |
+| `reason` | `string` | yes |
+| `exit_code` | `integer | null` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "hook_id": {
+      "title": "Hook Id",
+      "type": "string"
+    },
+    "event": {
+      "title": "Event",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "blocking": {
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "elapsed_ms": {
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "blocked": {
+      "title": "Blocked",
+      "type": "boolean"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exit Code"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hook_id",
+    "event",
+    "status",
+    "blocking",
+    "elapsed_ms",
+    "blocked",
+    "reason",
+    "ts"
+  ],
+  "title": "HookAuditInfo",
+  "type": "object"
+}
+```
+
+### HookRerunCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `hook_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "hooks.rerun",
+      "default": "hooks.rerun",
+      "title": "Type",
+      "type": "string"
+    },
+    "hook_id": {
+      "minLength": 1,
+      "title": "Hook Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hook_id"
+  ],
+  "title": "HookRerunCommand",
+  "type": "object"
+}
+```
+
+### HookRerunResult
+
+| Field | Type | Required |
+|---|---|---|
+| `hook_id` | `string` | yes |
+| `executed` | `boolean` | yes |
+| `status` | `string` | no |
+| `reason` | `string` | no |
+| `ts` | `string` | no |
+
+```json
+{
+  "properties": {
+    "hook_id": {
+      "title": "Hook Id",
+      "type": "string"
+    },
+    "executed": {
+      "title": "Executed",
+      "type": "boolean"
+    },
+    "status": {
+      "default": "",
+      "title": "Status",
+      "type": "string"
+    },
+    "reason": {
+      "default": "",
+      "title": "Reason",
+      "type": "string"
+    },
+    "ts": {
+      "default": "",
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hook_id",
+    "executed"
+  ],
+  "title": "HookRerunResult",
+  "type": "object"
+}
+```
+
+### MemoryListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "memory.list",
+      "default": "memory.list",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "MemoryListCommand",
+  "type": "object"
+}
+```
+
+### MemoryListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `memories` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "MemoryInfo": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "source_session_id": {
+          "title": "Source Session Id",
+          "type": "string"
+        },
+        "source_run_id": {
+          "title": "Source Run Id",
+          "type": "string"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "type",
+        "body",
+        "source_session_id",
+        "source_run_id",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "MemoryInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "memories": {
+      "items": {
+        "$ref": "#/$defs/MemoryInfo"
+      },
+      "title": "Memories",
+      "type": "array"
+    }
+  },
+  "title": "MemoryListResult",
+  "type": "object"
+}
+```
+
+### MemoryInfo
+
+| Field | Type | Required |
+|---|---|---|
+| `id` | `string` | yes |
+| `name` | `string` | yes |
+| `description` | `string` | yes |
+| `type` | `string` | yes |
+| `body` | `string` | yes |
+| `source_session_id` | `string` | yes |
+| `source_run_id` | `string` | yes |
+| `created_at` | `string` | yes |
+| `updated_at` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "type": {
+      "title": "Type",
+      "type": "string"
+    },
+    "body": {
+      "title": "Body",
+      "type": "string"
+    },
+    "source_session_id": {
+      "title": "Source Session Id",
+      "type": "string"
+    },
+    "source_run_id": {
+      "title": "Source Run Id",
+      "type": "string"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "description",
+    "type",
+    "body",
+    "source_session_id",
+    "source_run_id",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "MemoryInfo",
+  "type": "object"
+}
+```
+
+### MemoryDeleteCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `memory_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "memory.delete",
+      "default": "memory.delete",
+      "title": "Type",
+      "type": "string"
+    },
+    "memory_id": {
+      "minLength": 1,
+      "title": "Memory Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "memory_id"
+  ],
+  "title": "MemoryDeleteCommand",
+  "type": "object"
+}
+```
+
+### MemoryDeleteResult
+
+| Field | Type | Required |
+|---|---|---|
+| `memory_id` | `string` | yes |
+| `deleted` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "memory_id": {
+      "title": "Memory Id",
+      "type": "string"
+    },
+    "deleted": {
+      "title": "Deleted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "memory_id",
+    "deleted"
+  ],
+  "title": "MemoryDeleteResult",
+  "type": "object"
+}
+```
+
+### BackgroundGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `job_id` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "background.get",
+      "default": "background.get",
+      "title": "Type",
+      "type": "string"
+    },
+    "job_id": {
+      "default": "",
+      "title": "Job Id",
+      "type": "string"
+    }
+  },
+  "title": "BackgroundGetCommand",
+  "type": "object"
+}
+```
+
+### BackgroundGetResult
+
+| Field | Type | Required |
+|---|---|---|
+| `jobs` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "BackgroundJobInfo": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "output": {
+          "title": "Output",
+          "type": "string"
+        },
+        "is_error": {
+          "title": "Is Error",
+          "type": "boolean"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "finished_at": {
+          "default": "",
+          "title": "Finished At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "command",
+        "session_id",
+        "run_id",
+        "status",
+        "output",
+        "is_error",
+        "created_at"
+      ],
+      "title": "BackgroundJobInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "jobs": {
+      "items": {
+        "$ref": "#/$defs/BackgroundJobInfo"
+      },
+      "title": "Jobs",
+      "type": "array"
+    }
+  },
+  "title": "BackgroundGetResult",
+  "type": "object"
+}
+```
+
+### BackgroundJobInfo
+
+| Field | Type | Required |
+|---|---|---|
+| `id` | `string` | yes |
+| `command` | `string` | yes |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `status` | `string` | yes |
+| `output` | `string` | yes |
+| `is_error` | `boolean` | yes |
+| `created_at` | `string` | yes |
+| `finished_at` | `string` | no |
+
+```json
+{
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "command": {
+      "title": "Command",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "output": {
+      "title": "Output",
+      "type": "string"
+    },
+    "is_error": {
+      "title": "Is Error",
+      "type": "boolean"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "finished_at": {
+      "default": "",
+      "title": "Finished At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "command",
+    "session_id",
+    "run_id",
+    "status",
+    "output",
+    "is_error",
+    "created_at"
+  ],
+  "title": "BackgroundJobInfo",
+  "type": "object"
+}
+```
+
+### BackgroundCancelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `job_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "background.cancel",
+      "default": "background.cancel",
+      "title": "Type",
+      "type": "string"
+    },
+    "job_id": {
+      "minLength": 1,
+      "title": "Job Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id"
+  ],
+  "title": "BackgroundCancelCommand",
+  "type": "object"
+}
+```
+
+### BackgroundCancelResult
+
+| Field | Type | Required |
+|---|---|---|
+| `job_id` | `string` | yes |
+| `cancelled` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "job_id": {
+      "title": "Job Id",
+      "type": "string"
+    },
+    "cancelled": {
+      "title": "Cancelled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "job_id",
+    "cancelled"
+  ],
+  "title": "BackgroundCancelResult",
+  "type": "object"
+}
+```
+
+### WorkerCancelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `worker_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.cancel",
+      "default": "worker.cancel",
+      "title": "Type",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "worker_id"
+  ],
+  "title": "WorkerCancelCommand",
+  "type": "object"
+}
+```
+
+### WorkerCancelResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `status` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "worker_id",
+    "status"
+  ],
+  "title": "WorkerCancelResult",
+  "type": "object"
+}
+```
+
 ## Server Push
 
 Events pushed from daemon to subscribed clients over the same TCP connection.

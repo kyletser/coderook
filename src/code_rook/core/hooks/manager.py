@@ -144,9 +144,22 @@ class HookManager:
     ) -> None:
         self._callbacks[_normalize_event(event)].append(callback)
 
+    # 以只读 tuple 形式公开当前已加载的 hook 配置，供管理面板列出
+    @property
+    def configs(self) -> tuple[HookConfig, ...]:
+        return self._configs
+
     # 返回当前进程内最近的结构化 hook 审计事件快照
     def audit_events(self) -> tuple[HookAuditEvent, ...]:
         return tuple(self._audit)
+
+    # 手动重跑指定 hook_id 的进程 hook，返回本次审计记录（未找到返回 None）
+    async def rerun(self, hook_id: str) -> HookAuditEvent | None:
+        config = next((item for item in self._configs if item.id == hook_id), None)
+        if config is None:
+            return None
+        await self._execute(config, config.event, {"session_id": "", "rerun": True})
+        return self._audit[-1] if self._audit else None
 
     # 触发生命周期事件，阻断 hook 同步决策，非阻断 hook 进入有界队列
     async def emit(

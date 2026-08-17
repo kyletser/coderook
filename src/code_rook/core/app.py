@@ -23,12 +23,31 @@ from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
+    BackgroundCancelCommand,
+    BackgroundCancelResult,
+    BackgroundGetCommand,
+    BackgroundGetResult,
+    BackgroundJobInfo,
     CoreShutdownCommand,
     CoreShutdownResult,
     EventReplayCommand,
     EventReplayResult,
     EventSubscribeCommand,
     EventSubscribeResult,
+    HookAuditInfo,
+    HookConfigInfo,
+    HookRerunCommand,
+    HookRerunResult,
+    HooksListCommand,
+    HooksListResult,
+    McpListCommand,
+    McpListResult,
+    McpServerInfo,
+    MemoryDeleteCommand,
+    MemoryDeleteResult,
+    MemoryInfo,
+    MemoryListCommand,
+    MemoryListResult,
     PermissionRespondCommand,
     PermissionRespondResult,
     PongResult,
@@ -98,6 +117,8 @@ from code_rook.core.bus.commands import (
     TurnSteerResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
+    WorkerCancelCommand,
+    WorkerCancelResult,
     WorkerListCommand,
     WorkerListResult,
     WorkflowGetCommand,
@@ -125,6 +146,7 @@ from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteRegistry
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.mcp.server import McpServerManager
+from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.runner import AgentRunner
@@ -623,6 +645,150 @@ class CoreApp:
         ]
         return WorkerListResult(workers=payload)
 
+    # 取消持久 Worker 并返回其新状态（先查内存子代理再查 fleet）
+    async def _worker_cancel_handler(self, params: dict[str, Any]) -> WorkerCancelResult:
+        cmd = WorkerCancelCommand.model_validate(params)
+        assert self._subagent_registry is not None
+        if self._subagent_registry.record(cmd.worker_id) is not None:
+            worker = await self._subagent_registry.cancel(cmd.worker_id)
+            return WorkerCancelResult(
+                worker_id=cmd.worker_id, status=worker.status.value
+            )
+        if (
+            self._fleet_registry is not None
+            and self._fleet_registry.record(cmd.worker_id) is not None
+        ):
+            worker = await self._fleet_registry.cancel(cmd.worker_id)
+            return WorkerCancelResult(
+                worker_id=cmd.worker_id, status=worker.status.value
+            )
+        raise HandlerError(INVALID_PARAMS, f"worker not found: {cmd.worker_id}")
+
+    # 返回后台 shell 任务列表，或单个任务的全量增量输出
+    async def _background_get_handler(self, params: dict[str, Any]) -> BackgroundGetResult:
+        cmd = BackgroundGetCommand.model_validate(params)
+        records = (
+            [self._background_registry.get(cmd.job_id)]
+            if cmd.job_id
+            else self._background_registry.list()
+        )
+        jobs = [
+            BackgroundJobInfo(
+                id=job.id,
+                command=job.command,
+                session_id=job.session_id,
+                run_id=job.run_id,
+                status=job.status,
+                output=job.output,
+                is_error=job.is_error,
+                created_at=job.created_at,
+                finished_at=job.finished_at,
+            )
+            for job in records
+            if job is not None
+        ]
+        return BackgroundGetResult(jobs=jobs)
+
+    # 取消指定后台 shell 任务并返回是否真正终止了运行
+    async def _background_cancel_handler(
+        self, params: dict[str, Any]
+    ) -> BackgroundCancelResult:
+        cmd = BackgroundCancelCommand.model_validate(params)
+        cancelled = await self._background_registry.cancel(cmd.job_id)
+        return BackgroundCancelResult(job_id=cmd.job_id, cancelled=cancelled)
+
+    # 返回 MCP server 状态与工具清单
+    async def _mcp_list_handler(self, params: dict[str, Any]) -> McpListResult:
+        McpListCommand.model_validate(params)
+        assert self._mcp_manager is not None
+        servers = [
+            McpServerInfo(
+                name=str(state.get("name", "")),
+                transport=str(state.get("transport", "")),
+                status=str(state.get("status", "")),
+                tool_count=len(state.get("tools", [])),
+                tools=list(state.get("tools", [])),
+                error=str(state.get("error", "")),
+            )
+            for state in self._mcp_manager.describe()
+        ]
+        return McpListResult(servers=servers)
+
+    # 返回 hook 配置表与最近执行记录
+    async def _hooks_list_handler(self, params: dict[str, Any]) -> HooksListResult:
+        cmd = HooksListCommand.model_validate(params)
+        assert self._hooks is not None
+        configs = [
+            HookConfigInfo(
+                id=cfg.id,
+                event=cfg.event,
+                blocking=cfg.blocking,
+                trusted_scope=cfg.trusted_scope,
+                on_failure=cfg.on_failure,
+                command=list(cfg.command),
+                conditions=dict(cfg.conditions),
+            )
+            for cfg in self._hooks.configs
+        ]
+        audit_events = [
+            HookAuditInfo(
+                hook_id=item.hook_id,
+                event=item.event,
+                status=item.status,
+                blocking=item.blocking,
+                elapsed_ms=item.elapsed_ms,
+                blocked=item.blocked,
+                reason=item.reason,
+                exit_code=item.exit_code,
+                ts=item.ts,
+            )
+            for item in self._hooks.audit_events()[-cmd.limit :]
+        ]
+        return HooksListResult(configs=configs, audit_events=audit_events)
+
+    # 手动重跑指定 hook，返回本次执行状态
+    async def _hook_rerun_handler(self, params: dict[str, Any]) -> HookRerunResult:
+        cmd = HookRerunCommand.model_validate(params)
+        assert self._hooks is not None
+        audit = await self._hooks.rerun(cmd.hook_id)
+        if audit is None:
+            raise HandlerError(INVALID_PARAMS, f"hook not found: {cmd.hook_id}")
+        return HookRerunResult(
+            hook_id=cmd.hook_id,
+            executed=True,
+            status=audit.status,
+            reason=audit.reason,
+            ts=audit.ts,
+        )
+
+    # 返回当前项目记忆条目列表
+    async def _memory_list_handler(self, params: dict[str, Any]) -> MemoryListResult:
+        MemoryListCommand.model_validate(params)
+        store = MemoryStore(Path.cwd() / ".coderook" / "memory")
+        return MemoryListResult(
+            memories=[
+                MemoryInfo(
+                    id=item.id,
+                    name=item.name,
+                    description=item.description,
+                    type=item.type,
+                    body=item.body[:1_000],
+                    source_session_id=item.source_session_id,
+                    source_run_id=item.source_run_id,
+                    created_at=item.created_at,
+                    updated_at=item.updated_at,
+                )
+                for item in store.list_all()
+            ]
+        )
+
+    # 删除指定记忆并返回是否删除成功
+    async def _memory_delete_handler(self, params: dict[str, Any]) -> MemoryDeleteResult:
+        cmd = MemoryDeleteCommand.model_validate(params)
+        store = MemoryStore(Path.cwd() / ".coderook" / "memory")
+        deleted = store.forget(cmd.memory_id)
+        return MemoryDeleteResult(memory_id=cmd.memory_id, deleted=deleted)
+
     # 启动声明式 TOML/JSON workflow，并立即返回 durable workflow ID
     async def _workflow_start_handler(
         self,
@@ -1016,6 +1182,14 @@ class CoreApp:
         server.register("session.rewind", self._session_rewind_handler)
         server.register("session.context", self._session_context_handler)
         server.register("turn.inspect", self._turn_inspect_handler)
+        server.register("mcp.list", self._mcp_list_handler)
+        server.register("hooks.list", self._hooks_list_handler)
+        server.register("hooks.rerun", self._hook_rerun_handler)
+        server.register("memory.list", self._memory_list_handler)
+        server.register("memory.delete", self._memory_delete_handler)
+        server.register("background.get", self._background_get_handler)
+        server.register("background.cancel", self._background_cancel_handler)
+        server.register("worker.cancel", self._worker_cancel_handler)
 
         addr = await server.start()
         try:

@@ -50,6 +50,10 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("cost", "查看本会话成本分解与缓存节省"),
         ("turn", "检查 route、用量、审批与收据"),
         ("skills", "列出、查看、安装或删除 skills"),
+        ("mcp", "查看 MCP server 状态与工具"),
+        ("hooks", "查看 hook 配置与执行记录"),
+        ("memory", "查看或删除项目记忆"),
+        ("jobs", "后台任务中心：查看/取消"),
     ]
     actual = [(cmd.name, cmd.description) for cmd in BUILTIN_SLASH_COMMANDS]
     assert actual == previous

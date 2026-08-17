@@ -355,6 +355,150 @@ async def _cmd_skills(app: Any, ta: ChatTextArea, content: str) -> None:
     app._handle_skills_command(content)
 
 
+async def _cmd_mcp(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    ta.disabled = True
+    ta.border_title = f"正在加载 {content}"
+    server = content.removeprefix("/mcp").strip()
+    app.run_worker(app._show_mcp(server), name="view_mcp", exclusive=False)
+
+
+async def _cmd_hooks(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    if content == "/hooks" or content.startswith("/hooks "):
+        arg = content.removeprefix("/hooks").strip()
+        if arg.startswith("rerun "):
+            hook_id = arg.removeprefix("rerun ").strip()
+            if not hook_id:
+                app._append(
+                    Static(
+                        "[yellow]用法：/hooks rerun <hook_id> --yes[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            if "--yes" not in content:
+                app._append(
+                    Static(
+                        f"[yellow]将重跑 hook {escape(hook_id)}，确认请输入 "
+                        f"[bold]/hooks rerun {escape(hook_id)} --yes[/bold][/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            ta.disabled = True
+            ta.border_title = "正在重跑 hook"
+            app.run_worker(
+                app._do_hook_rerun(hook_id), name="rerun_hook", exclusive=False
+            )
+            return
+        if arg:
+            app._append(
+                Static(
+                    "[yellow]用法：/hooks 或 /hooks rerun <hook_id> --yes[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+    ta.disabled = True
+    ta.border_title = "正在加载 hooks"
+    app.run_worker(app._show_hooks(), name="view_hooks", exclusive=False)
+
+
+async def _cmd_memory(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    if content != "/memory" and content.startswith("/memory "):
+        arg = content.removeprefix("/memory ").strip()
+        if arg.startswith("delete "):
+            memory_id = arg.removeprefix("delete ").strip()
+            if not memory_id:
+                app._append(
+                    Static(
+                        "[yellow]用法：/memory delete <memory_id> --yes[/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            if "--yes" not in content:
+                app._append(
+                    Static(
+                        f"[yellow]将删除记忆 {escape(memory_id)}，确认请输入 "
+                        f"[bold]/memory delete {escape(memory_id)} --yes[/bold][/yellow]",
+                        classes="log-line",
+                    )
+                )
+                return
+            ta.disabled = True
+            ta.border_title = "正在删除记忆"
+            app.run_worker(
+                app._do_memory_delete(memory_id), name="delete_memory", exclusive=False
+            )
+            return
+        app._append(
+            Static(
+                "[yellow]用法：/memory 或 /memory delete <memory_id> --yes[/yellow]",
+                classes="log-line",
+            )
+        )
+        return
+    ta.disabled = True
+    ta.border_title = "正在加载记忆"
+    app.run_worker(app._show_memory(), name="view_memory", exclusive=False)
+
+
+async def _cmd_jobs(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    arg = content.removeprefix("/jobs").strip()
+    if arg == "":
+        ta.disabled = True
+        ta.border_title = "正在加载后台任务"
+        app.run_worker(app._show_jobs(), name="view_jobs", exclusive=False)
+        return
+    parts = arg.split(maxsplit=1)
+    action, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+    if action == "show" and rest:
+        ta.disabled = True
+        ta.border_title = "正在加载任务输出"
+        app.run_worker(
+            app._show_jobs(rest), name="show_job", exclusive=False
+        )
+        return
+    if action == "cancel" and rest:
+        if "--yes" not in content:
+            app._append(
+                Static(
+                    f"[yellow]将取消任务 {escape(rest)}，确认请输入 "
+                    f"[bold]/jobs cancel {escape(rest)} --yes[/bold][/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+        ta.disabled = True
+        ta.border_title = "正在取消任务"
+        app.run_worker(
+            app._do_job_cancel(rest), name="cancel_job", exclusive=False
+        )
+        return
+    app._append(
+        Static(
+            "[yellow]用法：/jobs [show <id> | cancel <id> --yes][/yellow]",
+            classes="log-line",
+        )
+    )
+
+
 # 内建命令的唯一事实来源；顺序即补全弹窗展示顺序
 BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("help", "显示键位与全部命令", False, _cmd_help),
@@ -403,6 +547,10 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("cost", "查看本会话成本分解与缓存节省", False, _cmd_cost),
     SlashCommand("turn", "检查 route、用量、审批与收据", True, _cmd_turn),
     SlashCommand("skills", "列出、查看、安装或删除 skills", False, _cmd_skills),
+    SlashCommand("mcp", "查看 MCP server 状态与工具", True, _cmd_mcp),
+    SlashCommand("hooks", "查看 hook 配置与执行记录", True, _cmd_hooks),
+    SlashCommand("memory", "查看或删除项目记忆", True, _cmd_memory),
+    SlashCommand("jobs", "后台任务中心：查看/取消", True, _cmd_jobs),
 ]
 
 

@@ -253,3 +253,84 @@ async def test_send_success_returns_payload() -> None:
         {"session_id": "s"},
     )
     assert result["message_count"] == 5
+
+
+# 功能：验证 list_mcp_servers 调用 mcp.list 并原样返回
+# 设计：断言方法名与空参数，返回值即 daemon 组装好的 server 清单
+async def test_list_mcp_servers_success() -> None:
+    client = _FakeClient({"mcp.list": {"servers": [{"name": "github"}]}})
+    result = await ipc_actions.list_mcp_servers(client)
+    assert result["servers"][0]["name"] == "github"
+    assert client.calls == [("mcp.list", {})]
+
+
+# 功能：验证 list_hooks 携带 limit 调用 hooks.list
+# 设计：默认 20 的 limit 应透传，返回原始 payload dict
+async def test_list_hooks_success() -> None:
+    client = _FakeClient({"hooks.list": {"configs": []}})
+    result = await ipc_actions.list_hooks(client)
+    assert result["configs"] == []
+    assert client.calls == [("hooks.list", {"limit": 20})]
+
+
+# 功能：验证 rerun_hook 按 hook_id 调用 hooks.rerun
+# 设计：断言 hook_id 透传且返回值即新产生的审计记录
+async def test_rerun_hook_success() -> None:
+    client = _FakeClient({"hooks.rerun": {"hook_id": "h1"}})
+    result = await ipc_actions.rerun_hook(client, "h1")
+    assert result["hook_id"] == "h1"
+    assert client.calls == [("hooks.rerun", {"hook_id": "h1"})]
+
+
+# 功能：验证 list_memories 调用 memory.list
+# 设计：断言方法名与空参数，返回原始 payload
+async def test_list_memories_success() -> None:
+    client = _FakeClient({"memory.list": {"memories": []}})
+    result = await ipc_actions.list_memories(client)
+    assert result["memories"] == []
+    assert client.calls == [("memory.list", {})]
+
+
+# 功能：验证 delete_memory 按 memory_id 调用 memory.delete
+# 设计：断言 memory_id 透传
+async def test_delete_memory_success() -> None:
+    client = _FakeClient({"memory.delete": {"deleted": "m1"}})
+    result = await ipc_actions.delete_memory(client, "m1")
+    assert result["deleted"] == "m1"
+    assert client.calls == [("memory.delete", {"memory_id": "m1"})]
+
+
+# 功能：验证 get_background 缺省 job_id 时查询任务列表
+# 设计：job_id 为空时参数固定为 {}，覆盖列表模式的调用约定
+async def test_get_background_list_default() -> None:
+    client = _FakeClient({"background.get": {"jobs": []}})
+    result = await ipc_actions.get_background(client)
+    assert result["jobs"] == []
+    assert client.calls == [("background.get", {"job_id": ""})]
+
+
+# 功能：验证 get_background 带 job_id 时查询单个任务输出
+# 设计：job_id 非空时透传，覆盖查看增量输出的调用约定
+async def test_get_background_by_job() -> None:
+    client = _FakeClient({"background.get": {"jobs": [{"id": "j1"}]}})
+    result = await ipc_actions.get_background(client, job_id="j1")
+    assert result["jobs"][0]["id"] == "j1"
+    assert client.calls == [("background.get", {"job_id": "j1"})]
+
+
+# 功能：验证 cancel_background 按 job_id 调用 background.cancel
+# 设计：断言 job_id 透传
+async def test_cancel_background_success() -> None:
+    client = _FakeClient({"background.cancel": {"job_id": "j1"}})
+    result = await ipc_actions.cancel_background(client, "j1")
+    assert result["job_id"] == "j1"
+    assert client.calls == [("background.cancel", {"job_id": "j1"})]
+
+
+# 功能：验证 cancel_worker 按 worker_id 调用 worker.cancel
+# 设计：断言 worker_id 透传，复用现有 worker.cancel 协议
+async def test_cancel_worker_success() -> None:
+    client = _FakeClient({"worker.cancel": {"worker_id": "w1"}})
+    result = await ipc_actions.cancel_worker(client, "w1")
+    assert result["worker_id"] == "w1"
+    assert client.calls == [("worker.cancel", {"worker_id": "w1"})]

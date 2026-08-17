@@ -173,3 +173,48 @@ async def set_authority(
         "session.set_authority",
         params,
     )
+
+
+# 列出全部 MCP server 的状态与工具清单
+async def list_mcp_servers(client: SocketClient) -> dict[str, Any]:
+    return await send(client, "mcp.list", {})
+
+
+# 列出 hook 配置表与最近执行记录，limit 控制审计条数
+async def list_hooks(
+    client: SocketClient, *, limit: int = 20
+) -> dict[str, Any]:
+    return await send(client, "hooks.list", {"limit": limit})
+
+
+# 手动重跑指定 id 的历史 hook
+async def rerun_hook(client: SocketClient, hook_id: str) -> dict[str, Any]:
+    return await send(client, "hooks.rerun", {"hook_id": hook_id})
+
+
+# 列出当前项目记忆条目
+async def list_memories(client: SocketClient) -> dict[str, Any]:
+    return await send(client, "memory.list", {})
+
+
+# 删除指定 id 的一条项目记忆
+async def delete_memory(client: SocketClient, memory_id: str) -> dict[str, Any]:
+    return await send(client, "memory.delete", {"memory_id": memory_id})
+
+
+# 查询后台 shell 任务列表，或单个任务的全量输出
+async def get_background(
+    client: SocketClient, *, job_id: str = ""
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"job_id": job_id}
+    return await send(client, "background.get", params)
+
+
+# 取消指定后台 shell 任务
+async def cancel_background(client: SocketClient, job_id: str) -> dict[str, Any]:
+    return await send(client, "background.cancel", {"job_id": job_id})
+
+
+# 取消指定持久 Worker/子代理任务
+async def cancel_worker(client: SocketClient, worker_id: str) -> dict[str, Any]:
+    return await send(client, "worker.cancel", {"worker_id": worker_id})

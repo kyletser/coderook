@@ -6,10 +6,17 @@ from pydantic import ValidationError
 from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.commands import (
     AgentRunCommand,
+    BackgroundCancelCommand,
+    BackgroundGetCommand,
     CoreAuthenticateCommand,
     CoreAuthenticateResult,
     EventReplayCommand,
     EventSubscribeCommand,
+    HookRerunCommand,
+    HooksListCommand,
+    McpListCommand,
+    MemoryDeleteCommand,
+    MemoryListCommand,
     PingCommand,
     PongResult,
     RunCancelCommand,
@@ -42,6 +49,7 @@ from code_rook.core.bus.commands import (
     TurnStartCommand,
     TurnSteerCommand,
     UserQuestionRespondCommand,
+    WorkerCancelCommand,
     WorkerListCommand,
     WorkflowGetCommand,
     WorkflowListCommand,
@@ -372,6 +380,40 @@ def test_session_inspection_commands_validate() -> None:
     assert workflow_start.type == "workflow.start"
     assert workflow_list.type == "workflow.list"
     assert workflow_get.type == "workflow.get"
+
+
+# 功能：验证管理面板四件套命令具有精确 typed 判别值与范围约束
+# 设计：构造 mcp/hooks/memory/background/worker 命令并做 JSON 往返，固定新协议面
+def test_management_panel_commands_roundtrip() -> None:
+    mcp = McpListCommand()
+    hooks = HooksListCommand(limit=30)
+    rerun = HookRerunCommand(hook_id="post-commit")
+    memories = MemoryListCommand()
+    memory_del = MemoryDeleteCommand(memory_id="m1")
+    background = BackgroundGetCommand(job_id="j1")
+    background_cancel = BackgroundCancelCommand(job_id="j1")
+    worker_cancel = WorkerCancelCommand(worker_id="w1")
+
+    assert McpListCommand.model_validate_json(mcp.model_dump_json()).type == "mcp.list"
+    assert hooks.type == "hooks.list"
+    assert hooks.limit == 30
+    assert HookRerunCommand.model_validate_json(
+        rerun.model_dump_json()
+    ).hook_id == "post-commit"
+    assert memories.type == "memory.list"
+    assert MemoryDeleteCommand.model_validate_json(
+        memory_del.model_dump_json()
+    ).memory_id == "m1"
+    assert BackgroundGetCommand.model_validate_json(
+        background.model_dump_json()
+    ).job_id == "j1"
+    assert background_cancel.type == "background.cancel"
+    assert worker_cancel.type == "worker.cancel"
+
+    with pytest.raises(ValidationError):
+        HookRerunCommand(hook_id="")
+    with pytest.raises(ValidationError):
+        HooksListCommand(limit=0)
 
 
 # 功能：验证计划完成事件携带原请求和完整计划供 TUI 审阅

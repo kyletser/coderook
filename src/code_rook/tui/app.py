@@ -48,7 +48,14 @@ from code_rook.tui.commands import BUILTIN_SLASH_COMMANDS, match_slash_command
 from code_rook.tui.connection import TuiConnection
 from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
+    render_hooks,
+    render_job_output,
+    render_jobs,
+    render_mcp_servers,
+    render_mcp_tools,
+    render_memory,
     render_turn_inspector,
+    render_workers_summary,
     render_workflow_graph,
     render_workflow_list,
 )
@@ -1001,6 +1008,162 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(Static(body, classes="log-line"))
         except IpcActionError as exc:
             self._append(Static(f"[red]workers error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示 MCP server 列表，或按名称展开单个 server 的工具清单
+    async def _show_mcp(self, server_name: str = "") -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.list_mcp_servers(self._client)
+            servers = list(result.get("servers", []))
+            if server_name:
+                target = next(
+                    (
+                        item
+                        for item in servers
+                        if str(item.get("name", "")) == server_name
+                    ),
+                    None,
+                )
+                body = (
+                    render_mcp_tools(target)
+                    if target is not None
+                    else f"[dim]未找到 MCP server：{escape(server_name)}[/dim]"
+                )
+            else:
+                body = render_mcp_servers(servers)
+            self._append(Static(body, classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]mcp error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示 hook 配置表与最近执行记录
+    async def _show_hooks(self) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.list_hooks(self._client)
+            body = render_hooks(result)
+            self._append(Static(body, classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]hooks error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 手动重跑指定 hook 并在滚动区展示本次执行状态
+    async def _do_hook_rerun(self, hook_id: str) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.rerun_hook(self._client, hook_id)
+            status = str(result.get("status", ""))
+            reason = str(result.get("reason", "")).strip()
+            detail = f"  [dim]{escape(reason)}[/dim]" if reason else ""
+            self._append(
+                Static(
+                    f"[green]hook {escape(hook_id)} rerun[/green]  "
+                    f"[dim]{escape(status)}[/dim]{detail}",
+                    classes="log-line",
+                )
+            )
+        except IpcActionError as exc:
+            self._append(Static(f"[red]hook rerun error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示当前项目记忆条目
+    async def _show_memory(self) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.list_memories(self._client)
+            memories = list(result.get("memories", []))
+            body = render_memory(memories)
+            self._append(Static(body, classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]memory error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 删除指定项目记忆并在滚动区回显结果
+    async def _do_memory_delete(self, memory_id: str) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.delete_memory(self._client, memory_id)
+            if result.get("deleted"):
+                self._append(
+                    Static(
+                        f"[green]已删除记忆 {escape(memory_id)}[/green]",
+                        classes="log-line",
+                    )
+                )
+            else:
+                self._append(
+                    Static(
+                        f"[yellow]未找到记忆 {escape(memory_id)}[/yellow]",
+                        classes="log-line",
+                    )
+                )
+        except IpcActionError as exc:
+            self._append(Static(f"[red]memory delete error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示后台任务中心：bg 任务列表 + 子代理汇总，或单个任务全量输出
+    async def _show_jobs(self, show_id: str = "") -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.get_background(
+                self._client, job_id=show_id
+            )
+            jobs = list(result.get("jobs", []))
+            if show_id:
+                body = render_job_output(jobs)
+            else:
+                workers = await ipc_actions.get_workers(self._client)
+                worker_records = list(workers.get("workers", []))
+                body = (
+                    render_jobs(jobs)
+                    + "\n\n"
+                    + render_workers_summary(worker_records)
+                )
+            self._append(Static(body, classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]jobs error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 取消后台任务（bg-* 或 Worker/子代理）并在滚动区回显结果
+    async def _do_job_cancel(self, job_id: str) -> None:
+        if self._client is None:
+            return
+        try:
+            if job_id.startswith("bg-"):
+                await ipc_actions.cancel_background(self._client, job_id)
+            else:
+                result = await ipc_actions.cancel_worker(self._client, job_id)
+                status = str(result.get("status", ""))
+                self._append(
+                    Static(
+                        f"[green]cancelled {escape(job_id)}[/green]  "
+                        f"[dim]{escape(status)}[/dim]",
+                        classes="log-line",
+                    )
+                )
+                return
+            self._append(
+                Static(
+                    f"[green]cancelled {escape(job_id)}[/green]",
+                    classes="log-line",
+                )
+            )
+        except IpcActionError as exc:
+            self._append(Static(f"[red]cancel job error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
 

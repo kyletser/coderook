@@ -331,6 +331,24 @@ def _render_stage(app: Any, t: str, event: dict[str, Any]) -> None:
             )
         )
 
+    elif t == "hook.executed":
+        hook_id = str(event.get("hook_id", ""))
+        status = str(event.get("status", ""))
+        elapsed_ms = int(event.get("elapsed_ms") or 0)
+        marker = "[bold green]hook[/bold green]" if status == "completed" else (
+            "[bold red]hook[/bold red]"
+        )
+        detail = f"  [dim]{status} · {elapsed_ms}ms[/dim]"
+        reason = str(event.get("reason") or "")
+        if status in {"failed", "blocked", "timeout"} and reason:
+            detail += f"  [dim]{escape(reason[:120])}[/dim]"
+        app._append(
+            Static(
+                f"{marker} [cyan]{escape(hook_id)}[/cyan]{detail}",
+                classes="log-line",
+            )
+        )
+
 
 # 处理 step 起止事件，维护步号索引
 def _render_step(app: Any, t: str, event: dict[str, Any]) -> None:
@@ -518,7 +536,7 @@ def _render_rest(app: Any, event: dict[str, Any]) -> None:
         _render_user_question(app, event)
     elif t.startswith("run."):
         _render_run(app, t, event)
-    elif t.startswith(("skill.", "subagent.", "background.")):
+    elif t.startswith(("skill.", "subagent.", "background.", "hook.")):
         _render_stage(app, t, event)
     elif t.startswith("step."):
         _render_step(app, t, event)
