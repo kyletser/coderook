@@ -63,6 +63,7 @@ class OpenAICompatibleProvider:
         use_max_completion_tokens: bool = False,
         context_window: int | None = None,
         thinking: str = "off",
+        temperature: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -76,6 +77,7 @@ class OpenAICompatibleProvider:
         self._use_max_completion_tokens = use_max_completion_tokens
         self._context_window = context_window
         self._thinking = thinking
+        self._temperature = temperature
         self._client = client
 
     async def chat(
@@ -121,6 +123,8 @@ class OpenAICompatibleProvider:
                 include_reasoning=effective_thinking != "off",
             ),
         }
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
         if effective_thinking in {"low", "medium", "high"}:
             payload["reasoning_effort"] = effective_thinking
             if is_deepseek:

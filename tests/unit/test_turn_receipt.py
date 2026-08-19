@@ -123,6 +123,24 @@ def test_receipt_builds_from_durable_records_only() -> None:
             payload={"tool": "ruff", "status": "ok"},
             ts=now,
         ),
+        RuntimeEventRecord(
+            thread_id=turn.thread_id,
+            turn_id=turn.id,
+            seq=6,
+            type="tool.call_finished",
+            payload={
+                "process_usage": {
+                    "wall_time_ms": 120,
+                    "user_cpu_ms": 30,
+                    "system_cpu_ms": 10,
+                    "peak_memory_bytes": 4096,
+                    "process_count": 2,
+                    "samples": 3,
+                    "complete": True,
+                }
+            },
+            ts=now,
+        ),
     ]
 
     receipt = build_turn_receipt(turn, items, events)
@@ -141,6 +159,15 @@ def test_receipt_builds_from_durable_records_only() -> None:
     assert receipt.workers[0]["run_id"] == "worker-1"
     assert receipt.verification[0]["status"] == "ok"
     assert receipt.cost == "unknown"
+    assert receipt.process_usage.model_dump() == {
+        "record_count": 1,
+        "complete_records": 1,
+        "total_process_wall_ms": 120,
+        "user_cpu_ms": 30,
+        "system_cpu_ms": 10,
+        "peak_memory_bytes": 4096,
+        "process_count": 2,
+    }
     assert receipt.unavailable == ["cost"]
 
 

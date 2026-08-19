@@ -4,10 +4,11 @@
 - 基准代码版本：`817cce1`（feat: expand LLM provider support, runtime service, and project docs）
 - 时间跨度：约 14 周（3-6 个月），综合路线：体验快赢 → 生态兼容 + 感知能力 → 智能与经济性 → 安全与可信 → TUI 重构 + 管理面板 → 形态扩展
 - 现状基准：`docs/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
-- **进度基线（2026-08-17 更新）**：阶段 0、1、2、3、4 全部完成（阶段 2 收尾见 §5.6、阶段 3 见 §5.7、阶段 4 见 §5.8 复盘）；下一步从阶段 5（形态扩展，方向占位）。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
+- **进度基线（2026-08-18 更新）**：阶段 0、1、2、3、4 全部完成（阶段 2 收尾见 §5.6、阶段 3 见 §5.7、阶段 4 见 §5.8 复盘）；原阶段 5 保留为形态扩展方向占位，实际执行顺序由生产就绪计划接管。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
+- **后续执行计划**：Stage 5 不再直接按形态扩展顺序开工；先执行 `docs/PRODUCTION_READINESS_PLAN.md` 的 R0–R2（真实任务证据、安全与 durable 一致性），达到公开 Beta 门禁后再推进 SDK、MCP 与 IDE。
 - 本文档**取代**以下历史差距分析（它们描述的缺口多数已修复或已过时）：
   - `docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
-  - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md`（2026-07-30，81/100，早于 08-04 R1-R9 大改造批次）
+  - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md` 的 2026-07-30 旧版（81/100 计分已撤销；当前文件已重写为无虚假分数的发布边界）
   - `docs/IMPLEMENTATION_PROGRESS.md` / `docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md`（2026-07-16，历史快照）
 
 ---
@@ -321,7 +322,7 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 - 按 `docs/TUI_REFACTOR_PLAN.md`：控件外迁（widgets/）→ 连接层（client/）→ 命令注册表（commands/）→ IPC 封装（ipc_actions/）→ 事件渲染器（render/）；不改交互语义。
 - 拆分后单文件 <500 行；`/` 命令注册表化使新命令 = 一个声明 + 一个 handler（为 W4.2/W4.3 降成本）。
 - 每拆一阶段跑全量 TUI 单测（65 个）+ 手工冒烟清单。
-- **落地结果**：app.py 由 4,176 行降至 ~2,110 行（5 个独立提交，每阶段一次，均通过完整 CI gate）。单文件 **<500 行未达成**——剩余为 App 编排/状态/一次性流程（会话选择、权限卡编排、steer 等），与 Textual 消息泵强耦合，脱离会引入不必要抽象，计划阶段的"收益递减即停"职责已触发。**结构性目标达成**：连机、命令、IPC、事件渲染均模块化，新增一条斜杠命令实测 ≤30 行（W4.2 的管理四条）。详见 §5.8 复盘。
+- **落地结果**：app.py 在五阶段拆分完成时由 4,176 行降至 ~2,110 行；随后合入管理面板与输入体验后，最终为约 2,246 行（5 个独立重构提交，每阶段一次，均通过完整 CI gate）。单文件 **<500 行未达成**——剩余为 App 编排/状态/一次性流程（会话选择、权限卡编排、steer 等），与 Textual 消息泵强耦合，脱离会引入不必要抽象，计划阶段的"收益递减即停"职责已触发。**结构性目标达成**：连机、命令、IPC、事件渲染均模块化，新增一条斜杠命令实测 ≤30 行（W4.2 的管理四条）。详见 §5.8 复盘。
 
 **W4.2 管理面板四件套**（G26）✅
 - `/mcp`：server 列表（名称/transport/状态/工具数）、工具清单展开、启停（写回 config.toml 需确认）、失败原因透出。
@@ -412,7 +413,7 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 - **续段配额翻倍 bug**：`loop.py::_try_continue_past_max_steps` 首次触达时固定 `_initial_max_steps`，续段按固定初始配额追加（2→4→6→8），不再随上限翻倍。
 - **`provider.py::with_incremental_cache_breakpoint` 类型错误**：`content` 经 `isinstance(raw, list)` 收窄后重建块列表，移除全部 ignore 注释。
 
-**W2.5 ✅ 已完成**：步数耗尽时交互模式经结构化提问续跑（上限 3 段，选项"继续执行/就此停止"），`[agent] max_step_continues`（env `CODEROOK_MAX_STEP_CONTINUES`）配置自动续段数供 headless 使用。
+**W2.5 ✅ 已完成**：步数耗尽时交互模式经结构化提问续跑（上限 3 段，选项"继续执行/就此停止"），TOML `[agent] max_step_continues` 配置自动续段数供 headless 使用；当前没有对应环境变量覆盖。
 **W2.3 ✅ 部分完成**：Anthropic 增量缓存断点（最后一个 tool_result 块打 ephemeral 标记，受 route `supports_prompt_cache` 开关控制）；OpenAI cached_tokens 节省展示已由 W2.1 /cost 覆盖。
 
 **随后待办**：W2.5b 子代理 token_budget 硬顶（顺延项）；阶段 3 沙箱起步。
@@ -436,7 +437,7 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 
 ### 5.8 阶段 4 复盘（2026-08-17，阶段4批次）
 
-**W4.1 TUI 五阶段拆分 ✅（结构性完成）**：执行项目自己的 `TUI_REFACTOR_PLAN.md`，五个独立提交——stage1 控件外迁（`tui/widgets/`）+ stage2 连接层（`tui/connection.py`，重连/会话恢复）+ stage3 命令注册表（`tui/commands.py`，dispatch 从约 360 行 if 链收敛为 10 行查表）+ stage4 IPC 动作封装（`tui/ipc_actions.py`，统一超时/错误为 `IpcActionError`）+ stage5 事件渲染器（`tui/render.py`，按事件族拆分）。app.py 由 4,176 → ~2,110 行。**诚实偏差**：满意度指标"单文件 <500 行"未达成（剩余为 App 编排/状态/一次性流程，与 Textual 消息泵强耦合）；结构性目标达成，这正是计划中"收益递减即停"的预期出口。全程 0 bug 修复混入，行为逐项等价。
+**W4.1 TUI 五阶段拆分 ✅（结构性完成）**：执行项目自己的 `TUI_REFACTOR_PLAN.md`，五个独立提交——stage1 控件外迁（`tui/widgets/`）+ stage2 连接层（`tui/connection.py`，重连/会话恢复）+ stage3 命令注册表（`tui/commands.py`，dispatch 从约 360 行 if 链收敛为 10 行查表）+ stage4 IPC 动作封装（`tui/ipc_actions.py`，统一超时/错误为 `IpcActionError`）+ stage5 事件渲染器（`tui/render.py`，按事件族拆分）。app.py 在拆分完成时由 4,176 → ~2,110 行，管理功能合入后的最终规模约 2,246 行。**诚实偏差**：满意度指标"单文件 <500 行"未达成（剩余为 App 编排/状态/一次性流程，与 Textual 消息泵强耦合）；结构性目标达成，这正是计划中"收益递减即停"的预期出口。全程 0 bug 修复混入，行为逐项等价。
 **W4.2 管理面板四件套 ✅**：链路贯通 `bus 命令`→`daemon handler`→`ipc_actions`→`TUI 注册表命令`。新增 8 条查询/动作命令模型 + 结果模型并入 `Command` union，daemon 注册 handler，`gen_protocol_doc.py` 重新生成 `WIRE_PROTOCOL.md` 且 `--check` 通过；`hook.executed` topic 加入订阅并新增渲染分支；副作用（hooks.rerun / memory.delete / background.cancel / worker.cancel）沿用 `--yes` 二次确认。面板渲染集中在 `tui/panels/manage.py`。4 条新命令/面板各 ≤30 行 handler，兑现"新命令 = 一个声明 + 一个 handler"。
 **W4.3 补全与输入体验 ✅**：`SlashCommand` 新增强制字段 `usage`/`arg_candidates`（14 条填 usage、9 条填参数候选）；`SlashCompleteWidget` 名称+描述子序列模糊匹配（包含优先于子序列、稳定），底部 usage 随选中项切换；`/cmd <partial>` 按候选前缀循环 Tab 补全。
 **指标**：单测基数 916 → 1011（+95，全部新 TUI/管理/补全测试）。完整 CI gate 5 项全绿：`ruff check .`、`check_brand`、`mypy src`+`mypy --platform linux src`、`pytest -q`（1011 passed, 2 skipped）、`gen_protocol_doc.py --check`。涉及 `bus/` 与生成脚本的改动均同步 `WIRE_PROTOCOL.md` 且 `--check` 通过，符合仓库纪律。
@@ -449,10 +450,11 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 
 | 文档 | 状态 | 说明 |
 |---|---|---|
-| docs/FUNCTIONAL_ARCHITECTURE.md v1.1 | ✅ 现行权威 | 架构深描 + §20 已知问题清单（本路线图的输入） |
+| docs/FUNCTIONAL_ARCHITECTURE.md v1.2 | ✅ 现行权威 | 架构深描 + §20 已知问题清单（本路线图的输入） |
 | docs/TUI_REFACTOR_PLAN.md | ✅ 现行 | 阶段 4 W4.1 的执行依据 |
 | docs/ADR_RUNTIME_CONTRACT.md | ✅ 现行 | 持久运行时契约决策 |
 | docs/OPTIMIZATION_ROADMAP.md（本文档） | ✅ 现行 | 产品优化路线图（取代下列历史差距文档） |
+| docs/PRODUCTION_READINESS_PLAN.md | ✅ 现行 | Stage 4 后的生产就绪执行计划与量化发布门禁 |
 | docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md | 🗄 历史 | 2026-07-15 快照，缺口多数已修复 |
 | docs/CLAUDE_CODE_EXPERIENCE_PARITY.md | 🗄 历史 | 2026-07-30 评分 81/100，早于 R1-R9 批次 |
 | docs/IMPLEMENTATION_PROGRESS.md | 🗄 历史 | 2026-07-16 快照 |

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from code_rook.core.tools.builtin._search import (
     SearchPathFilter,
+    forget_process,
     iter_workspace_files,
     resolve_search_root,
     ripgrep_ignore_args,
@@ -72,17 +75,23 @@ class GlobTool(BaseTool):
         boundary: WorkspaceBoundary | None = None,
         *,
         workspace_root: Path | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         if boundary is not None and workspace_root is not None:
             raise ValueError("pass either boundary or workspace_root, not both")
         self._boundary = boundary or WorkspaceBoundary(workspace_root or Path.cwd())
+        self._process_supervisor = process_supervisor
 
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         request = GlobParams.model_validate(params)
         search_root, search_arg = resolve_search_root(self._boundary, request.path)
         rg = ripgrep_path()
         if rg is not None:
-            return await self._invoke_ripgrep(rg, search_arg, request)
+            try:
+                return await self._invoke_ripgrep(rg, search_arg, request)
+            except OSError:
+                # PATH 中的应用别名可能存在但不可执行，此时安全回退到纯 Python 搜索
+                pass
         return self._invoke_python(search_root, request)
 
     async def _invoke_ripgrep(
@@ -113,25 +122,35 @@ class GlobTool(BaseTool):
             include_hidden=request.include_hidden,
             search_root=search_root,
         )
-        process = await start_process(executable, args, cwd=self._boundary.root)
+        process = await start_process(
+            executable,
+            args,
+            cwd=self._boundary.root,
+            process_supervisor=self._process_supervisor,
+        )
         assert process.stdout is not None
-        while raw_line := await process.stdout.readline():
-            path = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            normalized = Path(path).as_posix()
-            if not path_filter.allows(normalized):
-                continue
-            if len(files) >= request.limit:
-                truncated = True
-                await stop_process(process)
-                break
-            files.append(normalized)
+        try:
+            while raw_line := await process.stdout.readline():
+                path = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                normalized = Path(path).as_posix()
+                if not path_filter.allows(normalized):
+                    continue
+                if len(files) >= request.limit:
+                    truncated = True
+                    await stop_process(process, self._process_supervisor)
+                    break
+                files.append(normalized)
 
-        if process.returncode is None:
-            _stdout, stderr = await process.communicate()
-            return_code = process.returncode or 0
-            error = stderr.decode("utf-8", errors="replace").strip()
-        else:
-            return_code, error = process.returncode, ""
+            if process.returncode is None:
+                _stdout, stderr = await process.communicate()
+                return_code = process.returncode or 0
+                error = stderr.decode("utf-8", errors="replace").strip()
+            else:
+                return_code, error = process.returncode, ""
+        except asyncio.CancelledError:
+            await stop_process(process, self._process_supervisor)
+            raise
+        forget_process(process, self._process_supervisor)
         if return_code not in (0, 1) and not truncated:
             return ToolResult(error or "ripgrep failed", is_error=True, error_type="schema_error")
         return self._result(files, truncated, "ripgrep")
@@ -161,3 +180,4 @@ class GlobTool(BaseTool):
             "backend": backend,
         }
         return ToolResult(json.dumps(payload, ensure_ascii=False, indent=2))
+    forget_process,

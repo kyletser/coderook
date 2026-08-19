@@ -71,6 +71,7 @@ def parse_pyright_diagnostics(
         return (), False
     counts: Counter[str] = Counter()
     diagnostics: list[Diagnostic] = []
+    seen: set[tuple[object, ...]] = set()
     truncated = False
     for raw in raw_items:
         if not isinstance(raw, dict):
@@ -98,15 +99,25 @@ def parse_pyright_diagnostics(
         if len(message) > _MAX_MESSAGE_CHARS:
             message = message[: _MAX_MESSAGE_CHARS - 3] + "..."
             truncated = True
-        diagnostics.append(
-            Diagnostic(
-                path=relative,
-                line=_display_position(start.get("line", 0)),
-                column=_display_position(start.get("character", 0)),
-                severity=cast(DiagnosticSeverity, severity),
-                message=message,
-                rule=str(raw.get("rule", "") or ""),
-            )
+        diagnostic = Diagnostic(
+            path=relative,
+            line=_display_position(start.get("line", 0)),
+            column=_display_position(start.get("character", 0)),
+            severity=cast(DiagnosticSeverity, severity),
+            message=message,
+            rule=str(raw.get("rule", "") or ""),
         )
+        key = (
+            diagnostic.path,
+            diagnostic.line,
+            diagnostic.column,
+            diagnostic.severity,
+            diagnostic.message,
+            diagnostic.rule,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        diagnostics.append(diagnostic)
         counts[relative] += 1
     return tuple(diagnostics), truncated

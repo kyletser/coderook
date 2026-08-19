@@ -29,7 +29,7 @@ uv run coderook-tui --no-auto-core
 
 ```bash
 uv run coderook ping
-# → pong server=0.0.1 uptime=12ms latency=2ms
+# → pong server=0.1.0 uptime=12ms latency=2ms
 ```
 
 ### 停止守护进程
@@ -57,7 +57,8 @@ uv run coderook config-status
 `~/.coderook/credentials.json`；连接地址、模型和 active provider 保存到配置文件。TUI 首次
 启动会在缺少配置时自动进入该向导，也可在界面中输入 `/config` 重新配置。
 
-配置变更后，由 CodeRook 管理的后台 Core 会自动重启。手动启动的 Core 可执行：
+CLI/TUI 候选 route 默认先执行 ProviderDoctor；只有凭据、TLS、endpoint、模型和 wire schema
+通过后才一次性提交 route/active/credential。配置变更后，由 CodeRook 管理的后台 Core 会自动重启。手动启动的 Core 可执行：
 
 ```powershell
 uv run coderook core restart
@@ -99,6 +100,42 @@ cp .env.example .env
 | `CODEROOK_LLM_BASE_URL` | 空 | Anthropic 根地址或 OpenAI Chat Completions 完整地址 |
 | `CODEROOK_LLM_API_KEY_ENV` | `ANTHROPIC_API_KEY` | 指定读取 API key 的环境变量名 |
 | `CODEROOK_CREDENTIALS_FILE` | `~/.coderook/credentials.json` | 覆盖本地凭据文件路径 |
+
+---
+
+## 诊断与恢复
+
+```bash
+uv run coderook doctor all --json
+uv run coderook doctor runtime --json
+uv run coderook doctor runtime --repair
+uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
+```
+
+`doctor all` 即使 route 或 runtime 文件损坏也会在 `errors` 中报告对应 section。`runtime --repair`
+只修复可证明安全的投影/计数漂移，并写 repair journal；transcript checksum 损坏不会静默覆盖。
+诊断包默认仅包含系统报告与脱敏日志，不包含 session 正文、credentials 或原始 trace，且必须显式确认。
+
+## 分发入口
+
+```powershell
+scripts\install-windows.ps1
+scripts\build_windows_portable.ps1
+```
+
+portable ZIP 自带 uv 管理的 Python 3.12。容器使用 `Dockerfile` 或
+`docker compose -f docker-compose.example.yml up --build`；示例只映射 loopback，若改为非回环监听，
+必须设置长随机 `CODEROOK_API_TOKEN`。
+
+## 沙箱边界
+
+```bash
+uv run python scripts/check_sandbox_boundary.py
+```
+
+Linux/macOS 有后端时，该命令真实验证工作区内写成功、工作区外写失败、read-only 写失败。
+Windows 当前输出 `DEGRADED (windows_none)`，这是受支持结论：AUTO_REVIEW shell 会回到 ASK，
+Job Object/进程树回收不被描述成文件系统 sandbox。
 
 ---
 

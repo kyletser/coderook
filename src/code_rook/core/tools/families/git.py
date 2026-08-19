@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from code_rook.core.processes import terminate_process_tree
+from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.tools.builtin.git_diff import GitDiffTool
 from code_rook.core.tools.registry import ToolRegistry
@@ -89,10 +89,23 @@ class GitTool(BaseTool):
     }
 
     # 初始化只读 Git family 和兼容 diff backend
-    def __init__(self, boundary: WorkspaceBoundary, diff_backend: GitDiffTool) -> None:
+    def __init__(
+        self,
+        boundary: WorkspaceBoundary,
+        diff_backend: GitDiffTool,
+        process_supervisor: ProcessSupervisor | None = None,
+    ) -> None:
         self._boundary = boundary
         self._diff = diff_backend
         self._git = shutil.which("git")
+        self._process_supervisor = process_supervisor
+
+    # 通过统一监管器终止只读 Git 进程树并清理登记
+    async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
+        if self._process_supervisor is not None:
+            await self._process_supervisor.terminate(process)
+        else:
+            await terminate_process_tree(process)
 
     # 返回 Git family 的 action 级 schema
     def build_spec(self) -> ToolSpec:
@@ -212,12 +225,12 @@ class GitTool(BaseTool):
         while chunk := await stream.read(8192):
             remaining = limit - size
             if remaining <= 0:
-                await terminate_process_tree(process)
+                await self._terminate_process(process)
                 return b"".join(chunks), True
             chunks.append(chunk[:remaining])
             size += min(len(chunk), remaining)
             if len(chunk) > remaining:
-                await terminate_process_tree(process)
+                await self._terminate_process(process)
                 return b"".join(chunks), True
         return b"".join(chunks), False
 
@@ -231,14 +244,25 @@ class GitTool(BaseTool):
             "GIT_PAGER": "cat",
             "GIT_TERMINAL_PROMPT": "0",
         }
-        process = await asyncio.create_subprocess_exec(
-            self._git,
-            *args,
-            cwd=self._boundary.root,
-            env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if self._process_supervisor is not None:
+            process = await self._process_supervisor.start_exec(
+                self._git,
+                *args,
+                label="git-read",
+                cwd=self._boundary.root,
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                self._git,
+                *args,
+                cwd=self._boundary.root,
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         assert process.stdout is not None and process.stderr is not None
         stdout_task = asyncio.create_task(
             self._read_limited(process.stdout, _OUTPUT_LIMIT, process)
@@ -254,9 +278,16 @@ class GitTool(BaseTool):
                 )
                 await process.wait()
         except TimeoutError:
-            await terminate_process_tree(process)
+            await self._terminate_process(process)
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
             return _GitOutput("", "git command timed out", 124, False)
+        except asyncio.CancelledError:
+            await self._terminate_process(process)
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            raise
+        finally:
+            if self._process_supervisor is not None and process.returncode is not None:
+                self._process_supervisor.forget(process)
         text = stdout.decode("utf-8", errors="replace")
         if truncated:
             text += "\n[output truncated]\n"
@@ -377,6 +408,7 @@ def register_git_family(
     diff_backend: GitDiffTool,
     *,
     allowed_names: set[str] | None = None,
+    process_supervisor: ProcessSupervisor | None = None,
 ) -> GitTool | None:
     allowed = allowed_names is None or "Git" in allowed_names or "git_diff" in allowed_names
     if not allowed:
@@ -391,7 +423,7 @@ def register_git_family(
             }
         )
         registry.register(diff_backend, spec=legacy_spec)
-    family = GitTool(boundary, diff_backend)
+    family = GitTool(boundary, diff_backend, process_supervisor)
     if allowed_names is not None and "Git" not in allowed_names:
         spec = family.build_spec()
         diff_action = spec.action("diff")

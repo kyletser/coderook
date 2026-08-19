@@ -1,0 +1,45 @@
+{
+  "name": "coderook-vscode",
+  "displayName": "CodeRook",
+  "description": "Minimal CodeRook runtime client for VS Code",
+  "version": "0.1.0",
+  "publisher": "coderook",
+  "engines": {"vscode": "^1.95.0"},
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onCommand:coderook.send"],
+  "contributes": {
+    "commands": [
+      {"command": "coderook.newThread", "title": "CodeRook: New Thread"},
+      {"command": "coderook.resumeThread", "title": "CodeRook: Resume Thread"},
+      {"command": "coderook.send", "title": "CodeRook: Send Task"},
+      {"command": "coderook.steer", "title": "CodeRook: Steer Active Turn"},
+      {"command": "coderook.interrupt", "title": "CodeRook: Interrupt Active Turn"},
+      {"command": "coderook.openDiff", "title": "CodeRook: Open Workspace Diff"}
+    ],
+    "configuration": {
+      "title": "CodeRook",
+      "properties": {
+        "coderook.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:7438",
+          "description": "CodeRook runtime API base URL"
+        },
+        "coderook.apiToken": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Bearer token. Prefer the `CODEROOK_API_TOKEN` environment variable when possible."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "check": "tsc --noEmit -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.95.0",
+    "typescript": "^5.7.2"
+  }
+}

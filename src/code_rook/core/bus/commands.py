@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field, model_validator
 
+from code_rook.core.artifacts import ArtifactInventoryItem, ImageArtifactInput
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
@@ -53,10 +54,24 @@ class AgentRunCommand(BaseModel):
     goal: str
     permission_mode: Literal["deny", "fail_fast", "allow_list"] = "fail_fast"
     allow_tools: list[str] = Field(default_factory=list)
+    resume_session_id: str | None = None
+    question_mode: Literal["fail_fast", "timeout", "preset"] = "fail_fast"
+    question_timeout_s: float | None = Field(default=None, gt=0, le=3600)
+    preset_answers: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    # 校验 headless 提问策略所需参数并拒绝无效组合
+    def _validate_question_policy(self) -> AgentRunCommand:
+        if self.question_mode == "timeout" and self.question_timeout_s is None:
+            raise ValueError("question_timeout_s is required in timeout mode")
+        if self.question_mode == "preset" and not self.preset_answers:
+            raise ValueError("preset_answers are required in preset mode")
+        return self
 
 
 class AgentRunResult(BaseModel):
     run_id: str
+    session_id: str
 
 
 class RunCancelCommand(BaseModel):
@@ -249,6 +264,7 @@ class SessionSendMessageCommand(BaseModel):
     session_id: str
     content: str
     runtime_mode: RuntimeMode = RuntimeMode.ACT
+    attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
 
 
 class SessionSendMessageResult(BaseModel):
@@ -375,6 +391,8 @@ class PermissionRespondCommand(BaseModel):
     tool_use_id: str
     # "allow_once" | "always_allow" | "deny_once" | "always_deny"
     decision: str
+    selected_hunks: list[str] | None = Field(default=None, max_length=1000)
+    patch_plan_id: str | None = Field(default=None, max_length=128)
 
 
 class PermissionRespondResult(BaseModel):
@@ -557,6 +575,7 @@ class HookConfigInfo(BaseModel):
 
 class HookAuditInfo(BaseModel):
     hook_id: str
+    run_id: str = ""
     event: str
     status: str
     blocking: bool
@@ -564,6 +583,7 @@ class HookAuditInfo(BaseModel):
     blocked: bool
     reason: str
     exit_code: int | None = None
+    process_usage: dict[str, Any] = Field(default_factory=dict)
     ts: str
 
 
@@ -630,6 +650,7 @@ class BackgroundJobInfo(BaseModel):
     is_error: bool
     created_at: str
     finished_at: str = ""
+    process_usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class BackgroundGetResult(BaseModel):
@@ -654,6 +675,31 @@ class WorkerCancelCommand(BaseModel):
 class WorkerCancelResult(BaseModel):
     worker_id: str
     status: str
+
+
+class ArtifactListCommand(BaseModel):
+    type: Literal["artifact.list"] = "artifact.list"
+    days: int = Field(default=30, ge=0, le=3650)
+
+
+class ArtifactListResult(BaseModel):
+    artifacts: list[ArtifactInventoryItem] = Field(default_factory=list)
+    total_bytes: int = Field(ge=0)
+    reclaimable_bytes: int = Field(ge=0)
+
+
+class ArtifactGcCommand(BaseModel):
+    type: Literal["artifact.gc"] = "artifact.gc"
+    days: int = Field(default=30, ge=0, le=3650)
+    confirmed: bool = False
+
+
+class ArtifactGcResult(BaseModel):
+    dry_run: bool
+    candidates: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+    reclaimable_bytes: int = Field(ge=0)
+    receipt_path: str = ""
 
 
 # 根据 type 字段决定命令类型的判别联合
@@ -710,6 +756,8 @@ Command = Annotated[
     | MemoryDeleteCommand
     | BackgroundGetCommand
     | BackgroundCancelCommand
-    | WorkerCancelCommand,
+    | WorkerCancelCommand
+    | ArtifactListCommand
+    | ArtifactGcCommand,
     Discriminator("type"),
 ]

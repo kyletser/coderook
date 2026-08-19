@@ -8,11 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import (
+    ProcessSupervisor,
     bounded_shell_output,
-    create_shell_process,
     terminate_process_tree,
 )
-from code_rook.core.sandbox.planner import SandboxPlan, wrap_sandbox_command
+from code_rook.core.sandbox.planner import (
+    SandboxPlan,
+    SandboxSpawnRequest,
+    spawn_sandboxed_shell,
+)
 from code_rook.core.tools.base import BaseTool, ToolResult
 
 _DEFAULT_TIMEOUT = 60
@@ -71,12 +75,14 @@ class BashTool(BaseTool):
         persistent_pool: PersistentShellPool | None = None,
         persistent_key: str = "",
         sandbox_plan: SandboxPlan | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         self._cwd = cwd
         self._persistent_pool = persistent_pool
         self._persistent_key = persistent_key
         # 本会话施加的真实 OS 沙箱计划；degraded 或空时按原样执行（仅审计）
         self._sandbox_plan = sandbox_plan
+        self._process_supervisor = process_supervisor
 
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -96,27 +102,42 @@ class BashTool(BaseTool):
 
     # 走一次性子进程的原有执行路径；有真实沙箱时对命令施加 OS 包裹
     async def _run_isolated(self, command: str, timeout: int) -> ToolResult:
-        wrapped = (
-            wrap_sandbox_command(self._sandbox_plan, command)
-            if self._sandbox_plan is not None
-            else command
-        )
+        process_usage: dict[str, object] | None = None
         try:
-            proc = await create_shell_process(wrapped, self._cwd)
+            proc = await spawn_sandboxed_shell(
+                self._sandbox_plan,
+                SandboxSpawnRequest(
+                    command=command,
+                    label="isolated-shell",
+                    cwd=self._cwd,
+                ),
+                self._process_supervisor,
+            )
             try:
                 stdout_bytes, _ = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
                 )
+                if self._process_supervisor is not None:
+                    process_usage = self._process_supervisor.forget(proc).to_dict()
             except TimeoutError:
-                await terminate_process_tree(proc)
+                if self._process_supervisor is not None:
+                    process_usage = (
+                        await self._process_supervisor.terminate(proc)
+                    ).to_dict()
+                else:
+                    await terminate_process_tree(proc)
                 await proc.communicate()
                 return ToolResult(
                     content=f"[timeout after {timeout}s]",
                     is_error=True,
                     error_type="timeout",
+                    process_usage=process_usage,
                 )
             except asyncio.CancelledError:
-                await asyncio.shield(terminate_process_tree(proc))
+                if self._process_supervisor is not None:
+                    await asyncio.shield(self._process_supervisor.terminate(proc))
+                else:
+                    await asyncio.shield(terminate_process_tree(proc))
                 await asyncio.shield(proc.communicate())
                 raise
         except Exception as exc:
@@ -130,13 +151,21 @@ class BashTool(BaseTool):
                 content=f"[exit {returncode}]\n{output}",
                 is_error=True,
                 error_type="runtime_error",
+                process_usage=process_usage,
             )
-        return ToolResult(content=output or "[no output]")
+        return ToolResult(
+            content=output or "[no output]",
+            process_usage=process_usage,
+        )
 
     # 走常驻 shell 会话，保留 cwd/env/venv 激活状态
     async def _run_persistent(self, command: str, timeout: int) -> ToolResult:
         assert self._persistent_pool is not None
-        session = self._persistent_pool.get_or_create(self._persistent_key, self._cwd)
+        session = self._persistent_pool.get_or_create(
+            self._persistent_key,
+            self._cwd,
+            self._sandbox_plan,
+        )
         try:
             outcome = await session.run(command, timeout_s=timeout)
         except (OSError, RuntimeError) as exc:
@@ -150,6 +179,7 @@ class BashTool(BaseTool):
                 content=f"[timeout after {timeout}s]\n{outcome.text}",
                 is_error=True,
                 error_type="timeout",
+                process_usage=outcome.process_usage,
             )
         if outcome.died or outcome.exit_code is None:
             return ToolResult(
@@ -159,6 +189,7 @@ class BashTool(BaseTool):
                 ),
                 is_error=True,
                 error_type="runtime_error",
+                process_usage=outcome.process_usage,
             )
         text = outcome.text or "[no output]"
         if outcome.truncated:
@@ -168,5 +199,6 @@ class BashTool(BaseTool):
                 content=f"[exit {outcome.exit_code}]\n{text}",
                 is_error=True,
                 error_type="runtime_error",
+                process_usage=outcome.process_usage,
             )
-        return ToolResult(content=text)
+        return ToolResult(content=text, process_usage=outcome.process_usage)

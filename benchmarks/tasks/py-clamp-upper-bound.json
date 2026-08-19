@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "py-clamp-upper-bound",
+  "title": "修复 clamp 的上界处理",
+  "language": "python",
+  "difficulty": "easy",
+  "category": "single_file_fix",
+  "suites": ["quick", "nightly", "release"],
+  "baseline_commit": "fixture-v1",
+  "fixture": "benchmarks/fixtures/py-clamp-upper-bound",
+  "goal": "修复 math_utils.py 中 clamp 的上界错误。不要修改测试文件。完成后检查实现是否同时覆盖低于下界、区间内和高于上界三种输入。",
+  "allowed_tools": ["File"],
+  "allowed_change_paths": ["math_utils.py"],
+  "forbidden_paths": ["test_math_utils.py"],
+  "budgets": {
+    "max_steps": 8,
+    "wall_time_s": 180,
+    "max_total_tokens": 20000,
+    "max_cost_usd": 0.25
+  },
+  "verifiers": [
+    {
+      "name": "unit-tests",
+      "argv": ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+      "timeout_s": 30,
+      "cwd": "."
+    }
+  ]
+}

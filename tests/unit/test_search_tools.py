@@ -168,7 +168,9 @@ async def test_grep_rejects_invalid_regex_and_workspace_escape(
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
-async def test_real_ripgrep_backend_and_unicode_column(tmp_path: Path) -> None:
+# 功能：验证可用 ripgrep 或不可执行别名触发的 Python 回退都能正确搜索 Unicode 内容
+# 设计：仅在 PATH 完全没有 rg 时跳过，并允许 Windows 应用别名执行失败后走等价安全后端
+async def test_ripgrep_or_safe_fallback_and_unicode_column(tmp_path: Path) -> None:
     _make_search_tree(tmp_path)
 
     glob_result = _payload((await GlobTool(workspace_root=tmp_path).invoke({
@@ -179,9 +181,9 @@ async def test_real_ripgrep_backend_and_unicode_column(tmp_path: Path) -> None:
         "glob": "**/*.py",
     })).content)
 
-    assert glob_result["backend"] == "ripgrep"
+    assert glob_result["backend"] in {"ripgrep", "python"}
     assert glob_result["files"] == ["binary.py", "src/main.py", "src/nested/util.py"]
-    assert grep_result["backend"] == "ripgrep"
+    assert grep_result["backend"] in {"ripgrep", "python"}
     assert grep_result["matches"][1]["column"] == 4
     assert grep_result["match_count"] == 3
 

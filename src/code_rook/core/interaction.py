@@ -21,6 +21,17 @@ class _PendingQuestion:
     session_id: str
 
 
+@dataclass(frozen=True)
+class HeadlessQuestionPolicy:
+    mode: str = "fail_fast"
+    timeout_s: float | None = None
+    answers: tuple[str, ...] = ()
+
+
+class HeadlessQuestionRequiredError(RuntimeError):
+    pass
+
+
 class InteractionManager:
     # 初始化问题等待表、活动 run 集合和逐 run 纠偏队列
     def __init__(self, bus: EventBus) -> None:
@@ -28,6 +39,22 @@ class InteractionManager:
         self._pending_questions: dict[str, _PendingQuestion] = {}
         self._active_runs: set[str] = set()
         self._steering: dict[str, deque[str]] = defaultdict(deque)
+        self._question_policies: dict[str, HeadlessQuestionPolicy] = {}
+        self._preset_answers: dict[str, deque[str]] = {}
+
+    # 为 headless session 设置有限等待或预置答案策略
+    def set_question_policy(
+        self,
+        session_id: str,
+        policy: HeadlessQuestionPolicy,
+    ) -> None:
+        self._question_policies[session_id] = policy
+        self._preset_answers[session_id] = deque(policy.answers)
+
+    # 清除 headless session 的临时提问策略
+    def clear_question_policy(self, session_id: str) -> None:
+        self._question_policies.pop(session_id, None)
+        self._preset_answers.pop(session_id, None)
 
     # 注册一个可接受运行中纠偏的活动 run
     def register_run(self, run_id: str) -> None:
@@ -90,7 +117,26 @@ class InteractionManager:
             )
         )
         try:
-            return await future
+            policy = self._question_policies.get(session_id)
+            if policy is None:
+                return await future
+            if policy.mode == "preset":
+                answers = self._preset_answers.get(session_id)
+                if answers:
+                    return answers.popleft()
+                raise HeadlessQuestionRequiredError(
+                    "headless preset answers were exhausted"
+                )
+            if policy.mode == "timeout" and policy.timeout_s is not None:
+                try:
+                    return await asyncio.wait_for(future, timeout=policy.timeout_s)
+                except TimeoutError as exc:
+                    raise HeadlessQuestionRequiredError(
+                        f"headless question timed out after {policy.timeout_s:g}s"
+                    ) from exc
+            raise HeadlessQuestionRequiredError(
+                "headless question requires input; configure timeout or preset answers"
+            )
         finally:
             self._pending_questions.pop(question_id, None)
 

@@ -4,13 +4,18 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from code_rook.core.bus.events import BackgroundJobFinishedEvent, BackgroundJobStartedEvent
 from code_rook.core.events.bus import EventBus
 from code_rook.core.processes import (
+    ProcessSupervisor,
     bounded_shell_output,
-    create_shell_process,
-    terminate_process_tree,
+)
+from code_rook.core.sandbox.planner import (
+    SandboxPlan,
+    SandboxSpawnRequest,
+    spawn_sandboxed_shell,
 )
 
 
@@ -30,36 +35,62 @@ class BackgroundJob:
     is_error: bool = False
     created_at: str = ""
     finished_at: str = ""
+    sandbox_backend: str = "degraded"
+    cwd: str = ""
+    process_usage: dict[str, object] | None = None
 
 
 class BackgroundJobRegistry:
     # 初始化 daemon 级后台任务表和事件总线
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        process_supervisor: ProcessSupervisor | None = None,
+    ) -> None:
         self._bus = bus
         self._jobs: dict[str, BackgroundJob] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._ready: dict[str, asyncio.Event] = {}
+        self._process_supervisor = process_supervisor or ProcessSupervisor()
 
     # 启动后台 shell 任务并立即返回可查询的任务记录
-    def start(self, command: str, timeout: int, session_id: str, run_id: str) -> BackgroundJob:
+    def start(
+        self,
+        command: str,
+        timeout: int,
+        session_id: str,
+        run_id: str,
+        sandbox_plan: SandboxPlan | None = None,
+        cwd: Path | None = None,
+    ) -> BackgroundJob:
         job = BackgroundJob(
             id=f"bg-{uuid.uuid4().hex[:12]}",
             command=command,
             session_id=session_id,
             run_id=run_id,
             created_at=_now(),
+            sandbox_backend=(
+                sandbox_plan.backend if sandbox_plan is not None else "degraded"
+            ),
+            cwd=str(cwd.resolve()) if cwd is not None else "",
         )
         self._jobs[job.id] = job
         self._ready[job.id] = asyncio.Event()
         self._tasks[job.id] = asyncio.create_task(
-            self._execute(job, timeout),
+            self._execute(job, timeout, sandbox_plan, cwd),
             name=f"background:{job.id}",
         )
         return job
 
     # 执行后台命令、保存结果并发布开始和结束事件
-    async def _execute(self, job: BackgroundJob, timeout: int) -> None:
+    async def _execute(
+        self,
+        job: BackgroundJob,
+        timeout: int,
+        sandbox_plan: SandboxPlan | None,
+        cwd: Path | None,
+    ) -> None:
         output_task: asyncio.Task[bytes] | None = None
         await self._bus.publish(
             BackgroundJobStartedEvent(
@@ -71,9 +102,15 @@ class BackgroundJobRegistry:
             )
         )
         try:
-            process = await create_shell_process(
-                job.command,
-                interactive_stdin=True,
+            process = await spawn_sandboxed_shell(
+                sandbox_plan,
+                SandboxSpawnRequest(
+                    command=job.command,
+                    label=f"background:{job.id}",
+                    cwd=cwd,
+                    interactive_stdin=True,
+                ),
+                self._process_supervisor,
             )
             self._processes[job.id] = process
             self._ready[job.id].set()
@@ -82,7 +119,9 @@ class BackgroundJobRegistry:
             try:
                 await asyncio.wait_for(process.wait(), timeout=timeout)
             except TimeoutError:
-                await terminate_process_tree(process)
+                job.process_usage = (
+                    await self._process_supervisor.terminate(process)
+                ).to_dict()
                 stdout = await output_task
                 job.output = f"[timeout after {timeout}s]"
                 job.status = "failed"
@@ -99,7 +138,10 @@ class BackgroundJobRegistry:
         except asyncio.CancelledError:
             active_process = self._processes.get(job.id)
             if active_process is not None:
-                await asyncio.shield(terminate_process_tree(active_process))
+                usage = await asyncio.shield(
+                    self._process_supervisor.terminate(active_process)
+                )
+                job.process_usage = usage.to_dict()
             if output_task is not None:
                 await asyncio.shield(
                     asyncio.gather(output_task, return_exceptions=True)
@@ -112,6 +154,14 @@ class BackgroundJobRegistry:
             job.output = str(exc)
             job.is_error = True
         finally:
+            active_process = self._processes.pop(job.id, None)
+            if active_process is not None:
+                if job.process_usage is None:
+                    job.process_usage = self._process_supervisor.forget(
+                        active_process
+                    ).to_dict()
+                else:
+                    self._process_supervisor.forget(active_process)
             self._ready[job.id].set()
             job.finished_at = _now()
             await self._bus.publish(
@@ -121,6 +171,7 @@ class BackgroundJobRegistry:
                     session_id=job.session_id,
                     status=job.status,
                     output_preview=job.output[:500],
+                    process_usage=job.process_usage or {},
                     ts=job.finished_at,
                 )
             )
@@ -191,6 +242,7 @@ class BackgroundJobRegistry:
                     session_id=job.session_id,
                     status=job.status,
                     output_preview=job.output,
+                    process_usage=job.process_usage or {},
                     ts=job.finished_at,
                 )
             )

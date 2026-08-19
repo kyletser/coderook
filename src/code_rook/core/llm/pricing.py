@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 # 用户级单价覆盖文件路径，测试或高级用户可通过环境变量重定向
 _DEFAULT_PRICING_PATH = "~/.coderook/pricing.toml"
+_BUILTIN_PRICING_EFFECTIVE_DATE = "2026-08-18"
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,13 @@ class ModelPricing:
     output_per_m: float
     cache_read_per_m: float = 0.0
     cache_write_per_m: float = 0.0
+
+
+@dataclass(frozen=True)
+class PricingQuote:
+    pricing: ModelPricing
+    source: str
+    effective_date: str
 
 
 # 内置参考单价（USD / 1M tokens）；仅为估算展示用，用户可用 pricing.toml 覆盖
@@ -68,14 +77,8 @@ def load_pricing_overrides(path: Path | None = None) -> dict[str, ModelPricing]:
     return overrides
 
 
-# 返回单价查找结果：用户覆盖优先于内置，其次按最长前缀匹配日期后缀
-def get_pricing(
-    model: str,
-    overrides: dict[str, ModelPricing] | None = None,
-) -> ModelPricing | None:
-    table = dict(_BUILTIN_PRICING)
-    if overrides is not None:
-        table.update(overrides)
+# 在指定价格表中按精确名称或最长前缀查找模型单价
+def _match_pricing(table: dict[str, ModelPricing], model: str) -> ModelPricing | None:
     name = model.strip()
     if not name:
         return None
@@ -85,6 +88,42 @@ def get_pricing(
     if not candidates:
         return None
     return table[max(candidates, key=len)]
+
+
+# 返回单价查找结果：用户覆盖优先于内置，其次按最长前缀匹配日期后缀
+def get_pricing(
+    model: str,
+    overrides: dict[str, ModelPricing] | None = None,
+) -> ModelPricing | None:
+    table = dict(_BUILTIN_PRICING)
+    if overrides is not None:
+        table.update(overrides)
+    return _match_pricing(table, model)
+
+
+# 返回带来源和生效日期的价格证据，供持久 receipt 离线解释成本
+def resolve_pricing_quote(
+    model: str,
+    path: Path | None = None,
+) -> PricingQuote | None:
+    override_path = path or pricing_override_path()
+    overrides = load_pricing_overrides(override_path)
+    override = _match_pricing(overrides, model)
+    if override is not None:
+        modified = datetime.fromtimestamp(override_path.stat().st_mtime, tz=UTC).date()
+        return PricingQuote(
+            pricing=override,
+            source=str(override_path),
+            effective_date=modified.isoformat(),
+        )
+    builtin = _match_pricing(_BUILTIN_PRICING, model)
+    if builtin is None:
+        return None
+    return PricingQuote(
+        pricing=builtin,
+        source="builtin",
+        effective_date=_BUILTIN_PRICING_EFFECTIVE_DATE,
+    )
 
 
 # 按 token 用量估算美元成本

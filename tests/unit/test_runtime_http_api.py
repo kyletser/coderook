@@ -67,6 +67,7 @@ class _FakeRuntimeApi:
             for index in range(1, 4)
         ]
         self.steering = ""
+        self.permission_response: tuple[str, str] | None = None
 
     # 返回内存 thread 列表
     async def list_threads(self) -> list[ThreadRecord]:
@@ -134,6 +135,20 @@ class _FakeRuntimeApi:
     # 返回测试用量聚合
     async def usage(self) -> dict[str, Any]:
         return {"tokens": {"input_tokens": 3}, "cost": "unknown"}
+
+    # 记录 IDE 经 HTTP 提交的审批响应
+    async def respond_permission(
+        self,
+        tool_use_id: str,
+        decision: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        self.permission_response = (tool_use_id, decision)
+        return {"tool_use_id": tool_use_id, "accepted": True}
+
+    # 返回最小结构化 diff 供 HTTP 路由测试
+    async def workspace_diff(self, *, scope: str, path: str) -> dict[str, object]:
+        return {"scope": scope, "path": path, "files": []}
 
 
 # 启动随机端口 HTTP API 并返回 server 与 base URL
@@ -211,6 +226,20 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             assert receipt["turn_id"] == "turn-1"
             assert (await client.get("/v1/capabilities")).json()["api_version"] == "v1"
             assert (await client.get("/v1/usage")).json()["cost"] == "unknown"
+
+            response = await client.post(
+                "/v1/permissions/tool-1",
+                json={"decision": "allow_once"},
+            )
+            assert response.json()["accepted"] is True
+            assert service.permission_response == ("tool-1", "allow_once")
+
+            response = await client.get(
+                "/v1/workspace/diff",
+                params={"scope": "unstaged", "path": "src"},
+            )
+            assert response.json()["scope"] == "unstaged"
+            assert response.json()["path"] == "src"
 
             response = await client.post("/v1/turns/turn-1/interrupt")
             assert response.status_code == 200

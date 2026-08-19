@@ -18,6 +18,10 @@ def test_turn_inspector_renders_durable_facts() -> None:
             },
             "items": [
                 {
+                    "kind": "message",
+                    "payload": {"role": "user", "content": "修复跨文件缓存缺陷"},
+                },
+                {
                     "kind": "tool_call",
                     "payload": {
                         "tool_name": "read_file",
@@ -37,6 +41,7 @@ def test_turn_inspector_renders_durable_facts() -> None:
                     "profile": "ask",
                     "workspace_trust": "trusted",
                     "sandbox": {"kind": "windows_none"},
+                    "sandbox_plan": {"backend": "degraded"},
                 },
                 "cost": "unknown",
                 "tool_call_count": 1,
@@ -44,7 +49,7 @@ def test_turn_inspector_renders_durable_facts() -> None:
                 "files_changed": [],
                 "checkpoints": [],
                 "artifacts": [],
-                "workers": [],
+                "workers": [{"worker_id": "w1", "status": "running"}],
                 "unavailable": ["cost"],
             },
         }
@@ -57,3 +62,8 @@ def test_turn_inspector_renders_durable_facts() -> None:
     assert "README.md" in rendered
     assert "ruff" in rendered
     assert "1/1/0" in rendered
+    assert "修复跨文件缓存缺陷" in rendered
+    assert "workers=1/1" in rendered
+    assert "pending_approvals=0" in rendered
+    assert "failure=none" in rendered
+    assert "sandbox=degraded" in rendered

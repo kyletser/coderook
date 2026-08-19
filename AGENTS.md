@@ -67,14 +67,14 @@ coderook (CLI)   coderook-tui (TUI, primary frontend)
 All IPC messages are typed pydantic v2 models with a **discriminated union on the `type` field**. This is the contract boundary — adding a new command or event means adding a new model class to `commands.py` or `events.py` and extending the `Command`/`Event` union.
 
 - `envelope.py` — `JsonRpcRequest`, `JsonRpcSuccess`, `JsonRpcError`, `EventPushEnvelope`, error code constants (`AUTH_REQUIRED=-32001`, `AUTH_FAILED=-32002`), `HandlerError`, `make_error()`
-- `commands.py` — `Command` union of 45 command models across domains: core/auth, headless run (`agent.run`), event subscribe/replay, durable `thread.*`/`turn.*`, `session.*` (create/send/authority/history/fork/export/compact/checkpoints/rewind/context), `permission.respond`, `user_question.respond`, `worker.list`, `workflow.start/list/get`, `workspace.diff`, `turn.inspect`
-- `events.py` — `Event` union of 45 event types: run/step lifecycle, `agent.decision`, `tool.call_*`, `llm.*`, `context.*`, `permission.*`, `plan.*`, `subagent.*`, `background.*`, `skill.invoked`, `hook.executed`, `lsp.diagnostics`, `runtime.event`
+- `commands.py` — `Command` union across core/auth, headless run (`agent.run`), event subscribe/replay, durable `thread.*`/`turn.*`, `session.*`, permission/question responses, worker/workflow, workspace/turn inspection, and MCP/Hooks/Memory/background/artifact management
+- `events.py` — `Event` union across run/step lifecycle, `agent.decision`, `tool.call_*`, `llm.*`, `context.*`, `permission.*`, `plan.*`, `subagent.*`, `background.*`, extensions, diagnostics and durable runtime events
 
 `WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
 
 ### Transport layer (`src/code_rook/core/transport/`)
 
-- `socket_server.py` — TCP server (`asyncio.start_server`); reads NDJSON lines, dispatches each line as an independent task (so long handlers don't block concurrent commands like `permission.respond`), handles JSON-RPC error cases. Enforces loopback peer, first-frame `core.authenticate` with `hmac.compare_digest`. On `start()`, probes `host:port` first — errors if another daemon is already listening. Handlers registered via `server.register("method.name", handler_fn)` (44 business handlers in `app.py`).
+- `socket_server.py` — TCP server (`asyncio.start_server`); reads NDJSON lines, dispatches each line as an independent task (so long handlers don't block concurrent commands like `permission.respond`), handles JSON-RPC error cases. Enforces loopback peer, first-frame `core.authenticate` with `hmac.compare_digest`. On `start()`, probes `host:port` first — errors if another daemon is already listening. Business handlers are registered in `app.py`.
 - `socket_client.py` — shared client for CLI/TUI: token read, auth handshake, command/response futures, event dispatch.
 - `ipc_broadcaster.py` — topic (fnmatch) + scope (`global`/`run:`/`thread:`) subscriptions; durable runtime replay with high-water handoff so reconnects lose no events.
 - `auth.py` — IPC token lifecycle (`~/.coderook/ipc-token`, 0600, exclusive create, strict validation).
@@ -87,7 +87,7 @@ Second interface on port 7438 for external integrations: hand-written HTTP/1.1 (
 
 Five-tier priority: **built-in defaults → `~/.coderook/config.toml` → `.coderook/config.toml` → `.env` → `CODEROOK_*` env vars**. `CODEROOK_CONFIG` forces a single TOML path. Config file is silently skipped if absent; unknown keys cause a hard exit. **Project-level TOML must not set route security keys** (`provider`, `base_url`, `api_key_env`, `active_route_id`) — the loader exits hard if it does.
 
-Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps), `[llm]` (legacy provider settings), `[trace]`, `[permission]` (timeout_s), `[api]` (host/port), `[compaction]`, `[[mcp.servers]]`.
+Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps/max_step_continues), `[llm]` (legacy provider settings plus static/rule-based/cost-budget router controls), `[trace]`, `[permission]` (timeout_s), `[api]` (host/port), `[compaction]`, `[[mcp.servers]]`.
 
 ### Daemon entry (`src/code_rook/core/app.py`)
 
@@ -95,15 +95,20 @@ Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps
 
 ### Core subsystems (`src/code_rook/core/`)
 
-- `loop.py` / `runner.py` / `context.py` / `interaction.py` — async Plan-Act-Observe agent loop, run assembly, system-prompt layering, interactive question/steer futures
-- `tools/` — capability model (`ToolSpec`), registry/catalog/discovery, invocation pipeline (validation → hooks → permission → execute → output policy), action families (`File`/`Git`/`Bash`/`Run` + control), builtin tools
-- `permissions/` + `authority/` — six-tier permission decision flow, authority matrix (mode × profile × trust × allowed actions), sandbox capability detection (advisory metadata only — no OS isolation is enforced; the real defense is the approval chain)
-- `llm/` — explicit wire-format routes, credential store (keyring → file), Anthropic/OpenAI-compatible/OpenAI Responses providers, doctor
+- `loop.py` / `runner.py` / `context.py` / `interaction.py` — async Plan-Act-Observe agent loop, run assembly, system-prompt layering, interactive question/steer futures, max-step continuation, per-step route refresh, and one-shot multimodal image delivery
+- `tools/` — capability model (`ToolSpec`), registry/catalog/discovery, invocation pipeline (validation → hooks → permission → execute → output policy), action families (`File`/`Git`/`Bash`/`Run` + control), WebFetch/WebSearch/read_image, and isolated or persistent shell sessions
+- `permissions/` + `authority/` + `sandbox/` — six-tier permission decision flow, authority matrix (mode × profile × trust × allowed actions), command-prefix allow rules, and real bwrap/Seatbelt wrapping on Linux/macOS; Windows currently degrades explicitly to approval-chain/workspace-boundary enforcement
+- `llm/` — explicit wire-format routes, credential store (keyring → file), Anthropic/OpenAI-compatible/OpenAI Responses providers, thinking budgets, model pricing/cost accounting, static/rule-based/cost-budget routing, and doctor
 - `session/` + `runtime/` — dual source of truth: file ledger (`~/.coderook/sessions/`) is the operational truth; SQLite runtime is the queryable/auditable projection
 - `compact/` — context budget, distillation, structured compaction with quality gate
 - `task/` / `goal/` / `subagent/` / `fleet/` / `workflow/` — multi-agent: run-level task board, goal control plane, in-process subagents with write claims and budgets, cross-process fleet workers, declarative event-sourced workflows
 - `skills/` / `hooks/` / `mcp/` / `agents/` — extension mechanisms
+- `lsp/` / `persistent_shell.py` — post-edit Python/TypeScript diagnostics and daemon-lifetime shell pools keyed by session
 - `trace/` / `receipts/` / `events/` — observability, redacted trace, offline turn receipts
+
+### Client layer (`src/code_rook/tui/`)
+
+The TUI remains orchestrated by `app.py`, but connection/reconnect handling, slash-command registration, IPC actions, event rendering, management panels, and widgets are split into `connection.py`, `commands.py`, `ipc_actions.py`, `render.py`, `panels/`, and `widgets/`. Management commands `/mcp`, `/hooks`, `/memory`, and `/jobs` use the typed IPC contract rather than reading daemon state directly.
 
 ### Persistence layout
 
@@ -111,7 +116,7 @@ User-level state lives in `~/.coderook/` (sessions/, runtime.db, fleet.db, workf
 
 ### Testing
 
-Integration tests in `tests/conftest.py` spawn a real daemon subprocess using a random free port (via `free_port` fixture) with an isolated `HOME`/`USERPROFILE` and placeholder LLM config — they never touch developer state or real API keys. Unit tests cover protocol, loop, tools, permissions, compaction, workflow IR/executor, runtime store, and TUI/CLI components.
+Integration tests in `tests/conftest.py` spawn a real daemon subprocess using a random free port (via `free_port` fixture) with an isolated `HOME`/`USERPROFILE` and placeholder LLM config — they never touch developer state or real API keys. Unit tests cover protocol, loop, tools, permissions/sandboxing, pricing/routing, Web/image/LSP/persistent-shell behavior, compaction, workflow IR/executor, runtime store, SDK, headless execution, and TUI/CLI components. Do not preserve an exact test-count claim in this file; use the current CI result and release scorecard as evidence.
 
 ### Pre-push CI discipline
 

@@ -17,6 +17,7 @@ from code_rook.core.authority import (
     detect_sandbox_capability,
 )
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.pricing import estimate_cost, resolve_pricing_quote
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.receipts.builder import build_turn_receipt
 from code_rook.core.receipts.models import TurnReceipt
@@ -54,6 +55,18 @@ logger = logging.getLogger(__name__)
 # 将 session 时间文本解析为 datetime
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+# 将任意 JSON 标量安全转换成非负计数，复杂值按零处理
+def _json_count(value: JsonValue | None) -> int:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return 0
+
+
+# 将 JSON 值收窄为可安全追加的列表
+def _json_list(value: JsonValue | None) -> list[JsonValue]:
+    return list(value) if isinstance(value, list) else []
 
 
 class RuntimeService:
@@ -166,6 +179,17 @@ class RuntimeService:
     async def get_turn(self, turn_id: str) -> TurnRecord:
         return await asyncio.to_thread(self._store.get_turn, turn_id)
 
+    # 从 durable usage 投影读取已知估算成本，未知或未建 turn 时返回 None
+    async def get_estimated_cost(self, turn_id: str) -> float | None:
+        try:
+            turn = await self.get_turn(turn_id)
+        except RecordNotFoundError:
+            return None
+        value = turn.usage.get("estimated_cost_usd")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+        return None
+
     # 异步列出全部 thread
     async def list_threads(self) -> list[ThreadRecord]:
         return await asyncio.to_thread(self._store.list_threads)
@@ -261,9 +285,10 @@ class RuntimeService:
     # 从持久化记录构建可在 daemon 重启后离线读取的 turn receipt
     async def get_receipt(self, turn_id: str) -> TurnReceipt:
         turn = await self.get_turn(turn_id)
+        thread = await self.get_thread(turn.thread_id)
         items = await self.list_items(turn_id)
         events = await self.list_turn_events(turn_id)
-        return build_turn_receipt(turn, items, events)
+        return build_turn_receipt(turn, items, events, workspace=thread.workspace)
 
     # 将运行中的领域事件投影到同一 durable runtime ledger
     async def record_bus_event(self, event: BaseModel) -> None:
@@ -449,6 +474,49 @@ class RuntimeService:
                 current_count = int(current) if isinstance(current, (int, float)) else 0
                 usage[key] = previous_count + current_count
             usage["context_pct"] = payload.get("context_pct", 0.0)
+            model = str(payload.get("model") or (turn.route.model if turn.route else ""))
+            models: list[JsonValue] = [
+                item for item in _json_list(usage.get("models")) if isinstance(item, str)
+            ]
+            if model and model not in models:
+                models.append(model)
+            usage["models"] = models
+            quote = resolve_pricing_quote(model)
+            if quote is None or usage.get("cost_status") == "unknown":
+                usage["cost_status"] = "unknown"
+                usage["estimated_cost_usd"] = "unknown"
+            else:
+                previous_cost = usage.get("estimated_cost_usd", 0.0)
+                base_cost = (
+                    float(previous_cost)
+                    if isinstance(previous_cost, (int, float))
+                    else 0.0
+                )
+                usage["estimated_cost_usd"] = base_cost + estimate_cost(
+                    quote.pricing,
+                    input_tokens=_json_count(payload.get("input_tokens")),
+                    output_tokens=_json_count(payload.get("output_tokens")),
+                    cache_read_tokens=_json_count(
+                        payload.get("cache_read_input_tokens")
+                    ),
+                    cache_write_tokens=_json_count(
+                        payload.get("cache_creation_input_tokens")
+                    ),
+                )
+                usage["cost_status"] = "estimated"
+                pricing_evidence: list[JsonValue] = [
+                    dict(item)
+                    for item in _json_list(usage.get("pricing"))
+                    if isinstance(item, dict)
+                ]
+                evidence: dict[str, JsonValue] = {
+                    "model": model,
+                    "source": quote.source,
+                    "effective_date": quote.effective_date,
+                }
+                if evidence not in pricing_evidence:
+                    pricing_evidence.append(evidence)
+                usage["pricing"] = pricing_evidence
             return self._store.update_usage_and_event(
                 run_id,
                 usage=usage,

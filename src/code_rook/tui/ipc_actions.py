@@ -218,3 +218,22 @@ async def cancel_background(client: SocketClient, job_id: str) -> dict[str, Any]
 # 取消指定持久 Worker/子代理任务
 async def cancel_worker(client: SocketClient, worker_id: str) -> dict[str, Any]:
     return await send(client, "worker.cancel", {"worker_id": worker_id})
+
+
+# 列出 daemon ArtifactStore 的引用状态与可回收空间
+async def list_artifacts(client: SocketClient, *, days: int = 30) -> dict[str, Any]:
+    return await send(client, "artifact.list", {"days": days})
+
+
+# 预览或确认执行引用感知的 Artifact GC
+async def gc_artifacts(
+    client: SocketClient,
+    *,
+    days: int = 30,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "artifact.gc",
+        {"days": days, "confirmed": confirmed},
+    )

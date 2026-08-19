@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
+from code_rook.core.app import CoreApp
 from code_rook.core.artifacts import (
     ArtifactCorruptError,
+    ArtifactError,
     ArtifactNotFoundError,
     ArtifactStore,
+    inspect_image,
 )
 from code_rook.core.artifacts.store import scan_referenced_artifact_shas
 from code_rook.core.tools.artifact import ArtifactReadTool
@@ -48,6 +52,25 @@ async def test_artifact_store_reports_missing_and_corrupt(tmp_path: Path) -> Non
 
     with pytest.raises(ArtifactCorruptError):
         await store.read(reference.sha256)
+
+
+# 功能：验证图片 artifact 可按完整 hash 有界读取并从内容头取得尺寸与 MIME
+# 设计：构造最小 PNG 头而不依赖图像库，固定 extensionless artifact 的发送前校验契约
+async def test_image_artifact_is_content_detected_and_bounded(tmp_path: Path) -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (3).to_bytes(4, "big") + (
+        5
+    ).to_bytes(4, "big")
+    store = ArtifactStore(tmp_path / "artifacts")
+    reference = await store.put(png, media_type="image/png")
+
+    restored = await store.read_bytes(reference.sha256, max_bytes=1024)
+    metadata = inspect_image(restored)
+
+    assert restored == png
+    assert metadata.media_type == "image/png"
+    assert (metadata.width, metadata.height) == (3, 5)
+    with pytest.raises(ArtifactError, match="exceeds"):
+        await store.read_bytes(reference.sha256, max_bytes=4)
 
 
 # 功能：验证 artifact_read 工具只返回请求范围并保留 corrupt 结构化错误码
@@ -123,3 +146,54 @@ def test_scan_referenced_artifact_shas_extracts_refs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert scan_referenced_artifact_shas([file]) == {sha, other}
+
+
+# 功能：验证 inventory 同时报告大小、引用状态、年龄和 GC 候选判定
+# 设计：固定 mtime/now 并保留其中一份旧 artifact，区分 referenced 与 candidate 两条状态
+async def test_artifact_inventory_explains_gc_decision(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path / "artifacts")
+    kept = (await store.put("keep")).sha256
+    candidate = (await store.put("remove")).sha256
+    now = 2_000_000_000.0
+    for sha in (kept, candidate):
+        os.utime(
+            tmp_path / "artifacts" / sha,
+            (now - 40 * 86400, now - 40 * 86400),
+        )
+
+    inventory = store.inventory(days=30, keep={kept}, now=now)
+    by_sha = {item.sha256: item for item in inventory}
+
+    assert by_sha[kept].referenced is True
+    assert by_sha[kept].gc_candidate is False
+    assert by_sha[candidate].referenced is False
+    assert by_sha[candidate].gc_candidate is True
+    assert by_sha[candidate].size == len("remove")
+
+
+# 功能：验证 daemon GC 默认 dry-run，确认后重新扫描并删除且写入 receipt
+# 设计：在临时 HOME/工作区构造过期 artifact，连续调用同一类型化 handler 覆盖预览与确认
+async def test_artifact_gc_handler_requires_confirmation_and_writes_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.chdir(tmp_path)
+    app = CoreApp()
+    reference = await app._artifact_store.put("expired")
+    artifact_path = tmp_path / ".coderook" / "artifacts" / reference.sha256
+    old = time.time() - 40 * 86400
+    os.utime(artifact_path, (old, old))
+
+    preview = await app._artifact_gc_handler({"days": 30})
+    assert preview.dry_run is True
+    assert artifact_path.exists()
+
+    applied = await app._artifact_gc_handler({"days": 30, "confirmed": True})
+    assert applied.dry_run is False
+    assert applied.removed == [reference.sha256]
+    assert not artifact_path.exists()
+    assert Path(applied.receipt_path).is_file()

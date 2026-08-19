@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ class SessionStore:
         self._root = root.expanduser()
         self._root.mkdir(parents=True, exist_ok=True)
         self._known_block_ids: dict[str, set[str]] = {}
+        self._ledger_heads: dict[str, tuple[int, str]] = {}
         self._cleanup_deleted_sessions()
 
     def _cleanup_deleted_sessions(self) -> None:
@@ -110,6 +112,7 @@ class SessionStore:
         os.replace(source, tombstone)
         self._fsync_directory(self._root)
         self._known_block_ids.pop(sid, None)
+        self._ledger_heads.pop(sid, None)
         try:
             shutil.rmtree(tombstone)
         except OSError:
@@ -151,7 +154,7 @@ class SessionStore:
             row["run_id"] = run_id
         if message_id is not None:
             row["message_id"] = message_id
-        self._append_jsonl(self.session_dir(sid) / "thread.jsonl", row)
+        self._append_ledger_row(sid, row)
 
     # 批量追加一次 run 新产生的消息到 thread.jsonl
     def append_messages(
@@ -197,7 +200,7 @@ class SessionStore:
             "block_index": block_index,
             "block_count": block_count,
         }
-        self._append_jsonl(self.session_dir(sid) / "thread.jsonl", row)
+        self._append_ledger_row(sid, row)
         known_ids.add(block_id)
         return True
 
@@ -279,6 +282,7 @@ class SessionStore:
         retained_bytes = (retained + "\n").encode("utf-8") if retained else b""
         self._replace_file(path, retained_bytes)
         self._known_block_ids.pop(sid, None)
+        self._ledger_heads.pop(sid, None)
 
         recovery = TranscriptRecovery(
             archive_path=archive,
@@ -394,6 +398,8 @@ class SessionStore:
         message_groups: dict[str, tuple[int, int, set[int]]] = {}
         last_balanced = 0
         damaged = False
+        ledger_sequence = 0
+        ledger_previous = ""
         for index, line in enumerate(lines, start=1):
             if not line:
                 if not pending and not damaged:
@@ -407,6 +413,23 @@ class SessionStore:
             if not isinstance(row, dict):
                 damaged = True
                 continue
+            ledger_sequence += 1
+            expected_checksum = self._ledger_checksum(ledger_previous, row)
+            raw_sequence = row.get("ledger_seq")
+            raw_previous = row.get("ledger_prev_checksum")
+            raw_checksum = row.get("ledger_checksum")
+            if (
+                (raw_sequence is not None and raw_sequence != ledger_sequence)
+                or (raw_previous is not None and raw_previous != ledger_previous)
+                or (raw_checksum is not None and raw_checksum != expected_checksum)
+            ):
+                damaged = True
+                continue
+            ledger_previous = (
+                str(raw_checksum)
+                if isinstance(raw_checksum, str)
+                else expected_checksum
+            )
 
             blocks: list[dict[str, Any]] = []
             if row.get("kind") == "block":
@@ -501,6 +524,88 @@ class SessionStore:
             file.flush()
             os.fsync(file.fileno())
 
+    # 返回去掉 hash 链字段后的稳定 JSON 字节
+    @staticmethod
+    def _ledger_payload(row: dict[str, Any]) -> bytes:
+        payload = {
+            key: value
+            for key, value in row.items()
+            if key not in {"ledger_seq", "ledger_prev_checksum", "ledger_checksum"}
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    # 依据前序 checksum 计算当前 transcript 行的链式 SHA-256
+    @classmethod
+    def _ledger_checksum(cls, previous: str, row: dict[str, Any]) -> str:
+        digest = hashlib.sha256()
+        digest.update(previous.encode("ascii"))
+        digest.update(b"\n")
+        digest.update(cls._ledger_payload(row))
+        return digest.hexdigest()
+
+    # 扫描 transcript hash 链并返回最后序号、checksum 与问题列表
+    def _scan_ledger(self, sid: str) -> tuple[int, str, list[str]]:
+        path = self.session_dir(sid) / "thread.jsonl"
+        if not path.is_file():
+            return 0, "", []
+        sequence = 0
+        previous = ""
+        issues: list[str] = []
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                issues.append(f"line {line_no}: invalid JSON")
+                continue
+            if not isinstance(row, dict):
+                issues.append(f"line {line_no}: row is not an object")
+                continue
+            sequence += 1
+            expected = self._ledger_checksum(previous, row)
+            raw_sequence = row.get("ledger_seq")
+            raw_previous = row.get("ledger_prev_checksum")
+            raw_checksum = row.get("ledger_checksum")
+            if raw_sequence is not None and raw_sequence != sequence:
+                issues.append(
+                    f"line {line_no}: ledger_seq={raw_sequence}, expected {sequence}"
+                )
+            if raw_previous is not None and raw_previous != previous:
+                issues.append(f"line {line_no}: previous checksum mismatch")
+            if raw_checksum is not None and raw_checksum != expected:
+                issues.append(f"line {line_no}: checksum mismatch")
+            previous = str(raw_checksum) if isinstance(raw_checksum, str) else expected
+        return sequence, previous, issues
+
+    # 验证指定 session transcript 的单调序号和 hash 链
+    def verify_ledger(self, sid: str) -> list[str]:
+        _sequence, _checksum, issues = self._scan_ledger(sid)
+        return issues
+
+    # 给 transcript 行补齐序号与 hash 链后耐久追加
+    def _append_ledger_row(self, sid: str, row: dict[str, Any]) -> None:
+        head = self._ledger_heads.get(sid)
+        if head is None:
+            sequence, previous, issues = self._scan_ledger(sid)
+            if issues:
+                raise ValueError(
+                    f"refusing to append to damaged transcript {sid}: {issues[0]}"
+                )
+        else:
+            sequence, previous = head
+        encoded = dict(row)
+        encoded["ledger_seq"] = sequence + 1
+        encoded["ledger_prev_checksum"] = previous
+        encoded["ledger_checksum"] = self._ledger_checksum(previous, encoded)
+        self._append_jsonl(self.session_dir(sid) / "thread.jsonl", encoded)
+        self._ledger_heads[sid] = (sequence + 1, str(encoded["ledger_checksum"]))
+
     def _write_new_file(self, path: Path, content: bytes) -> None:
         with path.open("xb") as file:
             file.write(content)
@@ -543,7 +648,7 @@ class SessionStore:
         bak = self.session_dir(sid) / f"thread_{ts_str}.jsonl.bak"
         if path.exists():
             self._write_new_file(bak, path.read_bytes())
-        rows = [
+        raw_rows = [
             {
                 "schema_version": 2,
                 "kind": "message",
@@ -553,12 +658,22 @@ class SessionStore:
             }
             for msg in messages
         ]
-        encoded = "".join(
+        rows: list[dict[str, Any]] = []
+        previous = ""
+        for sequence, row in enumerate(raw_rows, 1):
+            ledger_row = dict(row)
+            ledger_row["ledger_seq"] = sequence
+            ledger_row["ledger_prev_checksum"] = previous
+            ledger_row["ledger_checksum"] = self._ledger_checksum(previous, ledger_row)
+            previous = str(ledger_row["ledger_checksum"])
+            rows.append(ledger_row)
+        content_bytes = "".join(
             json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
             for row in rows
         ).encode("utf-8")
-        self._replace_file(path, encoded)
+        self._replace_file(path, content_bytes)
         self._known_block_ids.pop(sid, None)
+        self._ledger_heads[sid] = (len(rows), previous)
 
     # 读取 notes.md 全文，文件不存在时返回空字符串
     def read_notes(self, sid: str) -> str:

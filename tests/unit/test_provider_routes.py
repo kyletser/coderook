@@ -88,6 +88,43 @@ def test_provider_route_allows_loopback_http(url: str) -> None:
     assert route.base_url.scheme == "http"
 
 
+# 功能：验证 route 温度进入脱敏 receipt，并拒绝 Anthropic 不支持的范围与 thinking 组合
+# 设计：先检查合法 temperature=0 往返，再用两个非法配置锁定 provider 原生约束
+def test_provider_route_validates_and_receipts_temperature() -> None:
+    route = ProviderRoute(
+        id="deterministic",
+        provider="anthropic",
+        wire_format="anthropic_messages",
+        base_url=AnyHttpUrl("https://api.anthropic.com"),
+        model="claude-test",
+        credential_ref="env:ANTHROPIC_API_KEY",
+        temperature=0.0,
+    )
+
+    assert route.receipt("env").temperature == 0.0
+    with pytest.raises(ValidationError, match="between 0 and 1"):
+        ProviderRoute.model_validate(
+            {**route.model_dump(mode="python"), "temperature": 1.5}
+        )
+    with pytest.raises(ValidationError, match="requires temperature=1"):
+        ProviderRoute.model_validate(
+            {**route.model_dump(mode="python"), "thinking": "high"}
+        )
+
+
+# 功能：验证未来 routes.json 版本会在读取时明确阻断而不是被旧版保存路径覆盖
+# 设计：写入最小 version=99 文档后调用只读 list，断言专用存储错误且原始字节保持不变
+def test_future_route_document_blocks_unsupported_downgrade(tmp_path: Path) -> None:
+    path = tmp_path / "routes.json"
+    original = '{"version":99,"active_route_id":null,"routes":[]}\n'
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(RouteStoreError, match="newer than supported"):
+        RouteStore(path).list()
+
+    assert path.read_text(encoding="utf-8") == original
+
+
 # 功能：验证五类内置 route preset 具有稳定 ID 且 Zen 使用官方兼容端点
 # 设计：直接检查 preset 领域对象，不经过旧 provider 名称推断逻辑
 def test_route_presets_cover_v1_provider_families() -> None:

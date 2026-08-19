@@ -35,6 +35,8 @@ from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore, load_context_file, load_project_instructions
 from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.persistent_shell import PersistentShellPool
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.runs import RUNS_DIR, new_run_id
 from code_rook.core.runtime.service import RuntimeService
@@ -82,6 +84,8 @@ class AgentRunner:
         interaction_manager: InteractionManager | None = None,
         route_registry: RouteRegistry | None = None,
         runtime_service: RuntimeService | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
+        persistent_shell_pool: PersistentShellPool | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -99,7 +103,10 @@ class AgentRunner:
             else WorkspaceBoundary.current()
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".coderook" / "memory")
-        self._worktree_manager = WorktreeManager(self._workspace_boundary.root)
+        self._worktree_manager = WorktreeManager(
+            self._workspace_boundary.root,
+            process_supervisor=process_supervisor,
+        )
         self._skill_loader = SkillLoader(self._workspace_boundary.root)
         self._agent_profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
@@ -110,7 +117,10 @@ class AgentRunner:
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
-        self._diagnostics_client = WorkspaceDiagnosticsClient(self._workspace_boundary)
+        self._diagnostics_client = WorkspaceDiagnosticsClient(
+            self._workspace_boundary,
+            process_supervisor=process_supervisor,
+        )
         self._tool_assembly = RuntimeToolAssembly(
             workspace_boundary=self._workspace_boundary,
             artifact_store=self._artifact_store,
@@ -126,6 +136,8 @@ class AgentRunner:
             mcp_manager=self._mcp_manager,
             route_registry=self._route_registry,
             hooks=self._hooks,
+            process_supervisor=process_supervisor,
+            persistent_shell_pool=persistent_shell_pool,
         )
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
@@ -157,6 +169,11 @@ class AgentRunner:
             tool_whitelist=tool_whitelist,
             checkpoint_store=checkpoint_store,
             runtime_mode=runtime_mode,
+            supports_images=(
+                resolved_route.route.supports_images
+                if resolved_route is not None
+                else True
+            ),
         )
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
@@ -175,6 +192,7 @@ class AgentRunner:
         tool_whitelist: list[str] | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
+        initial_images: list[dict[str, object]] | None = None,
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         if session is not None and store is not None:
@@ -229,6 +247,8 @@ class AgentRunner:
             system_prompt_override=system_prompt_override,
             runtime_mode=runtime_mode,
         )
+        for image_block in initial_images or []:
+            context.add_pending_image(dict(image_block))
         prompt_decision = (
             await self._hooks.emit(
                 "message_submit",
@@ -277,6 +297,14 @@ class AgentRunner:
                             base_url_origin=receipt.base_url_origin,
                             model=receipt.model,
                             credential_source=receipt.credential_source,
+                            strategy="initial",
+                            candidates=(
+                                self._route_registry.candidate_ids()
+                                if self._route_registry is not None
+                                else [receipt.route_id]
+                            ),
+                            reason="initial_binding",
+                            temperature=receipt.temperature,
                             ts=_now(),
                         )
                     )
@@ -433,7 +461,7 @@ class AgentRunner:
         current_key: str = self._binding_key(initial_binding)
         accumulated_cost: float = 0.0
 
-        # 订阅 llm.usage 累加本 run 的估算成本，供 cost_budget 降档判断
+        # 无 durable runtime 的独立 runner 才订阅内存用量，生产 daemon 读取统一 usage 投影
         async def _on_usage(event: object) -> None:
             nonlocal accumulated_cost
             if not isinstance(event, LlmUsageEvent) or event.run_id != run_id:
@@ -449,15 +477,19 @@ class AgentRunner:
                 cache_write_tokens=event.cache_creation_input_tokens,
             )
 
-        if policy.strategy == "cost_budget":
+        if policy.strategy == "cost_budget" and self._runtime is None:
             bus.subscribe(_on_usage)
 
         # 在每步 provider.chat 前被 loop 调用；返回新 provider 表示需要切换
         async def _refresh(_step: int) -> LLMProvider | None:
-            nonlocal current_key
+            nonlocal current_key, accumulated_cost
             registry = self._route_registry
             if registry is None:
                 return None
+            if policy.strategy == "cost_budget" and self._runtime is not None:
+                durable_cost = await self._runtime.get_estimated_cost(run_id)
+                if durable_cost is not None:
+                    accumulated_cost = durable_cost
             res = registry.resolve()
             target_route_id = select_route_id(
                 policy,
@@ -469,6 +501,45 @@ class AgentRunner:
             if target_route_id is not None and target_route_id != res.route.id:
                 binding = registry.resolve(target_route_id)
             new_key = f"{binding.route.id}:{binding.route.model}"
+            receipt = binding.receipt
+            if policy.strategy == "cost_budget":
+                reason = (
+                    "cost_budget_exceeded"
+                    if target_route_id is not None
+                    else "cost_budget_within_limit"
+                )
+            elif policy.strategy == "rule_based":
+                reason = (
+                    "rule_based_plan"
+                    if runtime_mode == RuntimeMode.PLAN and target_route_id is not None
+                    else "rule_based_act"
+                    if target_route_id is not None
+                    else "rule_based_active_fallback"
+                )
+            else:
+                reason = "active_route"
+            await bus.publish(
+                LlmRouteSelectedEvent(
+                    run_id=run_id,
+                    route_id=receipt.route_id,
+                    wire_format=receipt.wire_format,
+                    base_url_origin=receipt.base_url_origin,
+                    model=receipt.model,
+                    credential_source=receipt.credential_source,
+                    strategy=policy.strategy,
+                    candidates=registry.candidate_ids(),
+                    reason=reason,
+                    step=_step,
+                    accumulated_cost_usd=accumulated_cost,
+                    cost_budget_usd=(
+                        policy.cost_budget_usd
+                        if policy.strategy == "cost_budget"
+                        else None
+                    ),
+                    temperature=receipt.temperature,
+                    ts=_now(),
+                )
+            )
             if new_key == current_key:
                 return None
             current_key = new_key
@@ -479,18 +550,6 @@ class AgentRunner:
                     trace,
                     include_payload=self._config.trace.include_llm_payload,
                 )
-            receipt = binding.receipt
-            await bus.publish(
-                LlmRouteSelectedEvent(
-                    run_id=run_id,
-                    route_id=receipt.route_id,
-                    wire_format=receipt.wire_format,
-                    base_url_origin=receipt.base_url_origin,
-                    model=receipt.model,
-                    credential_source=receipt.credential_source,
-                    ts=_now(),
-                )
-            )
             return provider
 
         return _refresh

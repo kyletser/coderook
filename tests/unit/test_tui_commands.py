@@ -54,6 +54,7 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("hooks", "查看 hook 配置与执行记录"),
         ("memory", "查看或删除项目记忆"),
         ("jobs", "后台任务中心：查看/取消"),
+        ("artifacts", "查看产物或执行引用感知 GC"),
     ]
     actual = [(cmd.name, cmd.description) for cmd in BUILTIN_SLASH_COMMANDS]
     assert actual == previous

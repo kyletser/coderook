@@ -575,6 +575,18 @@ async def test_inline_config_flow_returns_verified_selection(
             assert api_key == "verified-key"
             return f"file:{route_id}"
 
+    class _RouteDoctor:
+        # 返回成功诊断，证明 TUI 只在 doctor 通过后提交配置事务
+        async def check(self, route: object, credential: object) -> ProviderDoctorResult:
+            del credential
+            return ProviderDoctorResult(
+                status="ok",
+                category="ok",
+                route_id=str(getattr(route, "id")),
+                message="route is ready",
+                credential_source="keyring",
+            )
+
     routes = RouteStore(tmp_path / "routes.json")
     app = ConfigHarness(
         "127.0.0.1",
@@ -583,6 +595,7 @@ async def test_inline_config_flow_returns_verified_selection(
         model="gpt-5.6-sol",
         route_store=routes,
         credential_store=_Credentials(),  # type: ignore[arg-type]
+        provider_doctor=_RouteDoctor(),  # type: ignore[arg-type]
     )
     async with app.run_test(size=(110, 26)) as pilot:
         await pilot.pause()

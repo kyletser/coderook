@@ -15,6 +15,8 @@ class ApplyPatchParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
     patch: str
     dry_run: bool = False
+    selected_hunks: list[str] | None = None
+    expected_plan_id: str | None = None
 
 
 class ApplyPatchTool(BaseTool):
@@ -60,7 +62,21 @@ class ApplyPatchTool(BaseTool):
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         request = ApplyPatchParams.model_validate(params)
         try:
-            outcome = self._engine.apply(request.patch, dry_run=request.dry_run)
+            if request.selected_hunks is not None:
+                plan = self._engine.plan(request.patch)
+                if request.expected_plan_id is not None and plan.id != request.expected_plan_id:
+                    raise PatchError(
+                        "stale_patch_plan",
+                        "workspace changed after patch review; generate a new patch plan",
+                    )
+                if request.dry_run:
+                    raise PatchError(
+                        "invalid_selection",
+                        "selected_hunks cannot be combined with dry_run",
+                    )
+                outcome = self._engine.apply_plan(plan, set(request.selected_hunks))
+            else:
+                outcome = self._engine.apply(request.patch, dry_run=request.dry_run)
         except PatchError as exc:
             error_payload = {
                 "error": {
@@ -105,3 +121,8 @@ class ApplyPatchTool(BaseTool):
             "removals": sum(item.removals for item in outcome.files),
         }
         return ToolResult(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    # 生成绑定当前工作区状态的逐 hunk 审批计划
+    def approval_context(self, params: dict[str, object]) -> dict[str, object] | None:
+        request = ApplyPatchParams.model_validate(params)
+        return {"patch_plan": self._engine.plan(request.patch).approval_context()}

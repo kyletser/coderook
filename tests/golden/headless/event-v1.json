@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "kind": "event",
+  "sequence": 1,
+  "run_id": "run-golden",
+  "type": "run.started",
+  "payload": {
+    "type": "run.started",
+    "run_id": "run-golden"
+  }
+}

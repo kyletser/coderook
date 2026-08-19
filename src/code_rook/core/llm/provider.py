@@ -98,6 +98,7 @@ class AnthropicProvider:
         context_window: int | None = None,
         thinking: str = "off",
         supports_prompt_cache: bool = True,
+        temperature: float | None = None,
     ) -> None:
         self._client: Any
         if client is None:
@@ -117,6 +118,7 @@ class AnthropicProvider:
         self._context_window = context_window
         self._thinking = thinking
         self._supports_prompt_cache = supports_prompt_cache
+        self._temperature = temperature
 
     # 流式调用 Anthropic API，逐 token 发布事件并返回 LlmResponse；网络中断时自动重试
     async def chat(
@@ -166,6 +168,8 @@ class AnthropicProvider:
         }
         if thinking_param is not None:
             kwargs["thinking"] = thinking_param
+        if self._temperature is not None:
+            kwargs["temperature"] = self._temperature
         if tools:
             kwargs["tools"] = tools
 

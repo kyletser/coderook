@@ -53,8 +53,3 @@ def select_route_id(
             return policy.cost_fallback_route_id or None
         return None
     return None
-
-
-# 判定是否为无需高推理的一次性问答（rule_based 路由的纯问答降档规则）
-def is_brief_question(step: int, has_tools: bool, text_len: int) -> bool:
-    return step <= 1 and not has_tools and text_len <= 200

@@ -12,7 +12,10 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.builtin.web import (
+    SearchHit,
+    SearXngSearchBackend,
     WebFetchTool,
+    WebSearchBackend,
     WebSearchTool,
     html_to_text,
     parse_duckduckgo_html,
@@ -85,6 +88,8 @@ async def test_web_fetch_returns_readable_text(
     assert not result.is_error
     assert "title: Docs" in result.content
     assert "hello web" in result.content
+    assert "bytes:" in result.content
+    assert "redirects: 0" in result.content
 
 
 # 功能：验证 web_fetch 截断超长正文并追加省略标记
@@ -177,9 +182,11 @@ async def test_web_search_returns_structured_hits() -> None:
     result = await tool.invoke({"query": "pydantic v2", "max_results": 1})
 
     assert not result.is_error
-    assert "1. Result One" in result.content
-    assert "https://a.example.com/1" in result.content
-    assert "Result Two" not in result.content
+    payload = __import__("json").loads(result.content)
+    assert payload["backend"] == "duckduckgo_html"
+    assert payload["results"][0]["title"] == "Result One"
+    assert payload["results"][0]["url"] == "https://a.example.com/1"
+    assert len(payload["results"]) == 1
 
 
 # 功能：验证 web_search 端点结构变化时返回明确错误
@@ -193,6 +200,82 @@ async def test_web_search_handles_unparseable_response() -> None:
 
     assert result.is_error
     assert "no results" in result.content
+
+
+class _FailingSearchBackend:
+    name = "failing"
+
+    # 固定模拟首选后端网络失败
+    async def search(self, query: str, limit: int) -> list[SearchHit]:
+        del query, limit
+        raise httpx.ConnectError("offline")
+
+
+class _SuccessfulSearchBackend:
+    name = "fallback"
+
+    # 返回一条固定结构结果供降级链断言
+    async def search(self, query: str, limit: int) -> list[SearchHit]:
+        del limit
+        return [
+            SearchHit(
+                title="Fallback result",
+                url="https://example.com/fallback",
+                snippet=query,
+                source="fixture",
+                backend=self.name,
+                queried_at="2026-08-18T00:00:00Z",
+            )
+        ]
+
+
+# 功能：验证首选搜索后端失败时自动尝试下一明确配置的后端
+# 设计：注入先抛 ConnectError 后成功的两后端链，断言结果标记实际 fallback 来源
+async def test_web_search_falls_back_to_next_backend() -> None:
+    backends: list[WebSearchBackend] = [
+        _FailingSearchBackend(),
+        _SuccessfulSearchBackend(),
+    ]
+    tool = WebSearchTool(backends=backends)
+
+    result = await tool.invoke({"query": "recovery"})
+
+    payload = __import__("json").loads(result.content)
+    assert not result.is_error
+    assert payload["backend"] == "fallback"
+    assert payload["results"][0]["source"] == "fixture"
+
+
+# 功能：验证 SearXNG JSON 后端归一化 engine、content 和查询证据
+# 设计：MockTransport 返回两条结构化结果，limit=1 后检查统一 SearchHit 字段
+async def test_searxng_backend_normalizes_results() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/search"
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Docs",
+                        "url": "https://docs.example.com",
+                        "content": "Guide",
+                        "engine": "docs-index",
+                    },
+                    {"title": "Ignored", "url": "https://ignored.example.com"},
+                ]
+            },
+        )
+
+    backend = SearXngSearchBackend(
+        "https://search.example.com",
+        transport=_transport(handler),
+    )
+
+    hits = await backend.search("query", 1)
+
+    assert len(hits) == 1
+    assert hits[0].source == "docs-index"
+    assert hits[0].backend == "searxng"
 
 
 # 功能：验证 web 工具在 ACT 模式注册、PLAN 模式被裁剪且默认需要审批

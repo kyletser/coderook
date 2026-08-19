@@ -21,6 +21,7 @@ def _make_usage(
     input_tokens: int = 100,
     output_tokens: int = 50,
     cache_read: int = 0,
+    temperature: float | None = None,
     cache_create: int = 0,
 ) -> MagicMock:
     u = MagicMock()
@@ -99,6 +100,7 @@ class DroppingToolStream:
         return self._final
 
 
+# 构造可控的 Anthropic provider 及其模拟客户端
 def _make_provider(
     texts: list[str] | None = None,
     stop_reason: str = "end_turn",
@@ -106,11 +108,16 @@ def _make_provider(
     input_tokens: int = 100,
     output_tokens: int = 50,
     cache_read: int = 0,
+    temperature: float | None = None,
 ) -> tuple[AnthropicProvider, MagicMock]:
     final = _make_final(stop_reason, content, input_tokens, output_tokens, cache_read)
     client = MagicMock()
     client.messages.stream.return_value = FakeStream(texts or [], final)
-    return AnthropicProvider(model="test-model", client=client), client
+    return AnthropicProvider(
+        model="test-model",
+        client=client,
+        temperature=temperature,
+    ), client
 
 
 async def _chat(
@@ -147,6 +154,16 @@ async def test_model_selected_event_published() -> None:
     assert sel[0].model == "test-model"  # type: ignore[attr-defined]
     assert sel[0].strategy == "static"  # type: ignore[attr-defined]
     assert sel[0].run_id == "r1"  # type: ignore[attr-defined]
+
+
+# 功能：验证 Anthropic route 的固定 temperature 原样进入 Messages 请求参数
+# 设计：通过可注入 FakeStream 捕获 SDK kwargs，避免真实网络并精确检查采样配置
+async def test_anthropic_provider_sends_configured_temperature() -> None:
+    provider, client = _make_provider(temperature=0.0)
+
+    await _chat(provider)
+
+    assert client.messages.stream.call_args.kwargs["temperature"] == 0.0
 
 
 # 功能：验证流式响应的每个 token 触发独立的 llm.token 事件，内容与顺序均正确
@@ -325,6 +342,41 @@ async def test_openai_model_override_uses_resolved_context_window(
     assert seen_models == ["override-model"]
     assert result.usage is not None
     assert result.usage.context_pct == pytest.approx(0.5)
+
+
+# 功能：验证 OpenAI-compatible provider 把固定温度写入请求体
+# 设计：用 MockTransport 捕获完整请求，选择 0.0 覆盖基准复现所需的确定性边界值
+async def test_openai_compatible_sends_configured_temperature() -> None:
+    captured: list[dict[str, object]] = []
+
+    # 捕获请求体并返回最小合法响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://example.test/v1/chat/completions",
+            api_key_env="OPENAI_API_KEY",
+            api_key="test-key",
+            temperature=0.0,
+            client=client,
+        )
+        await provider.chat(
+            messages=[],
+            tool_schemas=[],
+            bus=EventBus(),
+            run_id="r-openai-temperature",
+        )
+
+    assert captured[0]["temperature"] == 0.0
 
 
 # 功能：验证 OpenAI 官方推理模型使用 max_completion_tokens 请求字段

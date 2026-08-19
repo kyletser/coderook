@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from code_rook.core.workspace import WorkspaceBoundary
 
@@ -91,11 +92,20 @@ class GitDiffTool(BaseTool):
         boundary: WorkspaceBoundary | None = None,
         *,
         workspace_root: Path | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         if boundary is not None and workspace_root is not None:
             raise ValueError("pass either boundary or workspace_root, not both")
         self._boundary = boundary or WorkspaceBoundary(workspace_root or Path.cwd())
         self._git = shutil.which("git")
+        self._process_supervisor = process_supervisor
+
+    # 通过统一监管器终止 Git 进程树，无监管器时执行平台原生回收
+    async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
+        if self._process_supervisor is not None:
+            await self._process_supervisor.terminate(process)
+        else:
+            await terminate_process_tree(process)
 
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         request = GitDiffParams.model_validate(params)
@@ -219,14 +229,25 @@ class GitDiffTool(BaseTool):
             "GIT_PAGER": "cat",
             "GIT_TERMINAL_PROMPT": "0",
         }
-        process = await asyncio.create_subprocess_exec(
-            self._git,
-            *args,
-            cwd=self._boundary.root,
-            env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if self._process_supervisor is not None:
+            process = await self._process_supervisor.start_exec(
+                self._git,
+                *args,
+                label="git-diff",
+                cwd=self._boundary.root,
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                self._git,
+                *args,
+                cwd=self._boundary.root,
+                env=environment,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         assert process.stdout is not None and process.stderr is not None
         stderr_task = asyncio.create_task(process.stderr.read())
         chunks: list[bytes] = []
@@ -238,22 +259,28 @@ class GitDiffTool(BaseTool):
                     remaining = limit - size
                     if remaining <= 0:
                         truncated = True
-                        process.terminate()
+                        await self._terminate_process(process)
                         break
                     chunks.append(chunk[:remaining])
                     size += min(len(chunk), remaining)
                     if len(chunk) > remaining:
                         truncated = True
-                        process.terminate()
+                        await self._terminate_process(process)
                         break
                 await process.wait()
                 stderr = (await stderr_task).decode("utf-8", errors="replace").strip()
         except TimeoutError as exc:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
+            await self._terminate_process(process)
             await stderr_task
             raise GitDiffError("git_timeout", "git command timed out") from exc
+        except asyncio.CancelledError:
+            await self._terminate_process(process)
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
+            raise
+        finally:
+            if self._process_supervisor is not None and process.returncode is not None:
+                self._process_supervisor.forget(process)
         return _GitOutput(
             stdout=b"".join(chunks),
             stderr=stderr,

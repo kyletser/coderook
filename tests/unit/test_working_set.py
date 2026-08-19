@@ -160,6 +160,7 @@ async def test_edit_diagnostics_are_transient_and_prefix_stays_stable(
     lsp_events = [event for event in events if isinstance(event, LspDiagnosticsEvent)]
     assert len(lsp_events) == 1
     assert lsp_events[0].diagnostic_count == 1
+    assert lsp_events[0].duration_ms >= 0
     prefixes = [
         event for event in events if isinstance(event, ContextPrefixFingerprintEvent)
     ]

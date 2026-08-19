@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import pytest
-
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.llm.router import (
     RoutingPolicy,
-    is_brief_question,
     select_route_id,
 )
 
@@ -59,18 +56,3 @@ def test_from_config_falls_back_to_static_on_unknown_strategy() -> None:
     policy = RoutingPolicy.from_config("mystery")
     assert policy.strategy == "static"
     assert select_route_id(policy, mode=RuntimeMode.PLAN, step=1) is None
-
-
-# 功能：only 一次简短且无工具调用的问题被识别为轻量问答
-# 设计：用 step/has_tools/text_len 三个边界条件矩阵验证 is_brief_question 的判定
-@pytest.mark.parametrize(
-    ("step", "has_tools", "length", "expected"),
-    [
-        (1, False, 100, True),
-        (2, False, 100, False),
-        (1, True, 100, False),
-        (1, False, 500, False),
-    ],
-)
-def test_is_brief_question(step: int, has_tools: bool, length: int, expected: bool) -> None:
-    assert is_brief_question(step, has_tools, length) is expected

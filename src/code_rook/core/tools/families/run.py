@@ -210,6 +210,18 @@ class RunTool(BaseTool):
         except ValidationError as exc:
             return ToolResult(str(exc), is_error=True, error_type="schema_error")
 
+    # 将 Run action 解析为对应 verifier backend，统一执行其校验和超时策略
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        action = params.get("action")
+        if not isinstance(action, str) or action not in self._backends:
+            return self, dict(params)
+        payload = dict(params)
+        payload.pop("action", None)
+        return self._backends[action], payload
+
 
 # 注册 Run family，并把旧测试工具限制为 internal/replay alias
 def register_run_family(

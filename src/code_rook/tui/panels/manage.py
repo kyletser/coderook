@@ -27,6 +27,67 @@ _STATUS_MARKERS = {
 }
 
 
+# 将字节数格式化为紧凑二进制单位
+def _format_bytes(value: int) -> str:
+    size = float(max(value, 0))
+    units = ("B", "KiB", "MiB", "GiB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value} B"
+
+
+# 渲染 artifact 清单、引用状态与 GC 候选摘要
+def render_artifacts(payload: dict[str, Any]) -> str:
+    artifacts = payload.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        artifacts = []
+    total = int(payload.get("total_bytes", 0))
+    reclaimable = int(payload.get("reclaimable_bytes", 0))
+    lines = [
+        "[bold cyan]Artifacts[/bold cyan]",
+        f"[dim]{len(artifacts)} item(s) · {_format_bytes(total)} total · "
+        f"{_format_bytes(reclaimable)} reclaimable[/dim]",
+    ]
+    for item in artifacts[:30]:
+        if not isinstance(item, dict):
+            continue
+        sha = escape(str(item.get("sha256", ""))[:12])
+        size = _format_bytes(int(item.get("size", 0)))
+        referenced = bool(item.get("referenced", False))
+        candidate = bool(item.get("gc_candidate", False))
+        marker = "[green]kept[/green]" if referenced else (
+            "[yellow]candidate[/yellow]" if candidate else "[dim]recent[/dim]"
+        )
+        lines.append(f"  {marker}  [cyan]{sha}[/cyan]  [dim]{size}[/dim]")
+    if len(artifacts) > 30:
+        lines.append(f"[dim]⋯ {len(artifacts) - 30} more item(s)[/dim]")
+    lines.append("[dim]使用 /artifacts gc [days] 预览，追加 --yes 确认删除。[/dim]")
+    return "\n".join(lines)
+
+
+# 渲染 Artifact GC 预览或已确认删除结果
+def render_artifact_gc(payload: dict[str, Any]) -> str:
+    dry_run = bool(payload.get("dry_run", True))
+    candidates = payload.get("candidates", [])
+    removed = payload.get("removed", [])
+    candidate_count = len(candidates) if isinstance(candidates, list) else 0
+    removed_count = len(removed) if isinstance(removed, list) else 0
+    reclaimable = _format_bytes(int(payload.get("reclaimable_bytes", 0)))
+    if dry_run:
+        return (
+            f"[bold cyan]Artifact GC preview[/bold cyan]  [dim]{candidate_count} item(s), "
+            f"{reclaimable}[/dim]\n"
+            "[yellow]未删除任何文件；确认请输入 /artifacts gc --yes[/yellow]"
+        )
+    receipt = escape(str(payload.get("receipt_path", "")))
+    return (
+        f"[green]Artifact GC completed[/green]  [dim]{removed_count} item(s), "
+        f"{reclaimable}[/dim]\n[dim]receipt: {receipt}[/dim]"
+    )
+
+
 # 将 MCP server 列表渲染为名称/传输/状态/工具数的紧凑清单
 def render_mcp_servers(servers: list[dict[str, Any]]) -> str:
     if not servers:

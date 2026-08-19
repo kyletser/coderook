@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.processes import _decode_shell_output
+from code_rook.core.processes import ProcessSupervisor, _decode_shell_output
 from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
@@ -19,6 +19,22 @@ async def test_bash_success_stdout() -> None:
     result = await BashTool().invoke({"command": "echo hello"})
     assert not result.is_error
     assert "hello" in result.content
+
+
+@pytest.mark.asyncio
+# 功能：验证受管 Bash 把 CPU、内存、进程数与 wall-time 写入 ToolResult
+# 设计：使用真实 ProcessSupervisor 执行短命令，检查结构化证据而不依赖平台具体数值
+async def test_bash_reports_process_usage() -> None:
+    supervisor = ProcessSupervisor()
+
+    result = await BashTool(process_supervisor=supervisor).invoke(
+        {"command": "echo usage"}
+    )
+
+    assert result.process_usage is not None
+    assert int(result.process_usage["process_count"]) >= 1
+    assert int(result.process_usage["wall_time_ms"]) >= 0
+    assert supervisor.snapshot() == ()
 
 
 # 功能：验证非零退出码时 is_error=True 且 content 包含退出码标注

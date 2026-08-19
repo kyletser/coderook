@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import sys
 import time
-from typing import Any
+from typing import Any, Literal
 
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.headless import HeadlessEnvelope, HeadlessRunResult
 from code_rook.core.transport.auth import IpcTokenError
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
 EXIT_RUN_FAILED = 1
 EXIT_PERMISSION_REQUIRED = 3
+OutputFormat = Literal["text", "json", "stream-json"]
+_TERMINAL_TURN_STATUSES = {"completed", "failed", "interrupted"}
+_PARTIAL_EVENT_TYPES = {"llm.token", "llm.reasoning"}
 
 
 def _run_finished_exit_code(status: str, reason: str | None) -> int:
@@ -83,6 +88,102 @@ class StdoutPrinter:
             )
 
 
+class StreamJsonPrinter:
+    # 保存事件筛选规则和本地单调序号，保证每行都是独立版本化 envelope
+    def __init__(
+        self,
+        *,
+        event_filters: list[str] | None = None,
+        include_partial: bool = False,
+    ) -> None:
+        self._filters = event_filters or ["*"]
+        self._include_partial = include_partial
+        self._sequence = 0
+
+    # 判断事件是否应进入机器流，默认排除 token/reasoning 增量
+    def accepts(self, event_type: str) -> bool:
+        if event_type in _PARTIAL_EVENT_TYPES and not self._include_partial:
+            return False
+        return any(fnmatch.fnmatchcase(event_type, pattern) for pattern in self._filters)
+
+    # 将单个领域事件编码为一行 JSON，stdout 不混入其他文字
+    async def handle(self, event: dict[str, Any]) -> None:
+        event_type = str(event.get("type", ""))
+        if not self.accepts(event_type):
+            return
+        self._sequence += 1
+        envelope = HeadlessEnvelope(
+            kind="event",
+            sequence=self._sequence,
+            run_id=str(event.get("run_id", "")),
+            type=event_type,
+            payload=dict(event),
+        )
+        print(envelope.model_dump_json(), flush=True)
+
+    # 在事件流末尾写入带最终正文和 usage 的稳定结果 envelope
+    def write_result(self, result: HeadlessRunResult) -> None:
+        self._sequence += 1
+        envelope = HeadlessEnvelope(
+            kind="result",
+            sequence=self._sequence,
+            run_id=result.run_id,
+            type="run.result",
+            payload=result.model_dump(mode="json"),
+        )
+        print(envelope.model_dump_json(), flush=True)
+
+
+# 等待 runtime 投影进入终态并读取最终 assistant 正文与持久 usage
+async def _fetch_final_result(
+    client: SocketClient,
+    run_id: str,
+    finished_event: dict[str, Any],
+) -> HeadlessRunResult:
+    turn: dict[str, Any] = {}
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        response = await client.send_command("turn.get", {"turn_id": run_id})
+        raw_turn = response.get("turn")
+        turn = dict(raw_turn) if isinstance(raw_turn, dict) else {}
+        if str(turn.get("status", "")) in _TERMINAL_TURN_STATUSES:
+            break
+        await asyncio.sleep(0.05)
+
+    result_text = ""
+    items_response = await client.send_command("turn.items", {"turn_id": run_id})
+    raw_items = items_response.get("items")
+    if isinstance(raw_items, list):
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict) or raw_item.get("kind") != "message":
+                continue
+            payload = raw_item.get("payload")
+            if isinstance(payload, dict) and payload.get("role") == "assistant":
+                result_text = str(payload.get("content", ""))
+
+    event_status = str(finished_event.get("status", "failed"))
+    turn_status = str(turn.get("status", ""))
+    status: Literal["success", "failed", "interrupted"]
+    if turn_status == "interrupted":
+        status = "interrupted"
+    elif event_status == "success":
+        status = "success"
+    else:
+        status = "failed"
+    reason_raw = finished_event.get("reason")
+    reason = str(reason_raw) if reason_raw else None
+    return HeadlessRunResult(
+        run_id=run_id,
+        thread_id=str(turn.get("thread_id", "")),
+        status=status,
+        reason=reason,
+        exit_code=_run_finished_exit_code(event_status, reason),
+        result=result_text,
+        steps=int(finished_event.get("steps", 0)),
+        usage=dict(turn.get("usage", {})) if isinstance(turn.get("usage"), dict) else {},
+    )
+
+
 # 异步核心：连接 daemon，订阅事件，触发 run，等待 run.finished
 async def _run_async(
     goal: str,
@@ -90,6 +191,13 @@ async def _run_async(
     *,
     permission_mode: str = "fail_fast",
     allow_tools: list[str] | None = None,
+    output_format: OutputFormat = "text",
+    event_filters: list[str] | None = None,
+    include_partial: bool = False,
+    resume_session_id: str | None = None,
+    question_mode: str = "fail_fast",
+    question_timeout_s: float | None = None,
+    preset_answers: list[str] | None = None,
 ) -> int:
     try:
         client = SocketClient.from_config(config)
@@ -101,14 +209,27 @@ async def _run_async(
         print(f"error: IPC authentication failed: {auth_error}", file=sys.stderr)
         return 1
 
-    printer = StdoutPrinter()
+    text_printer = StdoutPrinter() if output_format == "text" else None
+    stream_printer = (
+        StreamJsonPrinter(
+            event_filters=event_filters,
+            include_partial=include_partial,
+        )
+        if output_format == "stream-json"
+        else None
+    )
     finished = asyncio.Event()
     exit_code = 0
+    finished_event: dict[str, Any] = {}
 
     async def on_event(event: dict[str, Any]) -> None:
-        nonlocal exit_code
-        await printer.handle(event)
+        nonlocal exit_code, finished_event
+        if text_printer is not None:
+            await text_printer.handle(event)
+        if stream_printer is not None:
+            await stream_printer.handle(event)
         if event.get("type") == "run.finished":
+            finished_event = dict(event)
             exit_code = _run_finished_exit_code(
                 str(event.get("status", "")),
                 str(event["reason"]) if event.get("reason") else None,
@@ -141,6 +262,10 @@ async def _run_async(
                 "goal": goal,
                 "permission_mode": permission_mode,
                 "allow_tools": allow_tools or [],
+                "resume_session_id": resume_session_id,
+                "question_mode": question_mode,
+                "question_timeout_s": question_timeout_s,
+                "preset_answers": preset_answers or [],
             },
         )
         run_id = str(started["run_id"])
@@ -182,6 +307,17 @@ async def _run_async(
         await client.close()
         return 1
 
+    assert run_id is not None
+    try:
+        final_result = await _fetch_final_result(client, run_id, finished_event)
+        exit_code = final_result.exit_code
+        if output_format == "json":
+            print(final_result.model_dump_json())
+        elif stream_printer is not None:
+            stream_printer.write_result(final_result)
+    except (IpcError, RuntimeError, OSError, TimeoutError, ValueError) as exc:
+        print(f"error: could not read final run result: {exc}", file=sys.stderr)
+
     loop_task.cancel()
     wait_task.cancel()
     try:
@@ -200,6 +336,13 @@ def cmd_run(
     *,
     permission_mode: str = "fail_fast",
     allow_tools: list[str] | None = None,
+    output_format: OutputFormat = "text",
+    event_filters: list[str] | None = None,
+    include_partial: bool = False,
+    resume_session_id: str | None = None,
+    question_mode: str = "fail_fast",
+    question_timeout_s: float | None = None,
+    preset_answers: list[str] | None = None,
 ) -> None:
     try:
         exit_code = asyncio.run(
@@ -208,6 +351,13 @@ def cmd_run(
                 config,
                 permission_mode=permission_mode,
                 allow_tools=allow_tools,
+                output_format=output_format,
+                event_filters=event_filters,
+                include_partial=include_partial,
+                resume_session_id=resume_session_id,
+                question_mode=question_mode,
+                question_timeout_s=question_timeout_s,
+                preset_answers=preset_answers,
             )
         )
     except KeyboardInterrupt:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -92,3 +93,25 @@ async def test_background_job_interact_and_wait() -> None:
     assert not interaction.is_error
     assert payload["status"] == "completed"
     assert "hello-background" in payload["output"]
+
+
+# 功能：验证后台命令继承当前工具装配的工作目录而不是 daemon 启动目录
+# 设计：在隔离目录运行打印 cwd 的真实短进程，并同时核对任务元数据与进程输出
+async def test_background_job_uses_explicit_workspace_cwd(tmp_path: Path) -> None:
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+    registry = BackgroundJobRegistry(EventBus())
+    command = subprocess.list2cmdline(
+        [sys.executable, "-c", "import pathlib; print(pathlib.Path.cwd())"]
+    )
+    tool = BackgroundStartTool(registry, "sess-cwd", "run-cwd", cwd=workspace)
+
+    started = await tool.invoke({"command": command, "timeout": 10})
+    job_id = started.content.split("job_id=", 1)[1].split(".", 1)[0]
+    result = await BackgroundResultTool(registry).invoke(
+        {"job_id": job_id, "wait": True, "timeout": 10}
+    )
+    payload = json.loads(result.content)
+
+    assert payload["cwd"] == str(workspace.resolve())
+    assert str(workspace.resolve()) in payload["output"]

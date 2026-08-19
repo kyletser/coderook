@@ -1,13 +1,13 @@
 # CodeRook 功能架构文档
 
-**版本**：1.1
-**基准日期**：2026-08-06
-**代码基线**：`CodeRook 0.0.1`（本文档基于当日对仓库全部源码的逐文件精读，非转述既有文档）
+**版本**：1.3
+**基准日期**：2026-08-18
+**代码基线**：`CodeRook 0.1.0`（工作树；本文档按当前代码与 R0–R5 生产就绪改造校准）
 **状态**：Current
 **适用读者**：新加入的工程师、AI Agent、架构评审者
 
-> 说明：本文档以代码为准。v1.0 列出的 18 项已知问题中的大部分已在 2026-08-06 修复批次中落地，
-> 各项最新状态见 §20；`AGENTS.md` 亦已在同批次按当前代码重写。
+> 说明：本文档以代码为准。v1.3 吸收 Stage 0–4 与 R0–R5 的仓库内实现；真实模型、跨平台
+> 沙箱、分发物和外部协议兼容报告仍按发布门禁单独取证。各项最新边界见 §20 和发布评分卡。
 
 ---
 
@@ -56,30 +56,31 @@ CodeRook 是一个**本地 AI 编程 Agent 运行时**（Python 3.12），不是
 
 | 领域 | 实现要点 |
 |---|---|
-| Agent Loop | 异步 Plan-Act-Observe 循环（默认 20 步上限）、资源声明驱动的并行工具批、Todo 软状态机、限流退避、上下文溢出反应式压缩 |
+| Agent Loop | 异步 Plan-Act-Observe 循环（默认 20 步，可自动/交互续段）、资源声明驱动的并行工具批、每步路由刷新、Todo 软状态机、限流退避、上下文溢出反应式压缩 |
 | 类型化协议 | Pydantic v2 判别联合命令/事件模型、JSON-RPC 2.0 over NDJSON、`WIRE_PROTOCOL.md` 自动生成与 CI 契约校验 |
-| 本地安全 | loopback 强制、首帧 IPC token 认证、工作区边界（`WorkspaceBoundary`）、六层权限决策、交互审批 Future、headless 权限模式 |
-| 代码工具 | File/Git/Bash/Run action-family、unified diff 事务提交、Checkpoint/Rewind、旧工具名保留为 replay 别名 |
+| 本地安全 | loopback 强制、首帧 IPC token 认证、工作区边界、六层权限决策、命令前缀放行、Linux bwrap/macOS Seatbelt 执行包装（Windows 明确降级） |
+| 代码工具 | File/Git/Bash/Run action-family、WebFetch/WebSearch、一次性图片输入、隔离/持久 shell、Python/TypeScript 编辑后诊断、Checkpoint/Rewind |
 | 会话系统 | block 级增量 transcript、崩溃尾部恢复、会话 resume/fork/export/delete、SQLite durable runtime 投影 |
 | 上下文治理 | 80% 自动压缩、25% 最近窗口保留、结构化 JSON 摘要 + 质量门禁、工具输出蒸馏/截断/artifact 溢出三级预算 |
 | 多 Agent | 子代理权限收窄、写声明（WriteClaim）静态冲突检测、token 预算共享、心跳租约、Git worktree 隔离 |
 | 工作流 | 声明式 JSON/TOML IR（sequence/parallel/branch/retry/review_gate/fan_in）、SQLite 事件溯源账本、崩溃恢复幂等重放 |
-| 扩展机制 | Skills（digest 完整性校验）、11 个生命周期 Hooks、MCP 客户端、planner/executor/reviewer 角色 profile |
-| 可观测性 | 45 种类型化事件、脱敏 Trace（10MB×5 轮转）、Turn Receipt 离线重建、prompt 前缀指纹 |
+| 模型经济性 | thinking/reasoning 档位、用户可覆盖的模型单价、会话成本与缓存节省展示、static/rule_based/cost_budget 路由 |
+| 扩展机制 | Skills（digest 完整性校验）、11 个生命周期 Hooks、MCP 客户端、planner/executor/reviewer 角色 profile，以及 TUI 管理入口 |
+| 可观测性 | 类型化事件、durable usage/cost/路由证据、脱敏 Trace（10MB×5 轮转）、Turn Receipt 离线重建、prompt 前缀指纹 |
 
 ### 1.3 技术栈
 
 - **语言/运行**：Python 3.12（`>=3.12,<3.13` 精确锁定）、asyncio、uv 包管理、Hatchling 构建
 - **核心库**：pydantic v2（协议与校验）、anthropic SDK（流式）、httpx[socks]（OpenAI 兼容协议）、textual（TUI）、keyring（凭证）、pathspec（gitignore 语义）、unidiff（patch 解析）、python-dotenv
 - **存储**：文件系统账本（JSONL/JSON）+ SQLite（runtime.db / fleet.db / workflow.db），无外部数据库依赖
-- **质量链**：ruff、mypy strict（双平台：本机 + `--platform linux`）、pytest + pytest-asyncio、CI 矩阵（ubuntu-latest + windows-latest）
+- **质量链**：ruff、mypy strict（本机 + `--platform linux`）、pytest + pytest-asyncio、Linux/macOS/Windows CI、quick/nightly/release benchmark 工作流
 
 ### 1.4 工程规模快照
 
-- 核心包 `src/code_rook`：约 60 个子模块，三个可执行入口（`coderook` / `coderook-core` / `coderook-tui`）
-- 协议契约：45 个命令模型、45 种事件类型、44 个 daemon 注册方法
-- 测试基线：README 声明 `635 passed, 3 skipped`；单元 + 集成两层，集成测试由 fixture 拉起真实 daemon 子进程
-- 最大单文件：`tui/app.py` 约 4175 行（上帝类，见 §20）
+- 三个可执行入口：`coderook` / `coderook-core` / `coderook-tui`；另提供 Python SDK 与 VS Code 原型
+- 协议模型与 daemon handler 以 `WIRE_PROTOCOL.md` 和 `CoreApp` 注册表为准，不在手写文档固化易漂移计数
+- 单元、集成、golden、benchmark 四层证据；真实 provider 与跨平台发行证据在发布评分卡单独登记
+- TUI 的连接、命令、IPC、渲染、管理面板和控件已拆出独立模块，`app.py` 仍是主要编排器
 
 ---
 
@@ -114,14 +115,14 @@ flowchart LR
 | `coderook-core` | 常驻 daemon，由 TUI/`core start` 自动拉起或手动启动；PID 文件 `~/.coderook/coderook-core.pid` | 唯一的状态持有者：会话、Agent run、后台任务、权限、持久化 |
 | `coderook` / `coderook-tui` | 随用户终端 | 瘦客户端：发命令、订阅事件、渲染；断线自动重连恢复会话 |
 | fleet worker | 由 workflow 执行器按需 spawn，任务结束即退出 | 在独立进程内跑完整 `AgentRunner.run_and_capture`，headless 权限（fail_fast） |
-| hooks/MCP/git/rg/pyright 子进程 | 瞬态 | 由 daemon 或工具层按需拉起，全部有超时与进程树终止保护 |
+| hooks/MCP/git/rg/pyright/tsc 子进程 | 瞬态 | 由 daemon 或工具层按需拉起，全部有超时与进程树终止保护 |
 
 ### 2.2 端口与本地端点
 
 | 端点 | 默认值 | 协议 | 认证 |
 |---|---|---|---|
 | IPC | `127.0.0.1:7437` | TCP + NDJSON + JSON-RPC 2.0 | 首帧 `core.authenticate`，token 来自 `~/.coderook/ipc-token`（0600）或 `CODEROOK_IPC_TOKEN` |
-| Runtime HTTP API | `127.0.0.1:7438` | 手写 HTTP/1.1 + SSE | Bearer token（`CODEROOK_API_TOKEN`）；**token 未配置时 loopback 直接放行**；非 loopback 绑定强制要求 token |
+| Runtime HTTP API | `127.0.0.1:7438` | 手写 HTTP/1.1 + SSE | 强制 Bearer token；未配置时自动创建 `~/.coderook/api-token`，非 loopback 绑定仍额外受 host 校验约束 |
 
 `require_loopback_host()` 在 daemon 启动与 SocketServer 启动两处强制 host 必须是回环地址，
 且 SocketServer 对每个连接做 peer 地址回环复检——双重防线。
@@ -133,9 +134,9 @@ flowchart LR
 | LLM API（Anthropic/OpenAI 兼容/Responses） | 模型推理 | `doctor` 分类诊断（credential/tls/network/model/schema），run 失败 |
 | git | worktree、Git 家族工具、结构化 diff | 相关工具返回错误，不影响其余功能 |
 | ripgrep（可选） | glob/grep 加速后端 | 自动回退 Python 遍历实现 |
-| pyright/basedpyright（可选） | 编辑后 Python 诊断 | 诊断降级为 `unavailable`，不阻断 |
-| OS keyring（可选） | API key 首选存储 | 静默回退 `~/.coderook/credentials.json`（0600） |
-| bwrap / sandbox-exec（仅探测） | 沙箱能力上报 | **探测结果只是元数据，不改变任何执行路径**（见 §10.4） |
+| pyright/basedpyright、tsc/npx（可选） | 编辑后 Python/TypeScript 诊断 | 对应语言诊断降级为 `unavailable`，不阻断 |
+| OS keyring（可选） | API key 首选存储 | 告警后回退 `~/.coderook/credentials.json`（0600） |
+| bwrap / sandbox-exec（可选） | AUTO_REVIEW shell 的真实 OS 执行包装 | Linux/macOS 可用时施加只读/工作区写沙箱；Windows 或缺失后端时明确降级并回到审批链 |
 
 ---
 
@@ -154,8 +155,8 @@ flowchart LR
 │                 InteractionManager │ BackgroundTaskRegistry(×2)      │
 ├─────────────────────────────────────────────────────────────────────┤
 │ 领域子系统层                                                         │
-│  tools(注册/调用/内置+family)  llm(routes/credentials/providers)     │
-│  permissions+authority         session+runtime(双真源持久化)          │
+│  tools(注册/调用/Web/图片/shell) llm(routes/pricing/router/providers)  │
+│  permissions+authority+sandbox session+runtime(双真源持久化)          │
 │  compact(上下文治理)           subagent/fleet/workflow(多Agent)       │
 │  skills/hooks/mcp/agents(扩展) checkpoints/artifacts/memory(资产)    │
 ├─────────────────────────────────────────────────────────────────────┤
@@ -202,8 +203,8 @@ flowchart LR
 
 ### 4.2 命令联合（commands.py）
 
-45 个命令模型按 `type` 字段构成判别联合（`Annotated[Union[...], Discriminator("type")]`），
-其中 44 个注册在 daemon（`core.authenticate` 由传输层在认证阶段特殊处理）。按域分组：
+命令模型按 `type` 字段构成判别联合（`Annotated[Union[...], Discriminator("type")]`）；
+`core.authenticate` 由传输层在认证阶段特殊处理，其余业务命令由 daemon 注册。按域分组：
 
 | 域 | 命令 |
 |---|---|
@@ -213,14 +214,15 @@ flowchart LR
 | durable thread/turn | `thread.create/list/get/update/archive`、`turn.start/get/list/interrupt/steer/items`、`turn.inspect`（turn+items+events+receipt 审计四件套） |
 | session | `session.create/send_message/get_history/list/resume/rename/fork/export/delete/close/compact/tasks/checkpoints/rewind/context` |
 | 权限与交互 | `session.get_authority/set_authority`（四维快照，busy 时禁止修改）、`permission.respond`（tool_use_id + 四级决策）、`user_question.respond` |
-| 多 Agent | `worker.list`、`workflow.start/list/get` |
+| 多 Agent | `worker.list/cancel`、`workflow.start/list/get` |
 | 工作区 | `workspace.diff`（结构化 git diff） |
+| 管理面 | `mcp.list`、`hooks.list/rerun`、`memory.list/delete`、`background.get/cancel`、`artifact.list/show/delete/gc` |
 
 命令参数全部有边界约束（如 `content ≤100_000`、`limit 1..200`、workflow source ≤1MB）。
 
 ### 4.3 事件联合（events.py）
 
-45 种事件类型，全部带 `type` Literal 判别字段：
+事件模型全部带 `type` Literal 判别字段，并组成同一判别联合：
 
 | 族 | 事件 |
 |---|---|
@@ -315,11 +317,12 @@ token 文件要求：常规文件、非符号链接、≤4096 字节、当前用
 ### 6.2 配置节
 
 `[core]`（host/port/ipc_token_file）、`[logging]`（level/file/format=text|json）、
-`[agent]`（max_steps，默认 20）、`[llm]`（provider/default_model/router/base_url/api_key_env，
-兼容旧式配置）、`[trace]`（enabled/file/include_payload/include_llm_payload/max_bytes/backup_count）、
+`[agent]`（max_steps，默认 20；max_step_continues，默认 0）、`[llm]`（provider/default_model/base_url/api_key_env，
+以及 router/static|rule_based|cost_budget、plan/act route、成本阈值与 fallback，兼容旧式配置）、`[trace]`（enabled/file/include_payload/include_llm_payload/max_bytes/backup_count）、
 `[permission]`（timeout_s，默认 60）、`[api]`（host/port）、
 `[compaction]`（auto_threshold=0.80 / retain_ratio=0.25 / tool_result_limit=8000 /
-tool_result_keep=4000 / tool_result_summarize_threshold=20000）、`[[mcp.servers]]`（name/transport/command/args/env/host/port）。
+tool_result_keep=4000 / tool_result_summarize_threshold=20000）、`[[mcp.servers]]`（name/transport/command/args/env/host/port，
+Streamable HTTP 另用 url/auth_token_env）。
 
 **未知键一律硬退出**（每个小节独立校验），防止拼写错误静默失效。
 
@@ -346,7 +349,7 @@ tool_result_keep=4000 / tool_result_summarize_threshold=20000）、`[[mcp.server
 10. **LocalFleetScheduler + LocalFleet**（workflow.db 账本 + LocalProcessHost 固定 argv）→ `resume_all()` 恢复 durable workflow
 11. **SessionManager**（注入 runner_factory：每次 run 新建 AgentRunner，共享 daemon 级依赖）
 12. RuntimeApiService + HttpApiServer（7438）
-13. SocketServer（7437）注册 **44 个 handler** → `start()`
+13. SocketServer（7437）注册全部业务 handler → `start()`
 14. 等待 SIGINT/SIGTERM（Windows 事件循环不支持时降级告警）
 
 **关闭序列**（有序、防泄漏）：HTTP API → fleet shutdown → subagent registry 进入 shutdown 态 →
@@ -364,9 +367,9 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 3. 创建 run 级 `TaskManager`（`.tasks`）与 `CheckpointStore`（`.checkpoints`）
 4. 组装 `ExecutionContext`（历史消息、notes、运行时上下文、能力上下文、RuntimeMode）
 5. `EventWriter` 订阅 bus，全量事件落 `events.jsonl`（replay 用）
-6. Provider 解析：注入 provider > RouteRegistry.resolve → factory > 旧式 config 路径；可选 TracingProvider 装饰
+6. Provider 解析：注入 provider > RouteRegistry.resolve → factory > 旧式 config 路径；可选 TracingProvider 装饰；非 static 策略构建每步 route refresher
 7. `RuntimeToolAssembly.build()` 按 run 注入动态依赖构建工具注册表
-8. 创建 Compactor、AgentLoop；临时切换 permission authority 到本次 RuntimeMode；`loop.run(context)`
+8. 创建 Compactor、AgentLoop；注入 thinking 升档、步数续段和 route refresher；临时切换 permission authority 到本次 RuntimeMode；`loop.run(context)`
 9. 成功后 `memory_store.remember_explicit_prompt(goal)`（命中"记住/以后/always"等关键词才持久化）
 10. 返回 `RunOutcome(status, result, reason)`
 
@@ -383,15 +386,16 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 
 1. **steering 注入**：从 InteractionManager 排空运行中用户消息
 2. **工具结果预算**：先 LLM 蒸馏 >20000 字符的旧输出，再头尾截断 >8000 字符的输出
-3. **LLM 调用**（watchdog 包裹）：transient 错误（429/529/rate limit/overloaded）指数退避重试 ≤2 次；
+3. **路由与 LLM 调用**：每步先按 static/rule_based/cost_budget 策略刷新 provider，再由 watchdog 包裹调用；transient 错误（429/529/rate limit/overloaded）指数退避重试 ≤2 次；
    空响应重试 ≤2 次；成功后清理 transient context
 4. **决策观测**：规则归纳 intent（按工具名集合分类，无额外模型调用）
 5. **回写 assistant**：thinking + text + tool_use 块顺序追加，同步写 transcript
 6. **act 阶段**（并行调度见下）
 7. **max_tokens 兜底**：为不完整 tool_calls 补合成错误 tool_result，保持协议闭环
-8. **end_turn 软状态机**：有未完成 todos 且变化中 → 注入提醒并延迟结束（≤3 次）；否则成功收尾
-9. **自动压缩**：`usage.context_pct ≥ 0.80` 且本步是 tool_use 时触发（时机选择保证压缩后消息对下次调用合法）
-10. **溢出恢复**：context_length_exceeded 类错误 → 一次性 force 压缩（retain_ratio=0）后重试本步
+8. **图片一次性交付**：`read_image` 产生的 image block 只注入下一次模型请求，请求后替换为文本占位，避免 base64 长驻历史
+9. **end_turn/步数软状态机**：有未完成 todos 且变化中 → 注入提醒并延迟结束（≤3 次）；达到 max_steps 时先消耗自动续段，再最多三次结构化询问用户
+10. **自动压缩**：`usage.context_pct ≥ 0.80` 且本步是 tool_use 时触发（时机选择保证压缩后消息对下次调用合法）
+11. **溢出恢复**：context_length_exceeded 类错误 → 一次性 force 压缩（retain_ratio=0）后重试本步
 
 **并行工具调度**：按模型给定顺序扫描，把连续可并行调用组批——`ParallelPolicy.SERIAL` 不可并行；
 `SAFE` 且非 mutating 直接可并行；`RESOURCE_CLAIMS` 取工具声明（如 `workspace:<path>` 写独占），
@@ -456,8 +460,9 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 |---|---|---|
 | 文件 | `read_file`(≤512KB+sha256)、`write_file`(≤1MB,事务+checkpoint)、`edit_file`(精确串替换,双重哈希并发检测)、`apply_patch`(unified diff,≤1MB/100文件/1000hunks,逐行精确无fuzz,事务提交)、`list_dir`、`artifact_read`(分页读溢出输出) | 全部经 WorkspaceBoundary；写类自动 checkpoint |
 | 搜索 | `glob`(rg 后端+pathspec 回退)、`grep`(rg --json 或 Python re,三模式) | ≤2000 条结果；gitignore 语义 |
-| Shell | `bash`(≤120s,64KB 输出,进程树终止)、`background_start/result/interact/list/cancel`(daemon 级注册表,≤3600s) | 非交互；超时杀树 |
-| Git | `git_diff`(结构化,status+numstat+patch)、`Git` 家族 `status/diff/log/show/blame` | **仓库根必须等于 workspace 根**；15s/200KB 上限 |
+| Shell | `bash`(≤120s,64KB 输出,进程树终止；`isolated|persistent`)、`background_start/result/interact/list/cancel`(daemon 级注册表,≤3600s) | 持久模式按 session 复用 cwd/env；默认 isolated；超时杀树 |
+| Web/图片 | `web_fetch`（逐跳 SSRF 校验）、`web_search`（DuckDuckGo HTML）、`read_image`（png/jpeg/webp/gif ≤2MiB） | Web 默认需 EXTERNAL 权限；图片限工作区且只交付下一次模型调用 |
+| Git | `git_diff`(结构化,status+numstat+patch)、`Git` 家族 `status/diff/log/show/blame` | Git 仓库根可包含 workspace（支持 monorepo 子目录）；15s/200KB 上限 |
 | 验证 | `Run` 家族 `tests/verifiers`（verifiers 并行 ≤8 gate，各 16KB，结构化 verdict） | PROCESS+ALWAYS |
 | 任务 | `task_create/claim/update/list/get`（原子认领、8 态状态机）、`update_plan`(发 PlanUpdatedEvent) | run 级任务板 |
 | 记忆 | `memory_save/search/forget`、`note_save`(session notes.md) | 词法检索，无向量 |
@@ -488,7 +493,7 @@ AUTO_REVIEW+MUTATE→ALLOW（SHELL/EXTERNAL 仍需 ASK）；其余→ASK。
 1. bash deny_patterns（不可被任何缓存绕过）
 2. outside-cwd 启发式（6 条正则：绝对路径/~//../$HOME/$PWD/cd → 强制 ASK）
 3. 会话级 always 缓存（内存，(session_id, tool.action) 精确键）
-4. 持久 always 缓存（~/.coderook/policy.toml）
+4. 持久 always 缓存（~/.coderook/policy.toml），Bash 可按规范化命令前缀匹配
 5. ApprovalRequirement：NEVER 放行 / ALWAYS+FULL_ACCESS 放行 / allow_patterns / 工具默认值（约 30 个工具硬编码默认，未登记兜底 ASK）
 → 最终 ASK：Future 挂起 + permission.requested 事件（含 60 字参数摘要），默认 60s 超时按拒绝
 ```
@@ -504,10 +509,18 @@ CLI 退出码 3）/ `deny`。客户端断连 → 该 session 全部待批 Future
 
 ### 10.4 沙箱现状（诚实说明）
 
-`sandbox.detect_sandbox_capability()` 只做 `shutil.which` 探测（win→`windows_none`、linux→bwrap、
-darwin→sandbox-exec）。**全库没有任何代码实际用 bwrap/sandbox-exec/Job Object 包裹子进程**——
-`bash` 工具直接在宿主 shell 执行。沙箱能力值目前只是进入 AuthoritySnapshot/TurnRecord/receipt 的
-**记账元数据**，不是强制机制。真正的防线是：loopback 边界 + 工作区边界 + 六层审批 + deny_patterns。
+`detect_sandbox_capability()` 探测后由 `sandbox/planner.py` 构造三档计划：`read_only`、
+`workspace_write`、`none`。AUTO_REVIEW 下若 Linux 的 bwrap 或 macOS 的 sandbox-exec 可用，
+`BashTool` 会把命令真实包装进 OS 沙箱；权限层据此以 `authority_sandbox_allow` 自动放行。
+`SandboxPlan` v2 还持久记录 `allowed_domains` 与 `domain_policy_enforced`。当前后端只可靠支持完全禁网或
+完全联网；任何非空域名白名单都会在生成计划时抛出 `SandboxPolicyError`，不会静默退化为全网访问。
+Windows 当前有 Job Object 负责进程树生命周期，但没有受限令牌/AppContainer 文件系统隔离后端；缺失包装器时会明确标记 degraded，原样执行并回到
+审批链、deny_patterns 与工作区边界。因而“真实沙箱”只在可用的 Linux/macOS 后端成立，不能泛化到所有平台。
+
+`ProcessSupervisor` 统一监管 isolated/persistent/background/hook/MCP/fleet 等子进程。Windows 从 Job
+Accounting 读取 CPU、峰值内存和进程数；Linux 按进程组采样 `/proc`；每条记录还包含 wall-time、
+采样数与完整性标记。数据随工具/后台/hook 事件进入 durable runtime，由 TurnReceipt 汇总并在 TUI
+Turn Inspector 展示。macOS 未有等价采样器时显式保留不完整标记，不把未知值伪装为零成本资源。
 
 ---
 
@@ -517,7 +530,7 @@ darwin→sandbox-exec）。**全库没有任何代码实际用 bwrap/sandbox-exe
 
 `ProviderRoute`（frozen pydantic）：`id / provider(anthropic|openai|openai-compatible|anthropic-compatible|opencode-zen) /
 wire_format(openai_chat|openai_responses|anthropic_messages) / base_url / model / credential_ref(env:|keyring:|file:) /
-context_window / supports_tools / supports_parallel_tools / supports_prompt_cache`。
+context_window / supports_tools / supports_parallel_tools / supports_prompt_cache / thinking(off|low|medium|high)`。
 
 **协议由路由显式声明，全链路绝不从模型名推断协议**（factory 与 legacy 路径的注释均强调此点）。
 安全校验器：拒绝 URL 内嵌凭据；明文 `http://` 仅限 loopback。`receipt()` 只暴露 origin，不含密钥与路径。
@@ -526,7 +539,7 @@ context_window / supports_tools / supports_parallel_tools / supports_prompt_cach
 ### 11.2 凭证管理（credentials.py）
 
 三来源：`env:` 环境变量、`keyring:` OS 密钥环（服务名 `coderook`）、`file:` `~/.coderook/credentials.json`
-（version-2 结构，0600 + 原子写）。`save()` 优先 keyring，任何异常静默回退文件；
+（version-2 结构，0600 + 原子写）。`save()` 优先 keyring，异常时记录 warning 后回退文件；
 `resolve()` 返回 `CredentialResolution(value, source)`，错误信息不含密钥正文。
 `ResolvedRoute.credential` 字段 `repr=False` 防日志泄露。
 
@@ -535,19 +548,21 @@ context_window / supports_tools / supports_parallel_tools / supports_prompt_cach
 - **RouteStore**：`~/.coderook/routes.json`；只存凭据引用不存密钥；add 禁止静默覆盖；validator 保证 active 引用存在
 - **RouteRegistry**：显式 route_id → store.get；缺省 → active()；store 空 → `legacy_config_route(config)`
   现场生成**不落盘**的兼容路由（旧 LlmConfig 迁移路径）→ resolve 时解析凭据，缺失抛错
+- **RoutingPolicy**：`static` 固定活动路由；`rule_based` 按 PLAN/ACT 选择 route；`cost_budget`
+  订阅本 run 的 `llm.usage` 累计估算美元成本，越过阈值切换 fallback。非 static 策略在每个 step 前重新解析 route
 
 ### 11.4 三个 Provider 实现对比
 
 | 维度 | AnthropicProvider | OpenAICompatibleProvider | OpenAIResponsesProvider |
 |---|---|---|---|
 | 传输 | 官方 SDK | 裸 httpx POST | 裸 httpx POST |
-| 流式 | **真流式**（逐 token 发事件；断线 1s/2s/4s 退避重试 3 次） | 伪流式（单次 POST 后全文作为一个 token 事件） | 伪流式（同左） |
+| 流式 | **真流式**（逐 token 发事件；断线 1s/2s/4s 退避重试 3 次） | SSE 真流式；非 SSE 端点降级整体解析 | SSE 真流式；非 SSE 端点降级整体解析 |
 | 消息翻译 | 原生块状格式（内部规范格式） | `_to_openai_messages`（tool_use→tool_calls 等） | `_to_responses_input` |
-| thinking | 原样保留（含 signature） | 仅"有 reasoning 且有工具调用"时回填 | 不回填（只发 reasoning 事件） |
-| 重试 | 3 次传输层重试 | 无 | 无 |
-| 优化 | prompt cache（system + 末位 tool 打 ephemeral 标记） | DeepSeek 域名特判启用 thinking | usage.cached_tokens 映射 |
+| thinking | route 档位映射 `budget_tokens`，PLAN 可升 high；原样保留签名块 | 映射 `reasoning_effort`，DeepSeek 兼容 `thinking`；保留 reasoning 块 | 映射 `reasoning.effort`；保留 reasoning 块 |
+| 重试 | SDK 传输层重试 + loop transient 重试 | loop transient 重试 | loop transient 重试 |
+| 优化 | system/tool cache + 最后一个 tool_result 增量 breakpoint | cached usage/成本展示，多模态 data URI | cached usage/成本展示，多模态 input_image |
 
-统一契约：`LLMProvider` 是 `typing.Protocol`，唯一方法 `chat(messages, tool_schemas, bus, run_id, step, system, model) -> LlmResponse`；
+统一契约：`LLMProvider` 是 `typing.Protocol`，唯一方法 `chat(messages, tool_schemas, bus, run_id, step, system, model, thinking) -> LlmResponse`；
 **事件发布写进接口契约**（llm.token/reasoning/usage/model_selected）。
 
 ### 11.5 运维设施
@@ -555,6 +570,7 @@ context_window / supports_tools / supports_parallel_tools / supports_prompt_cach
 - **ProviderDoctor**：按 wire_format 构造最小探测请求（1 个 token）做真实调用，分类结果
   `ok/credential/tls/schema/model/network`；401/403→credential；响应正文启发式判模型错误；结果不含密钥与响应正文
 - **model_catalog**：`~/.coderook/models.json` 按 provider 记录用过的模型
+- **pricing**：内置参考价 + `~/.coderook/pricing.toml` 用户覆盖，精确或最长模型前缀匹配；TUI 按模型显示本会话成本和缓存读节省。TurnReceipt 的 cost 字段仍可能为 `unknown`
 - **provider_presets**：4 家预设（deepseek/openai/anthropic/siliconflow），支持在线 `discover_models`
   拉取账号真实可用模型（配置向导 `/config` 使用）
 
@@ -599,7 +615,7 @@ context_window / supports_tools / supports_parallel_tools / supports_prompt_cach
   ③ workflow/worker 的 interrupted 重放（§13）
 - **生命周期**：create（hook session_start 可否决）/ send_message（全链路入口）/ resume / rename /
   fork（复制 thread.jsonl+notes.md，不复制 runs）/ export（json/markdown）/ delete（墓碑 + 启动清理）/
-  compact（手动压缩）/ rewind（仅暴露最近一次 run 的 checkpoint）
+  compact（手动压缩）/ rewind（可通过可选 run_id 访问历史 run checkpoint）
 - **原子写原语**：追加 jsonl 后 flush+fsync；覆盖写用同目录 mkstemp + fsync + `os.replace` + 目录 fsync
 
 ### 12.3 Runtime 子系统（durable 投影）
@@ -621,7 +637,8 @@ RuntimeService 是 daemon 内的**异步状态投影门面**，订阅 EventBus �
   **前态 blob + 后态哈希**，非全工作区快照。rewind 三态比对（已是前态 / 与后态不符→冲突整体中止 /
   匹配→原子事务恢复），**绝不静默覆盖用户改动**；写类工具先打 checkpoint，写失败 discard
 - **Artifact**：workspace 级内容寻址存储（句柄 `artifact:<sha256>`），64MiB 上限，
-  读取全量哈希校验 + 分页（≤50KB/次）；工具输出溢出与子代理产物共用
+  读取全量哈希校验 + 分页（≤50KB/次）；工具输出溢出与子代理产物共用；`list_gc_candidates()` /
+  `gc()` 按年龄选候选并扫描会话、run 与工作区引用，默认 dry-run，避免删除仍被引用的对象
 
 ### 12.5 Memory（项目级长期记忆）
 
@@ -728,8 +745,9 @@ UserPromptSubmit/PreToolUse/PostToolUse/Stop 映射）。
 
 ### 14.3 MCP（仅客户端方向）
 
-`McpClient`：手写 JSON-RPC 2.0，stdio（拉子进程）/ TCP 两传输；initialize 握手（protocolVersion 2024-11-05）+
-tools/list + tools/call；64MB 流上限、30s 读超时、后台排空 stderr。
+`McpClient`：手写 JSON-RPC 2.0，支持 stdio（拉子进程）、TCP 与 Streamable HTTP；initialize 握手 +
+tools/list + tools/call。HTTP 传输校验 TLS，携带协议版本与 session id，可解析 JSON 或 SSE 响应；
+stdio/TCP 保持 64MB 流上限、30s 读超时和后台排空 stderr。
 `McpServerManager`（命名易误导：实为"多 server 连接管理器"）把远端工具包装为 `McpTool`
 （`{server}__{tool}` 前缀、deferred、输出策略 8K/20K spill）注入本地注册表——
 模型侧与内置工具无差别调用，权限按普通工具名评估。**系统不暴露自身为 MCP server**。
@@ -750,8 +768,8 @@ TOML 配置，优先级 project > user > builtin：
 
 ## 15. 可观测性（events / trace / receipts / fingerprint）
 
-- **EventBus**：极简 pub/sub，handler 按注册顺序**串行 await**（注意：无异常隔离，慢订阅者会拖慢 token 流）。
-  全 daemon 单一实例贯穿 trace/IPC 广播/runtime 投影/EventWriter
+- **EventBus**：极简 pub/sub，handler 按注册顺序**串行 await**；普通订阅者异常会记录并隔离，
+  `CancelledError` 继续上抛，慢订阅者仍可能拖慢 token 流。全 daemon 单一实例贯穿 trace/IPC 广播/runtime 投影/EventWriter
 - **events.jsonl**：每 run 一份全量事件日志（EventWriter 订阅 bus），供 `event.subscribe replay_from_run` 回放与离线分析
 - **Trace**：方向化 JSONL 记录（非 span 式）——direction ∈ {CLIENT→CORE, CORE→CLIENT, CORE, CORE→LLM, LLM→CORE} ×
   layer ∈ {ipc, event, llm}；LLM 层由 TracingProvider 装饰器在 chat 前后记录。
@@ -784,9 +802,10 @@ sequenceDiagram
     SM->>SM: thread.jsonl 追加 user 消息 + fsync
     SM->>RT: start_turn (冻结 authority 快照)
     SM->>R: run_and_capture (await 整个 run)
-    R->>R: 读历史 + context.md + memory 召回 → ExecutionContext
-    loop 每 step (≤ max_steps)
-        L->>P: chat(messages, tool_schemas) [watchdog 包裹]
+    R->>R: 读历史 + AGENTS/CLAUDE/context + memory 召回 → ExecutionContext
+    loop 每 step (max_steps 可续段)
+        R->>R: 刷新 route / 累计成本预算
+        L->>P: chat(messages, tool_schemas, thinking) [watchdog 包裹]
         P-->>C: llm.token 事件流 (经 EventBus→Broadcaster)
         P->>L: LlmResponse(tool_calls?)
         L->>T: invoke_tool (校验→钩子→权限 Future→执行→输出策略)
@@ -844,16 +863,20 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
 
 ### 17.2 TUI（主要前端）
 
-`CodeRookTuiApp`（Textual）三段式布局：状态栏（host:port/session/route/model/模式/权限姿态/trust/连接状态）+
+`CodeRookTuiApp`（Textual）三段式布局：状态栏（host:port/session/route/model/模式/权限姿态/trust/context/成本/连接状态）+
 滚动日志区（动态 mount 块）+ 输入区（ChatTextArea，Enter 提交，`/` 触发补全，Tab 循环模式）。
 
+- **模块边界**：`connection.py` 管连接/重连，`commands.py` 管数据驱动斜杠命令，`ipc_actions.py`
+  统一 IPC 超时与错误，`render.py` 按事件族渲染，`panels/manage.py` 管管理面板，`widgets/` 承载控件；`app.py` 保留消息泵编排和跨模块状态
 - **渲染组件**：`LLMStreamBlock`（流式思考时间线→完成后 Markdown 重组）、`ToolCallBlock`
   （单行中文自然语言动作 + 可展开详情）、`ToolStepGroup`（同 step 折叠聚合）、
   `PermissionSelect`（内联审批卡，方向键/y/a/n/d/Esc）、模型/供应商/会话/检查点/计划评审等选择器
 - **事件订阅**：常驻 socket worker，topics 覆盖最全（含 `subagent.* / plan.* / user_question.* / log.*`），
   支持 `replay_from_run`；**断线 2s 自动重连并恢复会话**；事件 handler 异常隔离
-- **约 20 个斜杠命令**：`/new /sessions /model /config /doctor /compact /copy /plan /mode /permissions
-  /trust /sandbox /tasks /workers /workflow /diff /rewind /context /turn /skills` + 动态 skill 名
+- **31 个注册斜杠命令**：在原有会话/模型/权限/任务命令上新增 `/help /rename /fork /export /delete
+  /cost /mcp /hooks /memory /jobs`；名称/描述模糊匹配，部分命令提供 usage 与参数候选；另支持动态 skill 名
+- **输入与会话体验**：持久输入历史、用户上滚后停止贴底、新内容提示、会话搜索/管理与自动标题、Ctrl+C 复制/取消分流
+- **管理面板**：`/mcp`、`/hooks`、`/memory`、`/jobs` 全部通过类型化 IPC 查询 daemon；rerun/delete/cancel 需 `--yes`
 - **Plan 模式**：`/plan` 以 PLAN 模式发送 → `plan.ready` → PlanReview 卡 → 批准则切 ACT 自动发实施指令
 - **模型/配置切换**：`app.run()` 返回 `ModelSwitch/ConfigSwitch` → 入口落盘 → `stop_core()` → 循环重启 TUI
 - **剪贴板**：OSC 52 + Windows PowerShell `Set-Clipboard` 双通道（绕终端兼容差异）
@@ -864,21 +887,27 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
 
 ### 18.1 测试结构
 
-- `tests/unit/`（约 100 个文件）：协议、传输、loop、工具（权限/参数/重试/能力/家族适配器）、
-  压缩、会话、记忆、权限矩阵、沙箱能力、CLI/TUI 组件、workflow IR/executor/ledger、worktree、
+- `tests/unit/`：协议、传输、loop、工具（权限/参数/重试/能力/家族适配器）、
+  Web/图片、persistent shell、Python/TypeScript 诊断、pricing/router/thinking、真实沙箱规划、
+  压缩、会话、记忆、权限矩阵、CLI/TUI 组件、workflow IR/executor/ledger、worktree、
   runtime models/store/service/protocol handlers 等
 - `tests/integration/`：`conftest.py` 的 `running_daemon` fixture 用随机端口 + 隔离 HOME +
   占位 LLM 配置拉起**真实 daemon 子进程**（不依赖任何真实 API key）；覆盖 ping 往返、
   双进程协作（S2）、session IPC（S4）、权限流（S5）、runtime HTTP API、runtime 恢复、
   run e2e、provider doctor、local fleet
-- 基线：`635 passed, 3 skipped`（README 声明）
+- `tests/golden/` 与 `benchmarks/`：稳定输出契约、40 项 quick/nightly/release 固定任务和机器可读报告
+- 精确通过数不写入架构正文；以当前 CI artifact 与 `RELEASE_SCORECARD.md` 为准
 
-### 18.2 CI 门禁（GitHub Actions，ubuntu + windows 双矩阵）
+### 18.2 CI 门禁（GitHub Actions，Ubuntu + Windows + macOS 矩阵）
 
 ```
 ruff check → check_brand.py（品牌契约）→ mypy strict → pytest -q
+→ 40 任务 quick baseline 契约 → sandbox 真实/降级负向门禁
 → gen_protocol_doc.py --check（协议契约）→ uv build → smoke_wheel.py（安装态冒烟）
 ```
+
+Linux job 额外对 `editors/vscode` 执行 TypeScript strict typecheck。真实模型 benchmark 由独立
+nightly/release workflow 执行，不允许普通 CI 隐式消费 API key。
 
 本地完整复现（AGENTS.md 要求推送前全绿）：
 
@@ -908,75 +937,59 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 
 ## 20. 已知问题与技术债（诚实清单）
 
-按影响排序，全部来自代码实读。**状态更新于 2026-08-06 修复批次**：
+**状态更新于 2026-08-18（生产就绪 R0-R5 代码改造后）**。完整证据矩阵见
+`PRODUCTION_GAP_MATRIX.md`，发布结论见 `RELEASE_SCORECARD.md`。
 
-### P0（正确性/安全风险）
+### P0（阻塞公开 Beta 的外部证据）
 
-1. **沙箱有名无实** —— 已重定位为 advisory：`detect_sandbox_capability` 只探测不执行（事实未变），
-   但函数注释、TUI `/sandbox status` 展示与 README 均明确标注"仅能力探测、不实施进程隔离，
-   强制防线是审批链与工作区边界"，消除"已被隔离"的错觉。真隔离（bwrap/sandbox-exec 包裹子进程）
-   仍是未来项，需单独安全设计
-2. **双真源漂移** —— 部分修复：bootstrap 现在从 thread.jsonl 恢复每个 run 的真实首末时间戳
-   （`SessionStore.run_time_ranges`），不再坍缩为 session 元数据时间；空库重建会记录 warning。
-   双真源结构本身保留（文件账本为操作真源、SQLite 为投影），彻底合一属大型重构
-3. **单写者假设仅进程内成立** —— 已修复：daemon 启动时获取 `~/.coderook/core.lock`
-   OS 级排他锁（`daemon_lock.py`，POSIX flock / Windows msvcrt.locking，进程退出自动释放），
-   第二个 daemon 会直接退出并报出持有者 PID；runtime.db 同时启用 WAL
-4. **stop_reason 覆盖不全** —— 已修复：`AgentLoop._normalize_stop_reason` 把带工具调用的未知
-   stop_reason 归一为 `tool_use`、无工具调用的未知值（如 `"stop"`）归一为 `end_turn`，不再空转
-5. **ask_user 超时问题** —— 已修复误杀部分：BaseTool 新增 `timeout_s` 覆盖（0=不限时），
-   `ask_user_question` 声明不限时，不再被默认 120s 杀掉；"客户端在线但永不回答"仍可无限挂起，
-   由 run 取消兜底（与交互式 CLI 的通行语义一致）
+1. **真实模型效果尚未测量** —— 50 个任务和 quick/nightly/release 执行链已实现，但没有固定
+   route/model 的 pass@1、分类成功率、成本与波动报告
+2. **三平台安全报告尚未产出** —— 前台、持久、后台 Bash 已共用 bwrap/Seatbelt 计划；本机只验证
+   Windows `windows_none` 的诚实降级。Linux/macOS 必须由远端真实执行负向脚本
+3. **进程级强杀恢复率尚未测量** —— checksum chain、100 个文件截断点、SQLite 中断和幂等 reconcile
+   已测试，但公开 Beta 要求的 100 次 daemon 强杀/重启矩阵尚未运行
+4. **候选分发未在干净环境验收** —— wheel、Docker、Windows installer 与自带 Python portable
+   构建入口已存在，仍需容器/干净机/升级实际报告
 
-### P1（体验/兼容性）
+### P1（兼容性和体验限制）
 
-6. **两个 OpenAI provider 并非真流式** —— 已修复：两者改为 SSE 流式请求，正文增量实时发布
-   `llm.token` 事件；非 SSE 端点自动降级整体解析（兼容不支持流式的服务端）
-7. **thinking_blocks 处理不一致** —— 已修复：两个 OpenAI provider 现在只要有 reasoning 就保留
-   `thinking_blocks`，与 Anthropic provider 语义对齐
-8. **act 阶段提前终止产生孤儿 tool_use** —— 已修复：permission_required/stuck/取消三种提前终止
-   路径都会为未执行的 tool_use 补合成 `Skipped` 错误结果，transcript 保持协议闭环
-9. **Git 家族要求仓库根 == workspace 根** —— 已修复：放宽为"仓库根包含 workspace"，monorepo
-   子目录可用作 workspace；结构化输出路径归一为 workspace 相对
-10. **家族工具内部分派绕过调用管线** —— 保留：子调用经家族层一次审批（action 级 approval 已在
-    spec 声明），完整管线下沉需重构家族适配层，列入后续
-11. **loopback 无 token 即无认证**（HTTP API）—— 已修复：daemon 自动生成 `~/.coderook/api-token`
-    并强制 Bearer 认证（非 loopback 绑定原本就强制）；集成测试覆盖 401 拒绝
+5. **Windows 无真实 OS sandbox** —— 当前产品结论是 degraded + ASK；ProcessSupervisor 的进程树
+   治理不是文件系统或网络边界
+6. **shell 尚无按域正向放行后端** —— 域白名单请求已经 fail closed，但 bwrap/Seatbelt 当前不能在
+   不扩大权限的前提下按 DNS 域强制出站策略；实现该后端前只支持完全禁网或显式完全联网
+7. **TUI 原始位图粘贴受终端限制** —— 已支持粘贴本地图片路径并先落 ArtifactStore，但不是所有终端
+   都会把剪贴板位图转换为可读取路径
+8. **诊断性能没有 P95 基线** —— Python/TypeScript 后端已并发、可取消、去重和按文件过滤；Go/Rust
+   与常驻 LSP 不在当前 Beta 门禁
+9. **外部协议缺少认证报告** —— MCP Streamable HTTP 的 GET/reconnect/cancel/resources/prompts 已实现，
+   仍需官方兼容 server 报告；VS Code 原型已 strict typecheck，但尚未打包 VSIX 做真实 UI 冒烟
+10. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
+   仍需运营性维护
 
-### P2（结构债）
+### P2（非门禁结构债）
 
-12. **tui/app.py 上帝类** —— 已产出增量重构计划：`docs/TUI_REFACTOR_PLAN.md`（5 阶段、测试守门、
-    不改交互语义）；不在本批次盲改
-13. **供应商白名单重复/context_window 未贯通** —— 已修复：白名单统一到 `llm/kinds.py`
-    （credentials/factory/route_registry 共用）；`route.context_window` 现在贯通 Anthropic 与
-    OpenAI-compatible 两个 provider 的 context_pct 计算。两套预置体系（provider_presets vs
-    _PRESET_ROUTES）仍并存，服务于不同场景（向导探测 vs 路由配置）
-14. **token 估算 `len//4`** —— 保留：自动压缩阈值用的是 provider 返回的真实 `usage.context_pct`，
-    估算只影响展示与溢出前判断；引入 tokenizer 属增强项
-15. **WorkflowExecutor 全量 reduce / SSE 轮询 / create_turn 忙等** —— 已修复：WorkflowLedger.graph()
-    基于缓存增量重放（无新事件时零开销）；SSE 与 create_turn 改为 `asyncio.Condition` 事件驱动
-    唤醒（durable 事件落盘即通知，0.5s/0.1s 超时兜底）
-16. **手写 HTTP 服务器** —— 保留：本地 API 定位下可接受；keep-alive/TLS 列入后续增强
-17. **runs 布局/checkpoint 触达** —— 已修复：RUNS_DIR 改为 `~/.coderook/runs` 绝对路径；
-    `session.checkpoints`/`session.rewind` 新增可选 `run_id`，历史 run 的检查点可触达。
-    blob/artifact 无 GC 仍保留（自动删除风险高，需独立策略设计）
-18. **小项** —— 已修复四项：`PermissionDeniedError` 死代码已删除；`core.shutdown` IPC 命令提供
-    跨平台优雅停机（CLI stop 优先 IPC、失败回退信号）；EventBus 订阅者异常隔离（CancelledError
-    除外仍向上传播）；keyring 回退改为 warning 告知密钥落到文件。仍保留：doctor 模型错误判别
-    依赖英文文案启发式；全局订阅 scope 下多客户端互相可见事件流
+11. **TUI app.py 仍大** —— 模块边界已拆分，继续拆分只按所有权与测试收益推进，不以行数作为目标
+12. **手写 HTTP 服务定位有限** —— 适合本地 loopback runtime API，不提供公网 TLS 终止；远程部署应由
+    反向代理负责并强制 Bearer token
+13. **精确 tokenizer 未覆盖所有模型** —— provider 真实 usage 是 durable 计费事实，`len//4` 仅保留为
+    请求前展示/预算的保守估算
+
+已从问题清单移除：family 管线绕过、逐 hunk 缺失、非 durable 成本、headless 无限提问、TUI 图片
+入口、Artifact TUI、配置双事务、MCP GET/resources/prompts、持久/后台 shell 沙箱绕过和孤儿子进程。
 
 ---
 
 ## 21. 文档与代码的不一致
 
-**2026-08-06 批次已处理大部分项**：
+**2026-08-18 已按当前 R0–R5 工作树重新校准**：
 
 | 位置 | 不一致内容 | 状态 |
 |---|---|---|
-| `AGENTS.md` | 原描述停留在 S0（"只有 PingCommand"）。已按当前代码重写 Architecture 一节：44+ 命令模型、45 事件、双端口（7437 IPC / 7438 HTTP API）、全部子系统与持久化布局 | ✅ 已修复 |
-| `README.md` | 链接 `[技术架构](TECH_ARCHITECTURE.md)` 指向不存在的文件 | ✅ 已改为指向本文档 |
-| `README.md` | 项目结构树缺大量模块；Hooks 旧名作为当前机制列出 | ✅ 结构树已补全；Hooks 表述已更新为 11 事件点 + 旧名兼容 |
-| `pyproject.toml` vs 现实 | 版本号仍为 0.0.1，与功能成熟度不符 | 保留（版本号由发布节奏决定，非文档问题） |
+| `AGENTS.md` | 曾固定协议/handler/测试计数，改动后容易再次漂移 | ✅ 改为指向生成协议、注册表和当前 CI 证据，并同步真实沙箱边界 |
+| `README.md` | 曾停留在 0.0.1 时代能力树与过期测试基线 | ✅ 已同步 0.1.0、R0–R5 能力与公开 Beta 的诚实 NO-GO 边界 |
+| 本文档 v1.1/v1.2 | Provider、客户端、工具与技术债停留在 Stage 0–4 | ✅ v1.3 已吸收 R0–R5 的仓库内实现与外部门禁 |
+| `OPTIMIZATION_ROADMAP.md` | 复盘中的 app.py `~2,110` 是拆分完成瞬间，管理功能合入后实际约 2,246 行 | ✅ 已标注最终实际行数；其余阶段偏差继续作为历史复盘保留 |
+| `PRODUCTION_READINESS_PLAN.md` | Stage 4 后缺少从“功能合格”到公开 Beta 的量化执行计划 | ✅ 已建立 R0–R5、真实任务评分卡和发布门禁 |
 
 ---
 
@@ -984,25 +997,31 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 
 ```
 src/code_rook/
-├── __init__.py                  # version = 0.0.1
-├── cli/                         # CLI 入口与命令（14 个命令模块）
-├── tui/                         # Textual TUI（app.py + panels/turn,workflow + clipboard）
+├── __init__.py                  # version = 0.1.0
+├── benchmark/                   # 固定任务语料、评分与基线比较
+├── cli/                         # CLI 入口与命令
+├── sdk/                         # HTTP/SSE 同步与异步 Python SDK
+├── tui/                         # Textual TUI
+│   ├── app.py                   # App 编排、状态与 Textual 消息泵
+│   ├── connection.py / commands.py / ipc_actions.py / render.py
+│   ├── panels/                  # turn/workflow/manage 面板
+│   └── widgets/                 # input/permission/pickers/selectors/stream 等控件
 └── core/
     ├── app.py                   # daemon 入口与装配（CoreApp）
     ├── config.py / logging_setup.py / workspace.py / working_set.py
-    ├── context.py / interaction.py / prompt_context.py / processes.py
+    ├── context.py / interaction.py / prompt_context.py / processes.py / persistent_shell.py
     ├── loop.py / runner.py / runs.py / prefix_fingerprint.py / state_migration.py
-    ├── bus/                     # 协议契约：envelope + 44 命令 + 45 事件
+    ├── bus/                     # 协议契约：envelope + Command/Event 判别联合
     ├── transport/               # socket_server/client、auth、ipc_broadcaster
     ├── api/                     # 手写 HTTP runtime API（app/auth/service）
-    ├── llm/                     # routes/route_store/route_registry/credentials/factory
+    ├── llm/                     # routes/route_store/route_registry/credentials/factory/router/pricing
     │                            # provider(anthropic)/openai_compatible/openai_responses
     │                            # doctor/model_catalog/provider_presets/types/base
     ├── tools/                   # base/spec/registry/catalog/discovery/invocation/assembly
-    │   ├── builtin/             # 21 个内置工具模块
+    │   ├── builtin/             # 文件/搜索/Web/图片/Bash/任务/记忆等内置工具
     │   └── families/            # File/Git/Bash/Run/control(memory+tasks+update_plan)
-    ├── permissions/ authority/  # 六层决策 / 评估矩阵 / 沙箱探测
-    ├── session/ runtime/        # 文件账本 / SQLite 投影（双真源）
+    ├── permissions/ authority/ sandbox/  # 六层决策 / 前缀策略 / 评估矩阵 / OS 沙箱计划
+    ├── session/ runtime/ configuration/ # 文件账本 / SQLite 投影 / 验证后配置提交
     ├── checkpoints/ artifacts/ memory/
     ├── compact/                 # budget/protocol/compactor/models
     ├── task/ goal/              # run 级任务板 / daemon 级目标控制面
@@ -1010,13 +1029,16 @@ src/code_rook/
     ├── turn/                    # read_guard / stuck_guard / watchdog
     ├── skills/ hooks/ mcp/ agents/
     ├── trace/ receipts/ events/ # 脱敏 trace / 离线收据 / EventBus+EventWriter
-    ├── editing/ patching/ worktree/ lsp/
+    ├── editing/ patching/ worktree/ lsp/ # Python + TypeScript 编辑后诊断
 tests/
-├── unit/（~100 文件） integration/（9 文件） fixtures/ conftest.py
+├── unit/ integration/ golden/ fixtures/ conftest.py
 scripts/
-├── gen_protocol_doc.py / check_brand.py / smoke_wheel.py
+├── gen_protocol_doc.py / check_brand.py / smoke_wheel.py / run_benchmark.py
+├── check_sandbox_boundary.py / install-windows.ps1 / build_windows_portable.ps1
+benchmarks/                      # quick/nightly/release 固定任务与机器可读基线
+editors/vscode/                 # 基于 durable HTTP/SSE 契约的 VS Code 原型
 docs/                            # 设计文档群（本文件、ADR、差距分析、使用指南等）
-.github/workflows/ci.yml         # ubuntu+windows 双矩阵门禁
+.github/workflows/               # 三平台 CI 与 benchmark nightly/release
 ```
 
 ## 附录 B：环境变量清单
@@ -1034,6 +1056,7 @@ docs/                            # 设计文档群（本文件、ADR、差距分
 | `CODEROOK_PERMISSION_TIMEOUT_S` | 审批超时（0=不超时）|
 | `CODEROOK_COMPACT_THRESHOLD` / `CODEROOK_COMPACT_RETAIN_RATIO` / `CODEROOK_COMPACT_TOOL_LIMIT` / `CODEROOK_COMPACT_TOOL_KEEP` / `CODEROOK_COMPACT_TOOL_SUMMARY_THRESHOLD` | 压缩 |
 | `CODEROOK_CREDENTIALS_FILE` / `CODEROOK_MODEL_CATALOG` | 凭据/模型目录路径覆盖 |
+| `CODEROOK_PRICING` | 用户模型单价覆盖 TOML 路径 |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `SILICONFLOW_API_KEY` | 各供应商默认密钥环境变量 |
 
 ## 附录 C：术语表

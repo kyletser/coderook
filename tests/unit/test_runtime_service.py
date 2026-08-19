@@ -445,6 +445,7 @@ async def test_bus_events_and_final_message_are_durable(tmp_path: Path) -> None:
                 cache_read_input_tokens=1,
                 cache_creation_input_tokens=0,
                 context_pct=0.25,
+                model="claude-sonnet-4-6",
                 ts="2026-08-04T08:00:04Z",
             )
         )
@@ -467,9 +468,15 @@ async def test_bus_events_and_final_message_are_durable(tmp_path: Path) -> None:
     restarted = RuntimeService(RuntimeStore(store.path), workspace=tmp_path)
     receipt = await restarted.get_receipt(run_id)
     items = await restarted.list_items(run_id)
+    durable_cost = await restarted.get_estimated_cost(run_id)
 
     assert receipt.usage["input_tokens"] == 30
     assert receipt.usage["output_tokens"] == 7
+    assert isinstance(receipt.cost, float)
+    assert receipt.cost > 0
+    assert durable_cost == receipt.cost
+    assert receipt.usage["pricing"][0]["source"] == "builtin"
+    assert "cost" not in receipt.unavailable
     assert receipt.tool_call_count == 1
     assert receipt.approvals.requested == 1
     assert receipt.approvals.granted == 1

@@ -5,12 +5,16 @@ import struct
 import zlib
 from pathlib import Path
 
+from pydantic import AnyHttpUrl
+
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.openai_compatible import _to_openai_messages
 from code_rook.core.llm.openai_responses import _to_responses_input
+from code_rook.core.llm.route_registry import ResolvedRoute
+from code_rook.core.llm.routes import ProviderRoute
 from code_rook.core.loop import AgentLoop
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
@@ -167,6 +171,37 @@ def test_read_image_registered_in_act_and_plan(tmp_path: Path) -> None:
 
     assert loop._flush_pending_images(context) == 0
     assert len(context.messages) == before
+
+
+# 功能：验证显式不支持图片的 route 不会向模型暴露 read_image
+# 设计：用 ResolvedRoute 驱动真实工具装配，断言能力门禁发生在供应商请求之前
+def test_read_image_hidden_for_route_without_image_capability(tmp_path: Path) -> None:
+    route = ProviderRoute(
+        id="text-only",
+        provider="openai-compatible",
+        wire_format="openai_chat",
+        base_url=AnyHttpUrl("http://127.0.0.1:11434/v1/chat/completions"),
+        model="text-model",
+        credential_ref="env:TEST_KEY",
+        supports_images=False,
+    )
+    resolved = ResolvedRoute(
+        route=route,
+        receipt=route.receipt("env"),
+        credential="secret",
+    )
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, bus=EventBus())
+
+    registry = runner._build_registry(
+        TaskManager(tmp_path / ".tasks-text-only"),
+        run_id="run-text-only",
+        bus=EventBus(),
+        resolved_route=resolved,
+    )
+
+    assert "read_image" not in {
+        str(schema["name"]) for schema in registry.tool_schemas()
+    }
 
 
 # 功能：验证 _record_result 把 ToolResult.images 登记进 context 待发送列表

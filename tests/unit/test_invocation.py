@@ -52,6 +52,19 @@ class _BrokenTool(BaseTool):
         raise RuntimeError("boom")
 
 
+class _UsageTool(BaseTool):
+    name = "usage"
+    description = "Returns process usage"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}}
+
+    # 返回固定资源证据以验证 invocation 事件透传
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        return ToolResult(
+            content="done",
+            process_usage={"wall_time_ms": 5, "process_count": 1, "complete": True},
+        )
+
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -94,6 +107,24 @@ async def test_success_returns_content_and_finished_event() -> None:
         event for event in events if event.type == "tool.call_finished"  # type: ignore[attr-defined]
     )
     assert finished.output == "hi"  # type: ignore[attr-defined]
+
+
+# 功能：验证 ToolResult 的进程资源证据原样进入 tool.call_finished durable 事件
+# 设计：使用固定 usage stub 隔离 OS 采样波动，精确检查 invocation 到事件的投影边界
+async def test_success_event_preserves_process_usage() -> None:
+    registry = ToolRegistry()
+    registry.register(_UsageTool())
+
+    _result, events = await _run(registry, _call("usage"))
+    finished = next(
+        event for event in events if event.type == "tool.call_finished"  # type: ignore[attr-defined]
+    )
+
+    assert finished.process_usage == {  # type: ignore[attr-defined]
+        "wall_time_ms": 5,
+        "process_count": 1,
+        "complete": True,
+    }
 
 
 # 功能：验证调用不存在的工具时返回 runtime_error 并发布 failed 事件而非 finished

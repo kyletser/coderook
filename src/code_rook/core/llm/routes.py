@@ -38,6 +38,8 @@ class RouteReceipt(BaseModel):
     base_url_origin: str
     model: str
     credential_source: CredentialSource
+    supports_images: bool = False
+    temperature: float | None = None
 
 
 class ProviderRoute(BaseModel):
@@ -53,8 +55,10 @@ class ProviderRoute(BaseModel):
     supports_tools: bool = True
     supports_parallel_tools: bool = True
     supports_prompt_cache: bool = False
+    supports_images: bool = False
     # 推理预算档位；off 表示不请求 extended thinking / reasoning effort
     thinking: ThinkingLevel = "off"
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
 
     @model_validator(mode="after")
     # 拒绝 URL 内嵌凭据及非 loopback 明文 HTTP，防止密钥被发送到不安全端点
@@ -65,6 +69,11 @@ class ProviderRoute(BaseModel):
         host = self.base_url.host or ""
         if self.base_url.scheme == "http" and not _is_loopback_host(host):
             raise ValueError("plain HTTP is only allowed for loopback endpoints")
+        if self.wire_format == "anthropic_messages" and self.temperature is not None:
+            if self.temperature > 1.0:
+                raise ValueError("Anthropic temperature must be between 0 and 1")
+            if self.thinking != "off" and self.temperature != 1.0:
+                raise ValueError("Anthropic extended thinking requires temperature=1")
         return self
 
     # 生成不含密钥和 URL 路径的实际路由收据
@@ -79,6 +88,8 @@ class ProviderRoute(BaseModel):
             base_url_origin=origin,
             model=self.model,
             credential_source=credential_source,
+            supports_images=self.supports_images,
+            temperature=self.temperature,
         )
 
 
@@ -91,6 +102,7 @@ _PRESET_ROUTES: dict[str, ProviderRoute] = {
         model="claude-sonnet-4-6",
         credential_ref="env:ANTHROPIC_API_KEY",
         supports_prompt_cache=True,
+        supports_images=True,
     ),
     "openai": ProviderRoute(
         id="openai",
@@ -99,6 +111,7 @@ _PRESET_ROUTES: dict[str, ProviderRoute] = {
         base_url=AnyHttpUrl("https://api.openai.com/v1/chat/completions"),
         model="gpt-5.6-terra",
         credential_ref="env:OPENAI_API_KEY",
+        supports_images=True,
     ),
     "openai-compatible": ProviderRoute(
         id="openai-compatible",

@@ -165,6 +165,18 @@ class MemoryTool(BaseTool):
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         return await _invoke_backend(self.name, self._backends, params)
 
+    # 将 memory action 解析到隐藏 backend 并移除公开 action 字段
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        action = params.get("action")
+        if not isinstance(action, str) or action not in self._backends:
+            return self, dict(params)
+        payload = dict(params)
+        payload.pop("action", None)
+        return self._backends[action], payload
+
     # 对同一项目记忆库声明共享读或独占写
     def resource_claims(self, params: dict[str, object]) -> tuple[ResourceClaim, ...]:
         action = str(params.get("action", ""))
@@ -210,6 +222,18 @@ class TasksTool(BaseTool):
     # 调用对应 task backend
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         return await _invoke_backend(self.name, self._backends, params)
+
+    # 将 tasks action 解析到隐藏 backend 并移除公开 action 字段
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        action = params.get("action")
+        if not isinstance(action, str) or action not in self._backends:
+            return self, dict(params)
+        payload = dict(params)
+        payload.pop("action", None)
+        return self._backends[action], payload
 
     # 对当前 run 的任务控制面声明共享读或独占写
     def resource_claims(self, params: dict[str, object]) -> tuple[ResourceClaim, ...]:

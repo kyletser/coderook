@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from code_rook.tui.panels.manage import (
+    render_artifact_gc,
+    render_artifacts,
     render_hooks,
     render_job_output,
     render_jobs,
@@ -9,6 +11,51 @@ from code_rook.tui.panels.manage import (
     render_memory,
     render_workers_summary,
 )
+
+
+# 功能：验证 Artifact 面板展示总量、引用状态与可回收候选
+# 设计：注入一条被引用和一条候选记录，直接检查纯渲染文本避免依赖 daemon
+def test_render_artifacts_shows_inventory_and_gc_status() -> None:
+    rendered = render_artifacts(
+        {
+            "total_bytes": 3072,
+            "reclaimable_bytes": 2048,
+            "artifacts": [
+                {"sha256": "a" * 64, "size": 1024, "referenced": True},
+                {
+                    "sha256": "b" * 64,
+                    "size": 2048,
+                    "referenced": False,
+                    "gc_candidate": True,
+                },
+            ],
+        }
+    )
+
+    assert "Artifacts" in rendered
+    assert "kept" in rendered
+    assert "candidate" in rendered
+    assert "2.0 KiB reclaimable" in rendered
+
+
+# 功能：验证 Artifact GC 预览明确提示未删除且确认结果展示 receipt
+# 设计：分别渲染 dry-run 与 confirmed payload，覆盖安全提示和审计路径两个分支
+def test_render_artifact_gc_distinguishes_preview_and_commit() -> None:
+    preview = render_artifact_gc(
+        {"dry_run": True, "candidates": ["a"], "reclaimable_bytes": 10}
+    )
+    committed = render_artifact_gc(
+        {
+            "dry_run": False,
+            "removed": ["a"],
+            "reclaimable_bytes": 10,
+            "receipt_path": "receipt.jsonl",
+        }
+    )
+
+    assert "未删除任何文件" in preview
+    assert "completed" in committed
+    assert "receipt.jsonl" in committed
 
 
 # 功能：MCP server 列表展示名称/传输/状态/工具数，空列表给出提示

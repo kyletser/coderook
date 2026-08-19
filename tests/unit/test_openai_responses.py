@@ -42,6 +42,7 @@ async def test_responses_provider_roundtrips_function_call() -> None:
             base_url="https://api.example/v1/responses",
             api_key="secret-key",
             context_window=1_000,
+            temperature=0.0,
             client=client,
         )
         result = await provider.chat(
@@ -65,6 +66,7 @@ async def test_responses_provider_roundtrips_function_call() -> None:
     assert requests[0].headers["Authorization"] == "Bearer secret-key"
     assert payload["instructions"] == "system prompt"
     assert payload["store"] is False
+    assert payload["temperature"] == 0.0
     assert payload["tools"][0]["name"] == "read_file"
     assert result.stop_reason == "tool_use"
     assert result.tool_calls[0].input == {"path": "README.md"}

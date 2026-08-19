@@ -26,6 +26,8 @@ class ToolResult:
     error_type: str | None = None
     # 可选多模态附件：Anthropic 风格 image block dict，随下一次模型请求发送
     images: list[dict[str, object]] | None = None
+    # 受管子进程的 CPU、内存、进程数和 wall-time 证据；非进程工具为空
+    process_usage: dict[str, object] | None = None
 
 
 class ToolRetryPolicy(StrEnum):
@@ -120,6 +122,17 @@ class BaseTool(ABC):
     # 声明本次调用占用的资源；旧工具默认无显式 claim
     def resource_claims(self, params: dict[str, object]) -> tuple[ResourceClaim, ...]:
         return ()
+
+    # 返回审批界面可消费的结构化上下文，普通工具默认没有额外上下文
+    def approval_context(self, params: dict[str, object]) -> dict[str, object] | None:
+        return None
+
+    # 将公开 family 调用解析为恰好执行一次的真实 backend 与规范化参数
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        return self, dict(params)
 
     # 执行工具调用，返回结果或错误
     @abstractmethod

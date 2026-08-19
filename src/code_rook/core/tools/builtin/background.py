@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_rook.core.background import BackgroundJobRegistry
+from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
@@ -49,10 +51,14 @@ class BackgroundStartTool(BaseTool):
         registry: BackgroundJobRegistry,
         session_id: str,
         run_id: str,
+        sandbox_plan: SandboxPlan | None = None,
+        cwd: Path | None = None,
     ) -> None:
         self._registry = registry
         self._session_id = session_id
         self._run_id = run_id
+        self._sandbox_plan = sandbox_plan
+        self._cwd = cwd
 
     # 启动后台 shell 命令并返回 job_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -64,6 +70,8 @@ class BackgroundStartTool(BaseTool):
             parsed.timeout,
             self._session_id,
             self._run_id,
+            self._sandbox_plan,
+            self._cwd,
         )
         return ToolResult(
             content=(

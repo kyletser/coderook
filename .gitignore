@@ -11,6 +11,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.benchmark-results/
 .vscode/
 .idea/
 .DS_Store

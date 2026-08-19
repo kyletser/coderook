@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
+from code_rook.core.authority.models import SandboxCapability
 from code_rook.core.persistent_shell import (
     PersistentShellPool,
     PersistentShellSession,
     default_shell_argv,
 )
+from code_rook.core.sandbox.planner import SandboxTier, plan_sandbox
 from code_rook.core.tools.builtin.bash import BashTool
 
 _IS_WINDOWS = os.name == "nt"
@@ -103,6 +106,27 @@ async def test_pool_reuses_and_recycles_by_key(tmp_path: Path) -> None:
 
     assert refreshed is not first
     assert pool.size() == 1
+    await pool.aclose_all()
+
+
+# 功能：验证同一 session 的沙箱或工作目录变化不会复用旧常驻进程
+# 设计：先创建无沙箱会话再切换到模拟 bwrap 计划，断言身份失配立即生成新会话并回收旧实例
+async def test_pool_recycles_when_execution_policy_changes(tmp_path: Path) -> None:
+    pool = PersistentShellPool()
+    first = pool.get_or_create("sess-policy", tmp_path)
+    capability = SandboxCapability(available=True, kind="linux_bwrap", reason="ok")
+    sandbox_plan = plan_sandbox(
+        capability,
+        SandboxTier.WORKSPACE_WRITE,
+        str(tmp_path),
+    )
+
+    sandboxed = pool.get_or_create("sess-policy", tmp_path, sandbox_plan)
+
+    assert sandboxed is not first
+    assert sandboxed.execution_identity[0][0] == "bwrap"
+    await asyncio.sleep(0)
+    assert not first.alive
     await pool.aclose_all()
 
 

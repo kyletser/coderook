@@ -35,6 +35,32 @@ def test_meta_roundtrip(tmp_path: Path) -> None:
     assert loaded == session
 
 
+# 功能：验证未来 session meta schema 会明确阻断且不会被旧版 SessionStore 改写
+# 设计：手写 version=99 的完整 meta 后只调用读取，断言错误并逐字比较文件仍保持原样
+def test_future_session_schema_blocks_unsupported_downgrade(tmp_path: Path) -> None:
+    session_dir = tmp_path / "sess-future"
+    session_dir.mkdir()
+    payload = {
+        "schema_version": 99,
+        "id": "sess-future",
+        "mode": "chat",
+        "status": "active",
+        "title": "future",
+        "created_at": "t1",
+        "updated_at": "t2",
+        "run_ids": [],
+        "parent_session_id": None,
+    }
+    original = json.dumps(payload, ensure_ascii=False) + "\n"
+    meta = session_dir / "meta.json"
+    meta.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="newer than supported"):
+        SessionStore(tmp_path).read_meta("sess-future")
+
+    assert meta.read_text(encoding="utf-8") == original
+
+
 # 功能：验证含 tool_use/tool_result block 的 thread 消息能按 Anthropic 格式读回
 # 设计：追加 assistant tool_use 和 user tool_result，读取时应剥离 ts/run_id，只保留 API messages 所需字段
 def test_thread_message_roundtrip_with_tool_blocks(tmp_path: Path) -> None:
@@ -289,3 +315,53 @@ def test_delete_session_removes_directory_and_cached_blocks(tmp_path: Path) -> N
     assert not store.session_dir(session.id).exists()
     assert session.id not in store._known_block_ids  # type: ignore[attr-defined]
     assert not list(tmp_path.glob(".deleted-sess-*"))
+
+
+# 功能：验证 transcript 行携带单调序号和链式 checksum，内容篡改会被识别并裁掉
+# 设计：先写三条合法消息再改动中间行正文，断言 verify 报错且恢复后 hash 链重新健康
+def test_transcript_checksum_chain_detects_and_recovers_tampering(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    sid = "sess-checksum"
+    store.append_message(sid, "user", "first", run_id="run-1")
+    store.append_message(sid, "assistant", "second", run_id="run-1")
+    store.append_message(sid, "user", "third", run_id="run-2")
+    path = store.session_dir(sid) / "thread.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[1] = lines[1].replace("second", "tampered")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert any("checksum mismatch" in issue for issue in store.verify_ledger(sid))
+    recovery = store.recover_incomplete_tail(sid)
+
+    assert recovery is not None
+    assert recovery.kept_rows == 1
+    assert store.verify_ledger(sid) == []
+    assert store.read_messages(sid) == [{"role": "user", "content": "first"}]
+
+
+# 功能：验证 100 个 transcript 截断点都能恢复为健康前缀而不保留伪成功尾部
+# 设计：对同一带 hash 链账本按均匀字节位置制造独立故障，统计恢复后可验证比例固定为 100%
+def test_transcript_crash_injection_matrix_recovers_100_prefixes(tmp_path: Path) -> None:
+    source = SessionStore(tmp_path / "source")
+    sid = "sess-source"
+    for index in range(12):
+        source.append_message(
+            sid,
+            "user" if index % 2 == 0 else "assistant",
+            f"message-{index:02d}-" + "x" * 40,
+            run_id=f"run-{index // 2}",
+        )
+    raw = (source.session_dir(sid) / "thread.jsonl").read_bytes()
+    healthy = 0
+    for case in range(1, 101):
+        store = SessionStore(tmp_path / f"case-{case}")
+        case_sid = f"sess-case-{case}"
+        path = store.session_dir(case_sid) / "thread.jsonl"
+        path.parent.mkdir(parents=True)
+        cutoff = max(1, len(raw) * case // 100)
+        path.write_bytes(raw[:cutoff])
+        store.recover_incomplete_tail(case_sid)
+        if store.verify_ledger(case_sid) == []:
+            healthy += 1
+
+    assert healthy == 100

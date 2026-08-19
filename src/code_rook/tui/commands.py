@@ -501,6 +501,42 @@ async def _cmd_jobs(app: Any, ta: ChatTextArea, content: str) -> None:
     )
 
 
+# 解析 Artifact 清单/GC 命令并把副作用限定在显式 --yes 分支
+async def _cmd_artifacts(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    parts = content.removeprefix("/artifacts").strip().split()
+    if not parts:
+        days = 30
+        ta.disabled = True
+        ta.border_title = "正在加载 artifacts"
+        app.run_worker(app._show_artifacts(days), name="view_artifacts", exclusive=False)
+        return
+    if parts[0] != "gc":
+        app._append(
+            Static(
+                "[yellow]用法：/artifacts [gc [days] [--yes]][/yellow]",
+                classes="log-line",
+            )
+        )
+        return
+    numeric = next((part for part in parts[1:] if part.isdigit()), "30")
+    days = int(numeric)
+    if days > 3650:
+        app._append(Static("[yellow]days 必须在 0..3650[/yellow]", classes="log-line"))
+        return
+    confirmed = "--yes" in parts
+    ta.disabled = True
+    ta.border_title = "正在处理 artifact GC"
+    app.run_worker(
+        app._gc_artifacts(days, confirmed=confirmed),
+        name="gc_artifacts",
+        exclusive=False,
+    )
+
+
 # 内建命令的唯一事实来源；顺序即补全弹窗展示顺序
 BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("help", "显示键位与全部命令", False, _cmd_help),
@@ -623,6 +659,14 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         _cmd_jobs,
         usage="show <id>",
         arg_candidates=("show", "cancel"),
+    ),
+    SlashCommand(
+        "artifacts",
+        "查看产物或执行引用感知 GC",
+        True,
+        _cmd_artifacts,
+        usage="gc [days] [--yes]",
+        arg_candidates=("gc",),
     ),
 ]
 

@@ -1,4 +1,6 @@
 from code_rook.tui.panels.manage import (
+    render_artifact_gc,
+    render_artifacts,
     render_hooks,
     render_job_output,
     render_jobs,
@@ -14,6 +16,8 @@ from code_rook.tui.panels.workflow import (
 )
 
 __all__ = [
+    "render_artifact_gc",
+    "render_artifacts",
     "render_turn_inspector",
     "render_workflow_graph",
     "render_workflow_list",

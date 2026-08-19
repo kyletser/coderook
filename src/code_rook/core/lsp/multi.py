@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 
@@ -11,6 +12,7 @@ from code_rook.core.lsp.diagnostics import (
     Diagnostic,
     DiagnosticsReport,
 )
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.workspace import WorkspaceBoundary
 
 _TSC_TIMEOUT_S = 30.0
@@ -30,6 +32,7 @@ def parse_tsc_output(
     max_total: int = _MAX_PER_LANGUAGE,
 ) -> tuple[tuple[Diagnostic, ...], bool]:
     diagnostics: list[Diagnostic] = []
+    seen: set[tuple[object, ...]] = set()
     truncated = False
     for line in output.splitlines():
         match = _TSC_LINE_RE.match(line.strip())
@@ -46,16 +49,26 @@ def parse_tsc_output(
         if len(diagnostics) >= max_total:
             truncated = True
             break
-        diagnostics.append(
-            Diagnostic(
-                path=relative,
-                line=max(1, int(line_no)),
-                column=max(1, int(column)),
-                severity=severity,  # type: ignore[arg-type]
-                message=message[:500],
-                rule=rule,
-            )
+        diagnostic = Diagnostic(
+            path=relative,
+            line=max(1, int(line_no)),
+            column=max(1, int(column)),
+            severity=severity,  # type: ignore[arg-type]
+            message=message[:500],
+            rule=rule,
         )
+        key = (
+            diagnostic.path,
+            diagnostic.line,
+            diagnostic.column,
+            diagnostic.severity,
+            diagnostic.message,
+            diagnostic.rule,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        diagnostics.append(diagnostic)
     return tuple(diagnostics), truncated
 
 
@@ -67,12 +80,14 @@ class TscDiagnosticsClient:
         *,
         timeout_s: float = _TSC_TIMEOUT_S,
         max_output_bytes: int = _TSC_MAX_OUTPUT_BYTES,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         self._boundary = boundary
         self._tsc = shutil.which("tsc")
         self._npx = shutil.which("npx")
         self._timeout_s = timeout_s
         self._max_output_bytes = max_output_bytes
+        self._process_supervisor = process_supervisor
 
     # 返回实际可用的 TypeScript 诊断命令名，缺失时为空
     @property
@@ -112,6 +127,7 @@ class TscDiagnosticsClient:
                 self._boundary.root,
                 timeout_s=self._timeout_s,
                 max_output_bytes=self._max_output_bytes,
+                process_supervisor=self._process_supervisor,
             )
         except TimeoutError:
             return DiagnosticsReport(
@@ -154,9 +170,16 @@ class WorkspaceDiagnosticsClient:
         *,
         python_client: PythonDiagnosticsClient | None = None,
         tsc_client: TscDiagnosticsClient | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
-        self._python = python_client or PythonDiagnosticsClient(boundary)
-        self._tsc = tsc_client or TscDiagnosticsClient(boundary)
+        self._python = python_client or PythonDiagnosticsClient(
+            boundary,
+            process_supervisor=process_supervisor,
+        )
+        self._tsc = tsc_client or TscDiagnosticsClient(
+            boundary,
+            process_supervisor=process_supervisor,
+        )
 
     # 返回组合诊断工具的展示名
     @property
@@ -177,11 +200,12 @@ class WorkspaceDiagnosticsClient:
             for path in paths
             if path.casefold().endswith((".ts", ".tsx"))
         ]
-        reports: list[DiagnosticsReport] = []
+        pending = []
         if python_paths:
-            reports.append(await self._python.diagnose(python_paths))
+            pending.append(self._python.diagnose(python_paths))
         if tsc_paths and self._tsc.available:
-            reports.append(await self._tsc.diagnose(tsc_paths))
+            pending.append(self._tsc.diagnose(tsc_paths))
+        reports = list(await asyncio.gather(*pending)) if pending else []
         if not reports:
             return DiagnosticsReport(status="ok", tool=self.tool_name)
         if len(reports) == 1:
@@ -190,11 +214,23 @@ class WorkspaceDiagnosticsClient:
                 return report
             return report.model_copy(update={"tool": self.tool_name})
         merged: list[Diagnostic] = []
+        seen: set[tuple[object, ...]] = set()
         truncated = False
         error_parts: list[str] = []
         status = "ok"
         for report in reports:
-            merged.extend(report.diagnostics)
+            for diagnostic in report.diagnostics:
+                key = (
+                    diagnostic.path,
+                    diagnostic.line,
+                    diagnostic.column,
+                    diagnostic.severity,
+                    diagnostic.message,
+                    diagnostic.rule,
+                )
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(diagnostic)
             truncated = truncated or report.truncated
             if report.error:
                 error_parts.append(f"{report.tool}: {report.error}")

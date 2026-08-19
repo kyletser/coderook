@@ -18,11 +18,18 @@ import code_rook
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.api import HttpApiServer, RuntimeApiService
 from code_rook.core.api.auth import load_or_create_api_token
+from code_rook.core.artifacts import ArtifactStore
+from code_rook.core.artifacts.store import scan_referenced_artifact_shas
 from code_rook.core.authority import RuntimeMode, ToolAction, WorkspaceTrust
+from code_rook.core.authority.sandbox import detect_sandbox_capability
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
+    ArtifactGcCommand,
+    ArtifactGcResult,
+    ArtifactListCommand,
+    ArtifactListResult,
     BackgroundCancelCommand,
     BackgroundCancelResult,
     BackgroundGetCommand,
@@ -142,17 +149,20 @@ from code_rook.core.fleet import (
     SQLiteWorkerStore,
 )
 from code_rook.core.hooks import HookManager
-from code_rook.core.interaction import InteractionManager
+from code_rook.core.interaction import HeadlessQuestionPolicy, InteractionManager
 from code_rook.core.llm.route_registry import RouteRegistry
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
+from code_rook.core.persistent_shell import PersistentShellPool
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import RuntimeStore
+from code_rook.core.sandbox.planner import SandboxTier, plan_sandbox
 from code_rook.core.session import Session, SessionManager, SessionStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
@@ -193,7 +203,14 @@ class CoreApp:
         self._permission_manager: PermissionManager | None = None
         self._hooks: HookManager | None = None
         self._mcp_manager: McpServerManager | None = None
-        self._background_registry = BackgroundJobRegistry(self._bus)
+        self._process_supervisor = ProcessSupervisor()
+        self._persistent_shell_pool = PersistentShellPool(
+            process_supervisor=self._process_supervisor
+        )
+        self._background_registry = BackgroundJobRegistry(
+            self._bus,
+            self._process_supervisor,
+        )
         self._interaction_manager = InteractionManager(self._bus)
         # daemon 级后台 subagent 任务注册表，跨 turn 持有
         self._subagent_registry: BackgroundTaskRegistry | None = None
@@ -201,6 +218,99 @@ class CoreApp:
         self._fleet: LocalFleet | None = None
         self._http_api: HttpApiServer | None = None
         self._runtime_api: RuntimeApiService | None = None
+        self._artifact_store = ArtifactStore(Path.cwd() / ".coderook" / "artifacts")
+
+    # 收集 session 与工作区元数据文件，供 artifact GC 建立引用保留集合
+    def _artifact_reference_paths(self) -> list[Path]:
+        roots = [
+            Path("~/.coderook/sessions").expanduser(),
+            Path.cwd() / ".coderook",
+        ]
+        artifact_root = (Path.cwd() / ".coderook" / "artifacts").resolve()
+        paths: list[Path] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    if path.resolve().is_relative_to(artifact_root):
+                        continue
+                except OSError:
+                    continue
+                paths.append(path)
+        return paths
+
+    # 返回 artifact 清单、总大小和按当前保留期可回收大小
+    async def _artifact_list_handler(self, params: dict[str, Any]) -> ArtifactListResult:
+        cmd = ArtifactListCommand.model_validate(params)
+        keep = await asyncio.to_thread(
+            scan_referenced_artifact_shas,
+            self._artifact_reference_paths(),
+        )
+        inventory = await asyncio.to_thread(
+            self._artifact_store.inventory,
+            days=cmd.days,
+            keep=keep,
+        )
+        return ArtifactListResult(
+            artifacts=inventory,
+            total_bytes=sum(item.size for item in inventory),
+            reclaimable_bytes=sum(item.size for item in inventory if item.gc_candidate),
+        )
+
+    # 默认预览 GC；确认后重新扫描引用、删除候选并追加脱敏 receipt
+    async def _artifact_gc_handler(self, params: dict[str, Any]) -> ArtifactGcResult:
+        cmd = ArtifactGcCommand.model_validate(params)
+        first = await self._artifact_list_handler({"days": cmd.days})
+        candidates = [item.sha256 for item in first.artifacts if item.gc_candidate]
+        if not cmd.confirmed:
+            return ArtifactGcResult(
+                dry_run=True,
+                candidates=candidates,
+                reclaimable_bytes=first.reclaimable_bytes,
+            )
+
+        keep = await asyncio.to_thread(
+            scan_referenced_artifact_shas,
+            self._artifact_reference_paths(),
+        )
+        second_inventory = await asyncio.to_thread(
+            self._artifact_store.inventory,
+            days=cmd.days,
+            keep=keep,
+        )
+        candidate_sizes = {
+            item.sha256: item.size for item in second_inventory if item.gc_candidate
+        }
+        removed_paths = await asyncio.to_thread(
+            self._artifact_store.gc,
+            days=cmd.days,
+            keep=keep,
+            dry_run=False,
+        )
+        removed = [path.name for path in removed_paths]
+        reclaimed = sum(candidate_sizes.get(sha256, 0) for sha256 in removed)
+        receipt_path = Path("~/.coderook/artifact-gc-receipts.jsonl").expanduser()
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            "schema_version": 1,
+            "ts": _now(),
+            "workspace": str(Path.cwd()),
+            "days": cmd.days,
+            "removed": removed,
+            "reclaimed_bytes": reclaimed,
+        }
+        with receipt_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+        return ArtifactGcResult(
+            dry_run=False,
+            candidates=[item.sha256 for item in second_inventory if item.gc_candidate],
+            removed=removed,
+            reclaimable_bytes=reclaimed,
+            receipt_path=str(receipt_path),
+        )
 
     # 从当前 route、agent profile 和 authority 真值构建不可变 FleetProfile
     def _build_fleet_profiles(self) -> list[FleetProfile]:
@@ -277,11 +387,23 @@ class CoreApp:
         assert self._sessions is not None
         assert self._permission_manager is not None
         cmd = AgentRunCommand.model_validate(params)
-        session = await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
+        session = (
+            await self._sessions.resume(cmd.resume_session_id)
+            if cmd.resume_session_id is not None
+            else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
+        )
         self._permission_manager.set_session_mode(
             session.id,
             cmd.permission_mode,
             allow_tools=cmd.allow_tools,
+        )
+        self._interaction_manager.set_question_policy(
+            session.id,
+            HeadlessQuestionPolicy(
+                mode=cmd.question_mode,
+                timeout_s=cmd.question_timeout_s,
+                answers=tuple(cmd.preset_answers),
+            ),
         )
         run_id = new_run_id()
         run_task = asyncio.create_task(
@@ -293,9 +415,10 @@ class CoreApp:
             self._running_runs.discard(completed)
             if self._permission_manager is not None:
                 self._permission_manager.clear_session_mode(session.id)
+            self._interaction_manager.clear_question_policy(session.id)
 
         run_task.add_done_callback(_cleanup)
-        return AgentRunResult(run_id=run_id)
+        return AgentRunResult(run_id=run_id, session_id=session.id)
 
     # 取消指定 active run，并等待 Session 状态稳定落盘
     async def _run_cancel_handler(self, params: dict[str, Any]) -> RunCancelResult:
@@ -456,6 +579,7 @@ class CoreApp:
             cmd.session_id,
             cmd.content,
             runtime_mode=cmd.runtime_mode,
+            attachments=cmd.attachments,
         )
         return SessionSendMessageResult(run_id=run_id)
 
@@ -576,7 +700,12 @@ class CoreApp:
         if self._permission_manager is None:
             logger.error("permission.respond: PermissionManager not initialized")
             return PermissionRespondResult()
-        self._permission_manager.respond(cmd.tool_use_id, cmd.decision)
+        self._permission_manager.respond(
+            cmd.tool_use_id,
+            cmd.decision,
+            selected_hunks=cmd.selected_hunks,
+            patch_plan_id=cmd.patch_plan_id,
+        )
         return PermissionRespondResult()
 
     # 接收用户对结构化问题的回答并恢复挂起的工具调用
@@ -683,6 +812,7 @@ class CoreApp:
                 is_error=job.is_error,
                 created_at=job.created_at,
                 finished_at=job.finished_at,
+                process_usage=job.process_usage or {},
             )
             for job in records
             if job is not None
@@ -733,6 +863,7 @@ class CoreApp:
         audit_events = [
             HookAuditInfo(
                 hook_id=item.hook_id,
+                run_id=item.run_id,
                 event=item.event,
                 status=item.status,
                 blocking=item.blocking,
@@ -740,6 +871,7 @@ class CoreApp:
                 blocked=item.blocked,
                 reason=item.reason,
                 exit_code=item.exit_code,
+                process_usage=item.process_usage,
                 ts=item.ts,
             )
             for item in self._hooks.audit_events()[-cmd.limit :]
@@ -1050,6 +1182,7 @@ class CoreApp:
                 and self._permission_manager.get_authority_snapshot(session_id).workspace_trust
                 == WorkspaceTrust.TRUSTED
             ),
+            process_supervisor=self._process_supervisor,
         )
 
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
@@ -1067,7 +1200,7 @@ class CoreApp:
         assert self._config is not None
         self._route_registry = RouteRegistry(self._config.llm)
 
-        self._mcp_manager = McpServerManager()
+        self._mcp_manager = McpServerManager(self._process_supervisor)
         if self._config.mcp.servers:
             logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
             await self._mcp_manager.start_all(self._config.mcp.servers)
@@ -1084,6 +1217,13 @@ class CoreApp:
             LocalProcessHost(
                 (sys.executable, "-m", "code_rook.core.fleet.worker_process"),
                 cwd=Path.cwd(),
+                process_supervisor=self._process_supervisor,
+                sandbox_plan=plan_sandbox(
+                    detect_sandbox_capability(),
+                    SandboxTier.WORKSPACE_WRITE,
+                    str(Path.cwd()),
+                    network=True,
+                ),
             ),
             workspace=Path.cwd(),
             profiles=self._build_fleet_profiles(),
@@ -1110,6 +1250,8 @@ class CoreApp:
                 route_registry=self._route_registry,
                 runtime_service=self._runtime,
                 hooks=self._hooks,
+                process_supervisor=self._process_supervisor,
+                persistent_shell_pool=self._persistent_shell_pool,
             ),
             bus=self._bus,
             subagent_registry=self._subagent_registry,
@@ -1118,7 +1260,12 @@ class CoreApp:
             route_registry=self._route_registry,
             hooks=self._hooks,
         )
-        self._runtime_api = RuntimeApiService(self._runtime, self._sessions)
+        self._runtime_api = RuntimeApiService(
+            self._runtime,
+            self._sessions,
+            permission_manager=self._permission_manager,
+            workspace_boundary=WorkspaceBoundary.current(),
+        )
         self._bus.subscribe(self._runtime_api.notify_runtime_event)
         if not self._config.api.token:
             self._config.api.token = load_or_create_api_token(
@@ -1143,6 +1290,8 @@ class CoreApp:
         server.register("agent.run", self._agent_run_handler)
         server.register("run.cancel", self._run_cancel_handler)
         server.register("run.steer", self._run_steer_handler)
+        server.register("artifact.list", self._artifact_list_handler)
+        server.register("artifact.gc", self._artifact_gc_handler)
         server.register("event.replay", self._event_replay_handler)
         server.register("thread.create", self._thread_create_handler)
         server.register("thread.list", self._thread_list_handler)
@@ -1236,6 +1385,8 @@ class CoreApp:
             await self._subagent_registry.cancel_all()
         if self._hooks is not None:
             await self._hooks.close()
+        await self._persistent_shell_pool.aclose_all()
+        await self._process_supervisor.close()
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shlex
@@ -15,8 +16,13 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Label, Markdown, Static
 
+from code_rook.core.artifacts import ArtifactError, ArtifactStore, inspect_image
 from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.configuration import (
+    ConfigurationService,
+    ConfigurationValidationError,
+)
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctor
 from code_rook.core.llm.pricing import (
@@ -52,6 +58,8 @@ from code_rook.tui.commands import (
 from code_rook.tui.connection import TuiConnection
 from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
+    render_artifact_gc,
+    render_artifacts,
     render_hooks,
     render_job_output,
     render_jobs,
@@ -219,6 +227,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._models = models or ([model] if model else [])
         self._route_store = route_store or RouteStore()
         self._credential_store = credential_store or CredentialStore()
+        self._configuration = ConfigurationService(
+            self._route_store,
+            self._credential_store,
+        )
         self._provider_doctor = provider_doctor or ProviderDoctor()
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
@@ -262,6 +274,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_question_id: str | None = None
         self._answering_question = False
         self._slash_items: list[CompletionItem] = []
+        self._artifact_store = ArtifactStore(Path.cwd() / ".coderook" / "artifacts")
+        self._pending_image_attachments: list[dict[str, object]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
@@ -654,6 +668,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 将输入框提交内容发送给当前 chat session；用 worker 发送，避免 await 阻塞 App 消息泵
     async def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         content = event.value.strip()
+        if not content and self._pending_image_attachments:
+            content = "请分析附加图片。"
         if not content:
             return
         event.text_area.record_history(content)
@@ -702,6 +718,52 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         self._begin_message(event.text_area, content, self._input_runtime_mode)
 
+    # 收到输入框图片粘贴后异步校验并写入内容寻址 ArtifactStore
+    async def on_chat_text_area_image_pasted(
+        self,
+        event: ChatTextArea.ImagePasted,
+    ) -> None:
+        if len(self._pending_image_attachments) >= 8:
+            self.notify("每条消息最多附加 8 张图片", severity="warning")
+            return
+        self.run_worker(
+            self._stage_pasted_image(event.path),
+            name="stage_pasted_image",
+            exclusive=False,
+        )
+
+    # 读取图片头、落 artifact 并显示尺寸、类型和短 hash
+    async def _stage_pasted_image(self, path: Path) -> None:
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+            if len(data) > 2 * 1024 * 1024:
+                raise ValueError("图片超过 2 MiB，请先压缩或裁剪")
+            metadata = inspect_image(data)
+            reference = await self._artifact_store.put(
+                data,
+                media_type=metadata.media_type,
+            )
+        except (ArtifactError, OSError, ValueError) as exc:
+            self.notify(f"图片附加失败：{exc}", severity="error")
+            return
+        attachment: dict[str, object] = {
+            "sha256": reference.sha256,
+            "media_type": metadata.media_type,
+            "size": reference.size,
+            "width": metadata.width,
+            "height": metadata.height,
+        }
+        if attachment not in self._pending_image_attachments:
+            self._pending_image_attachments.append(attachment)
+        self._append(
+            Static(
+                "[cyan]已附加图片[/cyan] "
+                f"{escape(path.name)} · {metadata.width}x{metadata.height} · "
+                f"{metadata.media_type} · [dim]{reference.sha256[:12]}[/dim]",
+                classes="log-line",
+            )
+        )
+
     # 统一进入一次用户或计划批准触发的 run，确保输入状态与 mode 同步切换
     def _begin_message(
         self,
@@ -731,8 +793,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         self._append(Static(visible, classes="user-turn"))
         self._update_header("planning" if runtime_mode == RuntimeMode.PLAN else "running")
+        attachments = list(self._pending_image_attachments)
+        self._pending_image_attachments.clear()
         self.run_worker(
-            self._do_send_message(content, runtime_mode),
+            self._do_send_message(content, runtime_mode, attachments=attachments),
             name="send_message",
             exclusive=False,
         )
@@ -1060,6 +1124,34 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(Static(body, classes="log-line"))
         except IpcActionError as exc:
             self._append(Static(f"[red]mcp error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 加载并展示引用状态、大小和 GC 候选 Artifact 清单
+    async def _show_artifacts(self, days: int = 30) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.list_artifacts(self._client, days=days)
+            self._append(Static(render_artifacts(result), classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]artifacts error: {exc}[/red]", classes="log-line"))
+        finally:
+            self._restore_ready_prompt()
+
+    # 预览或确认执行引用感知 Artifact GC 并展示审计 receipt
+    async def _gc_artifacts(self, days: int, *, confirmed: bool) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.gc_artifacts(
+                self._client,
+                days=days,
+                confirmed=confirmed,
+            )
+            self._append(Static(render_artifact_gc(result), classes="log-line"))
+        except IpcActionError as exc:
+            self._append(Static(f"[red]artifact GC error: {exc}[/red]", classes="log-line"))
         finally:
             self._restore_ready_prompt()
 
@@ -1467,7 +1559,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._show_provider_routes()
             return
         try:
-            route = self._route_store.set_active(route_id)
+            route = self._configuration.set_active(route_id)
         except RouteStoreError as exc:
             self._append(Static(f"[red]{escape(str(exc))}[/red]", classes="log-line"))
             return
@@ -1500,7 +1592,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         payload = active.model_dump(mode="python")
         payload["model"] = selected
         updated = ProviderRoute.model_validate(payload)
-        self._route_store.update(updated)
+        self._configuration.save_route(updated, update=True)
         self._route = updated.id
         self._model = updated.model
         if selected not in self._models:
@@ -1542,7 +1634,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._restore_ready_prompt()
 
     # 将已探测的内置 Provider 选择保存为 route，并在当前 TUI 内立即生效
-    def _save_config_route(self, provider: ProviderPreset, api_key: str, model: str) -> None:
+    async def _save_config_route(
+        self,
+        provider: ProviderPreset,
+        api_key: str,
+        model: str,
+    ) -> None:
         provider_kind = (
             "anthropic"
             if provider.id == "anthropic"
@@ -1553,7 +1650,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         wire_format = (
             "anthropic_messages" if provider.anthropic_api else "openai_chat"
         )
-        credential_ref = self._credential_store.save(provider.id, api_key)
         route = ProviderRoute.model_validate(
             {
                 "id": provider.id,
@@ -1561,15 +1657,28 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 "wire_format": wire_format,
                 "base_url": provider.chat_url or "https://api.anthropic.com",
                 "model": model,
-                "credential_ref": credential_ref,
+                "credential_ref": f"file:{provider.id}",
                 "supports_prompt_cache": provider.anthropic_api,
             }
         )
-        if any(item.id == route.id for item in self._route_store.list()):
-            self._route_store.update(route)
-            self._route_store.set_active(route.id)
-        else:
-            self._route_store.add(route, activate=True)
+        exists = any(item.id == route.id for item in self._route_store.list())
+        try:
+            route = await self._configuration.save_route_checked(
+                route,
+                secret=api_key,
+                activate=True,
+                update=exists,
+                doctor=self._provider_doctor,
+            )
+        except ConfigurationValidationError as exc:
+            self._append(
+                Static(
+                    f"[red]Provider 验证失败[/red]  {escape(str(exc))}",
+                    classes="log-line",
+                )
+            )
+            self._restore_ready_prompt()
+            return
         self._provider = provider.id
         self._route = route.id
         self._model = route.model
@@ -1598,7 +1707,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
         message.picker.remove()
         if self._config_provider is not None and self._pending_config_key is not None:
-            self._save_config_route(
+            await self._save_config_route(
                 self._config_provider,
                 self._pending_config_key,
                 message.model,
@@ -1836,19 +1945,27 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self,
         content: str,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        *,
+        attachments: list[dict[str, object]] | None = None,
     ) -> None:
         if self._client is None:
             return
         try:
+            params: dict[str, object] = {
+                "session_id": self._session_id or "",
+                "content": content,
+                "runtime_mode": runtime_mode.value,
+            }
+            if attachments:
+                params["attachments"] = attachments
             await self._client.send_command(
                 "session.send_message",
-                {
-                    "session_id": self._session_id,
-                    "content": content,
-                    "runtime_mode": runtime_mode.value,
-                },
+                params,
             )
         except (IpcError, RuntimeError, OSError) as e:
+            for attachment in attachments or []:
+                if attachment not in self._pending_image_attachments:
+                    self._pending_image_attachments.append(attachment)
             self._busy = False
             prompt = self._prompt()
             if prompt is not None:
@@ -1991,7 +2108,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 try:
                     await self._client.send_command(
                         "permission.respond",
-                        {"tool_use_id": tool_use_id, "decision": decision},
+                        {
+                            "tool_use_id": tool_use_id,
+                            "decision": decision,
+                            "selected_hunks": msg.selected_hunks,
+                            "patch_plan_id": msg.patch_plan_id,
+                        },
                     )
                 except (IpcError, RuntimeError, OSError):
                     pass

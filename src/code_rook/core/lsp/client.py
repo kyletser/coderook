@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from code_rook.core.lsp.diagnostics import DiagnosticsReport, parse_pyright_diagnostics
-from code_rook.core.processes import terminate_process_tree
+from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 
 _DEFAULT_TIMEOUT_S = 5.0
@@ -31,20 +31,31 @@ async def _run_bounded_command(
     *,
     timeout_s: float,
     max_output_bytes: int,
+    process_supervisor: ProcessSupervisor | None = None,
 ) -> _CommandOutput:
     platform_options: dict[str, object] = (
         {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
         if os.name == "nt"
         else {"start_new_session": True}
     )
-    process = await asyncio.create_subprocess_exec(
-        executable,
-        *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        **platform_options,  # type: ignore[arg-type]
-    )
+    if process_supervisor is not None:
+        process = await process_supervisor.start_exec(
+            executable,
+            *args,
+            label="workspace-diagnostics",
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    else:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            *args,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            **platform_options,  # type: ignore[arg-type]
+        )
     reader = process.stdout
     assert reader is not None
 
@@ -58,7 +69,10 @@ async def _run_bounded_command(
             remaining = max_output_bytes + 1 - len(output)
             output.extend(chunk[:remaining])
             if len(output) > max_output_bytes:
-                await terminate_process_tree(process)
+                if process_supervisor is not None:
+                    await process_supervisor.terminate(process)
+                else:
+                    await terminate_process_tree(process)
                 return _CommandOutput(
                     returncode=process.returncode or -1,
                     stdout=bytes(output[:max_output_bytes]).decode(
@@ -67,6 +81,8 @@ async def _run_bounded_command(
                     truncated=True,
                 )
         returncode = await process.wait()
+        if process_supervisor is not None:
+            process_supervisor.forget(process)
         return _CommandOutput(
             returncode=returncode,
             stdout=bytes(output).decode("utf-8", errors="replace"),
@@ -76,7 +92,10 @@ async def _run_bounded_command(
     try:
         return await asyncio.wait_for(_collect(), timeout=timeout_s)
     except (TimeoutError, asyncio.CancelledError):
-        await terminate_process_tree(process)
+        if process_supervisor is not None:
+            await process_supervisor.terminate(process)
+        else:
+            await terminate_process_tree(process)
         raise
 
 
@@ -89,6 +108,7 @@ class PythonDiagnosticsClient:
         executable: str | None = None,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
@@ -100,6 +120,7 @@ class PythonDiagnosticsClient:
         )
         self._timeout_s = timeout_s
         self._max_output_bytes = max_output_bytes
+        self._process_supervisor = process_supervisor
 
     # 返回实际探测到的诊断工具名称，缺失时为空
     @property
@@ -128,6 +149,7 @@ class PythonDiagnosticsClient:
                 self._boundary.root,
                 timeout_s=self._timeout_s,
                 max_output_bytes=self._max_output_bytes,
+                process_supervisor=self._process_supervisor,
             )
         except TimeoutError:
             return DiagnosticsReport(

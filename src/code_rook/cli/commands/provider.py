@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import getpass
 from collections.abc import Callable, Mapping
 
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.configuration import ConfigurationService
 from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.doctor import ProviderDoctor
 from code_rook.core.llm.route_registry import RouteRegistry
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.llm.routes import ProviderRoute, get_route_preset
@@ -58,21 +61,30 @@ def cmd_provider_add(
     wire_format: str | None,
     base_url: str | None,
     model: str | None,
+    temperature: float | None = None,
     credential_ref: str | None,
     set_key: bool,
     activate: bool,
     route_store: RouteStore | None = None,
     credential_store: CredentialStore | None = None,
     secret_fn: Callable[[str], str] = getpass.getpass,
+    validate: bool = False,
+    doctor: ProviderDoctor | None = None,
 ) -> None:
     routes = route_store or RouteStore()
     credentials = credential_store or CredentialStore()
+    configuration = ConfigurationService(routes, credentials)
     if preset is not None:
         route = _updated_route(
             get_route_preset(preset),
             {
                 "id": route_id,
                 **({"model": model} if model is not None else {}),
+                **(
+                    {"temperature": temperature}
+                    if temperature is not None
+                    else {}
+                ),
                 **(
                     {"credential_ref": credential_ref}
                     if credential_ref is not None
@@ -103,17 +115,25 @@ def cmd_provider_add(
                 "base_url": base_url,
                 "model": model,
                 "credential_ref": credential_ref or f"file:{route_id}",
+                "temperature": temperature,
             }
         )
+    secret: str | None = None
     if set_key:
         secret = secret_fn("API key: ").strip()
         if not secret:
             raise SystemExit("API key cannot be empty")
-        route = _updated_route(
-            route,
-            {"credential_ref": credentials.save(route_id, secret)},
+    if validate:
+        asyncio.run(
+            configuration.save_route_checked(
+                route,
+                secret=secret,
+                activate=activate,
+                doctor=doctor,
+            )
         )
-    routes.add(route, activate=activate)
+    else:
+        configuration.save_route(route, secret=secret, activate=activate)
     print(f"route added: {route.id}")
 
 
@@ -125,15 +145,19 @@ def cmd_provider_edit(
     wire_format: str | None,
     base_url: str | None,
     model: str | None,
+    temperature: float | None = None,
     credential_ref: str | None,
     set_key: bool,
     activate: bool,
     route_store: RouteStore | None = None,
     credential_store: CredentialStore | None = None,
     secret_fn: Callable[[str], str] = getpass.getpass,
+    validate: bool = False,
+    doctor: ProviderDoctor | None = None,
 ) -> None:
     routes = route_store or RouteStore()
     credentials = credential_store or CredentialStore()
+    configuration = ConfigurationService(routes, credentials)
     current = routes.get(route_id)
     updates = {
         key: value
@@ -142,21 +166,36 @@ def cmd_provider_edit(
             ("wire_format", wire_format),
             ("base_url", base_url),
             ("model", model),
+            ("temperature", temperature),
             ("credential_ref", credential_ref),
         )
         if value is not None
     }
+    secret: str | None = None
     if set_key:
         secret = secret_fn("API key: ").strip()
         if not secret:
             raise SystemExit("API key cannot be empty")
-        updates["credential_ref"] = credentials.save(route_id, secret)
-    if not updates and not activate:
+    if not updates and not activate and not set_key:
         raise SystemExit("no provider route changes requested")
-    if updates:
-        routes.update(_updated_route(current, updates))
-    if activate:
-        routes.set_active(route_id)
+    updated = _updated_route(current, updates) if updates else current
+    if validate:
+        asyncio.run(
+            configuration.save_route_checked(
+                updated,
+                secret=secret,
+                activate=activate,
+                update=True,
+                doctor=doctor,
+            )
+        )
+    else:
+        configuration.save_route(
+            updated,
+            secret=secret,
+            activate=activate,
+            update=True,
+        )
     print(f"route updated: {route_id}")
 
 
@@ -170,10 +209,10 @@ def cmd_provider_remove(
 ) -> None:
     routes = route_store or RouteStore()
     credentials = credential_store or CredentialStore()
-    route = routes.get(route_id)
-    routes.remove(route_id)
-    if delete_credential:
-        credentials.delete(route.credential_ref)
+    ConfigurationService(routes, credentials).remove_route(
+        route_id,
+        delete_credential=delete_credential,
+    )
     print(f"route removed: {route_id}")
 
 
@@ -183,7 +222,7 @@ def cmd_provider_use(
     *,
     route_store: RouteStore | None = None,
 ) -> None:
-    route = (route_store or RouteStore()).set_active(route_id)
+    route = ConfigurationService(route_store or RouteStore()).set_active(route_id)
     print(f"active route: {route.id}")
 
 

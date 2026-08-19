@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
@@ -697,7 +698,11 @@ class AgentLoop:
             )
 
         if source == "edit" and self._diagnostics_client is not None:
+            diagnostics_started = time.monotonic()
             report = await self._diagnostics_client.diagnose(list(paths))
+            diagnostics_duration_ms = int(
+                (time.monotonic() - diagnostics_started) * 1000
+            )
             for diagnostic in report.diagnostics:
                 context.working_set.touch(
                     diagnostic.path,
@@ -718,6 +723,7 @@ class AgentLoop:
                     tool=report.tool,
                     paths=list(paths),
                     diagnostic_count=len(report.diagnostics),
+                    duration_ms=diagnostics_duration_ms,
                     truncated=report.truncated,
                     error=report.error,
                     ts=_now(),

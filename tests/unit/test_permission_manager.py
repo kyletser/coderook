@@ -9,6 +9,7 @@ from code_rook.core.authority import AuthorityProfile, SandboxCapability
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
 from code_rook.core.permissions.storage import (
+    PolicyStoreError,
     load_authority_profile,
     load_policy_file,
     save_policy_file,
@@ -793,6 +794,63 @@ async def test_auto_review_with_sandbox_auto_allows_bash() -> None:
     assert allowed is True
     assert decision == "authority_sandbox_allow"
     assert emitted == []
+
+
+# 功能：验证不受支持的隔离后端即使标记 available 也不能让 AUTO_REVIEW shell 自动放行
+# 设计：使用默认 ASK bash 与不受支持 capability，确认请求仍进入审批而不是返回 sandbox allow
+async def test_auto_review_unsupported_backend_requires_approval() -> None:
+    mgr = _make_manager()
+    current = mgr.get_authority_snapshot("s-unknown-sbx")
+    mgr.set_authority_snapshot(
+        "s-unknown-sbx",
+        current.model_copy(
+            update={
+                "profile": AuthorityProfile.AUTO_REVIEW,
+                "sandbox": SandboxCapability(
+                    available=True,
+                    kind="windows_none",
+                    reason="probe claimed support",
+                ),
+            }
+        ),
+    )
+
+    emitted, emitter = await _collect_emitted()
+    task = asyncio.create_task(
+        mgr.check_and_wait(
+            tool_use_id="t-unknown-sbx",
+            tool_name="bash",
+            params={"command": "python -c 'print(1)'"},
+            session_id="s-unknown-sbx",
+            event_emitter=emitter,
+            action="shell",
+        )
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    assert emitted and emitted[0]["tool_use_id"] == "t-unknown-sbx"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# 功能：验证未来 policy.toml 版本会阻断读取与保存，旧版 daemon 不能静默降级覆盖
+# 设计：写入带 meta schema_version=99 的最小策略，分别调用 loader 和 save 后比较原文不变
+def test_future_policy_schema_blocks_unsupported_downgrade(
+    tmp_path: pytest.TempPathFixture,
+) -> None:
+    policy_file = tmp_path / "policy.toml"
+    original = '[meta]\nschema_version = 99\n\n[always]\nbash = "allow"\n'
+    policy_file.write_text(original, encoding="utf-8")
+
+    with pytest.raises(PolicyStoreError, match="newer than supported"):
+        load_policy_file(policy_file)
+    with pytest.raises(PolicyStoreError, match="newer than supported"):
+        save_policy_file({"bash": "deny"}, policy_file)
+
+    assert policy_file.read_text(encoding="utf-8") == original
 
 
 # 功能：AUTO_REVIEW 但无可用沙箱时 shell_sandbox_plan 返回 None，不包裹命令

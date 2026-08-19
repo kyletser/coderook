@@ -155,6 +155,27 @@ class FileTool(BaseTool):
             ),
         )
 
+    # 将审批上下文请求委派给当前 action 的真实 backend
+    def approval_context(self, params: dict[str, object]) -> dict[str, object] | None:
+        action = params.get("action")
+        if not isinstance(action, str) or action not in self._backends:
+            return None
+        backend_params = dict(params)
+        backend_params.pop("action", None)
+        return self._backends[action].approval_context(backend_params)
+
+    # 将 File action 解析为真实文件 backend，避免 backend 契约被 family 分派绕过
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        action = params.get("action")
+        if not isinstance(action, str) or action not in self._backends:
+            return self, dict(params)
+        backend_params = dict(params)
+        backend_params.pop("action", None)
+        return self._backends[action], backend_params
+
 
 # 注册 File family，并把允许的旧工具降级为 internal/replay alias
 def register_file_family(

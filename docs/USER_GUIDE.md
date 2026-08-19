@@ -21,6 +21,10 @@ uv sync
 
 macOS 和 Linux 使用相同命令。
 
+Windows 可用 `scripts\install-windows.ps1` 安装本地 checkout；运行
+`scripts\build_windows_portable.ps1` 可生成自带 Python 3.12 的 ZIP。容器方式见根目录
+`Dockerfile` 和 `docker-compose.example.yml`。
+
 ### 启动
 
 在项目目录执行：
@@ -68,7 +72,8 @@ uv run coderook
 模型列表不是写死的。CodeRook 会调用平台的模型查询接口，只显示当前 API Key
 实际能够访问并适用于文本对话的模型。探测失败时不会用虚构列表代替。
 
-配置完成后，CodeRook 会保存配置、重启自己管理的 Core，并恢复当前会话。
+选择模型后，CodeRook 会先发送最小 ProviderDoctor 请求验证凭据、TLS、endpoint、wire schema
+与模型；只有诊断成功才原子保存配置、重启自己管理的 Core，并恢复当前会话。失败不会破坏旧活动 route。
 
 ### 在命令行中配置
 
@@ -131,6 +136,13 @@ CodeRook 会根据任务自行读取代码、搜索项目、修改文件和调�
 
 展开工具组后，每个工具仍保持单行；继续点击单个工具，可以查看完整输入、完整结果、
 成功或失败状态与耗时。长内容限制在详情面板内部滚动，不会撑开整个会话。
+
+### 附加图片
+
+在输入框粘贴一个现有 PNG/JPEG/GIF/WebP 文件的本地路径，TUI 会按文件头识别类型和尺寸，
+先把内容写入 ArtifactStore，并显示尺寸、MIME 与短 hash。可继续输入问题后发送，也可只发图片。
+不支持图片的 route 会在调用供应商前给出错误；图片 base64 只进入一次模型请求，永久 transcript
+仅保留 `artifact:<sha256>` 描述。受终端能力限制，当前不保证直接粘贴剪贴板位图。
 
 ### 回答 Agent 的问题
 
@@ -217,8 +229,9 @@ Header 会分别显示 Mode、Authority 和 workspace trust，不再把它们合
 /sandbox status
 ```
 
-Trust 是项目是否受信任的独立状态。Sandbox 显示操作系统真实隔离能力；Windows 没有可用
-隔离后端时会明确显示 `unavailable`，不会把审批或 Full Access 描述成 sandbox。
+Trust 是项目是否受信任的独立状态。Sandbox 显示并驱动操作系统真实隔离能力：Linux 的 bwrap
+与 macOS 的 Seatbelt 可在 AUTO_REVIEW 下实际包装 Bash 命令；Windows 没有可用后端时会明确显示
+`unavailable` 并回到审批链，不会把审批或 Full Access 描述成 sandbox。
 
 ### 工具审批
 
@@ -305,8 +318,13 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 
 | 命令 | 作用 |
 |---|---|
+| `/help` | 查看键位、内置命令及参数提示 |
 | `/new` | 创建并切换到新会话 |
 | `/sessions` | 打开历史会话选择器 |
+| `/rename 标题` | 重命名当前会话 |
+| `/fork [标题]` | 从当前会话创建分支 |
+| `/export [md\|json]` | 导出当前会话 |
+| `/delete --yes` | 删除当前会话 |
 | `/model` | 查看或切换当前模型 |
 | `/config` | 更换 API 平台、Key 或模型 |
 | `/compact` | 手动压缩当前会话上下文 |
@@ -325,9 +343,14 @@ Plan Mode 用于先分析、确认方案，再修改代码。
 | `/diff` | 查看当前工作区改动和统一 diff |
 | `/rewind` | 从安全 checkpoint 恢复文件 |
 | `/context` | 查看消息数、token 估算、运行次数和上下文占用 |
+| `/cost` | 查看本会话按模型估算的成本与缓存节省 |
 | `/turn` | 检视当前最近 turn 的 route、usage、工具、审批、诊断与 receipt |
 | `/turn ID` | 检视指定 durable turn |
 | `/skills` | 列出、查看、安装、删除或审计 Skills |
+| `/mcp` | 查看 MCP server 状态和工具 |
+| `/hooks [rerun ID --yes]` | 查看 Hook 或确认后重跑指定执行记录 |
+| `/memory [delete ID --yes]` | 查看或确认后删除项目记忆 |
+| `/jobs [show\|cancel]` | 查看或取消后台任务和 Worker |
 | `/技能名` | 调用已注册的 Skill |
 
 输入 `/` 会同时列出内置命令和当前已注册的 Skills。
@@ -410,7 +433,17 @@ TUI 是主要使用界面。CLI 适合脚本、调试和一次性任务：
 ```powershell
 uv run coderook ping
 uv run coderook run --goal "分析项目并运行相关测试"
+uv run coderook run --goal "分析项目" --output-format stream-json
+uv run coderook run --goal "继续处理" --resume SESSION_ID
+uv run coderook doctor all --json
+uv run coderook doctor runtime --json
+uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
+uv run coderook artifacts list --json
+uv run coderook artifacts gc --days 30
 ```
+
+`--output-format json|stream-json` 的 stdout 只输出版本化协议，适合脚本消费；
+`artifacts gc` 默认只列出候选项，只有显式加 `--yes` 才会在二次引用扫描后删除。
 
 Headless 任务默认使用 `fail-fast`：遇到需要人工审批的工具就退出。明确允许指定工具时：
 
@@ -426,6 +459,18 @@ uv run coderook run --goal "修改并验证代码" `
 
 `allow-list` 仍然不能绕过危险命令规则和工作区边界。完全不允许审批类工具时可使用
 `--permission-mode deny`。
+
+Headless 不会无限等待 Agent 提问。默认 `--question-mode fail-fast`；也可显式选择：
+
+```powershell
+uv run coderook run --goal "按既定选择执行" `
+  --question-mode preset --answer "保留向后兼容"
+uv run coderook run --goal "等待外部确认" `
+  --question-mode timeout --question-timeout 30
+```
+
+`preset` 可以重复提供 `--answer`，按提问顺序消费；用尽后明确失败。`timeout` 到期后写入终态，
+不会留下未解析 Future。
 
 ## 11. Core 管理
 

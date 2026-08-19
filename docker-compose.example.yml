@@ -1,0 +1,13 @@
+services:
+  coderook:
+    build: .
+    environment:
+      CODEROOK_API_TOKEN: "replace-with-a-long-random-token"
+    ports:
+      - "127.0.0.1:7438:7438"
+    volumes:
+      - coderook-state:/home/coderook/.coderook
+      - .:/workspace
+
+volumes:
+  coderook-state:

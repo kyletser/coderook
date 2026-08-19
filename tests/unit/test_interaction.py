@@ -5,7 +5,7 @@ import asyncio
 from pydantic import BaseModel
 
 from code_rook.core.events.bus import EventBus
-from code_rook.core.interaction import InteractionManager
+from code_rook.core.interaction import HeadlessQuestionPolicy, InteractionManager
 from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
 
 
@@ -84,3 +84,42 @@ def test_steering_queue_is_scoped_to_active_run() -> None:
     manager.unregister_run("run-1")
     assert manager.drain_steering("run-1") == []
     assert not manager.steer("run-1", "too late")
+
+
+# 功能：验证 headless fail-fast 提问不会留下无限等待 Future
+# 设计：通过真实提问工具触发策略，断言立即返回明确错误并仍发布可审计的问题事件
+async def test_headless_question_fail_fast_returns_error() -> None:
+    bus = EventBus()
+    events: list[BaseModel] = []
+
+    # 收集问题事件以证明 fail-fast 路径仍保留审计证据
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    manager = InteractionManager(bus)
+    manager.set_question_policy("sess-1", HeadlessQuestionPolicy())
+    tool = AskUserQuestionTool(manager, "sess-1", "run-1")
+
+    result = await tool.invoke({"question": "需要输入吗？"})
+
+    assert result.is_error
+    assert "headless question requires input" in result.content
+    assert getattr(events[0], "type") == "user_question.asked"
+
+
+# 功能：验证 headless 预置答案严格按配置顺序消费且不会等待客户端
+# 设计：连续提出两个真实问题并比较返回值，覆盖有界非交互回答队列的确定性
+async def test_headless_question_uses_ordered_preset_answers() -> None:
+    manager = InteractionManager(EventBus())
+    manager.set_question_policy(
+        "sess-1",
+        HeadlessQuestionPolicy(mode="preset", answers=("第一项", "第二项")),
+    )
+    tool = AskUserQuestionTool(manager, "sess-1", "run-1")
+
+    first = await tool.invoke({"question": "第一个？"})
+    second = await tool.invoke({"question": "第二个？"})
+
+    assert first.content == "User answer: 第一项"
+    assert second.content == "User answer: 第二项"

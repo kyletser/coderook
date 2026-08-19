@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from code_rook.core.llm.routes import ProviderRoute
 
 _DEFAULT_ROUTE_PATH = "~/.coderook/routes.json"
+_CURRENT_ROUTE_DOCUMENT_VERSION = 1
 
 
 class RouteStoreError(ValueError):
@@ -21,6 +22,17 @@ class _RouteDocument(BaseModel):
     version: int = Field(default=1, ge=1)
     active_route_id: str | None = None
     routes: list[ProviderRoute] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    # 阻断较新 route 文档被旧版 daemon 静默重写
+    def _validate_version(self) -> _RouteDocument:
+        if self.version > _CURRENT_ROUTE_DOCUMENT_VERSION:
+            raise ValueError(
+                "route document version "
+                f"{self.version} is newer than supported "
+                f"{_CURRENT_ROUTE_DOCUMENT_VERSION}"
+            )
+        return self
 
     @model_validator(mode="after")
     # 校验路由 ID 唯一且活动路由必须真实存在
@@ -90,6 +102,28 @@ class RouteStore:
                 self._save(document)
                 return
         raise RouteStoreError(f"route not found: {route.id}")
+
+    # 在一次原子文件替换中新增或更新 route 并可同步切换活动项
+    def commit(
+        self,
+        route: ProviderRoute,
+        *,
+        update: bool,
+        activate: bool,
+    ) -> None:
+        document = self._load()
+        matching = [index for index, item in enumerate(document.routes) if item.id == route.id]
+        if update:
+            if not matching:
+                raise RouteStoreError(f"route not found: {route.id}")
+            document.routes[matching[0]] = route
+        else:
+            if matching:
+                raise RouteStoreError(f"route already exists: {route.id}")
+            document.routes.append(route)
+        if activate or document.active_route_id is None:
+            document.active_route_id = route.id
+        self._save(document)
 
     # 删除路由并在删除活动项时清空活动选择
     def remove(self, route_id: str) -> None:

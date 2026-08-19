@@ -22,6 +22,7 @@ from code_rook.core.hooks.models import (
 )
 from code_rook.core.hooks.payload import build_hook_payload
 from code_rook.core.hooks.process import HookProcessResult, execute_hook_process
+from code_rook.core.processes import ProcessSupervisor
 
 LegacyHookEvent = Literal["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]
 HookCallback = Callable[[dict[str, Any]], Awaitable["HookDecision | None"]]
@@ -103,6 +104,7 @@ class HookManager:
         bus: EventBus | None = None,
         queue_size: int = 64,
         project_trust_provider: ProjectTrustProvider | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         if queue_size < 1:
             raise ValueError("hook queue_size must be positive")
@@ -115,6 +117,7 @@ class HookManager:
         self._queue: asyncio.Queue[_QueuedHook] = asyncio.Queue(maxsize=queue_size)
         self._worker: asyncio.Task[None] | None = None
         self._project_trust_provider = project_trust_provider
+        self._process_supervisor = process_supervisor
         self._audit: deque[HookAuditEvent] = deque(maxlen=1000)
 
     @classmethod
@@ -127,6 +130,7 @@ class HookManager:
         bus: EventBus | None = None,
         queue_size: int = 64,
         project_trust_provider: ProjectTrustProvider | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> HookManager:
         return cls(
             load_hook_configs(workspace, user_config=user_config),
@@ -134,6 +138,7 @@ class HookManager:
             bus=bus,
             queue_size=queue_size,
             project_trust_provider=project_trust_provider,
+            process_supervisor=process_supervisor,
         )
 
     # 注册一个内存异步 hook，并保持注册顺序执行
@@ -249,7 +254,12 @@ class HookManager:
         payload = build_hook_payload(config, event, context)
         cwd = self._workspace if config.trusted_scope == "project" else Path.home()
         try:
-            result = await execute_hook_process(config, payload, cwd=cwd)
+            result = await execute_hook_process(
+                config,
+                payload,
+                cwd=cwd,
+                supervisor=self._process_supervisor,
+            )
         except Exception as exc:
             logger.exception("hook process failed hook_id=%s", config.id)
             result = HookProcessResult("failed", None, "", str(exc), False)
@@ -266,6 +276,8 @@ class HookManager:
             reason=reason,
             output_truncated=result.output_truncated,
             exit_code=result.exit_code,
+            process_usage=result.process_usage or {},
+            run_id=str(context.get("run_id", "")),
         )
         return HookDecision(blocked=blocked, reason=reason)
 
@@ -299,9 +311,12 @@ class HookManager:
         reason: str = "",
         output_truncated: bool = False,
         exit_code: int | None = None,
+        process_usage: dict[str, Any] | None = None,
+        run_id: str = "",
     ) -> None:
         audit = HookAuditEvent(
             hook_id=config.id,
+            run_id=run_id,
             event=config.event,
             status=status,
             blocking=config.blocking,
@@ -311,6 +326,7 @@ class HookManager:
             reason=reason[:1000],
             output_truncated=output_truncated,
             exit_code=exit_code,
+            process_usage=process_usage or {},
             ts=_now(),
         )
         self._audit.append(audit)
@@ -320,6 +336,7 @@ class HookManager:
             await self._bus.publish(
                 HookExecutedEvent(
                     hook_id=audit.hook_id,
+                    run_id=audit.run_id,
                     event_name=audit.event,
                     status=audit.status,
                     blocking=audit.blocking,
@@ -329,6 +346,7 @@ class HookManager:
                     reason=audit.reason,
                     output_truncated=audit.output_truncated,
                     exit_code=audit.exit_code,
+                    process_usage=audit.process_usage,
                     ts=audit.ts,
                 )
             )

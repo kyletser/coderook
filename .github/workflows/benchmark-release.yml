@@ -1,0 +1,58 @@
+name: Release benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2]
+        route:
+          - anthropic_messages
+          - openai_responses
+        include:
+          - route: anthropic_messages
+            provider: anthropic
+            model: CODEROOK_BENCH_ANTHROPIC_MODEL
+            base_url: CODEROOK_BENCH_ANTHROPIC_BASE_URL
+            secret: CODEROOK_BENCH_ANTHROPIC_KEY
+          - route: openai_responses
+            provider: openai
+            model: CODEROOK_BENCH_OPENAI_MODEL
+            base_url: CODEROOK_BENCH_OPENAI_BASE_URL
+            secret: CODEROOK_BENCH_OPENAI_KEY
+    env:
+      CODEROOK_LLM_PROVIDER: ${{ matrix.provider }}
+      CODEROOK_LLM_DEFAULT_MODEL: ${{ vars[matrix.model] }}
+      CODEROOK_LLM_BASE_URL: ${{ vars[matrix.base_url] }}
+      CODEROOK_LLM_API_KEY_ENV: CODEROOK_RELEASE_API_KEY
+      CODEROOK_RELEASE_API_KEY: ${{ secrets[matrix.secret] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Require explicit release route
+        run: |
+          test -n "$CODEROOK_LLM_DEFAULT_MODEL"
+          test -n "$CODEROOK_RELEASE_API_KEY"
+      - name: Run candidate suite
+        run: >-
+          uv run python scripts/run_benchmark.py --suite release
+          --output .benchmark-results/${{ matrix.route }}-${{ matrix.repeat }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-${{ matrix.route }}-${{ matrix.repeat }}
+          path: .benchmark-results/${{ matrix.route }}-${{ matrix.repeat }}
+          if-no-files-found: warn

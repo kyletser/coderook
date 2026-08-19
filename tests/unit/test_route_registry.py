@@ -63,6 +63,29 @@ def test_registry_resolves_active_route_and_receipt(tmp_path: Path) -> None:
     assert "zen-secret" not in resolved.receipt.model_dump_json()
 
 
+# 功能：验证 benchmark 温度覆盖应用到配置 route 和 receipt，但不修改持久 route 文件
+# 设计：对同一临时 store 创建带 override 的第二 registry，比较解析值与原始存储值
+def test_registry_applies_ephemeral_temperature_override(tmp_path: Path) -> None:
+    _registry_default, routes, credentials = _registry(tmp_path)
+    reference = credentials.save("deterministic", "secret")
+    route = get_route_preset("openai").model_copy(
+        update={"id": "deterministic", "credential_ref": reference}
+    )
+    routes.add(route, activate=True)
+    overridden = RouteRegistry(
+        LlmConfig(),
+        route_store=routes,
+        credential_store=credentials,
+        temperature_override=0.0,
+    )
+
+    resolved = overridden.resolve()
+
+    assert resolved.route.temperature == 0.0
+    assert resolved.receipt.temperature == 0.0
+    assert routes.get("deterministic").temperature is None
+
+
 # 功能：验证切换 route 只改变选择，不覆盖任何另一 route 凭据
 # 设计：保存两条独立 file ref，来回切换后分别解析并比较原始值
 def test_registry_switches_routes_without_overwriting_credentials(tmp_path: Path) -> None:

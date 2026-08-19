@@ -12,6 +12,7 @@ CodeRook 是一个使用 Python 3.12 构建的本地 AI 编程 Agent 运行时�
 flowchart LR
     CLI["coderook CLI"] -->|"JSON-RPC 2.0 / NDJSON"| Core["coderook-core daemon"]
     TUI["coderook-tui"] -->|"JSON-RPC 2.0 / NDJSON"| Core
+    SDK["Python SDK / VS Code"] -->|"HTTP + SSE"| Core
     Core --> Runner["AgentRunner"]
     Runner --> Loop["Async AgentLoop"]
     Loop --> LLM["Anthropic / OpenAI-compatible LLM"]
@@ -30,16 +31,18 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 
 | 领域 | 当前实现 |
 |---|---|
-| Agent Loop | 异步 Plan-Act-Observe 循环、只读工具批量并行、Todo 软状态机、限流退避与上下文溢出恢复 |
+| Agent Loop | 异步 Plan-Act-Observe 循环、只读工具批量并行、Todo 软状态机、步数续段、每步路由刷新、限流退避与上下文溢出恢复 |
 | 类型化协议 | Pydantic v2 命令/事件模型、JSON-RPC 2.0、NDJSON 流、自动生成协议文档 |
-| 本地安全 | loopback 限制、首帧 token 认证、工作区边界、参数校验、交互审批与 headless 权限模式 |
-| 代码工具 | 稳定的 `File`、`Git`、`Run`、`Bash` action-family；Checkpoint/Rewind 与旧 transcript replay 兼容 |
-| 会话系统 | 多轮 thread、block 级 transcript、崩溃尾部恢复、会话恢复/分叉/导出/删除 |
+| 本地安全 | loopback 与强制 token 认证、工作区边界、命令前缀策略、Linux bwrap/macOS Seatbelt 沙箱包装（Windows 明确降级）、交互审批与 headless 权限模式 |
+| 代码工具 | `File`、`Git`、`Run`、`Bash` action-family，WebFetch/WebSearch、图片读取、持久 shell、Python/TypeScript 诊断与 Checkpoint/Rewind |
+| 会话系统 | 多轮 thread、checksum chain transcript、损坏检测/恢复、会话恢复/分叉/导出/删除、SQLite 投影对账 |
 | 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
 | 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
+| 模型经济性 | thinking/reasoning 档位、会话成本与缓存节省、static/rule_based/cost_budget 路由和用户单价覆盖 |
 | 多 Agent | 角色模型覆盖、只读 reviewer、共享任务板、跨 turn 后台任务和 Git worktree 隔离 |
 | 扩展机制 | Skills、MCP 工具接入、11 个生命周期 Hooks（兼容 UserPromptSubmit/PreToolUse/PostToolUse/Stop 旧名） |
-| 可观测性 | TUI 实时事件、token 水位、工具与审批状态、压缩指标、events.jsonl 和脱敏 Trace |
+| 可观测性 | TUI 实时事件、durable token/cost/路由决策、逐 hunk 审批、TurnReceipt、events.jsonl、doctor 与脱敏诊断包 |
+| 机器接口 | 版本化 JSON/NDJSON、HTTP/SSE、同步/异步 Python SDK、MCP Streamable HTTP、VS Code 原型 |
 
 ## 快速开始
 
@@ -68,6 +71,10 @@ macOS/Linux 可使用：
 cp .env.example .env
 ```
 
+Windows 也可运行 `scripts\install-windows.ps1`。`scripts\build_windows_portable.ps1`
+会生成自带 Python 3.12 的 portable ZIP。容器部署使用 `Dockerfile` 或
+`docker-compose.example.yml`；对外监听 HTTP API 时必须配置长随机 Bearer token。
+
 ### 2. 配置模型
 
 推荐使用交互式向导：
@@ -83,6 +90,7 @@ uv run coderook configure
 - 隐藏输入和更新 API key
 - 为两种协议分别保留 API key，切换时互不覆盖
 - 修改配置后自动重启由 CodeRook 管理的 Core
+- 候选 route 先执行脱敏 ProviderDoctor，成功后才一次性提交 route、active id 与凭据
 
 普通配置保存在 `~/.coderook/config.toml`，密钥单独保存在
 `~/.coderook/credentials.json`，不会写入仓库或日志。若项目已有 `.env`，向导会同步其中的
@@ -135,15 +143,19 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 |---|---|
 | `/new` | 创建并切换到新会话 |
 | `/sessions` | 打开历史会话选择器 |
+| `/rename`、`/fork`、`/export`、`/delete` | 在 TUI 中管理当前会话 |
 | `/model` | 打开模型选择器，选择后保存默认模型、重启 Core 并恢复当前会话 |
 | `/model <模型 ID>` | 直接新增并切换到该模型 |
 | `/model add <模型 ID>` | 新增自定义模型并立即切换 |
 | `/config` | 在当前页面选择 API 平台、填写 API Key 并探测可用模型 |
+| 粘贴本地图片路径 | 校验图片内容/尺寸后先落 ArtifactStore，再随下一条消息发送；永久 transcript 不存 base64 |
 | `/compact` | 手动执行结构化上下文压缩 |
 | `/mode plan\|act\|operate` | 独立查看或切换工作模式，`Tab` 循环 |
 | `/permissions ask\|auto-review\|full-access` | 独立查看或切换权限姿态，`Shift+Tab` 循环 |
 | `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
-| `/sandbox status` | 查看 OS 隔离能力探测结果（advisory，当前不实施进程隔离） |
+| `/sandbox status` | 查看 OS 隔离后端；Linux/macOS 可实际包装 Bash，Windows 当前降级为审批链与工作区边界 |
+| `/cost` | 查看本会话按模型估算的成本与缓存节省 |
+| `/mcp`、`/hooks`、`/memory`、`/jobs`、`/artifacts` | 查看扩展、记忆、后台任务和产物，带副作用操作需确认 |
 | `/skills list\|show\|install\|remove\|audit` | 管理带 provenance 和 digest 校验的 Skills |
 | `/skill_name` | 调用已安装 Skill |
 | `Ctrl+Q` | 退出 TUI |
@@ -156,8 +168,14 @@ CLI 适合脚本、调试和无人值守任务：
 uv run coderook ping
 uv run coderook chat
 uv run coderook run --goal "分析项目并运行测试"
+uv run coderook run --goal "分析项目" --output-format stream-json
 uv run coderook sessions --all
 uv run coderook skills audit
+uv run coderook doctor runtime --json
+uv run coderook doctor all --json
+uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
+uv run coderook artifacts list --json
+uv run coderook artifacts gc --days 30        # 默认只预览
 uv run coderook trace --follow
 ```
 
@@ -172,6 +190,17 @@ uv run coderook run --goal "修改并验证代码" `
 ```
 
 allow-list 仍不能绕过危险命令规则和工作区边界。
+
+模型若可能调用 `ask_user_question`，headless 还必须选择有限等待策略：
+
+```powershell
+uv run coderook run --goal "按预设完成迁移" `
+  --question-mode preset --answer "使用兼容模式"
+uv run coderook run --goal "等待一次外部选择" `
+  --question-mode timeout --question-timeout 30
+```
+
+`--resume SESSION_ID` 可把新目标追加到已有会话。机器格式只在 stdout 输出协议，日志写 stderr。
 
 ### 会话管理
 
@@ -218,15 +247,18 @@ tool_result_summarize_threshold = 20000
 ```text
 src/code_rook/
 ├── cli/                 # CLI 命令与 IPC 客户端
-├── tui/                 # Textual 终端界面
+├── tui/                 # Textual 终端界面（连接/命令/IPC/渲染/面板/控件已模块化）
 └── core/
     ├── bus/             # 类型化命令、事件与 JSON-RPC envelope
     ├── transport/       # TCP NDJSON server/client、IPC token 认证与事件广播
     ├── api/             # 手写 HTTP runtime API（threads/turns/SSE）
-    ├── llm/             # 路由、凭证、Anthropic/OpenAI 兼容 provider 与 doctor
-    ├── tools/           # 工具注册、调用、权限与内置工具（含 action families）
-    ├── permissions/     # 六层权限决策与策略持久化
-    ├── authority/       # 授权矩阵与沙箱能力探测（advisory）
+    ├── llm/             # 路由、凭证、provider、thinking、pricing、router 与 doctor
+    ├── tools/           # 工具注册、调用、Web/图片/持久 shell 与 action families
+    ├── permissions/     # 六层权限决策、命令前缀与策略持久化
+    ├── authority/       # 授权矩阵与沙箱能力探测
+    ├── sandbox/         # Linux bwrap/macOS Seatbelt 执行计划；Windows 降级
+    ├── lsp/             # Python/TypeScript 编辑后诊断
+    ├── persistent_shell.py # session 级 cwd/env/venv 复用
     ├── loop.py          # 异步 Agent 主循环（runner/context/interaction 同层）
     ├── session/         # 会话、transcript、导出和恢复
     ├── runtime/         # SQLite durable 投影（threads/turns/items/events）
@@ -268,11 +300,13 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-当前测试基线为 `841 passed, 4 skipped`。测试覆盖协议、传输、Agent Loop、工具权限、action-family、上下文压缩、会话恢复、记忆、后台任务、品牌迁移、worktree 管理、daemon 单写者锁、SSE 流式与 HTTP API 认证。
+CI 在 Ubuntu、Windows 与 macOS 上执行静态检查、测试、40 任务离线 benchmark 契约、沙箱负向门禁、协议生成检查、wheel smoke；Linux 额外类型检查 VS Code 原型。真实模型 nightly/release 与普通 CI 分离，避免测试隐式消费密钥。
 
 ## 设计文档
 
 - [功能架构](docs/FUNCTIONAL_ARCHITECTURE.md)
+- [2026 H2 优化路线图与 Stage 0–4 复盘](docs/OPTIMIZATION_ROADMAP.md)
+- [生产就绪改造计划](docs/PRODUCTION_READINESS_PLAN.md)
 - [Wire Protocol](WIRE_PROTOCOL.md)
 - [运行手册](RUNBOOK.md)
 - [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
@@ -289,7 +323,7 @@ CodeRook 适合作为 AI Agent 工程方向的学习与求职项目，因为它�
 - 如何隔离并行子 Agent 的代码修改？
 - 如何用事件、Trace 和测试证明 Agent 不是黑盒？
 
-项目仍是面向学习和本地开发的 mini Coding Agent，不宣称一比一复刻 Claude Code 或 Codex。
+项目仍处于候选 Beta 前的工程验证阶段，不宣称一比一复刻 Claude Code 或 Codex，也不在真实模型、三平台安全、强杀恢复和分发评分卡达标前宣称生产就绪。当前门禁见 [发布评分卡](docs/RELEASE_SCORECARD.md)。
 
 ## License
 

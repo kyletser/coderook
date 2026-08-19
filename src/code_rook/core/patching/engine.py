@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -65,6 +66,67 @@ class PatchOutcome:
 
 
 @dataclass(frozen=True)
+class PatchHunkPlan:
+    id: str
+    path: str
+    index: int
+    source_start: int
+    source_length: int
+    target_start: int
+    target_length: int
+    additions: int
+    removals: int
+    header: str
+    selectable: bool
+
+
+@dataclass(frozen=True)
+class PatchFilePlan:
+    path: str
+    action: Action
+    old_hash: str | None
+    new_hash: str | None
+    hunks: tuple[PatchHunkPlan, ...]
+
+
+@dataclass(frozen=True)
+class PatchPlan:
+    id: str
+    patch_text: str
+    files: tuple[PatchFilePlan, ...]
+
+    # 返回适合 IPC 审批事件的无原始补丁结构化摘要
+    def approval_context(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "files": [
+                {
+                    "path": item.path,
+                    "action": item.action,
+                    "old_hash": item.old_hash,
+                    "new_hash": item.new_hash,
+                    "hunks": [
+                        {
+                            "id": hunk.id,
+                            "index": hunk.index,
+                            "source_start": hunk.source_start,
+                            "source_length": hunk.source_length,
+                            "target_start": hunk.target_start,
+                            "target_length": hunk.target_length,
+                            "additions": hunk.additions,
+                            "removals": hunk.removals,
+                            "header": hunk.header,
+                            "selectable": hunk.selectable,
+                        }
+                        for hunk in item.hunks
+                    ],
+                }
+                for item in self.files
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class _TextFormat:
     bom: bool
     newline: str
@@ -80,6 +142,92 @@ class PatchEngine:
         self._boundary = boundary
         self._checkpoint_store = checkpoint_store
 
+    # 校验补丁并生成绑定当前文件哈希的稳定逐 hunk 审阅计划
+    def plan(self, patch_text: str) -> PatchPlan:
+        outcome = self.apply(patch_text, dry_run=True)
+        patch_set = _parse_patch_set(patch_text)
+        outcomes = {item.path: item for item in outcome.files}
+        files: list[PatchFilePlan] = []
+        for patched_file in patch_set:
+            action, path = _patch_file_identity(patched_file)
+            item = outcomes[path]
+            all_or_nothing = action in {"add", "delete"} and len(patched_file) > 1
+            hunks: list[PatchHunkPlan] = []
+            for index, hunk in enumerate(patched_file, start=1):
+                hunk_text = str(hunk)
+                digest = hashlib.sha256(
+                    f"{path}\0{index}\0{hunk_text}".encode()
+                ).hexdigest()[:16]
+                hunks.append(
+                    PatchHunkPlan(
+                        id=f"h-{digest}",
+                        path=path,
+                        index=index,
+                        source_start=int(hunk.source_start),
+                        source_length=int(hunk.source_length),
+                        target_start=int(hunk.target_start),
+                        target_length=int(hunk.target_length),
+                        additions=sum(1 for line in hunk if line.line_type == "+"),
+                        removals=sum(1 for line in hunk if line.line_type == "-"),
+                        header=str(hunk.section_header or ""),
+                        selectable=not all_or_nothing,
+                    )
+                )
+            files.append(
+                PatchFilePlan(
+                    path=path,
+                    action=action,
+                    old_hash=item.old_hash,
+                    new_hash=item.new_hash,
+                    hunks=tuple(hunks),
+                )
+            )
+        identity = "\n".join(
+            f"{item.path}:{item.old_hash or '-'}" for item in files
+        )
+        plan_id = hashlib.sha256(
+            f"{identity}\0{patch_text}".encode()
+        ).hexdigest()
+        return PatchPlan(id=f"patch-{plan_id[:24]}", patch_text=patch_text, files=tuple(files))
+
+    # 应用审阅计划中选定的 hunk，并拒绝计划生成后的文件漂移
+    def apply_plan(
+        self,
+        plan: PatchPlan,
+        selected_hunks: set[str],
+    ) -> PatchOutcome:
+        self._assert_plan_current(plan)
+        current = self.plan(plan.patch_text)
+        if current.id != plan.id:
+            raise PatchError(
+                "stale_patch_plan",
+                "workspace changed after patch review; generate a new patch plan",
+            )
+        known = {hunk.id for item in plan.files for hunk in item.hunks}
+        unknown = selected_hunks - known
+        if unknown:
+            raise PatchError(
+                "unknown_hunk",
+                f"selected hunk ids are not in patch plan: {', '.join(sorted(unknown))}",
+            )
+        if not selected_hunks:
+            raise PatchError("empty_selection", "at least one patch hunk must be selected")
+        selected_patch = _select_patch_hunks(plan, selected_hunks)
+        return self.apply(selected_patch)
+
+    # 对比计划记录的原始哈希，先于 hunk 匹配报告明确的审阅后漂移
+    def _assert_plan_current(self, plan: PatchPlan) -> None:
+        for item in plan.files:
+            path = self._boundary.resolve(item.path)
+            raw = path.read_bytes() if path.is_file() else None
+            current_hash = content_hash(raw) if raw is not None else None
+            if current_hash != item.old_hash:
+                raise PatchError(
+                    "stale_patch_plan",
+                    "workspace changed after patch review; generate a new patch plan",
+                    path=item.path,
+                )
+
     def apply(self, patch_text: str, *, dry_run: bool = False) -> PatchOutcome:
         encoded_patch = patch_text.encode("utf-8")
         if not patch_text.strip():
@@ -89,10 +237,7 @@ class PatchEngine:
                 "patch_too_large",
                 f"patch is {len(encoded_patch)} bytes; limit is {MAX_PATCH_BYTES} bytes",
             )
-        try:
-            patch_set = PatchSet(patch_text.splitlines(keepends=True))
-        except (UnidiffParseError, UnicodeDecodeError) as exc:
-            raise PatchError("invalid_patch", f"invalid unified diff: {exc}") from exc
+        patch_set = _parse_patch_set(patch_text)
         if not patch_set:
             raise PatchError("empty_patch", "patch contains no file changes")
         if len(patch_set) > MAX_PATCH_FILES:
@@ -246,6 +391,58 @@ class PatchEngine:
             new_hash=content_hash(updated) if updated is not None else None,
         )
         return FileMutation(path=path, original=original, updated=updated), outcome
+
+
+# 解析 unified diff 并把第三方解析错误收敛成稳定 PatchError
+def _parse_patch_set(patch_text: str) -> PatchSet:
+    try:
+        return PatchSet(patch_text.splitlines(keepends=True))
+    except (UnidiffParseError, UnicodeDecodeError) as exc:
+        raise PatchError("invalid_patch", f"invalid unified diff: {exc}") from exc
+
+
+# 返回文件补丁的动作和规范化工作区相对路径
+def _patch_file_identity(patched_file: Any) -> tuple[Action, str]:
+    if patched_file.source_file == "/dev/null":
+        return "add", _clean_patch_path(patched_file.target_file)
+    if patched_file.target_file == "/dev/null":
+        return "delete", _clean_patch_path(patched_file.source_file)
+    source = _clean_patch_path(patched_file.source_file)
+    target = _clean_patch_path(patched_file.target_file)
+    if source != target:
+        raise PatchError(
+            "path_mismatch",
+            f"source and target paths differ: {source!r} != {target!r}",
+        )
+    return "modify", source
+
+
+# 按稳定 hunk id 重建仅含所选块的 unified diff
+def _select_patch_hunks(plan: PatchPlan, selected: set[str]) -> str:
+    patch_set = _parse_patch_set(plan.patch_text)
+    planned_by_path = {item.path: item for item in plan.files}
+    output: list[str] = []
+    for patched_file in patch_set:
+        _action, path = _patch_file_identity(patched_file)
+        file_plan = planned_by_path[path]
+        chosen = [
+            (hunk_plan, hunk)
+            for hunk_plan, hunk in zip(file_plan.hunks, patched_file, strict=True)
+            if hunk_plan.id in selected
+        ]
+        if not chosen:
+            continue
+        if any(not hunk.selectable for hunk in file_plan.hunks):
+            if len(chosen) != len(file_plan.hunks):
+                raise PatchError(
+                    "partial_file_action_not_supported",
+                    f"all hunks must be selected for {file_plan.action} file: {path}",
+                    path=path,
+                )
+        output.append(f"--- {patched_file.source_file}\n")
+        output.append(f"+++ {patched_file.target_file}\n")
+        output.extend(str(hunk) for _hunk_plan, hunk in chosen)
+    return "".join(output)
 
 
 def _clean_patch_path(raw_path: str) -> str:

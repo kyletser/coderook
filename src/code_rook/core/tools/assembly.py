@@ -14,6 +14,7 @@ from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
@@ -93,6 +94,8 @@ class RuntimeToolAssembly:
         mcp_manager: McpServerManager | None,
         route_registry: RouteRegistry | None,
         hooks: HookManager | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
+        persistent_shell_pool: PersistentShellPool | None = None,
     ) -> None:
         self._boundary = workspace_boundary
         self._artifact_store = artifact_store
@@ -109,7 +112,10 @@ class RuntimeToolAssembly:
         self._route_registry = route_registry
         self._hooks = hooks
         # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
-        self._persistent_pool = PersistentShellPool()
+        self._process_supervisor = process_supervisor
+        self._persistent_pool = persistent_shell_pool or PersistentShellPool(
+            process_supervisor=process_supervisor
+        )
 
     # 依据权限管理层计算当前 session 应施加的 OS 沙箱计划（无权限管理器则返回 None）
     def _shell_sandbox_plan(self, session_id: str) -> SandboxPlan | None:
@@ -135,6 +141,7 @@ class RuntimeToolAssembly:
         tool_whitelist: list[str] | None = None,
         checkpoint_store: CheckpointStore | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        supports_images: bool = True,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
 
@@ -151,8 +158,8 @@ class RuntimeToolAssembly:
         registry = ToolRegistry(runtime_mode=runtime_mode)
         file_tools = [
             ReadFileTool(self._boundary),
-            GlobTool(self._boundary),
-            GrepTool(self._boundary),
+            GlobTool(self._boundary, process_supervisor=self._process_supervisor),
+            GrepTool(self._boundary, process_supervisor=self._process_supervisor),
             EditFileTool(self._boundary, checkpoint_store=checkpoint_store),
             ApplyPatchTool(self._boundary, checkpoint_store=checkpoint_store),
             WriteFileTool(self._boundary, checkpoint_store=checkpoint_store),
@@ -170,14 +177,20 @@ class RuntimeToolAssembly:
         register_git_family(
             registry,
             self._boundary,
-            GitDiffTool(self._boundary),
+            GitDiffTool(
+                self._boundary,
+                process_supervisor=self._process_supervisor,
+            ),
             allowed_names=allowed,
+            process_supervisor=self._process_supervisor,
         )
+        sandbox_plan = self._shell_sandbox_plan(session_id)
         shell = BashTool(
             self._boundary.root,
             persistent_pool=self._persistent_pool,
             persistent_key=session_id,
-            sandbox_plan=self._shell_sandbox_plan(session_id),
+            sandbox_plan=sandbox_plan,
+            process_supervisor=self._process_supervisor,
         )
         register_run_family(registry, shell, allowed_names=allowed)
         register_bash_family(
@@ -187,6 +200,8 @@ class RuntimeToolAssembly:
             session_id=session_id,
             run_id=run_id or "",
             allowed_names=allowed,
+            sandbox_plan=sandbox_plan,
+            cwd=self._boundary.root,
         )
         skill_tool = SkillTool(self._skill_loader)
         if _ok(skill_tool):
@@ -285,9 +300,10 @@ class RuntimeToolAssembly:
         for web_tool in (WebFetchTool(), WebSearchTool()):
             if _ok(web_tool):
                 registry.register(web_tool)
-        image_tool = ReadImageTool(self._boundary)
-        if _ok(image_tool):
-            registry.register(image_tool)
+        if supports_images:
+            image_tool = ReadImageTool(self._boundary)
+            if _ok(image_tool):
+                registry.register(image_tool)
         search_tool = ToolSearchTool(registry)
         if _ok(search_tool):
             registry.register(search_tool)

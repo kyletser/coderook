@@ -22,9 +22,12 @@ logger = logging.getLogger(__name__)
 _MAX_HEADERS = 64 * 1024
 _MAX_BODY = 1024 * 1024
 _THREAD_TURNS = re.compile(r"/v1/threads/([^/]+)/turns")
+_THREAD_READ = re.compile(r"/v1/threads/([^/]+)")
 _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
 _TURN_ACTION = re.compile(r"/v1/turns/([^/]+)/(interrupt|steer)")
 _TURN_READ = re.compile(r"/v1/turns/([^/]+)/(items|receipt)")
+_TURN_GET = re.compile(r"/v1/turns/([^/]+)")
+_PERMISSION_RESPONSE = re.compile(r"/v1/permissions/([^/]+)")
 _ANY_JSON = TypeAdapter(Any)
 
 
@@ -188,7 +191,25 @@ class HttpApiServer:
                 mode,
             )
             return HTTPStatus.CREATED, thread
+        match = _THREAD_READ.fullmatch(path)
+        if request.method == "GET" and match:
+            return HTTPStatus.OK, await self._service.get_thread(match.group(1))
+        if request.method == "PATCH" and match:
+            body = _json_object(request.body)
+            title = body.get("title")
+            archived = body.get("archived")
+            if title is not None and not isinstance(title, str):
+                raise ValueError("title must be a string")
+            if archived is not None and not isinstance(archived, bool):
+                raise ValueError("archived must be a boolean")
+            return HTTPStatus.OK, await self._service.update_thread(
+                match.group(1),
+                title=title,
+                archived=archived,
+            )
         match = _THREAD_TURNS.fullmatch(path)
+        if request.method == "GET" and match:
+            return HTTPStatus.OK, await self._service.list_turns(match.group(1))
         if request.method == "POST" and match:
             body = _json_object(request.body)
             content = body.get("content")
@@ -211,10 +232,47 @@ class HttpApiServer:
             if match.group(2) == "items":
                 return HTTPStatus.OK, await self._service.list_items(match.group(1))
             return HTTPStatus.OK, await self._service.get_receipt(match.group(1))
+        match = _TURN_GET.fullmatch(path)
+        if request.method == "GET" and match:
+            return HTTPStatus.OK, await self._service.get_turn(match.group(1))
         if request.method == "GET" and path == "/v1/capabilities":
             return HTTPStatus.OK, await self._service.capabilities()
         if request.method == "GET" and path == "/v1/usage":
             return HTTPStatus.OK, await self._service.usage()
+        match = _PERMISSION_RESPONSE.fullmatch(path)
+        if request.method == "POST" and match:
+            body = _json_object(request.body)
+            decision = str(body.get("decision", ""))
+            if decision not in {
+                "allow_once", "allow_session", "allow_always",
+                "deny_once", "deny_session", "deny_always",
+            }:
+                raise ValueError("invalid permission decision")
+            raw_hunks = body.get("selected_hunks")
+            if raw_hunks is not None and not (
+                isinstance(raw_hunks, list)
+                and all(isinstance(item, str) for item in raw_hunks)
+            ):
+                raise ValueError("selected_hunks must be a string list")
+            return HTTPStatus.OK, await self._service.respond_permission(
+                match.group(1),
+                decision,
+                selected_hunks=raw_hunks,
+                patch_plan_id=(
+                    str(body["patch_plan_id"])
+                    if body.get("patch_plan_id") is not None
+                    else None
+                ),
+            )
+        if request.method == "GET" and path == "/v1/workspace/diff":
+            query = parse_qs(urlsplit(request.target).query)
+            scope = query.get("scope", ["all"])[0]
+            if scope not in {"all", "staged", "unstaged"}:
+                raise ValueError("invalid diff scope")
+            return HTTPStatus.OK, await self._service.workspace_diff(
+                scope=scope,
+                path=query.get("path", ["."])[0],
+            )
         return HTTPStatus.NOT_FOUND, {"error": "route not found"}
 
     # 发送带明确长度的 JSON 响应

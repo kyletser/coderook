@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +47,17 @@ class ArtifactSlice(BaseModel):
     offset: int = Field(ge=0)
     content: str
     next_offset: int | None = Field(default=None, ge=0)
+
+
+class ArtifactInventoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+    modified_at: datetime
+    age_days: float = Field(ge=0)
+    referenced: bool
+    gc_candidate: bool
 
 
 class ArtifactStore:
@@ -142,6 +154,24 @@ class ArtifactStore:
     ) -> ArtifactSlice:
         return await asyncio.to_thread(self._read_sync, sha256, offset, limit)
 
+    # 完整读取并校验小型二进制 artifact，供图片发送等有界场景使用
+    def _read_bytes_sync(self, sha256: str, max_bytes: int) -> bytes:
+        if max_bytes < 1 or max_bytes > _MAX_ARTIFACT_BYTES:
+            raise ArtifactError("invalid artifact byte limit")
+        path = self._path(sha256)
+        if not path.is_file():
+            raise ArtifactNotFoundError(f"artifact is unavailable: {sha256}")
+        if path.stat().st_size > max_bytes:
+            raise ArtifactError(f"artifact exceeds {max_bytes} byte read limit")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != sha256:
+            raise ArtifactCorruptError(f"artifact hash mismatch: {sha256}")
+        return data
+
+    # 异步完整读取经过 hash 与大小校验的二进制 artifact
+    async def read_bytes(self, sha256: str, *, max_bytes: int) -> bytes:
+        return await asyncio.to_thread(self._read_bytes_sync, sha256, max_bytes)
+
     # 列出可按"年龄 + 引用保留"清理的候选 artifact（仅计算，不删除）
     def list_gc_candidates(
         self,
@@ -156,7 +186,7 @@ class ArtifactStore:
         cutoff = (now if now is not None else time.time()) - retention
         kept = keep or set()
         candidates: list[Path] = []
-        for item in self._root.iterdir():
+        for item in sorted(self._root.iterdir(), key=lambda path: path.name):
             if not item.is_file() or not _SHA256_RE.fullmatch(item.name):
                 continue
             if item.name in kept:
@@ -168,6 +198,41 @@ class ArtifactStore:
                 continue
             candidates.append(item)
         return candidates
+
+    # 列出 artifact 大小、年龄、引用状态和当前 GC 候选判定
+    def inventory(
+        self,
+        *,
+        days: int = 30,
+        keep: set[str] | None = None,
+        now: float | None = None,
+    ) -> list[ArtifactInventoryItem]:
+        if not self._root.is_dir():
+            return []
+        current = now if now is not None else time.time()
+        kept = keep or set()
+        candidate_names = {
+            path.name for path in self.list_gc_candidates(days=days, keep=kept, now=current)
+        }
+        items: list[ArtifactInventoryItem] = []
+        for path in sorted(self._root.iterdir(), key=lambda item: item.name):
+            if not path.is_file() or not _SHA256_RE.fullmatch(path.name):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            items.append(
+                ArtifactInventoryItem(
+                    sha256=path.name,
+                    size=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                    age_days=max(0.0, (current - stat.st_mtime) / 86400),
+                    referenced=path.name in kept,
+                    gc_candidate=path.name in candidate_names,
+                )
+            )
+        return items
 
     # 执行 artifact GC；dry_run 只返回候选不清除，默认开启以先展示清单
     def gc(
@@ -198,9 +263,13 @@ def scan_referenced_artifact_shas(paths: list[Path]) -> set[str]:
         if not path.is_file():
             continue
         try:
-            data = path.read_bytes()
+            with path.open("rb") as stream:
+                overlap = b""
+                while chunk := stream.read(1024 * 1024):
+                    data = overlap + chunk
+                    for match in _ARTIFACT_REF_RE.findall(data):
+                        referenced.add(match.decode("ascii").removeprefix("artifact:"))
+                    overlap = data[-80:]
         except OSError:
             continue
-        for match in _ARTIFACT_REF_RE.findall(data):
-            referenced.add(match.decode("ascii").removeprefix("artifact:"))
     return referenced

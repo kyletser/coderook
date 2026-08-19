@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import shlex
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 from code_rook.core.authority.models import SandboxCapability
+
+if TYPE_CHECKING:
+    from code_rook.core.processes import ProcessSupervisor
 
 
 class SandboxTier(StrEnum):
     READ_ONLY = "read_only"
     WORKSPACE_WRITE = "workspace_write"
     NONE = "none"
+
+
+class SandboxPolicyError(ValueError):
+    """沙箱无法强制执行请求策略时的拒绝错误。"""
 
 
 @dataclass(frozen=True)
@@ -24,11 +33,255 @@ class SandboxPlan:
     # 前置包装 argv（bwrap 参数，或 ["sandbox-exec", "-p", profile]）；degraded 时为空
     wrapper: list[str]
     reason: str
+    workspace: str = ""
+    network: bool = False
+    allowed_domains: tuple[str, ...] = ()
+    domain_policy_enforced: bool = False
+    writable_roots: tuple[str, ...] = ()
+    policy_version: int = 2
 
     @property
     def executable(self) -> str:
         # 包装器可执行文件；degraded 时返回空（直接执行原命令）
         return self.wrapper[0] if self.wrapper else ""
+
+    @property
+    # 只有存在真实包装器且未降级时才允许权限层视为强制隔离
+    def enforced(self) -> bool:
+        return bool(self.wrapper) and not self.degraded and self.tier != SandboxTier.NONE
+
+    @property
+    # 返回实际执行该计划的后端名称，降级时明确标为 degraded
+    def backend(self) -> str:
+        return self.capability.kind if self.enforced else "degraded"
+
+    # 返回可写入 receipt 的完整隔离决策，不包含命令或环境变量
+    def describe(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "tier": self.tier.value,
+            "workspace": self.workspace,
+            "network": self.network,
+            "allowed_domains": list(self.allowed_domains),
+            "domain_policy_enforced": self.domain_policy_enforced,
+            "writable_roots": list(self.writable_roots),
+            "enforced": self.enforced,
+            "degraded_reason": self.reason if self.degraded else "",
+            "policy_version": self.policy_version,
+        }
+
+
+@dataclass(frozen=True)
+class SandboxSpawnRequest:
+    label: str
+    command: str | None = None
+    argv: tuple[str, ...] = ()
+    cwd: Path | None = None
+    interactive_stdin: bool = False
+    env: dict[str, str] | None = None
+    stdin: Any = None
+    stdout: Any = None
+    stderr: Any = None
+
+    # 保证调用方只能选择 shell command 或可信 argv 其中一种执行形式
+    def __post_init__(self) -> None:
+        if (self.command is None) == (not self.argv):
+            raise ValueError("sandbox spawn requires exactly one of command or argv")
+
+
+class SandboxBackend(Protocol):
+    # 返回该后端启动时冻结的能力探测结果
+    def probe(self) -> SandboxCapability: ...
+
+    # 依据档位和工作区生成不可变执行计划
+    def plan(
+        self,
+        tier: SandboxTier,
+        workspace: str,
+        *,
+        network: bool = False,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> SandboxPlan: ...
+
+    # 通过统一进程监督边界启动一次性 shell
+    async def spawn(
+        self,
+        plan: SandboxPlan,
+        request: SandboxSpawnRequest,
+        supervisor: ProcessSupervisor | None,
+    ) -> asyncio.subprocess.Process: ...
+
+    # 返回不含命令与凭据的后端决策说明
+    def describe(self, plan: SandboxPlan) -> dict[str, object]: ...
+
+
+class _BaseBackend:
+    # 保存不可变能力快照，避免 plan 与 spawn 之间重新探测导致边界漂移
+    def __init__(self, capability: SandboxCapability) -> None:
+        self._capability = capability
+
+    # 返回构造后端时冻结的能力快照
+    def probe(self) -> SandboxCapability:
+        return self._capability
+
+    # 通过统一 supervisor 启动已包装命令，无 supervisor 时保留测试兼容路径
+    async def spawn(
+        self,
+        plan: SandboxPlan,
+        request: SandboxSpawnRequest,
+        supervisor: ProcessSupervisor | None,
+    ) -> asyncio.subprocess.Process:
+        from code_rook.core.processes import create_shell_process
+
+        if request.argv:
+            argv = (
+                (*plan.wrapper, shlex.join(request.argv))
+                if plan.enforced
+                else request.argv
+            )
+            if supervisor is not None:
+                return await supervisor.start_exec(
+                    *argv,
+                    label=request.label,
+                    cwd=request.cwd,
+                    env=request.env,
+                    stdin=request.stdin,
+                    stdout=request.stdout,
+                    stderr=request.stderr,
+                )
+            return await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=request.cwd,
+                env=request.env,
+                stdin=request.stdin,
+                stdout=request.stdout,
+                stderr=request.stderr,
+            )
+        assert request.command is not None
+        command = request.command
+        command = wrap_sandbox_command(plan, command)
+        if supervisor is not None:
+            return await supervisor.start_shell(
+                command,
+                label=request.label,
+                cwd=request.cwd,
+                interactive_stdin=request.interactive_stdin,
+            )
+        return await create_shell_process(
+            command,
+            request.cwd,
+            interactive_stdin=request.interactive_stdin,
+        )
+
+    # 返回计划自身的稳定说明，供审计和 receipt 持久化
+    def describe(self, plan: SandboxPlan) -> dict[str, object]:
+        return plan.describe()
+
+
+class BwrapBackend(_BaseBackend):
+    # 生成 Linux bubblewrap 隔离计划
+    def plan(
+        self,
+        tier: SandboxTier,
+        workspace: str,
+        *,
+        network: bool = False,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> SandboxPlan:
+        _reject_unenforceable_domain_policy(allowed_domains)
+        resolved_workspace = str(Path(workspace).resolve())
+        writable = tier == SandboxTier.WORKSPACE_WRITE
+        wrapper = build_bwrap_argv(
+            workspace,
+            writable=writable,
+            network=network,
+        ) + _shell_trailer()
+        return SandboxPlan(
+            tier=tier,
+            capability=self.probe(),
+            degraded=False,
+            wrapper=wrapper,
+            reason=f"bwrap {tier.value} wrap",
+            workspace=resolved_workspace,
+            network=network,
+            allowed_domains=allowed_domains,
+            writable_roots=(resolved_workspace, "/tmp") if writable else (),
+        )
+
+
+class SeatbeltBackend(_BaseBackend):
+    # 生成 macOS Seatbelt 隔离计划
+    def plan(
+        self,
+        tier: SandboxTier,
+        workspace: str,
+        *,
+        network: bool = False,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> SandboxPlan:
+        _reject_unenforceable_domain_policy(allowed_domains)
+        resolved_workspace = str(Path(workspace).resolve())
+        writable = tier == SandboxTier.WORKSPACE_WRITE
+        wrapper = [
+            "sandbox-exec",
+            "-p",
+            build_seatbelt_profile(workspace, writable=writable, network=network),
+            "/bin/sh",
+            "-c",
+        ]
+        return SandboxPlan(
+            tier=tier,
+            capability=self.probe(),
+            degraded=False,
+            wrapper=wrapper,
+            reason=f"seatbelt {tier.value} wrap",
+            workspace=resolved_workspace,
+            network=network,
+            allowed_domains=allowed_domains,
+            writable_roots=(resolved_workspace, "/tmp") if writable else (),
+        )
+
+
+class DegradedBackend(_BaseBackend):
+    # 生成明确不具备强制力的降级计划
+    def plan(
+        self,
+        tier: SandboxTier,
+        workspace: str,
+        *,
+        network: bool = False,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> SandboxPlan:
+        _reject_unenforceable_domain_policy(allowed_domains)
+        capability = self.probe()
+        reason = (
+            capability.reason
+            if not capability.available
+            else (
+                "sandbox disabled by requested tier"
+                if tier == SandboxTier.NONE
+                else f"no isolation backend for {capability.kind}"
+            )
+        )
+        return SandboxPlan(
+            tier=SandboxTier.NONE,
+            capability=capability,
+            degraded=True,
+            wrapper=[],
+            reason=reason,
+            workspace=str(Path(workspace).resolve()),
+            network=network,
+            allowed_domains=allowed_domains,
+        )
+
+
+# 将冻结的能力快照映射为唯一后端实现，未知或禁用能力一律降级
+def backend_for_capability(capability: SandboxCapability) -> SandboxBackend:
+    if capability.available and capability.kind == "linux_bwrap":
+        return BwrapBackend(capability)
+    if capability.available and capability.kind == "macos_seatbelt":
+        return SeatbeltBackend(capability)
+    return DegradedBackend(capability)
 
 
 # 依据平台能力与目标档位构建沙箱执行计划；不可用后端一律降级并诚实标注
@@ -36,51 +289,62 @@ def plan_sandbox(
     capability: SandboxCapability,
     tier: SandboxTier,
     workspace: str,
+    *,
+    network: bool = False,
+    allowed_domains: tuple[str, ...] = (),
 ) -> SandboxPlan:
-    if tier == SandboxTier.NONE or not capability.available:
-        return SandboxPlan(
-            tier=SandboxTier.NONE,
-            capability=capability,
-            degraded=True,
-            wrapper=[],
-            reason=(
-                capability.reason
-                if not capability.available
-                else "sandbox disabled by requested tier"
-            ),
+    backend = backend_for_capability(capability)
+    if tier == SandboxTier.NONE:
+        return DegradedBackend(capability).plan(
+            tier,
+            workspace,
+            network=network,
+            allowed_domains=allowed_domains,
         )
-    if capability.kind == "linux_bwrap":
-        writable = tier == SandboxTier.WORKSPACE_WRITE
-        wrapper = build_bwrap_argv(workspace, writable=writable) + _shell_trailer()
-        return SandboxPlan(
-            tier=tier,
-            capability=capability,
-            degraded=False,
-            wrapper=wrapper,
-            reason=f"bwrap {tier.value} wrap",
-        )
-    if capability.kind == "macos_seatbelt":
-        writable = tier == SandboxTier.WORKSPACE_WRITE
-        wrapper = ["sandbox-exec", "-p", build_seatbelt_profile(workspace, writable=writable)]
-        wrapper += _shell_trailer()
-        return SandboxPlan(
-            tier=tier,
-            capability=capability,
-            degraded=False,
-            wrapper=wrapper,
-            reason=f"seatbelt {tier.value} wrap",
-        )
-    return SandboxPlan(
-        tier=SandboxTier.NONE,
-        capability=capability,
-        degraded=True,
-        wrapper=[],
-        reason=f"no isolation backend for {capability.kind}",
+    return backend.plan(
+        tier,
+        workspace,
+        network=network,
+        allowed_domains=allowed_domains,
     )
 
 
+# 对当前无法由 OS 沙箱强制执行的域名白名单请求立即拒绝，禁止退化为全网访问
+def _reject_unenforceable_domain_policy(allowed_domains: tuple[str, ...]) -> None:
+    if allowed_domains:
+        domains = ", ".join(sorted(set(allowed_domains)))
+        raise SandboxPolicyError(
+            "domain allow-list enforcement is unavailable for shell sandboxes; "
+            f"refusing unrestricted network access for: {domains}"
+        )
+
+
+# 通过计划绑定的后端统一启动 shell，调用方不再自行拼接 wrapper
+async def spawn_sandboxed_shell(
+    plan: SandboxPlan | None,
+    request: SandboxSpawnRequest,
+    supervisor: ProcessSupervisor | None,
+) -> asyncio.subprocess.Process:
+    capability = (
+        plan.capability
+        if plan is not None
+        else SandboxCapability(available=False, kind="none", reason="no sandbox plan")
+    )
+    effective_plan = plan or DegradedBackend(capability).plan(
+        SandboxTier.NONE,
+        str(request.cwd or Path.cwd()),
+    )
+    backend = backend_for_capability(effective_plan.capability)
+    return await backend.spawn(effective_plan, request, supervisor)
+
+
 # 构建 bwrap argv：整机只读覆盖，workspace_write 时仅工作区与临时目录可写
-def build_bwrap_argv(workspace: str, *, writable: bool) -> list[str]:
+def build_bwrap_argv(
+    workspace: str,
+    *,
+    writable: bool,
+    network: bool = False,
+) -> list[str]:
     ws = str(Path(workspace).resolve())
     argv = [
         "bwrap",
@@ -89,6 +353,8 @@ def build_bwrap_argv(workspace: str, *, writable: bool) -> list[str]:
         "--unshare-all",
         "--ro-bind", "/", "/",
     ]
+    if network:
+        argv += ["--share-net"]
     if writable:
         argv += ["--bind", ws, ws, "--tmpfs", "/tmp"]
     else:
@@ -97,22 +363,28 @@ def build_bwrap_argv(workspace: str, *, writable: bool) -> list[str]:
 
 
 # 构建 macOS Seatbelt 沙箱 profile 文本；writable 时允许写工作区
-def build_seatbelt_profile(workspace: str, *, writable: bool) -> str:
-    ws = str(Path(workspace).resolve())
+def build_seatbelt_profile(
+    workspace: str,
+    *,
+    writable: bool,
+    network: bool = False,
+) -> str:
+    ws = str(Path(workspace).resolve()).replace("\\", "\\\\").replace('"', '\\"')
     write_rules = (
         f'(allow file-write* (subpath "{ws}"))\n    '
         '(allow file-write* (subpath "/tmp"))'
         if writable
         else ""
     )
+    network_rules = "(allow network*)" if network else ""
     return (
         "(version 1)\n"
         "(deny default)\n"
-        f'(allow file-read* (subpath "{ws}"))\n'
-        '(allow file-read* (subpath "/usr"))\n'
+        "(allow file-read*)\n"
         "(allow process*)\n"
         "(allow sysctl-read*)\n"
         + (f"    {write_rules}\n" if write_rules else "")
+        + (f"    {network_rules}\n" if network_rules else "")
     )
 
 
@@ -128,8 +400,20 @@ def wrap_sandbox_command(plan: SandboxPlan, command: str) -> str:
     return shlex.join([*plan.wrapper, command])
 
 
+# 返回适合常驻 shell 的沙箱 argv，移除一次性 sh -c 的命令参数约束
+def persistent_sandbox_argv(plan: SandboxPlan) -> list[str] | None:
+    if not plan.enforced:
+        return None
+    if len(plan.wrapper) >= 2 and plan.wrapper[-2:] == ["/bin/sh", "-c"]:
+        return [*plan.wrapper[:-1]]
+    return [*plan.wrapper]
+
+
 # AUTO_REVIEW 姿态下 shell 命令可落到的最小档位；无沙箱时返回 NONE 使决策回落 ASK
 def tier_for_auto_review(capability: SandboxCapability) -> SandboxTier:
-    if not capability.available:
+    if not capability.available or capability.kind not in {
+        "linux_bwrap",
+        "macos_seatbelt",
+    }:
         return SandboxTier.NONE
     return SandboxTier.WORKSPACE_WRITE

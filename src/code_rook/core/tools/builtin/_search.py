@@ -10,6 +10,7 @@ from pathlib import Path
 from pathspec import PathSpec
 from pathspec.gitignore import GitIgnoreSpec
 
+from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 
 DEFAULT_EXCLUDES: tuple[str, ...] = (
@@ -110,7 +111,17 @@ async def start_process(
     args: list[str],
     *,
     cwd: Path,
+    process_supervisor: ProcessSupervisor | None = None,
 ) -> asyncio.subprocess.Process:
+    if process_supervisor is not None:
+        return await process_supervisor.start_exec(
+            executable,
+            *args,
+            label="workspace-search",
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
     process = await asyncio.create_subprocess_exec(
         executable,
         *args,
@@ -121,14 +132,25 @@ async def start_process(
     return process
 
 
-async def stop_process(process: asyncio.subprocess.Process) -> None:
+async def stop_process(
+    process: asyncio.subprocess.Process,
+    process_supervisor: ProcessSupervisor | None = None,
+) -> None:
+    if process_supervisor is not None:
+        await process_supervisor.terminate(process)
+        return
     if process.returncode is None:
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.communicate(), timeout=1.0)
-    except TimeoutError:
-        process.kill()
-        await process.communicate()
+        await terminate_process_tree(process)
+    await process.communicate()
+
+
+# 从统一监管表移除已自然结束且完成回收的搜索进程
+def forget_process(
+    process: asyncio.subprocess.Process,
+    process_supervisor: ProcessSupervisor | None,
+) -> None:
+    if process_supervisor is not None:
+        process_supervisor.forget(process)
 
 
 def decode_rg_text(value: object) -> str:

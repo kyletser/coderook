@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ValidationError
 
 from code_rook.core.background import BackgroundJobRegistry
+from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.tools.builtin.background import (
     BackgroundCancelTool,
@@ -199,6 +202,28 @@ class BashTool(BaseTool):
             error_type="schema_error",
         )
 
+    # 将 Bash lifecycle action 解析为唯一 backend 与其规范化参数
+    def execution_target(
+        self,
+        params: dict[str, object],
+    ) -> tuple[BaseTool, dict[str, object]]:
+        action = params.get("action")
+        payload = dict(params)
+        payload.pop("action", None)
+        if action == "run":
+            background = bool(payload.pop("background", False))
+            if background and self._start is not None:
+                return self._start, payload
+            return self._shell, payload
+        if action == "wait" and self._result is not None:
+            payload["wait"] = True
+            return self._result, payload
+        if action == "interact" and self._interact is not None:
+            return self._interact, payload
+        if action == "cancel" and self._cancel is not None:
+            return self._cancel, payload
+        return self, dict(params)
+
     # 对后台任务状态声明共享读取或独占控制 claim
     def resource_claims(self, params: dict[str, object]) -> tuple[ResourceClaim, ...]:
         action = str(params.get("action", ""))
@@ -227,6 +252,8 @@ def register_bash_family(
     session_id: str = "",
     run_id: str = "",
     allowed_names: set[str] | None = None,
+    sandbox_plan: SandboxPlan | None = None,
+    cwd: Path | None = None,
 ) -> BashTool | None:
     tools: list[BaseTool] = [shell]
     start: BackgroundStartTool | None = None
@@ -234,7 +261,13 @@ def register_bash_family(
     interact: BackgroundInteractTool | None = None
     cancel: BackgroundCancelTool | None = None
     if background_registry is not None:
-        start = BackgroundStartTool(background_registry, session_id, run_id)
+        start = BackgroundStartTool(
+            background_registry,
+            session_id,
+            run_id,
+            sandbox_plan,
+            cwd,
+        )
         result = BackgroundResultTool(background_registry)
         interact = BackgroundInteractTool(background_registry)
         cancel = BackgroundCancelTool(background_registry)

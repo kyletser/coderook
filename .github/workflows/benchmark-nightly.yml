@@ -1,0 +1,41 @@
+name: Nightly benchmark
+
+on:
+  schedule:
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CODEROOK_LLM_PROVIDER: ${{ vars.CODEROOK_BENCH_PROVIDER }}
+      CODEROOK_LLM_DEFAULT_MODEL: ${{ vars.CODEROOK_BENCH_MODEL }}
+      CODEROOK_LLM_BASE_URL: ${{ vars.CODEROOK_BENCH_BASE_URL }}
+      CODEROOK_LLM_API_KEY_ENV: CODEROOK_BENCHMARK_API_KEY
+      CODEROOK_BENCHMARK_API_KEY: ${{ secrets.CODEROOK_BENCHMARK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Require explicit benchmark route
+        run: |
+          test -n "$CODEROOK_LLM_PROVIDER"
+          test -n "$CODEROOK_LLM_DEFAULT_MODEL"
+          test -n "$CODEROOK_BENCHMARK_API_KEY"
+      - name: Run complete real-model suite
+        run: uv run python scripts/run_benchmark.py --suite nightly --output .benchmark-results/nightly
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-nightly
+          path: .benchmark-results/nightly
+          if-no-files-found: warn

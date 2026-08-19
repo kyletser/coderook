@@ -17,6 +17,18 @@ from textual.widgets import Input, Label, Static, TextArea
 from code_rook.core.llm.provider_presets import ProviderPreset
 
 _INPUT_HISTORY_LIMIT = 500
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+# 将纯文件路径粘贴识别为本地图片，普通文本返回 None
+def _pasted_image_path(text: str) -> Path | None:
+    candidate = text.strip().strip('"').strip("'")
+    if not candidate or "\n" in candidate or "\r" in candidate:
+        return None
+    path = Path(candidate).expanduser()
+    if path.suffix.casefold() not in _IMAGE_SUFFIXES or not path.is_file():
+        return None
+    return path.resolve()
 
 
 # 返回用户级输入历史文件路径
@@ -314,6 +326,12 @@ class ChatTextArea(TextArea):
     class CycleMode(Message):
         pass
 
+    class ImagePasted(Message):
+        # 初始化图片粘贴消息并携带已解析的绝对路径
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            super().__init__()
+
     # 初始化输入历史状态，支持空输入时 ↑/↓ 回溯最近提交
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -338,6 +356,16 @@ class ChatTextArea(TextArea):
         self._history_index = None
         self._history_draft = ""
         _save_input_history_entry(cleaned)
+
+    # 拦截纯图片路径粘贴并交由 App 落入 ArtifactStore，普通文本沿用 TextArea 行为
+    async def _on_paste(self, event: events.Paste) -> None:
+        image_path = _pasted_image_path(event.text)
+        if image_path is not None:
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.ImagePasted(image_path))
+            return
+        await super()._on_paste(event)
 
     # 回溯到更早的历史输入；首次进入回溯时保存当前草稿
     def _history_up(self) -> None:

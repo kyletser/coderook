@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from code_rook.core.interaction import InteractionManager
+from code_rook.core.interaction import (
+    HeadlessQuestionRequiredError,
+    InteractionManager,
+)
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 
 
@@ -56,12 +59,19 @@ class AskUserQuestionTool(BaseTool):
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         parsed = AskUserQuestionParams.model_validate(params)
         options = [option.strip() for option in parsed.options if option.strip()]
-        answer = await self._manager.ask(
-            run_id=self._run_id,
-            session_id=self._session_id,
-            question=parsed.question.strip(),
-            header=parsed.header.strip(),
-            options=options,
-            multi_select=parsed.multi_select,
-        )
+        try:
+            answer = await self._manager.ask(
+                run_id=self._run_id,
+                session_id=self._session_id,
+                question=parsed.question.strip(),
+                header=parsed.header.strip(),
+                options=options,
+                multi_select=parsed.multi_select,
+            )
+        except HeadlessQuestionRequiredError as exc:
+            return ToolResult(
+                content=str(exc),
+                is_error=True,
+                error_type="runtime_error",
+            )
         return ToolResult(content=f"User answer: {answer}")

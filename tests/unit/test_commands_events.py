@@ -87,6 +87,22 @@ def test_turn_inspect_and_context_budget_protocol() -> None:
     ).tool_schema_tokens == 300
 
 
+# 功能：验证 headless 提问策略协议拒绝缺失超时或预置答案的无界配置
+# 设计：分别构造合法与两个非法组合，固定 daemon 在启动 run 前 fail closed 的边界
+def test_agent_run_question_policy_is_bounded() -> None:
+    valid = AgentRunCommand(
+        goal="work",
+        question_mode="timeout",
+        question_timeout_s=10,
+    )
+
+    assert valid.question_timeout_s == 10
+    with pytest.raises(ValidationError):
+        AgentRunCommand(goal="work", question_mode="timeout")
+    with pytest.raises(ValidationError):
+        AgentRunCommand(goal="work", question_mode="preset")
+
+
 # 功能：R1 thread/turn/runtime 命令清单全部具有精确的 typed 判别值
 # 设计：逐个构造规范要求的十二个操作，固定兼容 session 之外的正式 runtime 协议面
 def test_runtime_contract_protocol_commands_are_complete() -> None:

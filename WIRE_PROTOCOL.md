@@ -192,6 +192,10 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `goal` | `string` | yes |
 | `permission_mode` | `string` | no |
 | `allow_tools` | `array` | no |
+| `resume_session_id` | `string | null` | no |
+| `question_mode` | `string` | no |
+| `question_timeout_s` | `number | null` | no |
+| `preset_answers` | `array` | no |
 
 ```json
 {
@@ -222,6 +226,50 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       },
       "title": "Allow Tools",
       "type": "array"
+    },
+    "resume_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resume Session Id"
+    },
+    "question_mode": {
+      "default": "fail_fast",
+      "enum": [
+        "fail_fast",
+        "timeout",
+        "preset"
+      ],
+      "title": "Question Mode",
+      "type": "string"
+    },
+    "question_timeout_s": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Question Timeout S"
+    },
+    "preset_answers": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Preset Answers",
+      "type": "array"
     }
   },
   "required": [
@@ -250,6 +298,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `run_id` | `string` | yes |
+| `session_id` | `string` | yes |
 
 ```json
 {
@@ -257,10 +306,15 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "run_id": {
       "title": "Run Id",
       "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
     }
   },
   "required": [
-    "run_id"
+    "run_id",
+    "session_id"
   ],
   "title": "AgentRunResult",
   "type": "object"
@@ -1520,6 +1574,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "title": "Credential Source",
           "type": "string"
+        },
+        "supports_images": {
+          "default": false,
+          "title": "Supports Images",
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
         }
       },
       "required": [
@@ -1813,6 +1884,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "title": "Credential Source",
           "type": "string"
+        },
+        "supports_images": {
+          "default": false,
+          "title": "Supports Images",
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
         }
       },
       "required": [
@@ -2110,6 +2198,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "title": "Credential Source",
           "type": "string"
+        },
+        "supports_images": {
+          "default": false,
+          "title": "Supports Images",
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
         }
       },
       "required": [
@@ -2411,6 +2516,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "title": "Credential Source",
           "type": "string"
+        },
+        "supports_images": {
+          "default": false,
+          "title": "Supports Images",
+          "type": "boolean"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
         }
       },
       "required": [
@@ -2925,10 +3047,53 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `session_id` | `string` | yes |
 | `content` | `string` | yes |
 | `runtime_mode` | `object` | no |
+| `attachments` | `array` | no |
 
 ```json
 {
   "$defs": {
+    "ImageArtifactInput": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^image/(png|jpeg|webp|gif)$",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "size": {
+          "exclusiveMinimum": 0,
+          "maximum": 2097152,
+          "title": "Size",
+          "type": "integer"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Height",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "media_type",
+        "size",
+        "width",
+        "height"
+      ],
+      "title": "ImageArtifactInput",
+      "type": "object"
+    },
     "RuntimeMode": {
       "enum": [
         "plan",
@@ -2957,6 +3122,14 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "runtime_mode": {
       "$ref": "#/$defs/RuntimeMode",
       "default": "act"
+    },
+    "attachments": {
+      "items": {
+        "$ref": "#/$defs/ImageArtifactInput"
+      },
+      "maxItems": 8,
+      "title": "Attachments",
+      "type": "array"
     }
   },
   "required": [
@@ -4049,6 +4222,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `tool_use_id` | `string` | yes |
 | `decision` | `string` | yes |
+| `selected_hunks` | `array | null` | no |
+| `patch_plan_id` | `string | null` | no |
 
 ```json
 {
@@ -4066,6 +4241,35 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "decision": {
       "title": "Decision",
       "type": "string"
+    },
+    "selected_hunks": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Selected Hunks"
+    },
+    "patch_plan_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Patch Plan Id"
     }
   },
   "required": [
@@ -5192,6 +5396,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Hook Id",
           "type": "string"
         },
+        "run_id": {
+          "default": "",
+          "title": "Run Id",
+          "type": "string"
+        },
         "event": {
           "title": "Event",
           "type": "string"
@@ -5227,6 +5436,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Exit Code"
+        },
+        "process_usage": {
+          "additionalProperties": true,
+          "title": "Process Usage",
+          "type": "object"
         },
         "ts": {
           "title": "Ts",
@@ -5382,6 +5596,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `hook_id` | `string` | yes |
+| `run_id` | `string` | no |
 | `event` | `string` | yes |
 | `status` | `string` | yes |
 | `blocking` | `boolean` | yes |
@@ -5389,6 +5604,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `blocked` | `boolean` | yes |
 | `reason` | `string` | yes |
 | `exit_code` | `integer | null` | no |
+| `process_usage` | `object` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -5396,6 +5612,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
   "properties": {
     "hook_id": {
       "title": "Hook Id",
+      "type": "string"
+    },
+    "run_id": {
+      "default": "",
+      "title": "Run Id",
       "type": "string"
     },
     "event": {
@@ -5433,6 +5654,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Exit Code"
+    },
+    "process_usage": {
+      "additionalProperties": true,
+      "title": "Process Usage",
+      "type": "object"
     },
     "ts": {
       "title": "Ts",
@@ -5830,6 +6056,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Finished At",
           "type": "string"
+        },
+        "process_usage": {
+          "additionalProperties": true,
+          "title": "Process Usage",
+          "type": "object"
         }
       },
       "required": [
@@ -5873,6 +6104,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `is_error` | `boolean` | yes |
 | `created_at` | `string` | yes |
 | `finished_at` | `string` | no |
+| `process_usage` | `object` | no |
 
 ```json
 {
@@ -5913,6 +6145,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "default": "",
       "title": "Finished At",
       "type": "string"
+    },
+    "process_usage": {
+      "additionalProperties": true,
+      "title": "Process Usage",
+      "type": "object"
     }
   },
   "required": [
@@ -6206,6 +6443,7 @@ Events sent over the IPC socket (daemon -> client).
 |---|---|---|
 | `type` | `string` | no |
 | `hook_id` | `string` | yes |
+| `run_id` | `string` | no |
 | `event_name` | `string` | yes |
 | `status` | `string` | yes |
 | `blocking` | `boolean` | yes |
@@ -6215,6 +6453,7 @@ Events sent over the IPC socket (daemon -> client).
 | `reason` | `string` | yes |
 | `output_truncated` | `boolean` | yes |
 | `exit_code` | `integer | null` | yes |
+| `process_usage` | `object` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -6228,6 +6467,11 @@ Events sent over the IPC socket (daemon -> client).
     },
     "hook_id": {
       "title": "Hook Id",
+      "type": "string"
+    },
+    "run_id": {
+      "default": "",
+      "title": "Run Id",
       "type": "string"
     },
     "event_name": {
@@ -6272,6 +6516,11 @@ Events sent over the IPC socket (daemon -> client).
         }
       ],
       "title": "Exit Code"
+    },
+    "process_usage": {
+      "additionalProperties": true,
+      "title": "Process Usage",
+      "type": "object"
     },
     "ts": {
       "title": "Ts",
@@ -6807,6 +7056,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool_name` | `string` | yes |
 | `elapsed_ms` | `integer` | yes |
 | `output` | `string` | no |
+| `process_usage` | `object` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -6838,6 +7088,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": "",
       "title": "Output",
       "type": "string"
+    },
+    "process_usage": {
+      "additionalProperties": true,
+      "title": "Process Usage",
+      "type": "object"
     },
     "ts": {
       "title": "Ts",
@@ -6882,6 +7137,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `elapsed_ms` | `integer` | yes |
 | `attempt` | `integer` | no |
 | `terminal` | `boolean` | no |
+| `process_usage` | `object` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -6926,6 +7182,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": true,
       "title": "Terminal",
       "type": "boolean"
+    },
+    "process_usage": {
+      "additionalProperties": true,
+      "title": "Process Usage",
+      "type": "object"
     },
     "ts": {
       "title": "Ts",
@@ -7032,6 +7293,13 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `base_url_origin` | `string` | yes |
 | `model` | `string` | yes |
 | `credential_source` | `string` | yes |
+| `strategy` | `string` | no |
+| `candidates` | `array` | no |
+| `reason` | `string` | no |
+| `step` | `integer` | no |
+| `accumulated_cost_usd` | `number | null` | no |
+| `cost_budget_usd` | `number | null` | no |
+| `temperature` | `number | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -7072,6 +7340,64 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       ],
       "title": "Credential Source",
       "type": "string"
+    },
+    "strategy": {
+      "default": "static",
+      "title": "Strategy",
+      "type": "string"
+    },
+    "candidates": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Candidates",
+      "type": "array"
+    },
+    "reason": {
+      "default": "active_route",
+      "title": "Reason",
+      "type": "string"
+    },
+    "step": {
+      "default": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "accumulated_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Accumulated Cost Usd"
+    },
+    "cost_budget_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Budget Usd"
+    },
+    "temperature": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Temperature"
     },
     "ts": {
       "title": "Ts",
@@ -7535,6 +7861,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool` | `string` | yes |
 | `paths` | `array` | yes |
 | `diagnostic_count` | `integer` | yes |
+| `duration_ms` | `integer` | no |
 | `truncated` | `boolean` | yes |
 | `error` | `string` | no |
 | `ts` | `string` | yes |
@@ -7580,6 +7907,12 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "diagnostic_count": {
       "title": "Diagnostic Count",
+      "type": "integer"
+    },
+    "duration_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Duration Ms",
       "type": "integer"
     },
     "truncated": {

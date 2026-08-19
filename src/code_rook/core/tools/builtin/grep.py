@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections import defaultdict
@@ -8,11 +9,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from code_rook.core.tools.builtin._search import (
     MAX_SEARCH_FILE_BYTES,
     SearchPathFilter,
     decode_rg_text,
+    forget_process,
     iter_workspace_files,
     read_search_text,
     resolve_search_root,
@@ -102,17 +105,23 @@ class GrepTool(BaseTool):
         boundary: WorkspaceBoundary | None = None,
         *,
         workspace_root: Path | None = None,
+        process_supervisor: ProcessSupervisor | None = None,
     ) -> None:
         if boundary is not None and workspace_root is not None:
             raise ValueError("pass either boundary or workspace_root, not both")
         self._boundary = boundary or WorkspaceBoundary(workspace_root or Path.cwd())
+        self._process_supervisor = process_supervisor
 
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         request = GrepParams.model_validate(params)
         search_root, search_arg = resolve_search_root(self._boundary, request.path)
         rg = ripgrep_path()
         if rg is not None:
-            return await self._invoke_ripgrep(rg, search_arg, request)
+            try:
+                return await self._invoke_ripgrep(rg, search_arg, request)
+            except OSError:
+                # PATH 中的应用别名可能存在但不可执行，此时安全回退到纯 Python 搜索
+                pass
         return self._invoke_python(search_root, request)
 
     async def _invoke_ripgrep(
@@ -151,51 +160,61 @@ class GrepTool(BaseTool):
             include_hidden=request.include_hidden,
             search_root=search_root,
         )
-        process = await start_process(executable, args, cwd=self._boundary.root)
+        process = await start_process(
+            executable,
+            args,
+            cwd=self._boundary.root,
+            process_supervisor=self._process_supervisor,
+        )
         assert process.stdout is not None
-        while raw_line := await process.stdout.readline():
-            try:
-                event = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") != "match":
-                continue
-            data = event.get("data", {})
-            path = Path(decode_rg_text(data.get("path"))).as_posix()
-            if not path_filter.allows(path):
-                continue
-            line = decode_rg_text(data.get("lines")).rstrip("\r\n")
-            submatches = data.get("submatches", [])
-            submatch_count = len(submatches) if isinstance(submatches, list) else 1
-            file_counts[path] += submatch_count
-            match_count += submatch_count
+        try:
+            while raw_line := await process.stdout.readline():
+                try:
+                    event = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data", {})
+                path = Path(decode_rg_text(data.get("path"))).as_posix()
+                if not path_filter.allows(path):
+                    continue
+                line = decode_rg_text(data.get("lines")).rstrip("\r\n")
+                submatches = data.get("submatches", [])
+                submatch_count = len(submatches) if isinstance(submatches, list) else 1
+                file_counts[path] += submatch_count
+                match_count += submatch_count
 
-            if request.output_mode == "content":
-                if len(matches) >= request.limit:
-                    truncated = True
-                    await stop_process(process)
-                    break
-                start = self._first_match_start(submatches)
-                content, content_truncated = self._truncate_content(line)
-                matches.append({
-                    "path": path,
-                    "line": int(data.get("line_number", 0)),
-                    "column": self._byte_column(line, start),
-                    "content": content,
-                    "content_truncated": content_truncated,
-                })
-            elif request.output_mode == "files_with_matches":
-                if len(file_counts) > request.limit:
-                    truncated = True
-                    await stop_process(process)
-                    break
+                if request.output_mode == "content":
+                    if len(matches) >= request.limit:
+                        truncated = True
+                        await stop_process(process, self._process_supervisor)
+                        break
+                    start = self._first_match_start(submatches)
+                    content, content_truncated = self._truncate_content(line)
+                    matches.append({
+                        "path": path,
+                        "line": int(data.get("line_number", 0)),
+                        "column": self._byte_column(line, start),
+                        "content": content,
+                        "content_truncated": content_truncated,
+                    })
+                elif request.output_mode == "files_with_matches":
+                    if len(file_counts) > request.limit:
+                        truncated = True
+                        await stop_process(process, self._process_supervisor)
+                        break
 
-        if process.returncode is None:
-            _stdout, stderr = await process.communicate()
-            return_code = process.returncode or 0
-            error = stderr.decode("utf-8", errors="replace").strip()
-        else:
-            return_code, error = process.returncode, ""
+            if process.returncode is None:
+                _stdout, stderr = await process.communicate()
+                return_code = process.returncode or 0
+                error = stderr.decode("utf-8", errors="replace").strip()
+            else:
+                return_code, error = process.returncode, ""
+        except asyncio.CancelledError:
+            await stop_process(process, self._process_supervisor)
+            raise
+        forget_process(process, self._process_supervisor)
         if return_code not in (0, 1) and not truncated:
             return ToolResult(error or "ripgrep failed", is_error=True, error_type="schema_error")
 
@@ -304,3 +323,4 @@ class GrepTool(BaseTool):
         if len(content) <= _MAX_CONTENT_CHARS:
             return content, False
         return content[:_MAX_CONTENT_CHARS] + "…", True
+    forget_process,

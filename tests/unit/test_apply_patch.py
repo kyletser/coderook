@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 import code_rook.core.editing.transaction as transaction_module
+from code_rook.core.patching import PatchEngine, PatchError
 from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
+from code_rook.core.workspace import WorkspaceBoundary
 
 
 def _payload(content: str) -> dict:
@@ -254,3 +256,74 @@ async def test_apply_patch_rejects_invalid_diff(tmp_path: Path) -> None:
 
     assert result.is_error
     assert _payload(result.content)["error"]["code"] in {"invalid_patch", "empty_patch"}
+
+
+# 功能：验证 PatchPlan 的稳定 hunk id 可只应用用户选择的修改块
+# 设计：在同一文件构造两个相隔 hunk，重复规划后选择第二个并断言第一个保持原状
+def test_patch_plan_applies_only_selected_hunk(tmp_path: Path) -> None:
+    target = tmp_path / "item.txt"
+    target.write_text("one\nold-a\nmiddle\nold-b\nend\n", encoding="utf-8")
+    patch = """\
+--- a/item.txt
++++ b/item.txt
+@@ -1,2 +1,2 @@
+ one
+-old-a
++new-a
+@@ -3,3 +3,3 @@
+ middle
+-old-b
++new-b
+ end
+"""
+    engine = PatchEngine(WorkspaceBoundary(tmp_path))
+
+    first_plan = engine.plan(patch)
+    second_plan = engine.plan(patch)
+    selected = {first_plan.files[0].hunks[1].id}
+    outcome = engine.apply_plan(first_plan, selected)
+
+    assert first_plan.id == second_plan.id
+    assert first_plan.files[0].hunks == second_plan.files[0].hunks
+    assert outcome.files[0].hunks == 1
+    assert target.read_text(encoding="utf-8") == "one\nold-a\nmiddle\nnew-b\nend\n"
+
+
+# 功能：验证审阅后文件被外部修改时旧 PatchPlan 会拒绝提交
+# 设计：先规划再改写基线文件，断言专用 stale 错误且不会覆盖用户的新内容
+def test_patch_plan_rejects_stale_workspace(tmp_path: Path) -> None:
+    target = tmp_path / "item.txt"
+    target.write_text("old\n", encoding="utf-8")
+    patch = """\
+--- a/item.txt
++++ b/item.txt
+@@ -1 +1 @@
+-old
++new
+"""
+    engine = PatchEngine(WorkspaceBoundary(tmp_path))
+    plan = engine.plan(patch)
+    target.write_text("user-change\n", encoding="utf-8")
+
+    with pytest.raises(PatchError, match="workspace changed") as error:
+        engine.apply_plan(plan, {plan.files[0].hunks[0].id})
+
+    assert error.value.code == "stale_patch_plan"
+    assert target.read_text(encoding="utf-8") == "user-change\n"
+
+
+# 功能：验证 apply_patch 审批上下文公开计划 id、文件路径和稳定 hunk 元数据
+# 设计：直接调用工具审批上下文而不写文件，覆盖 TUI 选择依赖的结构化契约
+def test_apply_patch_approval_context_contains_hunk_plan(tmp_path: Path) -> None:
+    (tmp_path / "item.txt").write_text("old\n", encoding="utf-8")
+    patch = "--- a/item.txt\n+++ b/item.txt\n@@ -1 +1 @@\n-old\n+new\n"
+    tool = ApplyPatchTool(workspace_root=tmp_path)
+
+    context = tool.approval_context({"patch": patch})
+
+    assert context is not None
+    plan = context["patch_plan"]
+    assert isinstance(plan, dict)
+    assert str(plan["id"]).startswith("patch-")
+    assert plan["files"][0]["path"] == "item.txt"  # type: ignore[index]
+    assert str(plan["files"][0]["hunks"][0]["id"]).startswith("h-")  # type: ignore[index]

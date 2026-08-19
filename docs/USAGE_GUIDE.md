@@ -77,15 +77,20 @@ flowchart LR
   `allow-list` 三种无人值守策略。
 - **权限姿态（Authority）**：`ask`（询问后修改）/ `auto-review`（自动接受修改）/
   `full-access`（全自动执行）。
-- **工作区信任（Trust）**：项目是否受信任的独立状态；Sandbox 显示真实 OS 隔离能力。
+- **工作区信任（Trust）**：项目是否受信任的独立状态；Linux bwrap/macOS Seatbelt 可实际包装
+  AUTO_REVIEW 下的 Bash，Windows 无后端时明确降级并回到审批链。
 
 ### 2.4 代码工具（action-family）
 
 - **File**：`read_file`（返回 SHA-256）、`write_file`、`edit_file`（唯一/批量精确替换、
   冲突检测、原子落盘、有界 unified diff）、`apply_patch`（多文件事务补丁，dry-run）。
 - **Git**：`git_diff`（只读子进程返回 staged/unstaged/untracked、rename、numstat）。
-- **Run / Bash**：执行命令；`Bash.run` 进程树管理，取消时清理。
+- **Run / Bash**：执行命令；`Bash.run` 支持默认 isolated 与按 session 复用 cwd/env/venv 的
+  persistent 模式，保留进程树管理与取消清理。
 - **检索**：`glob`（工作区边界、ignore 规则、稳定排序）、`grep`（跳过二进制与超大文件）。
+- **Web / 图片 / 诊断**：`web_fetch`/`web_search` 多后端降级；`read_image` 或在 TUI 粘贴
+  本地图片路径会先落 ArtifactStore，只向下一次模型请求交付，永久账本不存 base64；编辑后
+  并发运行可取消、去重的 pyright/tsc 诊断。
 - **Checkpoint / Rewind**：写前持久化 preimage 与 post-hash，支持冲突预检和多文件回滚。
 - **工具重试语义**：显式声明 `NEVER` / `RATE_LIMIT` / `IDEMPOTENT`。
 
@@ -171,6 +176,9 @@ macOS/Linux：
 cp .env.example .env
 ```
 
+Windows 安装与自带解释器的 portable ZIP 分别使用 `scripts\install-windows.ps1`、
+`scripts\build_windows_portable.ps1`。容器入口为 `Dockerfile` 和 `docker-compose.example.yml`。
+
 ### 3.3 配置模型
 
 推荐使用交互式向导：
@@ -180,7 +188,8 @@ uv run coderook configure
 ```
 
 向导支持 Anthropic-compatible 与 OpenAI-compatible 接入，隐藏输入 API key，为两种协议分别
-保留 key，修改后自动重启 CodeRook 管理的 Core。普通配置保存在 `~/.coderook/config.toml`，
+保留 key。候选 route 先通过 ProviderDoctor，再原子提交并重启 CodeRook 管理的 Core；诊断失败
+不会覆盖旧活动配置。普通配置保存在 `~/.coderook/config.toml`，
 密钥单独保存在 `~/.coderook/credentials.json`，不会写入仓库或日志。
 
 查看当前配置（不显示密钥正文）：
@@ -248,8 +257,13 @@ uv run coderook
 
 | 命令 | 作用 |
 |---|---|
+| `/help` | 查看键位、内置命令及参数提示 |
 | `/new` | 创建并切换到新会话 |
 | `/sessions` | 打开历史会话选择器 |
+| `/rename 标题` | 重命名当前会话 |
+| `/fork [标题]` | 从当前会话创建分支 |
+| `/export [md\|json]` | 导出当前会话 |
+| `/delete --yes` | 删除当前会话 |
 | `/model` | 查看或切换当前模型 |
 | `/model <模型 ID>` | 直接切换到指定模型 |
 | `/model add <模型 ID>` | 新增自定义模型并立即切换 |
@@ -270,9 +284,14 @@ uv run coderook
 | `/diff` | 查看当前工作区改动和统一 diff |
 | `/rewind` | 从安全 checkpoint 恢复文件 |
 | `/context` | 查看消息数、token 估算、运行次数和上下文占用 |
+| `/cost` | 查看本会话成本分解与缓存节省 |
 | `/turn` | 检视当前最近 turn 的 route、usage、工具、审批、诊断与 receipt |
 | `/turn ID` | 检视指定 durable turn |
 | `/skills` | 列出、查看、安装、删除或审计 Skills |
+| `/mcp` | 查看 MCP server 状态和工具 |
+| `/hooks [rerun ID --yes]` | 查看 Hook 或确认后重跑指定记录 |
+| `/memory [delete ID --yes]` | 查看或确认后删除项目记忆 |
+| `/jobs [show\|cancel]` | 查看或取消后台任务和 Worker |
 | `/技能名` | 调用已注册的 Skill |
 
 ---
@@ -403,6 +422,11 @@ uv run coderook --version                # 版本号
 uv run coderook configure                # 交互式 LLM 配置
 uv run coderook config-status            # 查看生效配置
 uv run coderook doctor [route_id]        # 诊断 provider 路由（--json 输出）
+uv run coderook doctor all --json        # 系统、端口、sandbox、磁盘、runtime 汇总
+uv run coderook doctor runtime --json    # 检查 ledger/SQLite 投影一致性
+uv run coderook doctor bundle --output diagnostics.zip --yes  # 确认导出脱敏包
+uv run coderook artifacts list --json    # 列出内容寻址产物
+uv run coderook artifacts gc --days 30   # 安全预览；加 --yes 才删除
 uv run coderook cancel RUN_ID            # 取消活动 run
 ```
 
@@ -425,7 +449,12 @@ wire format 可选 `openai_chat`、`openai_responses`、`anthropic_messages`。
 
 ```powershell
 uv run coderook run --goal "分析项目并运行测试"
+uv run coderook run --goal "分析项目" --output-format stream-json
+uv run coderook run --goal "继续处理" --resume SESSION_ID
 ```
+
+`--output-format` 支持 `text|json|stream-json`。机器格式的 stdout 不混入日志；
+`--event-filter` 可筛选事件，`--include-partial` 可显式包含部分 token 事件。
 
 Headless 任务默认 `fail-fast`（遇到需人工审批的工具立即退出，权限所需退出码为 3）。指定
 允许工具时：
@@ -440,6 +469,9 @@ uv run coderook run --goal "修改并验证代码" `
 
 macOS/Linux 将 PowerShell 续行符 `` ` `` 换成 `\`。`allow-list` 仍不能绕过危险命令规则和
 工作区边界；完全不允许审批类工具时用 `--permission-mode deny`。
+
+模型提问也必须是有限策略：默认 `--question-mode fail-fast`；`timeout` 需要同时传
+`--question-timeout SECONDS`；`preset` 需要一个或多个按顺序消费的 `--answer TEXT`。
 
 ### 9.4 Trace 与诊断
 
@@ -569,6 +601,8 @@ CodeRook Core 提供本地 HTTP/JSON 与 SSE 接口，默认监听 `127.0.0.1:74
 | `POST` | `/v1/turns/{id}/steer` | 注入指令，body: `{"content":"..."}` |
 | `GET` | `/v1/turns/{id}/items` | 读取 durable turn items |
 | `GET` | `/v1/turns/{id}/receipt` | 读取可离线重建的 Turn Receipt |
+| `POST` | `/v1/permissions/{tool_use_id}` | 响应审批，可带 `selected_hunks`/`patch_plan_id` |
+| `GET` | `/v1/workspace/diff?scope=all&path=.` | 读取结构化工作区 diff |
 | `GET` | `/v1/capabilities` | 查询协商能力 |
 | `GET` | `/v1/usage` | 汇总 durable token usage |
 
@@ -581,6 +615,10 @@ Accept: text/event-stream
 
 断线后把最后收到的 id 作为 `after_seq` 或 `Last-Event-ID` header 重连，服务只返回严格大于
 该游标的事件。
+
+`code_rook.sdk` 提供同步 `CodeRookClient` 与异步 `AsyncCodeRookClient`，只封装上述公开
+HTTP/SSE 契约。`editors/vscode/` 是同一 API 的最小验证客户端，支持 thread、turn、游标恢复、
+审批/逐 hunk、diff、steer 与 interrupt，不使用 IDE 专用后门。
 
 ---
 

@@ -67,6 +67,7 @@ class HookAuditEvent(BaseModel):
 
     schema_version: int = 2
     hook_id: str
+    run_id: str = ""
     event: HookEvent
     status: HookAuditStatus
     blocking: bool
@@ -76,4 +77,5 @@ class HookAuditEvent(BaseModel):
     reason: str = ""
     output_truncated: bool = False
     exit_code: int | None = None
+    process_usage: dict[str, JsonValue] = Field(default_factory=dict)
     ts: str

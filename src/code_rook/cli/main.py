@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from code_rook.cli.commands.artifacts import cmd_artifacts
 from code_rook.cli.commands.cancel import cmd_cancel
 from code_rook.cli.commands.chat import cmd_chat
 from code_rook.cli.commands.configure import cmd_configure, print_llm_status
@@ -12,7 +14,12 @@ from code_rook.cli.commands.core import (
     cmd_core_status,
     cmd_core_stop,
 )
-from code_rook.cli.commands.doctor import cmd_doctor
+from code_rook.cli.commands.doctor import (
+    cmd_diagnostic_bundle,
+    cmd_doctor,
+    cmd_runtime_doctor,
+    cmd_system_doctor,
+)
 from code_rook.cli.commands.ping import cmd_ping
 from code_rook.cli.commands.provider import (
     cmd_model_list,
@@ -63,6 +70,13 @@ def main() -> None:
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose a provider route")
     doctor_parser.add_argument("route_id", nargs="?", help="Configured route ID")
     doctor_parser.add_argument("--json", action="store_true", help="Print JSON result")
+    doctor_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="With 'doctor runtime', repair safe projection/counter drift",
+    )
+    doctor_parser.add_argument("--output", type=Path, help="Output path for doctor bundle")
+    doctor_parser.add_argument("--yes", action="store_true", help="Confirm bundle export")
 
     provider_parser = subparsers.add_parser("provider", help="Manage provider routes")
     provider_sub = provider_parser.add_subparsers(dest="provider_command")
@@ -95,9 +109,15 @@ def main() -> None:
     )
     add_provider.add_argument("--base-url")
     add_provider.add_argument("--model")
+    add_provider.add_argument("--temperature", type=float)
     add_provider.add_argument("--credential-ref")
     add_provider.add_argument("--set-key", action="store_true")
     add_provider.add_argument("--activate", action="store_true")
+    add_provider.add_argument(
+        "--skip-doctor",
+        action="store_true",
+        help="Commit without a live provider probe (not recommended)",
+    )
 
     edit_provider = provider_sub.add_parser("edit", help="Edit a provider route")
     edit_provider.add_argument("route_id")
@@ -117,9 +137,15 @@ def main() -> None:
     )
     edit_provider.add_argument("--base-url")
     edit_provider.add_argument("--model")
+    edit_provider.add_argument("--temperature", type=float)
     edit_provider.add_argument("--credential-ref")
     edit_provider.add_argument("--set-key", action="store_true")
     edit_provider.add_argument("--activate", action="store_true")
+    edit_provider.add_argument(
+        "--skip-doctor",
+        action="store_true",
+        help="Commit without a live provider probe (not recommended)",
+    )
 
     remove_provider = provider_sub.add_parser("remove", help="Remove a provider route")
     remove_provider.add_argument("route_id")
@@ -193,6 +219,48 @@ def main() -> None:
         metavar="TOOL",
         help="Tool allowed in allow-list mode; repeat for multiple tools",
     )
+    run_parser.add_argument(
+        "--output-format",
+        choices=("text", "json", "stream-json"),
+        default="text",
+        help="Human output, one final JSON result, or versioned NDJSON events",
+    )
+    run_parser.add_argument(
+        "--event-filter",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="stream-json event type glob; repeat for multiple patterns",
+    )
+    run_parser.add_argument(
+        "--include-partial",
+        action="store_true",
+        help="Include llm.token and llm.reasoning events in stream-json",
+    )
+    run_parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="Append this goal to an existing resumable chat session",
+    )
+    run_parser.add_argument(
+        "--question-mode",
+        choices=("fail-fast", "timeout", "preset"),
+        default="fail-fast",
+        help="How headless runs handle ask_user_question",
+    )
+    run_parser.add_argument(
+        "--question-timeout",
+        type=float,
+        metavar="SECONDS",
+        help="Maximum question wait in timeout mode",
+    )
+    run_parser.add_argument(
+        "--answer",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Ordered preset answer; repeat for multiple questions",
+    )
 
     core_parser = subparsers.add_parser("core", help="Manage the core daemon")
     core_sub = core_parser.add_subparsers(dest="core_command")
@@ -208,6 +276,19 @@ def main() -> None:
     trace_parser.add_argument("--raw", action="store_true", help="Output raw NDJSON")
     trace_parser.add_argument("--follow", "-f", action="store_true", help="Follow new records")
 
+    artifacts_parser = subparsers.add_parser(
+        "artifacts",
+        help="Inspect or garbage collect artifacts",
+    )
+    artifacts_sub = artifacts_parser.add_subparsers(dest="artifacts_command")
+    artifacts_list = artifacts_sub.add_parser("list", help="List artifact inventory")
+    artifacts_list.add_argument("--days", type=int, default=30)
+    artifacts_list.add_argument("--json", action="store_true")
+    artifacts_gc = artifacts_sub.add_parser("gc", help="Preview or execute artifact GC")
+    artifacts_gc.add_argument("--days", type=int, default=30)
+    artifacts_gc.add_argument("--yes", action="store_true", help="Confirm deletion")
+    artifacts_gc.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
 
     if args.version:
@@ -222,7 +303,24 @@ def main() -> None:
     elif args.command == "config-status":
         print_llm_status(config)
     elif args.command == "doctor":
-        cmd_doctor(config, args.route_id, as_json=args.json)
+        if args.route_id == "runtime":
+            cmd_runtime_doctor(repair=args.repair, as_json=args.json)
+        elif args.route_id in {None, "all"}:
+            if args.repair:
+                parser.error("--repair requires 'coderook doctor runtime'")
+            cmd_system_doctor(config, as_json=args.json)
+        elif args.route_id == "bundle":
+            if args.repair or args.json:
+                parser.error("doctor bundle does not support --repair or --json")
+            cmd_diagnostic_bundle(
+                config,
+                args.output or Path.cwd() / "coderook-diagnostics.zip",
+                confirmed=args.yes,
+            )
+        else:
+            if args.repair:
+                parser.error("--repair requires 'coderook doctor runtime'")
+            cmd_doctor(config, args.route_id, as_json=args.json)
     elif args.command == "provider":
         if args.provider_command == "list":
             cmd_provider_list(config)
@@ -234,9 +332,11 @@ def main() -> None:
                 wire_format=args.wire_format,
                 base_url=args.base_url,
                 model=args.model,
+                temperature=args.temperature,
                 credential_ref=args.credential_ref,
                 set_key=args.set_key,
                 activate=args.activate,
+                validate=not args.skip_doctor,
             )
         elif args.provider_command == "edit":
             cmd_provider_edit(
@@ -245,9 +345,11 @@ def main() -> None:
                 wire_format=args.wire_format,
                 base_url=args.base_url,
                 model=args.model,
+                temperature=args.temperature,
                 credential_ref=args.credential_ref,
                 set_key=args.set_key,
                 activate=args.activate,
+                validate=not args.skip_doctor,
             )
         elif args.provider_command == "remove":
             cmd_provider_remove(
@@ -316,12 +418,37 @@ def main() -> None:
     elif args.command == "run":
         if args.allow_tool and args.permission_mode != "allow-list":
             parser.error("--allow-tool requires --permission-mode allow-list")
+        if args.question_mode == "timeout" and args.question_timeout is None:
+            parser.error("--question-timeout is required in timeout question mode")
+        if args.question_mode == "preset" and not args.answer:
+            parser.error("--answer is required in preset question mode")
         cmd_run(
             args.goal,
             config,
             permission_mode=args.permission_mode.replace("-", "_"),
             allow_tools=args.allow_tool,
+            output_format=args.output_format,
+            event_filters=args.event_filter,
+            include_partial=args.include_partial,
+            resume_session_id=args.resume,
+            question_mode=args.question_mode.replace("-", "_"),
+            question_timeout_s=args.question_timeout,
+            preset_answers=args.answer,
         )
+    elif args.command == "artifacts":
+        if args.artifacts_command == "list":
+            cmd_artifacts(config, "list", days=args.days, as_json=args.json)
+        elif args.artifacts_command == "gc":
+            cmd_artifacts(
+                config,
+                "gc",
+                days=args.days,
+                confirmed=args.yes,
+                as_json=args.json,
+            )
+        else:
+            artifacts_parser.print_help()
+            sys.exit(1)
     elif args.command == "core":
         if args.core_command == "start":
             cmd_core_start(config)

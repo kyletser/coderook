@@ -111,6 +111,7 @@ class PermissionManager:
         self._policies: dict[str, ToolPolicy] = policies or dict(DEFAULT_POLICIES)
         # tool_use_id → pending Future + metadata
         self._pending: dict[str, _PendingRequest] = {}
+        self._response_metadata: dict[str, dict[str, Any]] = {}
         # (session_id, tool_name) → "allow" | "deny"（session 内存，重启丢失）
         self._session_always: dict[tuple[str, str], str] = {}
         # tool_name → "allow" | "deny"（持久化，从 policy_file 加载）
@@ -306,7 +307,10 @@ class PermissionManager:
             and command
             and self.get_authority_snapshot(session_id).profile
             == AuthorityProfile.AUTO_REVIEW
-            and self.get_authority_snapshot(session_id).sandbox.available
+            and tier_for_auto_review(
+                self.get_authority_snapshot(session_id).sandbox
+            )
+            != SandboxTier.NONE
         ):
             return True, "authority_sandbox_allow"
 
@@ -392,13 +396,30 @@ class PermissionManager:
         return allowed, raw
 
     # 处理客户端返回的审批决策，resolve 对应 Future
-    def respond(self, tool_use_id: str, decision: str) -> None:
+    def respond(
+        self,
+        tool_use_id: str,
+        decision: str,
+        *,
+        selected_hunks: list[str] | None = None,
+        patch_plan_id: str | None = None,
+    ) -> bool:
         req = self._pending.pop(tool_use_id, None)
         if req is None:
             logger.warning("permission.respond: unknown tool_use_id=%s", tool_use_id)
-            return
+            return False
+        if selected_hunks is not None or patch_plan_id is not None:
+            self._response_metadata[tool_use_id] = {
+                "selected_hunks": selected_hunks,
+                "patch_plan_id": patch_plan_id,
+            }
         if not req.future.done():
             req.future.set_result(decision)
+        return True
+
+    # 取出并清除一次性审批元数据，防止跨工具调用复用 hunk 选择
+    def take_response_metadata(self, tool_use_id: str) -> dict[str, Any]:
+        return self._response_metadata.pop(tool_use_id, {})
 
     # 在给定缓存中查找命中 command 的命令前缀规则，返回缓存值或 None
     @staticmethod

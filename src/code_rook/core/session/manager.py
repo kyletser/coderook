@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import uuid
 from collections.abc import Callable
@@ -8,6 +9,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from code_rook.core.artifacts import (
+    ArtifactError,
+    ArtifactStore,
+    ImageArtifactInput,
+    inspect_image,
+)
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
@@ -96,7 +103,49 @@ class SessionManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
         self._skill_loader = SkillLoader()
+        workspace = WorkspaceBoundary.current().root
+        self._artifact_store = ArtifactStore(workspace / ".coderook" / "artifacts")
         self._rehydrate()
+
+    # 校验图片 artifact 元数据并构造只用于下一次模型请求的内存图片块
+    async def _prepare_image_attachments(
+        self,
+        attachments: list[ImageArtifactInput],
+    ) -> tuple[str, list[dict[str, object]]]:
+        descriptions: list[str] = []
+        blocks: list[dict[str, object]] = []
+        for attachment in attachments:
+            try:
+                data = await self._artifact_store.read_bytes(
+                    attachment.sha256,
+                    max_bytes=2 * 1024 * 1024,
+                )
+                metadata = inspect_image(data)
+            except (ArtifactError, OSError, ValueError) as exc:
+                raise HandlerError(INVALID_PARAMS, f"invalid image artifact: {exc}") from exc
+            if (
+                len(data) != attachment.size
+                or metadata.media_type != attachment.media_type
+                or metadata.width != attachment.width
+                or metadata.height != attachment.height
+            ):
+                raise HandlerError(INVALID_PARAMS, "image artifact metadata mismatch")
+            descriptions.append(
+                "[attached image: "
+                f"artifact:{attachment.sha256} {metadata.media_type} "
+                f"{metadata.width}x{metadata.height} {len(data)} bytes]"
+            )
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": metadata.media_type,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                }
+            )
+        return "\n".join(descriptions), blocks
 
     # 首次异步操作前将文件 session 索引幂等导入 runtime
     async def _ensure_runtime_sessions(self) -> None:
@@ -159,6 +208,7 @@ class SessionManager:
         *,
         run_id: str | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        attachments: list[ImageArtifactInput] | None = None,
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -176,6 +226,24 @@ class SessionManager:
                     resolved_route = self._route_registry.resolve()
                 except RouteResolutionError as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+            image_attachments = attachments or []
+            if (
+                image_attachments
+                and resolved_route is not None
+                and not resolved_route.route.supports_images
+            ):
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "active route does not support images; select an image-capable route",
+                )
+            attachment_text, image_blocks = await self._prepare_image_attachments(
+                image_attachments
+            )
+            ledger_content = (
+                f"{content.rstrip()}\n\n{attachment_text}".strip()
+                if attachment_text
+                else content
+            )
 
             if session.status in ("waiting_for_input", "interrupted"):
                 await self._bus.publish(SessionResumedEvent(session_id=sid, ts=_now()))
@@ -195,7 +263,7 @@ class SessionManager:
             if self._hooks is not None:
                 message_decision = await self._hooks.emit(
                     "message_submit",
-                    {"session_id": sid, "run_id": run_id, "content": content},
+                    {"session_id": sid, "run_id": run_id, "content": ledger_content},
                 )
                 if message_decision.blocked:
                     raise HandlerError(
@@ -218,12 +286,16 @@ class SessionManager:
             self._store.append_message(
                 sid,
                 "user",
-                content,
+                ledger_content,
                 run_id=run_id,
                 message_id=f"{run_id}:user",
             )
             await self._bus.publish(
-                SessionMessageReceivedEvent(session_id=sid, content=content, ts=_now())
+                SessionMessageReceivedEvent(
+                    session_id=sid,
+                    content=ledger_content,
+                    ts=_now(),
+                )
             )
 
             if not session.title:
@@ -237,13 +309,13 @@ class SessionManager:
                 await self._runtime.start_turn(
                     session,
                     run_id,
-                    content,
+                    ledger_content,
                     runtime_mode=runtime_mode,
                     route=(resolved_route.receipt if resolved_route is not None else None),
                 )
 
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
-            goal = content
+            goal = ledger_content
             system_prompt_override: str | None = None
             tool_whitelist: list[str] | None = None
             if requested_skill is not None:
@@ -260,28 +332,19 @@ class SessionManager:
                 )
 
             runner = self._runner_factory()
-            run_coroutine = (
-                runner.run_and_capture(
-                    goal,
-                    run_id=run_id,
-                    session=session,
-                    store=self._store,
-                    system_prompt_override=system_prompt_override,
-                    tool_whitelist=tool_whitelist,
-                    runtime_mode=runtime_mode,
-                    resolved_route=resolved_route,
-                )
-                if resolved_route is not None
-                else runner.run_and_capture(
-                    goal,
-                    run_id=run_id,
-                    session=session,
-                    store=self._store,
-                    system_prompt_override=system_prompt_override,
-                    tool_whitelist=tool_whitelist,
-                    runtime_mode=runtime_mode,
-                )
-            )
+            run_options: dict[str, Any] = {
+                "run_id": run_id,
+                "session": session,
+                "store": self._store,
+                "system_prompt_override": system_prompt_override,
+                "tool_whitelist": tool_whitelist,
+                "runtime_mode": runtime_mode,
+            }
+            if resolved_route is not None:
+                run_options["resolved_route"] = resolved_route
+            if image_blocks:
+                run_options["initial_images"] = image_blocks
+            run_coroutine = runner.run_and_capture(goal, **run_options)
             runner_task = asyncio.create_task(
                 run_coroutine,
                 name=f"run:{run_id}",

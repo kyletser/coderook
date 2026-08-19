@@ -7,7 +7,12 @@ import pytest
 
 from code_rook.core.authority import AuthorityProfile, ToolAction, WorkspaceTrust
 from code_rook.core.llm.routes import RouteReceipt
-from code_rook.core.runtime.migrations import _apply_v1, _apply_v2
+from code_rook.core.runtime.migrations import (
+    CURRENT_SCHEMA_VERSION,
+    RuntimeMigrationError,
+    _apply_v1,
+    _apply_v2,
+)
 from code_rook.core.runtime.models import (
     ThreadRecord,
     TurnItemKind,
@@ -64,6 +69,19 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 
     assert first.schema_version() == 3
     assert second.schema_version() == 3
+
+
+# 功能：验证较新 runtime schema 不会被旧版 daemon 静默降级或覆盖
+# 设计：只写入未来 user_version 后打开 RuntimeStore，断言在任何表变更前明确阻断
+def test_future_runtime_schema_blocks_unsupported_downgrade(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-future.db"
+    future_version = CURRENT_SCHEMA_VERSION + 100
+    connection = sqlite3.connect(path)
+    connection.execute(f"PRAGMA user_version = {future_version}")
+    connection.close()
+
+    with pytest.raises(RuntimeMigrationError, match="newer than supported"):
+        RuntimeStore(path)
 
 
 # 功能：验证普通 store 操作结束后不会遗留阻止文件移动的 SQLite 句柄

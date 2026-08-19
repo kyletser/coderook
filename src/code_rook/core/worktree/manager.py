@@ -4,6 +4,8 @@ import asyncio
 import re
 from pathlib import Path
 
+from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
+
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
 
 
@@ -13,9 +15,14 @@ class WorktreeError(RuntimeError):
 
 class WorktreeManager:
     # 初始化受项目根目录约束的 worktree 管理器
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        process_supervisor: ProcessSupervisor | None = None,
+    ) -> None:
         self._root = project_root.resolve()
         self._dir = self._root / ".coderook" / "worktrees"
+        self._process_supervisor = process_supervisor
 
     # 校验名称并返回固定 worktree 路径，拒绝路径穿越
     def path_for(self, name: str) -> Path:
@@ -72,15 +79,36 @@ class WorktreeManager:
 
     # 在项目仓库中运行 git 子命令，失败时转换为领域错误
     async def _git(self, *args: str) -> str:
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            str(self._root),
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
+        if self._process_supervisor is not None:
+            process = await self._process_supervisor.start_exec(
+                "git",
+                "-C",
+                str(self._root),
+                *args,
+                label="git-worktree",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(self._root),
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            if self._process_supervisor is not None:
+                await self._process_supervisor.terminate(process)
+            else:
+                await terminate_process_tree(process)
+            raise
+        finally:
+            if self._process_supervisor is not None and process.returncode is not None:
+                self._process_supervisor.forget(process)
         output = stdout.decode(errors="replace")
         if process.returncode != 0:
             message = stderr.decode(errors="replace").strip() or output.strip()

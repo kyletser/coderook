@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +36,10 @@ jobs:
       - name: Sync locked environment
         run: uv sync --frozen
 
+      - name: Install Linux sandbox backend
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: Ruff
         run: uv run ruff check .
 
@@ -47,6 +51,17 @@ jobs:
 
       - name: Tests
         run: uv run pytest -q
+
+      - name: Deterministic benchmark contract
+        run: uv run python scripts/run_benchmark.py --suite quick --validate-baseline
+
+      - name: Sandbox negative boundary
+        run: uv run python scripts/check_sandbox_boundary.py
+
+      - name: VS Code extension typecheck
+        if: runner.os == 'Linux'
+        working-directory: editors/vscode
+        run: npm ci && npm run check
 
       - name: Protocol contract
         run: uv run python scripts/gen_protocol_doc.py --check

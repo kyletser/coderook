@@ -162,6 +162,7 @@ class OpenAIResponsesProvider:
         api_key: str,
         context_window: int | None = None,
         thinking: str = "off",
+        temperature: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._model = model
@@ -169,6 +170,7 @@ class OpenAIResponsesProvider:
         self._api_key = api_key
         self._context_window = context_window or _DEFAULT_CONTEXT_WINDOW
         self._thinking = thinking
+        self._temperature = temperature
         self._client = client
 
     # 调用 Responses API 并把正文、reasoning summary、工具调用和 usage 投影为统一事件
@@ -202,6 +204,8 @@ class OpenAIResponsesProvider:
             "store": False,
             "stream": True,
         }
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
         if effective_thinking in {"low", "medium", "high"}:
             payload["reasoning"] = {"effort": effective_thinking}
         tools = _to_responses_tools(tool_schemas)

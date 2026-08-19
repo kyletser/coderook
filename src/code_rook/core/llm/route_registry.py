@@ -56,6 +56,7 @@ def legacy_config_route(config: LlmConfig) -> ProviderRoute:
             model=config.default_model,
             credential_ref=credential_ref,
             supports_prompt_cache=wire_format == "anthropic_messages",
+            supports_images=provider in {"anthropic", "openai"},
         )
     except ValidationError as exc:
         raise RouteResolutionError(f"invalid legacy route for provider: {provider}") from exc
@@ -69,22 +70,37 @@ class RouteRegistry:
         *,
         route_store: RouteStore | None = None,
         credential_store: CredentialStore | None = None,
+        temperature_override: float | None = None,
     ) -> None:
         self._config = config
         self._routes = route_store or RouteStore()
         self._credentials = credential_store or CredentialStore()
+        self._temperature_override = temperature_override
 
     # 返回指定或活动 route；尚未迁移时生成不落盘的旧配置 route
     def route(self, route_id: str | None = None) -> ProviderRoute:
         if route_id is not None:
             try:
-                return self._routes.get(route_id)
+                route = self._routes.get(route_id)
             except RouteStoreError as exc:
                 raise RouteResolutionError(
                     f"profile route is not configured: {route_id}"
                 ) from exc
-        active = self._routes.active()
-        return active if active is not None else legacy_config_route(self._config)
+        else:
+            active = self._routes.active()
+            route = active if active is not None else legacy_config_route(self._config)
+        if self._temperature_override is None:
+            return route
+        payload = route.model_dump(mode="python")
+        payload["temperature"] = self._temperature_override
+        return ProviderRoute.model_validate(payload)
+
+    # 返回当前参与路由决策的稳定候选 id，未迁移时包含兼容 route
+    def candidate_ids(self) -> list[str]:
+        configured = self._routes.list()
+        if configured:
+            return sorted(route.id for route in configured)
+        return [legacy_config_route(self._config).id]
 
     # 解析 route 凭据并生成不含敏感正文的冻结收据
     def resolve(self, route_id: str | None = None) -> ResolvedRoute:

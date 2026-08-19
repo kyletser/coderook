@@ -24,11 +24,17 @@ uv run coderook-core
 |---|---|---|
 | `GET` | `/v1/threads` | 列出 durable threads |
 | `POST` | `/v1/threads` | 创建 thread，body: `{"title":"...","mode":"chat"}` |
+| `GET` | `/v1/threads/{id}` | 读取单个 durable thread |
+| `PATCH` | `/v1/threads/{id}` | 更新标题或归档，body: `{"title":"...","archived":true}` |
+| `GET` | `/v1/threads/{id}/turns` | 列出 thread 的 durable turns |
 | `POST` | `/v1/threads/{id}/turns` | 启动 turn，body: `{"content":"...","mode":"act"}` |
+| `GET` | `/v1/turns/{id}` | 读取单个 durable turn |
 | `POST` | `/v1/turns/{id}/interrupt` | 中断活动 turn |
 | `POST` | `/v1/turns/{id}/steer` | 注入指令，body: `{"content":"..."}` |
 | `GET` | `/v1/turns/{id}/items` | 读取 durable turn items |
 | `GET` | `/v1/turns/{id}/receipt` | 读取可离线重建的 Turn Receipt |
+| `POST` | `/v1/permissions/{request_id}` | 回答审批；支持 `decision`、`patch_plan_id` 与 `selected_hunks` |
+| `GET` | `/v1/workspace/diff?scope=all&path=.` | 读取工作区 diff；scope 可为 all/staged/unstaged |
 | `GET` | `/v1/capabilities` | 查询协商能力 |
 | `GET` | `/v1/usage` | 汇总 durable token usage；未知价格返回 `unknown` |
 
@@ -59,3 +65,9 @@ Receipt 只使用 SQLite 中的 TurnRecord、TurnItemRecord 和 RuntimeEventReco
 
 无法从 durable records 证明的字段会列入 `unavailable`，不会伪造为已知事实。模型价格未
 配置时 `cost` 固定为 `unknown`。
+
+## Python SDK
+
+`code_rook.sdk.CodeRookClient` 和 `AsyncCodeRookClient` 对上述 durable HTTP/SSE 契约提供
+同步与异步封装，包括 thread/turn、事件游标重连、interrupt/steer、receipt、usage、diff 与
+逐 hunk 审批。SDK 不维护第二套会话状态；调用方应持久化最后确认的 SSE `seq` 并在重连时传回。

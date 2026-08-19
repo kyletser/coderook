@@ -95,6 +95,8 @@ class McpServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     host: str = "localhost"        # tcp 专用
     port: int = 3000               # tcp 专用
+    url: str = ""                  # streamable_http 专用：单一 HTTP endpoint
+    auth_token_env: str = ""       # 可选 Bearer token 环境变量名
 
 
 @dataclass
@@ -443,9 +445,10 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             if not isinstance(name, str) or not name:
                 raise SystemExit(f"Config error: mcp.servers[{i}].name must be a non-empty string")
             transport = srv.get("transport", "stdio")
-            if transport not in ("stdio", "tcp"):
+            if transport not in ("stdio", "tcp", "streamable_http"):
                 raise SystemExit(
-                    f"Config error: mcp.servers[{i}].transport must be 'stdio' or 'tcp'"
+                    f"Config error: mcp.servers[{i}].transport must be "
+                    "'stdio', 'tcp', or 'streamable_http'"
                 )
             s = McpServerConfig(name=name, transport=transport)
             if "command" in srv:
@@ -473,6 +476,20 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
                 if not isinstance(val, int):
                     raise SystemExit(f"Config error: mcp.servers[{i}].port must be an integer")
                 s.port = val
+            if "url" in srv:
+                val = srv["url"]
+                if not isinstance(val, str):
+                    raise SystemExit(
+                        f"Config error: mcp.servers[{i}].url must be a string"
+                    )
+                s.url = val
+            if "auth_token_env" in srv:
+                val = srv["auth_token_env"]
+                if not isinstance(val, str):
+                    raise SystemExit(
+                        f"Config error: mcp.servers[{i}].auth_token_env must be a string"
+                    )
+                s.auth_token_env = val
             config.mcp.servers.append(s)
 
 

@@ -6,9 +6,12 @@ from typing import Any
 
 from pydantic import JsonValue, TypeAdapter
 
+from code_rook.core.authority import AuthorityProfile
 from code_rook.core.receipts.models import (
+    SandboxPlanReceipt,
     TurnApprovalCounts,
     TurnAuthorityReceipt,
+    TurnProcessUsageReceipt,
     TurnReceipt,
 )
 from code_rook.core.runtime.models import (
@@ -18,9 +21,17 @@ from code_rook.core.runtime.models import (
     TurnRecord,
     TurnStatus,
 )
+from code_rook.core.sandbox.planner import SandboxTier, plan_sandbox, tier_for_auto_review
 
 _TERMINAL = {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.INTERRUPTED}
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
+
+
+# 将持久 JSON 数值安全收窄为非负整数，布尔值和复杂对象按零处理
+def _json_count(value: JsonValue | None) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 # 将事件 payload 中的结构化对象按稳定键去重
@@ -128,11 +139,34 @@ def _checkpoints(items: Iterable[TurnItemRecord]) -> list[dict[str, JsonValue]]:
     return checkpoints
 
 
+# 汇总工具、后台任务和 hook 事件中的受管进程资源证据
+def _process_usage(events: Iterable[RuntimeEventRecord]) -> TurnProcessUsageReceipt:
+    records: list[dict[str, JsonValue]] = []
+    for event in events:
+        raw = event.payload.get("process_usage")
+        if isinstance(raw, dict) and raw:
+            records.append(raw)
+    return TurnProcessUsageReceipt(
+        record_count=len(records),
+        complete_records=sum(bool(record.get("complete")) for record in records),
+        total_process_wall_ms=sum(_json_count(record.get("wall_time_ms")) for record in records),
+        user_cpu_ms=sum(_json_count(record.get("user_cpu_ms")) for record in records),
+        system_cpu_ms=sum(_json_count(record.get("system_cpu_ms")) for record in records),
+        peak_memory_bytes=max(
+            (_json_count(record.get("peak_memory_bytes")) for record in records),
+            default=0,
+        ),
+        process_count=sum(_json_count(record.get("process_count")) for record in records),
+    )
+
+
 # 从持久化 turn、item 和 event 纯函数构建可离线读取的收据
 def build_turn_receipt(
     turn: TurnRecord,
     items: list[TurnItemRecord],
     events: list[RuntimeEventRecord],
+    *,
+    workspace: str = "",
 ) -> TurnReceipt:
     event_types = [event.type for event in events]
     requested = event_types.count("permission.requested")
@@ -158,7 +192,9 @@ def build_turn_receipt(
         unavailable.append("route")
     if not turn.usage:
         unavailable.append("usage")
-    unavailable.append("cost")
+    cost = turn.usage.get("estimated_cost_usd", "unknown")
+    if cost == "unknown":
+        unavailable.append("cost")
     for name, value in (
         ("files_changed", files_changed),
         ("checkpoints", checkpoints),
@@ -174,6 +210,18 @@ def build_turn_receipt(
         error_classification = str(raw_error) if raw_error is not None else None
     if error_classification is None and turn.status in {TurnStatus.FAILED, TurnStatus.INTERRUPTED}:
         unavailable.append("error_classification")
+    requested_tier = (
+        tier_for_auto_review(turn.sandbox)
+        if turn.authority_profile == AuthorityProfile.AUTO_REVIEW
+        else SandboxTier.NONE
+    )
+    sandbox_plan = plan_sandbox(
+        turn.sandbox,
+        requested_tier,
+        workspace or ".",
+    ).describe()
+    if not workspace:
+        sandbox_plan["workspace"] = ""
     return TurnReceipt(
         turn_id=turn.id,
         thread_id=turn.thread_id,
@@ -183,18 +231,21 @@ def build_turn_receipt(
             profile=turn.authority_profile,
             workspace_trust=turn.workspace_trust,
             sandbox=turn.sandbox,
+            sandbox_plan=SandboxPlanReceipt.model_validate(sandbox_plan),
             allowed_actions=turn.allowed_actions,
         ),
         started_at=turn.created_at,
         finished_at=turn.updated_at if turn.status in _TERMINAL else None,
         status=turn.status,
         usage=turn.usage,
+        cost=cost,
         tool_call_count=sum(item.kind == TurnItemKind.TOOL_CALL for item in items),
         approvals=TurnApprovalCounts(
             requested=requested,
             granted=granted,
             denied=denied,
         ),
+        process_usage=_process_usage(events),
         files_changed=files_changed,
         checkpoints=checkpoints,
         artifacts=artifacts,

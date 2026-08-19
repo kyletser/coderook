@@ -63,6 +63,7 @@ def test_route_factory_does_not_infer_wire_format_from_model_name() -> None:
         base_url=AnyHttpUrl("https://gateway.example/v1/chat/completions"),
         model="claude-looking-model",
         credential_ref="file:odd-openai",
+        temperature=0.25,
     )
     anthropic_wire = ProviderRoute(
         id="odd-anthropic",
@@ -71,6 +72,7 @@ def test_route_factory_does_not_infer_wire_format_from_model_name() -> None:
         base_url=AnyHttpUrl("https://gateway.example"),
         model="gpt-looking-model",
         credential_ref="file:odd-anthropic",
+        temperature=0.5,
     )
 
     openai_provider = factory_module.create_provider_for_route(openai_wire, "key-a")
@@ -81,5 +83,7 @@ def test_route_factory_does_not_infer_wire_format_from_model_name() -> None:
 
     assert isinstance(openai_provider, OpenAICompatibleProvider)
     assert openai_provider._model == "claude-looking-model"
+    assert openai_provider._temperature == 0.25
     assert isinstance(anthropic_provider, AnthropicProvider)
     assert anthropic_provider._model == "gpt-looking-model"
+    assert anthropic_provider._temperature == 0.5

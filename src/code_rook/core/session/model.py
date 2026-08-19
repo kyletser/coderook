@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 SessionStatus = Literal["active", "waiting_for_input", "interrupted", "closed"]
 SessionMode = Literal["one_shot", "chat"]
+SESSION_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -21,6 +22,7 @@ class Session:
     # 将 Session 转为可写入 meta.json 的普通 dict
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": SESSION_SCHEMA_VERSION,
             "id": self.id,
             "mode": self.mode,
             "status": self.status,
@@ -34,6 +36,14 @@ class Session:
     # 从 meta.json 的 dict 还原 Session 对象
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Session:
+        schema_version = int(data.get("schema_version", 0))
+        if schema_version > SESSION_SCHEMA_VERSION:
+            raise ValueError(
+                "session schema "
+                f"{schema_version} is newer than supported {SESSION_SCHEMA_VERSION}"
+            )
+        if schema_version < 0:
+            raise ValueError(f"invalid session schema version: {schema_version}")
         return cls(
             id=str(data["id"]),
             mode=data["mode"],

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator
+from pydantic import BaseModel, Discriminator, Field
 
 
 class CoreStartedEvent(BaseModel):
@@ -78,6 +78,7 @@ class ToolCallFinishedEvent(BaseModel):
     tool_name: str
     elapsed_ms: int
     output: str = ""
+    process_usage: dict[str, Any] = Field(default_factory=dict)
     ts: str
 
 
@@ -92,6 +93,7 @@ class ToolCallFailedEvent(BaseModel):
     elapsed_ms: int
     attempt: int = 1  # 1=first attempt, 2=first retry, 3=second retry
     terminal: bool = True
+    process_usage: dict[str, Any] = Field(default_factory=dict)
     ts: str
 
 
@@ -138,6 +140,13 @@ class LlmRouteSelectedEvent(BaseModel):
     base_url_origin: str
     model: str
     credential_source: Literal["keyring", "file", "env", "missing"]
+    strategy: str = "static"
+    candidates: list[str] = Field(default_factory=list)
+    reason: str = "active_route"
+    step: int = 0
+    accumulated_cost_usd: float | None = None
+    cost_budget_usd: float | None = None
+    temperature: float | None = None
     ts: str
 
 
@@ -295,6 +304,7 @@ class LspDiagnosticsEvent(BaseModel):
     tool: str
     paths: list[str]
     diagnostic_count: int
+    duration_ms: int = Field(default=0, ge=0)
     truncated: bool
     error: str = ""
     ts: str
@@ -381,6 +391,7 @@ class BackgroundJobFinishedEvent(BaseModel):
     session_id: str
     status: str
     output_preview: str
+    process_usage: dict[str, Any] = Field(default_factory=dict)
     ts: str
 
 
@@ -395,6 +406,7 @@ class SkillInvokedEvent(BaseModel):
 class HookExecutedEvent(BaseModel):
     type: Literal["hook.executed"] = "hook.executed"
     hook_id: str
+    run_id: str = ""
     event_name: str
     status: str
     blocking: bool
@@ -404,6 +416,7 @@ class HookExecutedEvent(BaseModel):
     reason: str
     output_truncated: bool
     exit_code: int | None
+    process_usage: dict[str, Any] = Field(default_factory=dict)
     ts: str
 
 

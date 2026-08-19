@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.checkpoints import CheckpointStore
@@ -50,6 +51,23 @@ class _Runner:
             run_id,
         )
         return RunOutcome(status="success", result="done", reason=None)
+
+
+class _ImageRunner(_Runner):
+    # 初始化图片捕获槽以验证像素只通过临时参数进入 runner
+    def __init__(self) -> None:
+        self.initial_images: list[dict[str, object]] = []
+
+    # 捕获初始图片后复用普通 runner 的 transcript 行为
+    async def run_and_capture(
+        self,
+        goal: str,
+        *,
+        initial_images: list[dict[str, object]] | None = None,
+        **kwargs: object,
+    ) -> RunOutcome:
+        self.initial_images = initial_images or []
+        return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
 
 
 # 功能：验证 session_start、message_submit、turn_start、session_stop 接入真实会话生命周期
@@ -117,6 +135,46 @@ async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path
     messages = store.read_messages(session.id)
     assert messages[0] == {"role": "user", "content": "hello"}
     assert messages[1]["role"] == "assistant"
+
+
+# 功能：验证图片附件只把 artifact 引用写入 transcript，并把 base64 像素临时交给 runner
+# 设计：用内容寻址 PNG 和捕获 runner 串联 send_message，分别检查 durable 与 transient 两侧
+async def test_send_message_delivers_image_artifact_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    boundary = WorkspaceBoundary(workspace)
+    monkeypatch.setattr(WorkspaceBoundary, "current", classmethod(lambda cls: boundary))
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (2).to_bytes(4, "big") * 2
+    artifact = await ArtifactStore(workspace / ".coderook" / "artifacts").put(
+        png,
+        media_type="image/png",
+    )
+    runner = _ImageRunner()
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(store, lambda: runner, EventBus())  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    await manager.send_message(
+        session.id,
+        "分析截图",
+        attachments=[
+            ImageArtifactInput(
+                sha256=artifact.sha256,
+                media_type="image/png",
+                size=len(png),
+                width=2,
+                height=2,
+            )
+        ],
+    )
+
+    user_content = str(store.read_messages(session.id)[0]["content"])
+    assert f"artifact:{artifact.sha256}" in user_content
+    assert "base64" not in user_content
+    assert runner.initial_images[0]["type"] == "image"
 
 
 # 功能：验证 one_shot session 在单次消息完成后自动 closed

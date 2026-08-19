@@ -80,6 +80,8 @@ def _summary_result(
         content,
         is_error=result.is_error,
         error_type=result.error_type,
+        images=result.images,
+        process_usage=result.process_usage,
     )
 
 
@@ -136,6 +138,7 @@ async def _fail(
     elapsed_ms: int,
     *,
     attempt: int = 1,
+    process_usage: dict[str, object] | None = None,
 ) -> ToolResult:
     await bus.publish(
         ToolCallFailedEvent(
@@ -145,11 +148,17 @@ async def _fail(
             error_class=error_class,
             error_message=error_message,
             elapsed_ms=elapsed_ms,
+            process_usage=process_usage or {},
             attempt=attempt,
             ts=_now(),
         )
     )
-    return ToolResult(content=error_message, is_error=True, error_type=error_class)
+    return ToolResult(
+        content=error_message,
+        is_error=True,
+        error_type=error_class,
+        process_usage=process_usage,
+    )
 
 
 # 校验参数、检查权限、限时调用工具、发布进度事件，失败时指数退避重试，返回 ToolResult（不抛异常）
@@ -199,15 +208,40 @@ async def invoke_tool(
             bus, run_id, tool_call,
             "schema_error", str(exc), elapsed(),
         )
+    invoke_params = dict(tool_call.input)
 
-    if tool.params_model is not None:
+    try:
+        execution_tool, invoke_params = tool.execution_target(invoke_params)
+    except Exception as exc:
+        return await _fail(
+            bus,
+            run_id,
+            tool_call,
+            "schema_error",
+            f"could not resolve tool action: {exc}",
+            elapsed(),
+        )
+
+    if execution_tool.params_model is not None:
         try:
-            tool.params_model.model_validate(dict(tool_call.input))
+            execution_tool.params_model.model_validate(invoke_params)
         except ValidationError as exc:
             return await _fail(
                 bus, run_id, tool_call,
                 "schema_error", str(exc), elapsed(),
             )
+
+    try:
+        approval_context = execution_tool.approval_context(invoke_params)
+    except Exception as exc:
+        return await _fail(
+            bus,
+            run_id,
+            tool_call,
+            "runtime_error",
+            f"could not prepare approval context: {exc}",
+            elapsed(),
+        )
 
     if hooks is not None:
         hook_decision = await hooks.emit(
@@ -232,6 +266,11 @@ async def invoke_tool(
 
     if permission_manager is not None:
         async def _emit_permission(raw: dict[str, Any]) -> None:
+            if approval_context is not None:
+                raw = dict(raw)
+                raw_params = dict(raw.get("params", {}))
+                raw_params["_approval_context"] = approval_context
+                raw["params"] = raw_params
             if hooks is not None:
                 await hooks.emit("approval_requested", dict(raw, run_id=run_id))
             await bus.publish(PermissionRequestedEvent(**raw, run_id=run_id))
@@ -245,7 +284,16 @@ async def invoke_tool(
             action=resolved_call.action.authority_action(),
             approval_requirement=resolved_call.effective_approval_requirement,
         )
+        response_metadata = permission_manager.take_response_metadata(tool_call.id)
         if allowed:
+            selected_hunks = response_metadata.get("selected_hunks")
+            if selected_hunks is not None and approval_context is not None:
+                patch_plan = approval_context.get("patch_plan")
+                if isinstance(patch_plan, dict):
+                    invoke_params["selected_hunks"] = selected_hunks
+                    invoke_params["expected_plan_id"] = response_metadata.get(
+                        "patch_plan_id"
+                    ) or patch_plan.get("id")
             if decision not in ("auto_allow",):
                 await bus.publish(
                     PermissionGrantedEvent(
@@ -283,20 +331,27 @@ async def invoke_tool(
     for attempt in range(1, _MAX_RETRIES + 2):
         error_class: str | None = None
         error_message: str | None = None
+        attempt_process_usage: dict[str, object] | None = None
 
         try:
-            effective_timeout = timeout if tool.timeout_s is None else tool.timeout_s
+            effective_timeout = (
+                timeout
+                if execution_tool.timeout_s is None
+                else execution_tool.timeout_s
+            )
             if effective_timeout > 0:
                 result = await asyncio.wait_for(
-                    tool.invoke(dict(tool_call.input)), timeout=effective_timeout
+                    execution_tool.invoke(dict(invoke_params)),
+                    timeout=effective_timeout,
                 )
             else:
-                result = await tool.invoke(dict(tool_call.input))
+                result = await execution_tool.invoke(dict(invoke_params))
             result = await _apply_output_policy(
                 result,
-                resolved_call.spec.output_policy,
+                execution_tool.build_spec().output_policy,
                 artifact_store,
             )
+            attempt_process_usage = result.process_usage
             ms = elapsed()
 
             if result.is_error:
@@ -310,6 +365,7 @@ async def invoke_tool(
                         tool_name=tool_call.name,
                         elapsed_ms=ms,
                         output=result.content,
+                        process_usage=result.process_usage or {},
                         ts=_now(),
                     )
                 )
@@ -321,7 +377,7 @@ async def invoke_tool(
                             "session_id": session_id,
                             "tool_use_id": tool_call.id,
                             "tool_name": tool_call.name,
-                            "params": dict(tool_call.input),
+                            "params": dict(invoke_params),
                             "output": result.content,
                             "is_error": False,
                         },
@@ -347,7 +403,7 @@ async def invoke_tool(
         assert error_class is not None and error_message is not None
         ms = elapsed()
 
-        if tool.can_retry(error_class) and attempt <= _MAX_RETRIES:
+        if execution_tool.can_retry(error_class) and attempt <= _MAX_RETRIES:
             await bus.publish(
                 ToolCallFailedEvent(
                     run_id=run_id,
@@ -356,6 +412,7 @@ async def invoke_tool(
                     error_class=error_class,
                     error_message=error_message,
                     elapsed_ms=ms,
+                    process_usage=attempt_process_usage or {},
                     attempt=attempt,
                     terminal=False,
                     ts=_now(),
@@ -368,6 +425,7 @@ async def invoke_tool(
             bus, run_id, tool_call,
             error_class, error_message, ms,
             attempt=attempt,
+            process_usage=attempt_process_usage,
         )
 
     # unreachable, but keeps mypy happy

@@ -70,10 +70,20 @@ class PermissionSelect(Static):
     # 用户作出权限决策时发布，携带工具 ID 和决策字符串
     class Decided(Message):
         # 初始化决策消息，存储控件引用、工具 ID 和决策
-        def __init__(self, widget: PermissionSelect, tool_use_id: str, decision: str) -> None:
+        def __init__(
+            self,
+            widget: PermissionSelect,
+            tool_use_id: str,
+            decision: str,
+            *,
+            selected_hunks: list[str] | None = None,
+            patch_plan_id: str | None = None,
+        ) -> None:
             self.widget = widget
             self.tool_use_id = tool_use_id
             self.decision = decision
+            self.selected_hunks = selected_hunks
+            self.patch_plan_id = patch_plan_id
             super().__init__()
 
     # 初始化控件，存储工具 ID（用于 IPC 回复）
@@ -90,6 +100,19 @@ class PermissionSelect(Static):
         self._param_preview = param_preview
         self._params = params or {}
         self._cursor = 0
+        context = self._params.get("_approval_context")
+        context_dict = context if isinstance(context, dict) else {}
+        raw_plan = context_dict.get("patch_plan")
+        self._patch_plan = raw_plan if isinstance(raw_plan, dict) else None
+        self._patch_plan_id = (
+            str(self._patch_plan.get("id", "")) if self._patch_plan is not None else None
+        )
+        self._patch_hunks = self._collect_patch_hunks()
+        self._selected_hunks = {
+            str(hunk["id"]) for hunk in self._patch_hunks if hunk.get("id")
+        }
+        self._hunk_cursor = 0
+        self._hunk_mode = bool(self._patch_hunks)
         # 仅 bash 追加"始终允许此命令模式"选项；其余工具保持原样
         self._choices = (
             self._CHOICES
@@ -100,6 +123,31 @@ class PermissionSelect(Static):
             if tool_name == "bash"
             else self._CHOICES
         )
+
+    # 从审批上下文展平文件级 hunk，并补齐显示所需的路径和动作
+    def _collect_patch_hunks(self) -> list[dict[str, Any]]:
+        if self._patch_plan is None:
+            return []
+        collected: list[dict[str, Any]] = []
+        files = self._patch_plan.get("files", [])
+        if not isinstance(files, list):
+            return []
+        for raw_file in files:
+            if not isinstance(raw_file, dict):
+                continue
+            hunks = raw_file.get("hunks", [])
+            if not isinstance(hunks, list):
+                continue
+            for raw_hunk in hunks:
+                if isinstance(raw_hunk, dict):
+                    collected.append(
+                        dict(
+                            raw_hunk,
+                            path=str(raw_file.get("path", "")),
+                            action=str(raw_file.get("action", "modify")),
+                        )
+                    )
+        return collected
 
     def on_mount(self) -> None:
         self.update(self._render_ui())
@@ -197,6 +245,26 @@ class PermissionSelect(Static):
                 f"[#56606d]│[/#56606d] [#e1e7ef]{escape(value_line)}[/#e1e7ef]"
             )
         diff = self._diff_preview()
+        if self._patch_hunks:
+            lines.extend(("", "[bold #7d8794]HUNKS[/bold #7d8794]"))
+            for index, hunk in enumerate(self._patch_hunks[:30]):
+                hunk_id = str(hunk.get("id", ""))
+                checked = "x" if hunk_id in self._selected_hunks else " "
+                cursor = "❯" if self._hunk_mode and index == self._hunk_cursor else " "
+                path = escape(str(hunk.get("path", "")))
+                source_start = int(hunk.get("source_start", 0))
+                additions = int(hunk.get("additions", 0))
+                removals = int(hunk.get("removals", 0))
+                locked = " [dim](all-or-nothing)[/dim]" if not hunk.get(
+                    "selectable", True
+                ) else ""
+                lines.append(
+                    f"[bold #79c7d3]{cursor}[/bold #79c7d3] [{checked}] "
+                    f"[#c7cdd5]{path}:{source_start}[/#c7cdd5] "
+                    f"[green]+{additions}[/green]/[red]-{removals}[/red]{locked}"
+                )
+            if len(self._patch_hunks) > 30:
+                lines.append("[dim]⋯ additional hunks are selected but not shown[/dim]")
         if diff:
             diff_lines = self._safe_lines(diff)
             lines.append("")
@@ -219,29 +287,51 @@ class PermissionSelect(Static):
                     f"[#c7cdd5]{label}[/#c7cdd5]  "
                     f"[#6f7884]{description}[/#6f7884]"
                 )
-        lines.extend(
-            (
-                "",
-                "[#68717d]↑↓ navigate   Enter select   Esc deny[/#68717d]",
-            )
-        )
+        hint = "↑↓ navigate   Enter select   Esc deny"
+        if self._patch_hunks:
+            hint = "Tab hunks/actions   Space toggle hunk   " + hint
+        lines.extend(("", f"[#68717d]{hint}[/#68717d]"))
         return "\n".join(lines)
 
     # 方向键导航；快捷键直接选择；enter 确认光标位置
     def on_key(self, event: events.Key) -> None:
         log.debug("PermissionSelect.on_key  key=%r  char=%r", event.key, event.character)
         key = event.key
-        if key in ("up", "k"):
+        if self._patch_hunks and key == "tab":
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._choices)
+            self._hunk_mode = not self._hunk_mode
+            self.update(self._render_ui())
+        elif self._patch_hunks and self._hunk_mode and key == "space":
+            event.stop()
+            hunk = self._patch_hunks[self._hunk_cursor]
+            hunk_id = str(hunk.get("id", ""))
+            if hunk.get("selectable", True):
+                if hunk_id in self._selected_hunks:
+                    self._selected_hunks.remove(hunk_id)
+                else:
+                    self._selected_hunks.add(hunk_id)
+            self.update(self._render_ui())
+        elif key in ("up", "k"):
+            event.stop()
+            if self._hunk_mode:
+                self._hunk_cursor = (self._hunk_cursor - 1) % len(self._patch_hunks)
+            else:
+                self._cursor = (self._cursor - 1) % len(self._choices)
             self.update(self._render_ui())
         elif key in ("down", "j"):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._choices)
+            if self._hunk_mode:
+                self._hunk_cursor = (self._hunk_cursor + 1) % len(self._patch_hunks)
+            else:
+                self._cursor = (self._cursor + 1) % len(self._choices)
             self.update(self._render_ui())
         elif key == "enter":
             event.stop()
-            self._pick(self._choices[self._cursor][0])
+            if self._hunk_mode:
+                self._hunk_mode = False
+                self.update(self._render_ui())
+            else:
+                self._pick(self._choices[self._cursor][0])
         elif key == "escape":
             event.stop()
             self._pick("deny_once")
@@ -254,7 +344,22 @@ class PermissionSelect(Static):
     # 发布决策消息，由宿主 App 负责 IPC 回复和控件清理
     def _pick(self, decision: str) -> None:
         log.debug("PermissionSelect._pick  decision=%s", decision)
-        self.post_message(self.Decided(self, self._tool_use_id, decision))
+        selected: list[str] | None = None
+        if self._patch_hunks:
+            selected = sorted(self._selected_hunks)
+            if decision in {"allow_once", "always_allow"} and not selected:
+                decision = "deny_once"
+            if decision == "always_allow" and len(selected) != len(self._patch_hunks):
+                decision = "allow_once"
+        self.post_message(
+            self.Decided(
+                self,
+                self._tool_use_id,
+                decision,
+                selected_hunks=selected,
+                patch_plan_id=self._patch_plan_id,
+            )
+        )
 
 
 class PermissionBlock(Static):
