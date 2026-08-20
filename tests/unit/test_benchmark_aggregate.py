@@ -16,6 +16,10 @@ from code_rook.benchmark.models import (
     BenchmarkTaskContract,
     BenchmarkTaskResult,
 )
+from code_rook.benchmark.optimization import (
+    build_optimization_backlog,
+    record_optimization_experiment,
+)
 from code_rook.benchmark.runner import complete_run_config
 
 _TASKS = (
@@ -38,6 +42,7 @@ def _candidate_report(
     *,
     failed_tasks: set[str] | None = None,
     max_steps: int = 20,
+    repository_commit: str = "a" * 40,
 ) -> BenchmarkReport:
     failed = failed_tasks or set()
     results = [
@@ -88,13 +93,13 @@ def _candidate_report(
     config = complete_run_config(
         base_config,
         contracts,
-        repository_commit="a" * 40,
+        repository_commit=repository_commit,
         suite="release",
     )
     passed = sum(result.passed for result in results)
     return BenchmarkReport(
         generated_at="2026-08-20T00:00:00+00:00",
-        repository_commit="a" * 40,
+        repository_commit=repository_commit,
         suite="release",
         results=results,
         summary=BenchmarkSummary(
@@ -169,7 +174,73 @@ def test_release_benchmark_workflow_uses_aggregate_gate() -> None:
     assert "--report-only" in workflow
     assert "name: Aggregate 2 wire formats x 2 repeats" in workflow
     assert "scripts/aggregate_benchmark_reports.py" in workflow
+    assert "scripts/benchmark_optimization.py plan" in workflow
     assert "--min-overall-pass-rate 0.80" in workflow
     assert "--min-multi-file-pass-rate 0.75" in workflow
     assert "--min-read-only-pass-rate 0.90" in workflow
     assert "--min-security-pass-rate 1.0" in workflow
+
+
+# 功能：验证重复候选失败按六类效果域聚合并绑定原始报告哈希
+# 设计：用检索、编辑和预算三种失败跨两次报告构造优先级，断言出现次数排序和任务去重
+def test_optimization_backlog_clusters_failures_by_actionable_domain() -> None:
+    first = _candidate_report(
+        "route-a",
+        "anthropic_messages",
+        failed_tasks={"edit", "read"},
+    )
+    second = _candidate_report(
+        "route-a",
+        "anthropic_messages",
+        failed_tasks={"edit"},
+    )
+    first_results = [
+        result.model_copy(
+            update={
+                "failure_class": (
+                    "retrieval_failure" if result.task_id == "read" else result.failure_class
+                )
+            }
+        )
+        for result in first.results
+    ]
+    first = first.model_copy(update={"results": first_results})
+
+    backlog = build_optimization_backlog([first, second])
+
+    assert backlog.ready_for_optimization is True
+    assert len(backlog.source_report_sha256) == 2
+    assert backlog.clusters[0].category == "editing"
+    assert backlog.clusters[0].occurrences == 2
+    assert backlog.clusters[0].task_ids == ["edit"]
+    assert backlog.clusters[1].category == "retrieval"
+
+
+# 功能：验证优化实验必须绑定不同 commit 的可比前后报告并只接受无回归改善
+# 设计：让同一编辑任务从失败转为通过，保持 route/wire/fixture/budget 不变，断言 accepted 与双报告哈希
+def test_optimization_experiment_records_comparable_before_after_evidence() -> None:
+    baseline = _candidate_report(
+        "route-a",
+        "anthropic_messages",
+        failed_tasks={"edit"},
+        repository_commit="a" * 40,
+    )
+    candidate = _candidate_report(
+        "route-a",
+        "anthropic_messages",
+        repository_commit="b" * 40,
+    )
+
+    experiment = record_optimization_experiment(
+        category="editing",
+        hypothesis="改进 PatchPlan 选择可减少 incorrect_edit",
+        task_ids=["edit"],
+        baseline=baseline,
+        candidate=candidate,
+    )
+
+    assert experiment.outcome == "accepted"
+    assert experiment.baseline_commit == "a" * 40
+    assert experiment.candidate_commit == "b" * 40
+    assert experiment.baseline_report_sha256 != experiment.candidate_report_sha256
+    assert experiment.comparison.improvements[0].task_id == "edit"

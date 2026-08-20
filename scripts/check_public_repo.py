@@ -60,6 +60,7 @@ _REQUIRED_FILES = (
     "scripts/generate_release_manifest.py",
     "scripts/run_mcp_official_interop.py",
     "scripts/aggregate_benchmark_reports.py",
+    "scripts/benchmark_optimization.py",
     "scripts/smoke_installed_runtime.py",
     "scripts/run_vscode_extension_host_smoke.py",
     "tests/fixtures/mcp_official_server.py",

@@ -76,6 +76,11 @@ jobs:
         with:
           pattern: benchmark-*
           path: .benchmark-results/raw
+      - name: Build evidence-bound optimization backlog
+        run: >-
+          uv run python scripts/benchmark_optimization.py plan
+          --input-root .benchmark-results/raw
+          --output .benchmark-results/aggregate
       - name: Enforce aggregate release thresholds
         run: >-
           uv run python scripts/aggregate_benchmark_reports.py

@@ -18,6 +18,7 @@
 - 两个 wire format × 两次 release benchmark 聚合器，统一门禁分类成功率、合同漂移、重复波动和不稳定任务。
 - Docker 与 Windows portable 共用的零凭据 installed-runtime smoke，验证 TUI 首用入口、真实 Core 启动与 ping。
 - 基于 `@vscode/test-electron`、Xvfb 与隔离真实 daemon 的 VS Code Extension Host smoke，并生成 commit-bound JSON 证据。
+- 六域 benchmark 失败优化队列和前后实验记录器，拒绝相同 commit、评测合同漂移及无证据的“效果提升”。
 
 ### Changed
 

@@ -47,6 +47,30 @@ task/fixture/budget/candidate 指纹。比较器默认要求这些合同与基�
 聚合 JSON/Markdown 会列出每组均值/极值、成本/耗时和重复间不稳定任务；aggregate job 的退出码才是
 release benchmark 的最终结论。
 
+四份原始报告下载后，workflow 会先按 `retrieval`、`editing`、`verification`、`permission`、
+`budget`、`model_error` 六个效果域生成优化队列；没有失败时队列为空，不能凭空创建“优化成果”：
+
+```bash
+uv run python scripts/benchmark_optimization.py plan \
+  --input-root .benchmark-results/raw \
+  --output .benchmark-results/aggregate
+```
+
+实现优化后，必须用相同 suite/route/model/wire/config/task/fixture/budget 的前后报告记录实验；命令拒绝相同
+commit、合同漂移和缺失任务。只有目标任务改善、无回归且比较门禁通过时才标记 `accepted`：
+
+```bash
+uv run python scripts/benchmark_optimization.py record \
+  baseline/report.json candidate/report.json \
+  --category editing \
+  --hypothesis "PatchPlan hunk 选择降低非目标编辑" \
+  --task multi_file_01 \
+  --output .benchmark-results/optimization/multi_file_01
+```
+
+实验 JSON 保存前后完整 commit、两份报告 SHA-256、假设、目标任务、回归比较和客观结论。没有真实报告时，
+OS4-06 保持外部阻塞，不能把分类器或单测写成模型效果提升。
+
 ## 3. Aider Polyglot pass@1
 
 CodeRook 复刻官方 harness 的以下输入契约：从 `.meta/config.json` 读取 solution/test/example 文件；只允许

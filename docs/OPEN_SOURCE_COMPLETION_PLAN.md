@@ -222,7 +222,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS4-03 | PARTIAL | 适配 Aider Polyglot benchmark，使用隔离容器执行 | 官方目录/prompt/test loader、固定 commit、容器入口和统一报告已实现；真实固定切片待跑 |
 | OS4-04 | PARTIAL | 增加 SWE-bench Lite/Verified 小规模适配 smoke | 标准三字段 JSONL、基线校验、含新增文件 patch 与官方 harness 命令已实现；官方 Docker 判分 artifact 待产出 |
 | OS4-05 | DONE | 建立回归比较器：基线/候选、显著退化、失败聚类 | `compare_benchmark_reports.py` 输出 JSON/Markdown，门禁任务回退、安全负例、效果、P95 成本/耗时和任务集漂移 |
-| OS4-06 | TODO | 按检索、编辑、验证、权限、预算、模型错误分类优化 | 每项优化绑定前后数据与具体 commit |
+| OS4-06 | EXTERNAL | 按检索、编辑、验证、权限、预算、模型错误分类优化 | 六域 backlog 与 experiment recorder 已接入 release workflow，强制绑定前后报告 SHA-256、完整 commit 和同一评测合同；真实 OS4-02 报告产生后才能实施并接受优化 |
 
 公开报告不得只报 pass@1；同时报告有效样本、超时、格式错误、成本、耗时、配置和失败案例。
 SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固定小样本；不得把非标准子集冒充官方榜单成绩。

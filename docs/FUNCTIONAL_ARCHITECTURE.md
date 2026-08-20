@@ -953,6 +953,9 @@ commit，复刻官方 solution/test/prompt 选择并强制容器执行；SWE-ben
 release benchmark 采用 2 wire format × 2 repeats：矩阵 job 即使任务未全通过也先保留有效原始报告，
 aggregate job 再验证 candidate contract、相同任务/fixture/预算、分类成功率和重复波动，并输出不稳定任务；
 避免用“单次必须 100%”替代评分卡阈值，也避免只挑四次中的最好一次。
+同一 job 还会从原始失败生成 retrieval/editing/verification/permission/budget/model_error 六域 backlog；
+`benchmark_optimization.py record` 只有在 suite/route/model/wire/config/task/fixture/budget 不变时才记录实验，
+并把前后完整 commit、报告 SHA-256、任务转移和回归门禁写入 JSON。真实报告出现前不宣称优化收益。
 
 本地完整复现（AGENTS.md 要求推送前全绿）：
 
