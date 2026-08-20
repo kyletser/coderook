@@ -200,6 +200,14 @@ class AsyncCodeRookClient:
         )
         return dict(payload)
 
+    # 读取服务端版本与可协商能力
+    async def capabilities(self) -> dict[str, Any]:
+        return dict(await self._request("GET", "/v1/capabilities"))
+
+    # 读取 durable turn 的聚合用量
+    async def usage(self) -> dict[str, Any]:
+        return dict(await self._request("GET", "/v1/usage"))
+
     # 以 Last-Event-ID 游标消费 SSE；断线时从最后提交序号继续
     async def events(
         self,
@@ -400,6 +408,14 @@ class CodeRookClient:
             params={"scope": scope, "path": path},
         )
         return dict(payload)
+
+    # 同步读取服务端版本与可协商能力
+    def capabilities(self) -> dict[str, Any]:
+        return dict(self._request("GET", "/v1/capabilities"))
+
+    # 同步读取 durable turn 的聚合用量
+    def usage(self) -> dict[str, Any]:
+        return dict(self._request("GET", "/v1/usage"))
 
     # 同步消费 SSE，并通过 Last-Event-ID 在断线后续接
     def events(

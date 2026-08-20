@@ -115,6 +115,11 @@ flowchart LR
 | `coderook-core` | 常驻 daemon，由 TUI/`core start` 自动拉起或手动启动；PID 文件 `~/.coderook/coderook-core.pid` | 唯一的状态持有者：会话、Agent run、后台任务、权限、持久化 |
 | `coderook` / `coderook-tui` | 随用户终端 | 瘦客户端：发命令、订阅事件、渲染；断线自动重连恢复会话 |
 | fleet worker | 由 workflow 执行器按需 spawn，任务结束即退出 | 在独立进程内跑完整 `AgentRunner.run_and_capture`，headless 权限（fail_fast） |
+
+外部消费者以 `/v1/capabilities` 和 `X-CodeRook-API-Version` 协商 HTTP/SSE 版本；Python SDK
+同步/异步客户端都暴露 `capabilities()` 与 `usage()`。`stream-json` 每行携带 schema version，
+公共接口的兼容变化、错误稳定边界和“两 minor 且不少于 90 天”弃用窗口由
+`docs/COMPATIBILITY.md` 统一定义。
 | hooks/MCP/git/rg/pyright/tsc 子进程 | 瞬态 | 由 daemon 或工具层按需拉起，全部有超时与进程树终止保护 |
 
 ### 2.2 端口与本地端点

@@ -238,7 +238,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 | OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | UI smoke 录像/截图和 workflow 产物 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
 | OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |
-| OS5-06 | TODO | 公布 HTTP/SSE、Python SDK、stream-json 的兼容与版本策略 | 契约测试和弃用窗口写入文档 |
+| OS5-06 | DONE | 公布 HTTP/SSE、Python SDK、stream-json 的兼容、错误与版本策略 | capabilities/响应头/模型默认值/SDK 契约测试；两 minor 且不少于 90 天的弃用窗口写入文档 |
 
 阶段出口：扩展作者和 IDE 用户都有受支持的最短路径，TUI 仍是首先验收的产品面。
 

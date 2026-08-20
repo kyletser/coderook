@@ -1,0 +1,5 @@
+from __future__ import annotations
+
+HTTP_API_VERSION = "v1"
+RUNTIME_EVENT_SCHEMA_VERSION = 1
+STREAM_JSON_SCHEMA_VERSIONS = (1,)

@@ -22,6 +22,7 @@ _REQUIRED_FILES = (
     "docs/UPGRADING.md",
     "docs/THREAT_MODEL.md",
     "docs/PUBLIC_BENCHMARKS.md",
+    "docs/COMPATIBILITY.md",
     "docs/images/coderook-tui.svg",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -64,6 +65,7 @@ _README_REQUIRED_LINKS = (
     "GOVERNANCE.md",
     "CHANGELOG.md",
     "LICENSE",
+    "docs/COMPATIBILITY.md",
 )
 _TRACKED_POLLUTION_PATTERNS = (
     re.compile(r"(^|/)__pycache__/"),

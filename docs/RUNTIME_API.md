@@ -4,6 +4,10 @@ CodeRook Core 在统一的 durable Thread/Turn/Item/Event runtime 上提供本�
 SSE 接口。默认监听 `127.0.0.1:7438`；TUI、IPC 和 HTTP 读取同一个
 `~/.coderook/runtime.db`，不会分别维护近似状态。
 
+版本协商、允许的增量变化、错误稳定边界和弃用窗口见
+[《外部接口兼容与弃用策略》](COMPATIBILITY.md)。所有 JSON 与 SSE 响应都带
+`X-CodeRook-API-Version: v1`；调用方仍应以 `/v1/capabilities` 的结果做 feature 协商。
+
 ## 安全绑定
 
 - 回环地址默认可直接访问，也可以设置 token。
@@ -70,4 +74,5 @@ Receipt 只使用 SQLite 中的 TurnRecord、TurnItemRecord 和 RuntimeEventReco
 
 `code_rook.sdk.CodeRookClient` 和 `AsyncCodeRookClient` 对上述 durable HTTP/SSE 契约提供
 同步与异步封装，包括 thread/turn、事件游标重连、interrupt/steer、receipt、usage、diff 与
-逐 hunk 审批。SDK 不维护第二套会话状态；调用方应持久化最后确认的 SSE `seq` 并在重连时传回。
+逐 hunk 审批。两种客户端都提供 `capabilities()` 和 `usage()`。SDK 不维护第二套会话状态；
+调用方应持久化最后确认的 SSE `seq` 并在重连时传回。

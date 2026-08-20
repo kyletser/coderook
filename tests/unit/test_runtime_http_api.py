@@ -168,6 +168,7 @@ async def _read_sse_ids(url: str, count: int) -> list[int]:
     async with httpx.AsyncClient(timeout=2.0) as client:
         async with client.stream("GET", url) as response:
             assert response.status_code == 200
+            assert response.headers["X-CodeRook-API-Version"] == "v1"
             async for line in response.aiter_lines():
                 if line.startswith("id: "):
                     ids.append(int(line[4:]))
@@ -224,7 +225,9 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             assert (await client.get("/v1/turns/turn-1/items")).json()[0]["id"] == "message-1"
             receipt = (await client.get("/v1/turns/turn-1/receipt")).json()
             assert receipt["turn_id"] == "turn-1"
-            assert (await client.get("/v1/capabilities")).json()["api_version"] == "v1"
+            response = await client.get("/v1/capabilities")
+            assert response.json()["api_version"] == "v1"
+            assert response.headers["X-CodeRook-API-Version"] == "v1"
             assert (await client.get("/v1/usage")).json()["cost"] == "unknown"
 
             response = await client.post(

@@ -328,6 +328,8 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [生产就绪改造计划](docs/PRODUCTION_READINESS_PLAN.md)
 - [开源级补全计划](docs/OPEN_SOURCE_COMPLETION_PLAN.md)
 - [Wire Protocol](WIRE_PROTOCOL.md)
+- [Runtime API](docs/RUNTIME_API.md)
+- [外部接口兼容与弃用策略](docs/COMPATIBILITY.md)
 - [运行手册](RUNBOOK.md)
 - [升级、备份与回滚](docs/UPGRADING.md)
 - [威胁模型](docs/THREAT_MODEL.md)

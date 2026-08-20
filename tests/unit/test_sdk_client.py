@@ -109,6 +109,31 @@ async def test_async_sdk_controls_permission_and_workspace_diff() -> None:
     assert diff["scope"] == "unstaged"
 
 
+# 功能：验证同步 SDK 暴露 capabilities 与 usage 协商接口
+# 设计：让 MockTransport 按路径返回两个开放字典，断言调用方无需绕过 SDK 手写 HTTP 请求
+def test_sync_sdk_exposes_capabilities_and_usage() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/capabilities":
+            return httpx.Response(
+                200,
+                json={"api_version": "v1", "stream_json_schema_versions": [1]},
+            )
+        assert request.url.path == "/v1/usage"
+        return httpx.Response(200, json={"tokens": {"input_tokens": 7}})
+
+    with CodeRookClient(
+        "http://127.0.0.1:7438",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        capabilities = client.capabilities()
+        usage = client.usage()
+
+    assert capabilities["api_version"] == "v1"
+    assert capabilities["stream_json_schema_versions"] == [1]
+    assert usage["tokens"] == {"input_tokens": 7}
+
+
 # 功能：验证异步 SSE 从 Last-Event-ID 游标读取且忽略重复序号
 # 设计：返回一条重复 seq=2 和一条新 seq=3，关闭重连后断言只产出新事件
 async def test_async_sdk_sse_resumes_without_duplicate_events() -> None:

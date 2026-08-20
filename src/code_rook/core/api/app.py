@@ -16,6 +16,7 @@ from code_rook.core.api.auth import bearer_authorized, validate_api_binding
 from code_rook.core.api.service import RuntimeApiService
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
+from code_rook.core.compatibility import HTTP_API_VERSION
 from code_rook.core.runtime.store import RecordNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,7 @@ class HttpApiServer:
         header = (
             f"HTTP/1.1 {status.value} {status.phrase}\r\n"
             "Content-Type: application/json; charset=utf-8\r\n"
+            f"X-CodeRook-API-Version: {HTTP_API_VERSION}\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n\r\n"
         ).encode("ascii")
@@ -310,10 +312,13 @@ class HttpApiServer:
             raise ValueError("after_seq must be non-negative")
         await self._service.ensure_thread(match.group(1))
         writer.write(
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: text/event-stream\r\n"
-            b"Cache-Control: no-cache\r\n"
-            b"Connection: keep-alive\r\n\r\n"
+            (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                f"X-CodeRook-API-Version: {HTTP_API_VERSION}\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: keep-alive\r\n\r\n"
+            ).encode("ascii")
         )
         await writer.drain()
         last_heartbeat = time.monotonic()

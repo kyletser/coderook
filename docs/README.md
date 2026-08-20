@@ -12,6 +12,7 @@
 | [Runtime ADR](ADR_RUNTIME_CONTRACT.md) | durable thread/turn 与 API 设计决策 | 契约决策变化时更新 |
 | [Wire Protocol](../WIRE_PROTOCOL.md) | 由 bus 模型生成的 IPC 契约 | 修改 bus 后自动生成 |
 | [Runtime API](RUNTIME_API.md) | HTTP/SSE 外部接口 | endpoint/schema 变化时更新 |
+| [兼容与弃用策略](COMPATIBILITY.md) | HTTP/SSE、SDK、stream-json 的稳定边界和迁移窗口 | 公共契约或支持窗口变化时更新 |
 | [运行手册](../RUNBOOK.md) | 安装、运行、排障与恢复 | 运维行为变化时更新 |
 | [升级与回滚](UPGRADING.md) | 数据备份、版本升级、校验与回滚 | 配置或持久化兼容性变化时更新 |
 | [威胁模型](THREAT_MODEL.md) | 资产、信任边界、攻击面、降级与非目标 | 安全边界或外部能力变化时更新 |

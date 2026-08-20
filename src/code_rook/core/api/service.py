@@ -10,6 +10,11 @@ from typing import Any, cast
 import code_rook
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import RuntimeEventAppendedEvent
+from code_rook.core.compatibility import (
+    HTTP_API_VERSION,
+    RUNTIME_EVENT_SCHEMA_VERSION,
+    STREAM_JSON_SCHEMA_VERSIONS,
+)
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.receipts.models import TurnReceipt
 from code_rook.core.runs import new_run_id
@@ -216,7 +221,9 @@ class RuntimeApiService:
     async def capabilities(self) -> dict[str, Any]:
         return {
             "version": code_rook.__version__,
-            "api_version": "v1",
+            "api_version": HTTP_API_VERSION,
+            "runtime_event_schema_version": RUNTIME_EVENT_SCHEMA_VERSION,
+            "stream_json_schema_versions": list(STREAM_JSON_SCHEMA_VERSIONS),
             "runtime_modes": [mode.value for mode in RuntimeMode],
             "features": [
                 "durable_threads",
@@ -225,6 +232,8 @@ class RuntimeApiService:
                 "turn_receipts",
                 "interrupt",
                 "steer",
+                "permission_response",
+                "workspace_diff",
             ],
         }
 
