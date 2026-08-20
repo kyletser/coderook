@@ -60,12 +60,15 @@ _REQUIRED_FILES = (
     "scripts/generate_release_manifest.py",
     "scripts/run_mcp_official_interop.py",
     "scripts/aggregate_benchmark_reports.py",
+    "scripts/smoke_installed_runtime.py",
     "tests/fixtures/mcp_official_server.py",
     "tests/unit/test_mcp_interop_report.py",
     "tests/unit/test_benchmark_aggregate.py",
+    "tests/unit/test_distribution_smoke.py",
     ".github/workflows/mcp-interop.yml",
     "tests/unit/test_release_contract.py",
     ".github/workflows/release.yml",
+    ".github/workflows/distribution.yml",
 )
 _REQUIRED_PROJECT_FIELDS = (
     "description",
@@ -117,6 +120,11 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "package-ecosystem: uv",
         "package-ecosystem: npm",
         "package-ecosystem: github-actions",
+    ),
+    ".github/workflows/distribution.yml": (
+        "Container zero-credential Core, ping and TUI smoke",
+        "Portable zero-credential Core, ping and TUI smoke",
+        "smoke_installed_runtime.py",
     ),
     "docs/BRANCH_PROTECTION.md": (
         "`Required CI gate`",

@@ -973,6 +973,8 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 任何公开发布动作前失败。
 
 候选产物包括 wheel、sdist、Windows portable、VSIX 和带不可变 digest 的 GHCR 镜像。
+wheel、容器和 portable 的发行检查不止打印版本：`smoke_installed_runtime.py` 会清除继承凭据与
+`CODEROOK_*` 状态，在临时 HOME 和随机 loopback 端口验证未配置状态、TUI help、真实 Core 启动与 ping。
 Syft 为可下载产物与镜像生成 SPDX JSON SBOM；`generate_release_manifest.py` 流式生成
 `SHA256SUMS` 和机器可读 manifest；`actions/attest` 使用 GitHub OIDC 生成构建来源与 SBOM
 attestation；Cosign 使用短期 OIDC 身份签名容器和校验和文件，不在仓库或 Secrets 中保存长期
@@ -1007,8 +1009,9 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    Windows `windows_none` 的诚实降级。Linux/macOS 必须由远端真实执行负向脚本
 3. **进程级强杀恢复率尚未测量** —— checksum chain、100 个文件截断点、SQLite 中断和幂等 reconcile
    已测试，重启竞态修复后本机 5/5 smoke 通过，但公开 Beta 要求的三平台 100 次矩阵尚未运行
-4. **候选分发未在干净环境验收** —— 本机 wheel smoke 和 VSIX 打包已通过，distribution workflow
-   已覆盖三平台 wheel、Docker、Windows portable 与 VSIX，仍需远端/干净机/升级实际报告
+4. **候选分发未在远端干净环境验收** —— 本机 wheel smoke、通用 installed-runtime smoke 和 VSIX
+   打包已通过；distribution workflow 已让 Docker 与 Windows portable 运行真实 Core/ping/TUI smoke，
+   仍需远端产物和跨版本升级实际报告
 5. **三平台 CI 尚未恢复为绿** —— CI #31 在 Ubuntu/macOS 各失败 3 项、Windows 失败 1 项；当前候选
    已修复 shell 转义、沙箱探测耦合和 OEM 编码假设，但必须由新一次远端 run 复验
 
@@ -1095,7 +1098,8 @@ src/code_rook/
 tests/
 ├── unit/ integration/ golden/ fixtures/ conftest.py
 scripts/
-├── gen_protocol_doc.py / check_brand.py / smoke_wheel.py / run_benchmark.py
+├── gen_protocol_doc.py / check_brand.py / smoke_wheel.py / smoke_installed_runtime.py
+├── run_benchmark.py / aggregate_benchmark_reports.py / run_mcp_official_interop.py
 ├── compare_benchmark_reports.py / run_crash_recovery_matrix.py
 ├── check_sandbox_boundary.py / install-windows.ps1 / build_windows_portable.ps1
 benchmarks/                      # quick/nightly/release 固定任务与机器可读基线

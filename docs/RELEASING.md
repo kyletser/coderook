@@ -40,6 +40,8 @@ uv run python scripts/check_release_contract.py --tag v0.1.0
 
 `.github/workflows/release.yml` 先调用三平台 `distribution.yml`，再运行完整仓库门禁。全部通过后：
 
+- wheel、Docker 镜像与 Windows portable 都在零凭据、隔离 HOME 和随机 loopback 端口下验证版本、
+  未配置状态、TUI help、真实 Core 启动与 `ping`；
 - 从 Ubuntu 构建取得 wheel/sdist，从 Windows 取得 portable ZIP，从 Linux 取得 VSIX；
 - 构建并推送 `ghcr.io/<owner>/<repo>:<tag>`，以 OCI digest 作为容器校验值；
 - 用 Syft 为 wheel、sdist、portable、VSIX 和容器分别生成 SPDX JSON SBOM；

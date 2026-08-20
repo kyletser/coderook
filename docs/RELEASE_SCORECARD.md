@@ -14,7 +14,7 @@
 - VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；CI 与独立 distribution workflow 均会上传该产物。
 - 本机完整 pytest 为 1107 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建、8.73 秒 installed-wheel first-run smoke、VS Code typecheck 与含许可证 VSIX 打包全部通过。
 - 2026-08-19 的远端 CI #31 在测试阶段失败：Ubuntu/macOS 各 3 项，Windows 1 项。当前候选已修复 POSIX shell 转义、宿主沙箱探测耦合和 Windows OEM 编码假设，并在本机完整 unit 中通过，仍需新一次远端 run 确认。
-- Windows 安装/portable 与 Docker 构建入口已经纳入 `distribution.yml`；本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
+- Windows portable 与 Docker job 已复用零凭据 installed-runtime smoke，检查配置状态、TUI help、真实 Core 启动与 ping；该 smoke 在本机安装态 6.0 秒通过。本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
 - Aider Polyglot 固定 commit/container runner 与 SWE-bench 标准 prediction exporter 已通过离线契约测试；尚未产出真实模型切片和官方 SWE-bench harness artifact。
 - 官方 MCP Python SDK 2.0 在 commit `c47ae23` 的 Windows 实测中，stdio、legacy SSE、Streamable HTTP 的 tools/resources/prompts/cancellation/reconnect 全通过；报告不覆盖 OAuth、sampling、elicitation 或任意第三方 server。
 
@@ -30,7 +30,7 @@
 | 安全负例 | 三平台 100% | Windows degraded 合约通过；Linux/macOS 远端结果待产出 |
 | 强杀恢复 | 100 次中 ≥95% | 重启就绪竞态修复后本机 5/5 smoke 通过；三平台各 100 次报告未运行 |
 | 两 wire format × 两次 | 4 份候选报告 | workflow 已配置，报告未产生 |
-| 安装/升级 | 三平台、wheel、容器、portable | 本机 wheel build/smoke 与 VSIX 打包通过；distribution workflow 已配置，干净机报告未产生 |
+| 安装/升级 | 三平台、wheel、容器、portable | 本机 wheel build/smoke、通用 installed-runtime smoke 与 VSIX 打包通过；容器/portable 已接入相同真实 Core/ping 门禁，远端干净机报告未产生 |
 | 完整 CI | 全绿 | 本机完整 gate 通过；远端 CI #31 三平台失败，修复待远端复验 |
 
 ## 运行方式

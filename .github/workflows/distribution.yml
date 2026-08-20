@@ -40,6 +40,12 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build --tag coderook:candidate .
       - run: docker run --rm coderook:candidate coderook --version
+      - name: Container zero-credential Core, ping and TUI smoke
+        run: >-
+          docker run --rm
+          --volume "$PWD/scripts/smoke_installed_runtime.py:/tmp/coderook-smoke.py:ro"
+          coderook:candidate
+          python /tmp/coderook-smoke.py
 
   windows-portable:
     name: Windows portable smoke
@@ -56,6 +62,11 @@ jobs:
         run: ./scripts/build_windows_portable.ps1
       - shell: pwsh
         run: ./dist/coderook-windows-portable/portable-coderook.cmd --version
+      - name: Portable zero-credential Core, ping and TUI smoke
+        shell: pwsh
+        run: >-
+          ./dist/coderook-windows-portable/runtime/python.exe
+          ./scripts/smoke_installed_runtime.py
       - uses: actions/upload-artifact@v4
         with:
           name: coderook-windows-portable

@@ -178,7 +178,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 |---|---|---|---|
 | OS1-01 | DONE | 统一无配置启动、`/config`、`coderook configure` 与 provider doctor | TUI 不调用强制向导；配置/TUI 相关 27 项测试通过 |
 | OS1-02 | PARTIAL | 建立 10 分钟 quickstart 与脚本化 first-run smoke | 隔离 HOME、零凭据 wheel/Core/ping 最新本机 8.73 秒通过；三平台干净报告待 CI |
-| OS1-03 | PARTIAL | wheel、Docker、Windows portable 发行流水线 | 三平台 workflow 产物可下载并运行 ping/TUI help |
+| OS1-03 | PARTIAL | wheel、Docker、Windows portable 发行流水线 | 可复用零凭据 smoke 已在本机安装态 6.0 秒通过，并接入容器和 portable job，覆盖配置状态、TUI help、真实 Core/ping；远端产物报告待 CI |
 | OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册 | 首个公开版本后补“上一版本 → 当前版本 → 回滚”fixture |
 | OS1-05 | DONE | 增加 `examples/`：只读审查、自动修复、MCP 扩展 | 命令契约离线测试；MCP 示例由真实 stdio 客户端握手与调用 |
 | OS1-06 | DONE | 用真实 Textual 控件和确定性正式事件制作可复现 TUI 截图，更新 README 首屏 | `capture_tui_demo.py` 无 daemon/模型生成截图；SVG 内容测试与公开仓库门禁覆盖 |
