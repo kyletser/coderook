@@ -168,7 +168,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS0-03 | DONE | 增加 bug/feature/config Issue 表单和 PR 模板 | 表单要求版本、平台、sandbox、脱敏诊断与验收条件 |
 | OS0-04 | DONE | 完善 `pyproject.toml` 包元数据与项目 URL | `check_public_repo.py` 校验字段；wheel METADATA 随完整 gate 复验 |
 | OS0-05 | DONE | 清理历史文档过时结论，建立文档状态/更新时间/权威来源 | `docs/README.md` 建立权威/专题/历史分层，关键旧文档增加快照提示 |
-| OS0-06 | PARTIAL | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁、Dependabot、CodeQL、dependency review 与 gitleaks workflow 已配置；远端报告待产出 |
+| OS0-06 | DONE | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁与公开仓库检查通过；Security #4 的 gitleaks、Python/JS CodeQL 和汇总 gate 成功，Dependabot/dependency review 合同已配置 |
 
 阶段出口：公开仓库不再出现断链许可证、相互矛盾的启动说明或无法报告安全问题的状态。
 
@@ -177,8 +177,8 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
 | OS1-01 | DONE | 统一无配置启动、`/config`、`coderook configure` 与 provider doctor | TUI 不调用强制向导；配置/TUI 相关 27 项测试通过 |
-| OS1-02 | PARTIAL | 建立 10 分钟 quickstart 与脚本化 first-run smoke | 隔离 HOME、零凭据 wheel/Core/ping 最新本机 8.73 秒通过；三平台干净报告待 CI |
-| OS1-03 | PARTIAL | wheel、Docker、Windows portable 发行流水线 | 可复用零凭据 smoke 已在本机安装态 6.0 秒通过，并接入容器和 portable job，覆盖配置状态、TUI help、真实 Core/ping；远端产物报告待 CI |
+| OS1-02 | DONE | 建立 10 分钟 quickstart 与脚本化 first-run smoke | Distribution `32358752712` 的 Ubuntu/Windows/macOS clean wheel 与零凭据 Core/ping/TUI smoke 成功 |
+| OS1-03 | DONE | wheel、Docker、Windows portable 发行流水线 | 同一远端 run 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 六个 job 全绿并上传产物 |
 | OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册 | 首个公开版本后补“上一版本 → 当前版本 → 回滚”fixture |
 | OS1-05 | DONE | 增加 `examples/`：只读审查、自动修复、MCP 扩展 | 命令契约离线测试；MCP 示例由真实 stdio 客户端握手与调用 |
 | OS1-06 | DONE | 用真实 Textual 控件和确定性正式事件制作可复现 TUI 截图，更新 README 首屏 | `capture_tui_demo.py` 无 daemon/模型生成截图；SVG 内容测试与公开仓库门禁覆盖 |
@@ -204,11 +204,11 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | 远端审计器强制默认分支连续 3 次成功；2026-08-20 公开 API 实测最新仍为 CI #31 failure |
-| OS3-02 | EXTERNAL | 三平台运行 sandbox 负例矩阵 | artifact 记录 backend、enforced/degraded 与每项结果 |
-| OS3-03 | EXTERNAL | 三平台各运行 100 次 daemon 强杀恢复 | 每平台 ≥95%，孤儿 tool call=0 |
+| OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | CI #34/#35 的三平台与 Required CI gate 连续 2/3 次成功；审计器仍要求第 3 次 |
+| OS3-02 | PARTIAL | 三平台运行 sandbox 负例矩阵 | CI #34/#35 的真实/降级边界均通过；逐平台 backend、enforced/degraded、逐项结果 JSON 已在本地候选实现，待远端 artifact |
+| OS3-03 | PARTIAL | 三平台各运行 100 次 daemon 强杀恢复 | run `32358756995` 的 Ubuntu/macOS 各 100/100；Windows 54/54 后探针等待超时，30 秒候选修复待复验 |
 | OS3-04 | PARTIAL | 建立 ProcessSupervisor 资源 P95 基线 | benchmark 报告已投影 wall/CPU/RSS/进程数和完整性；真实三平台报告待产出 |
-| OS3-05 | PARTIAL | 增加 CodeQL、dependency review、Dependabot 和 secret scan | `security.yml` 与 `dependabot.yml` 已配置；2026-08-20 远端因未推送该 workflow 返回 404，首次结果待产出 |
+| OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security #4 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |
 
 阶段出口：安全能力以“支持/降级/拒绝”三态表达，所有可靠性数字来自真实进程和真实 OS。
@@ -235,7 +235,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 |---|---|---|---|
 | OS5-01 | DONE | 对固定官方 MCP Python SDK 2.0 server 完成 stdio/legacy SSE/Streamable HTTP 兼容矩阵 | Windows dated JSON/Markdown 绑定 commit c47ae23，三种 transport 的 tools/resources/prompts/cancel/reconnect 全通过；Ubuntu workflow 持续复验 |
 | OS5-02 | DONE | 提供可安装 focused-fix Skill、敏感文件阻断 Hook 与 MCP stdio 示例及安全说明 | Skill 经受管安装/digest/渲染 smoke；Hook 经真实配置加载与子进程阻断/放行；MCP 完成握手与调用 |
-| OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | Xvfb + 隔离真实 daemon runner 已覆盖激活、命令、新建/恢复 thread 与 diff，并上传 commit-bound JSON；远端报告及审批 UI 录像/截图待产出 |
+| OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | Distribution `32358752712` 已在 Xvfb + 隔离 daemon 覆盖激活、命令、新建/恢复 thread 与 diff，并上传 commit-bound JSON；审批 UI 录像/截图仍待产出 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
 | OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |
 | OS5-06 | DONE | 公布 HTTP/SSE、Python SDK、stream-json 的兼容、错误与版本策略 | capabilities/响应头/模型默认值/SDK 契约测试；两 minor 且不少于 90 天的弃用窗口写入文档 |

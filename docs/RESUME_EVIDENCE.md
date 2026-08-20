@@ -19,7 +19,7 @@
 | task/subagent/fleet/worktree/workflow 编排 | workflow IR/ledger 与相关 tests | 可写并发约束，不能写效果提升百分比 |
 | 50 个固定离线任务，baseline 50/50 按预期失败 | `docs/RELEASE_SCORECARD.md`、benchmark fixtures | 只证明 verifier 合同，不是模型 0% 或候选成绩 |
 | 1,000+ 自动测试门禁 | release scorecard 的 dated checkpoint | 使用范围值，避免每次提交后精确数过期 |
-| Windows/Ubuntu/macOS CI 与发行 workflow | `.github/workflows/ci.yml`、`distribution.yml` | 可写“建立三平台门禁”，不能写最新远端全绿 |
+| Windows/Ubuntu/macOS CI 与发行 workflow | CI #35、Distribution `32358752712` | 可写“commit `702737e` 的三平台 CI 与干净发行门禁全绿”，不能扩写为生产就绪 |
 | SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
 
 ## 可引用的历史精确数字
@@ -28,9 +28,11 @@
 
 | 数字 | 日期/基线 | 推荐写法 |
 |---|---|---|
-| `1107 passed, 2 skipped` | 2026-08-20，开源补全基线前完整本地 gate | “在 2026-08-20 本地完整门禁中 1,107 项通过、2 项平台跳过” |
+| `1155 passed, 2 skipped` | 2026-08-20，commit `7732514` 本地完整 gate | “在 2026-08-20 本地完整门禁中 1,155 项通过、2 项平台跳过”；该 commit 尚未推送 |
 | `8.73 s` | 同一评分卡记录的 installed-wheel first-run smoke | “该 Windows 本机样本为 8.73 秒”，不写成跨平台 P95 |
 | `5/5` | 重启就绪竞态修复后的本机强杀 smoke | “本机 5/5 smoke”，不能替代三平台各 100 次 ≥95% 门禁 |
+| Ubuntu `100/100`、macOS `100/100` | 2026-08-20，Crash Recovery run `32358756995`，commit `702737e` | 可写两平台各 100 次；Windows 只能写“54/54 后探针超时”，不能合并成三平台成绩 |
+| 三平台 clean wheel + Docker + Windows portable + VSIX/Extension Host | 2026-08-20，Distribution `32358752712`，commit `702737e` | 可写候选安装门禁通过；不能写已发布 PyPI/GHCR/Marketplace |
 | `4,176 -> ~2,110` 行 | 2026-08-17 TUI 拆分阶段；管理功能加入后约 2,246 行 | 用于解释重构范围，不写“减少 50% 复杂度” |
 | `+95` 个 TUI 相关测试 | 同一 TUI 阶段复盘 | 只描述新增回归保护，不推导缺陷率下降 |
 
@@ -52,7 +54,7 @@
 
 - “生产级 / production-ready / 企业级安全”；
 - “SWE-bench 达到 X%”或“Aider Polyglot 达到 X%”；
-- “三平台 CI 全绿”“100 次恢复率 ≥95%”“安全负例 100%”；
+- “连续三次 CI 全绿”“三平台 100 次恢复率 ≥95%”“逐平台安全 artifact 100%”；
 - “已发布 PyPI/GHCR/VSIX”或“供应链 attestation 已验证”；
 - “多 Agent 提升 X%”“降低成本 X%”“用户增长 X%”；
 - Windows 有 OS 文件系统/网络沙箱，或支持按域名强制联网白名单。

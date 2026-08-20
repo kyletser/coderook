@@ -154,7 +154,7 @@ _REQUIRED_RESUME_SNIPPETS = {
     ),
     "docs/RESUME_EVIDENCE.md": (
         "## 当前禁止宣称",
-        "`1107 passed, 2 skipped`",
+        "`1155 passed, 2 skipped`",
         "production-ready",
     ),
     "docs/INTERVIEW_GUIDE.md": (
@@ -163,7 +163,7 @@ _REQUIRED_RESUME_SNIPPETS = {
         "当前评分卡仍 NO-GO",
     ),
     "docs/postmortems/2026-08-19-cross-platform-ci.md": (
-        "远端三平台复验仍待新 run",
+        "CI #34/#35 远端三平台连续两次通过",
     ),
     "docs/postmortems/2026-08-17-tui-refactor.md": (
         "未达到的目标与停止理由",

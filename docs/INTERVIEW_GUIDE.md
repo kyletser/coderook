@@ -22,8 +22,9 @@ HTTP/SSE。daemon 持有 session、permission、worker 和 ledger；客户端重
 **2:10–2:40，证据。** 仓库有 50 个固定任务、1,000+ 自动测试、三平台 CI、公开 benchmark 适配器，
 发布链生成 SBOM/checksums/provenance。但离线 verifier 通过不等于模型效果。
 
-**2:40–3:00，诚实边界。** 当前评分卡仍 NO-GO：真实模型 pass@1、三平台 100 次强杀和首次公开发行
-证据未完成。这说明我把“代码实现”和“生产证据”分开管理。
+**2:40–3:00，诚实边界。** 当前评分卡仍 NO-GO：真实模型 pass@1、Windows 100 次强杀、active ruleset
+和首次公开发行证据未完成；Ubuntu/macOS 各 100 次与干净发行矩阵已有报告。这说明我把“代码实现”和
+“生产证据”分开管理。
 
 ## 10 分钟版本
 
@@ -34,7 +35,7 @@ HTTP/SSE。daemon 持有 session、permission、worker 和 ledger；客户端重
 3. **一次工具调用（2 分钟）**：从 model decision 到 schema、Hook、permission、sandbox、ProcessSupervisor、
    tool result、verification 和 receipt；重点讲 Windows degraded + ASK。
 4. **持久化与恢复（1.5 分钟）**：ledger checksum、SQLite projection、强杀截断、reconcile、幂等；说明
-   本机 smoke 与发布级 100 次矩阵的区别。
+   本机 smoke、Ubuntu/macOS 100/100 与 Windows 探针超时的区别。
 5. **多 Agent 约束（1 分钟）**：何时拆任务，write claim 如何防冲突，budget/lease 如何终止失控 worker；
    承认小任务多 Agent 可能只增加成本。
 6. **评测与发行（1.5 分钟）**：50 任务 verifier、Aider Polyglot/SWE-bench 适配、pass@1/成本/P95 比较，
@@ -62,7 +63,7 @@ HTTP/SSE。daemon 持有 session、permission、worker 和 ledger；客户端重
 | 沙箱真的安全吗？ | Linux/macOS 后端可强制；Windows 明确 degraded；域白名单无后端就拒绝 | `docs/THREAT_MODEL.md`、sandbox boundary script |
 | 多 Agent 如何避免互相写坏？ | task scope、write claims、worktree、lease、预算和 ledger | subagent/fleet/workflow tests |
 | 50 个任务是不是刷题自证？ | baseline 50/50 按预期失败只证明 verifier；真实效果必须固定模型和公开 harness | `docs/PUBLIC_BENCHMARKS.md` |
-| 有什么失败案例？ | CI #31 的平台假设与远端复验缺口 | `postmortems/2026-08-19-cross-platform-ci.md` |
+| 有什么失败案例？ | CI #31 的平台假设、CI #34/#35 的闭环与为何仍要求连续 3 次 | `postmortems/2026-08-19-cross-platform-ci.md` |
 | 有什么工程优化？ | TUI 4,176 行拆分，未硬追 <500 行，95 个测试守护行为 | `postmortems/2026-08-17-tui-refactor.md` |
 
 ## 避免的回答

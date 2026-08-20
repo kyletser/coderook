@@ -62,8 +62,9 @@ daemon 是状态所有者，客户端可退出和重连；文件 ledger 保存�
 | 1,000+ 自动测试与三平台 workflow | `docs/RELEASE_SCORECARD.md`、`.github/workflows/` | 本地工程门禁完整；远端最新状态需另查 |
 | SBOM、checksums、OIDC attestation、keyless signing | `docs/RELEASING.md` | 发布链路定义完整；首次真实 tag 仍未产生 |
 
-当前最重要的未完成项不是继续堆功能，而是真实模型 pass@1、三平台 100 次强杀、安全负例、干净机
-安装和首次公开 attestation。这些门禁未通过前，不把项目写成“生产就绪”。
+当前最重要的未完成项不是继续堆功能，而是真实模型 pass@1、Windows 100 次强杀、逐平台安全
+artifact、active main ruleset、跨版本升级和首次公开 attestation。三平台 clean distribution、官方 MCP、
+Ubuntu/macOS 各 100 次恢复已有远端证据；剩余门禁未通过前，仍不把项目写成“生产就绪”。
 
 ## 可用于简历的压缩版本
 

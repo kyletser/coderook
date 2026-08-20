@@ -1013,15 +1013,15 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
 
 1. **真实模型效果尚未测量** —— 50 个任务和 quick/nightly/release 执行链已实现，但没有固定
    route/model 的 pass@1、分类成功率、成本与波动报告
-2. **三平台安全报告尚未产出** —— 前台、持久、后台 Bash 已共用 bwrap/Seatbelt 计划；本机只验证
-   Windows `windows_none` 的诚实降级。Linux/macOS 必须由远端真实执行负向脚本
-3. **进程级强杀恢复率尚未测量** —— checksum chain、100 个文件截断点、SQLite 中断和幂等 reconcile
-   已测试，重启竞态修复后本机 5/5 smoke 通过，但公开 Beta 要求的三平台 100 次矩阵尚未运行
-4. **候选分发未在远端干净环境验收** —— 本机 wheel smoke、通用 installed-runtime smoke 和 VSIX
-   打包已通过；distribution workflow 已让 Docker 与 Windows portable 运行真实 Core/ping/TUI smoke，
-   仍需远端产物和跨版本升级实际报告
-5. **三平台 CI 尚未恢复为绿** —— CI #31 在 Ubuntu/macOS 各失败 3 项、Windows 失败 1 项；当前候选
-   已修复 shell 转义、沙箱探测耦合和 OEM 编码假设，但必须由新一次远端 run 复验
+2. **三平台安全 artifact 尚未最终产出** —— CI #34/#35 已真实运行 bwrap、Seatbelt 与 Windows
+   `windows_none` 降级负例；逐平台 backend/enforced/degraded/逐项 JSON 已在本地候选实现，受 GitHub
+   凭据缺少 `workflow` scope 阻塞推送复验
+3. **Windows 100 次恢复尚未完成** —— run `32358756995` 的 Ubuntu/macOS 各 100/100；Windows 前
+   54 次全部通过后因模型请求 10 秒窗口超时，30 秒慢 runner 修复待远端复验
+4. **跨版本升级尚无公开报告** —— Distribution `32358752712` 的三平台 wheel、Docker、Windows
+   portable 和真实 Extension Host 已全绿，但还没有“上一公开版本 → 当前版本 → 回滚”报告
+5. **连续 CI 证据尚差一次** —— CI #34/#35 的三平台与 Required CI gate 已连续 2/3 次成功；远端
+   审计器在达到 3 次前仍会 fail closed
 
 ### P1（兼容性和体验限制）
 

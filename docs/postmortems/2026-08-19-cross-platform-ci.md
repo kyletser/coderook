@@ -2,7 +2,7 @@
 
 - **日期**：2026-08-19
 - **类型**：质量门禁失败，无用户数据或公开发行受影响
-- **状态**：本地修复已验证，远端三平台复验仍待新 run
+- **状态**：已关闭；CI #34/#35 远端三平台连续两次通过，发布级连续 3 次门禁仍单独跟踪
 
 ## 摘要与影响
 
@@ -32,13 +32,17 @@
 相关实现集中在 `src/code_rook/core/persistent_shell.py`、`core/sandbox/`、`core/processes.py` 及其单测；
 生产就绪批次为 commit `1a93b3b`。
 
-## 验证与未解决项
+## 验证闭环与未解决项
 
-修复后的本地 unit/full gate 已通过，仓库也新增稳定 `Required CI gate` 汇总三平台矩阵。但复盘的完成
-证据必须包含新远端 run URL；在那之前，`docs/RELEASE_SCORECARD.md` 继续写“修复待远端复验”。
+修复后的本地 unit/full gate 已通过，仓库也新增稳定 `Required CI gate` 汇总三平台矩阵。2026-08-20，
+[CI #34](https://github.com/kyletser/coderook/actions/runs/32356991892) 与
+[CI #35](https://github.com/kyletser/coderook/actions/runs/32358736153) 的 Ubuntu、macOS、Windows 和汇总
+job 连续成功，CI #31 暴露的三类平台假设已完成远端复验。发布评分卡额外要求连续 3 次，因此全局
+发布状态仍保持 NO-GO。
 
 尚未解决的产品限制也不能与本次测试修复混淆：Windows 仍没有受支持的文件系统/网络强制 sandbox，
-正确行为是 degraded + ASK；Linux/macOS 真实安全负例还需要远端 runner 产出报告。
+正确行为是 degraded + ASK；Linux/macOS 负例已在远端 runner 通过，逐平台机器可读 artifact 仍待当前
+候选推送后产出。
 
 ## 防复发规则
 
