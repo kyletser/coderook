@@ -25,7 +25,7 @@
 | R4 | 稳定 headless 契约 | 完成 | text/json/stream-json、resume、filter、partial、退出码、golden | 无 |
 | R4 | Python SDK 与 IDE API | 完成 | 同步/异步 SDK、thread/turn/SSE/receipt/approval/diff | 真实 daemon + 模型 SDK 示例尚未在 CI 消费真实 key |
 | R4 | MCP Streamable HTTP | 完成并远端验证 | POST/GET SSE、session、cursor、取消、resources、prompts；MCP `32365934460` 的官方 SDK 2.0 三 transport 报告通过 | OAuth、sampling、elicitation 与任意第三方 server 不在该报告范围 |
-| R4 | VS Code 扩展 | 完成打包候选 | HTTP/SSE、创建/恢复、发送、审批/逐 hunk、diff、steer/interrupt；Distribution `32365931473` 的真实 daemon Extension Host 与 VSIX job 成功 | 审批 UI 视觉证据与 Marketplace 发布 |
+| R4 | VS Code 扩展 | 完成并远端验证 | HTTP/SSE、创建/恢复、发送、审批/逐 hunk、diff、steer/interrupt；commit `0e92a3b` 的 Distribution `32383191953` 在真实 VS Code 1.134.0 + Xvfb 中产出可读 QuickPick 审批 PNG，JSON 绑定 commit、字节数与 SHA-256 | Marketplace 发布 |
 | R5 | 共享 ConfigurationService | 完成 | CLI/TUI 共用 route/credential 事务；默认 doctor 后一次原子提交 | 无 |
 | R5 | 长任务单屏状态 | 完成 | Turn Inspector 同屏展示目标、活跃 worker、成本、待审批、失败原因与 sandbox backend | 真实长任务人工可用性报告 |
 | R5 | 升级/降级阻断 | 完成实现 | runtime/session/routes/policy 未来 schema fixture 均阻断且保持原文件 | 跨已发布版本的干净机升级报告 |

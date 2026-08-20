@@ -27,6 +27,8 @@
 - 生产就绪候选流水线扩展到三平台、VSIX、容器和 Windows portable 产物。
 - CI 的分支 push 仅保留 `main`，Dependabot 改为按生态每月聚合一个 PR；机器人 PR 跳过会在
   `main` 合并后重复执行的安全扫描，减少重复 Actions 与已知失败通知。
+- VS Code 审批改为关闭时默认拒绝的 QuickPick，并为 Distribution 增加单 job 聚焦入口；真实
+  Extension Host 证据现包含 commit-bound JSON 与哈希绑定审批截图。
 
 ## [0.1.0] - 2026-08-19
 

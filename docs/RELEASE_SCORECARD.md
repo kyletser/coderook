@@ -11,7 +11,7 @@
 - 未修改 fixture 的 50 个 baseline 均按预期失败，证明 verifier 不是天然通过。
 - stream-json、resume、SDK、HTTP/SSE、MCP、PatchPlan、Artifact、ledger checksum、doctor 和配置事务均有针对性测试。
 - 本机 Windows 沙箱检查结果是 `DEGRADED (windows_none)`；AUTO_REVIEW 不会把该状态当作强制隔离。Windows Job Object 后代终止测试通过，但只计为进程治理。
-- VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；Distribution `32365931473` 已在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
+- VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；commit `0e92a3b` 的聚焦 Distribution `32383191953` 在 Xvfb + VS Code 1.134.0 中连接隔离真实 daemon，验证激活、新建/恢复 thread、diff 与 fail-closed QuickPick 审批。artifact 同时包含 116,036 字节 PNG 和 commit-bound JSON，SHA-256 `a4a3ff2bb5ad5fc1329dc83a5c41eae1cbb7ca152848fb2640ba12aec39b222b` 匹配。
 - commit `a4e4fea` 的本机完整 pytest 为 1168 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 7.67 秒 installed-wheel first-run smoke 全部通过。
 - 同一 commit 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与 Required CI gate 全绿；期间暴露并修复 Windows 事件回放、wheel 冷启动窗口与 Git racy-clean 三类竞态。
 - Security `32376297003` 在 commit `a4e4fea` 上完成 gitleaks、Python/JavaScript CodeQL 与 Required security gate。仓库当前未启用 GitHub Dependency Graph，dependency review 因而 fail closed 为显式 opt-in，不能计作已有安全证据。
@@ -76,5 +76,5 @@ P95 成本/耗时显著上涨视为失败。资源字段和比较门禁已有离
 - README 的 TUI SVG 由真实 Textual 控件与正式事件结构确定性生成；它证明当前界面渲染契约，不代表在线模型效果或真实 benchmark 成绩。
 - Tag release workflow 已配置版本/Changelog/协议/评分卡一致性、三平台 distribution、SPDX SBOM、SHA256SUMS、GitHub OIDC provenance 与 Cosign keyless 签名；评分卡为 NO-GO 时会在推送镜像和创建 Release 前失败，远端产物尚未生成。
 - 通用 checkout/setup-node/artifact/setup-uv Actions 已升级到 Node 24 代际；远端证据 workflow 每日审计六类 workflow、连续 CI 与 active ruleset，并上传机器可读 JSON。
-- VS Code 的真实 daemon Extension Host JSON 已在 Distribution `32365931473` 产生；审批 UI 仍缺录像/截图，也未发布到 Marketplace。
+- VS Code 的真实 daemon Extension Host JSON 与审批 UI PNG 已在 Distribution `32383191953` 产生并完成哈希复核；扩展仍未发布到 Marketplace。
 - 未达到本页全部量化门禁前，不发布 `0.2.0-beta`，也不宣称生产就绪。

@@ -99,7 +99,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | P0 | 三平台可信交付 | CI、Security、Distribution、MCP 与 schema 3 强杀矩阵均有同一候选 commit `a4e4fea` 的远端成功报告；真实模型 release gate 仍缺 |
 | P1 | 首次安装体验 | 三平台 wheel、Docker clean-image 与 Windows portable 候选 smoke 已通过；公开 PyPI/GHCR/Release 安装仍缺 |
 | P1 | 供应链安全 | secret/CodeQL 远端全绿，SBOM/provenance/Cosign 合同已落地；首次 tag 资产验证仍缺 |
-| P1 | 外部兼容 | MCP 官方 SDK 三 transport 与真实 VSIX Extension Host 报告已产生；审批 UI 视觉证据仍缺 |
+| P1 | 外部兼容 | MCP 官方 SDK 三 transport 与真实 VSIX Extension Host/审批 UI 报告已产生；Marketplace 发布仍缺 |
 | P2 | 采用与社区 | 版本变更、贡献与支持路径已落地；真实录屏、首批 good first issue 和外部用户反馈仍缺 |
 
 ### 2.3 范围边界
@@ -235,7 +235,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 |---|---|---|---|
 | OS5-01 | DONE | 对固定官方 MCP Python SDK 2.0 server 完成 stdio/legacy SSE/Streamable HTTP 兼容矩阵 | MCP `32365934460` 的 Linux JSON/Markdown 绑定 commit `3e4a1c4`，三种 transport 的 tools/resources/prompts/cancel/reconnect 全通过 |
 | OS5-02 | DONE | 提供可安装 focused-fix Skill、敏感文件阻断 Hook 与 MCP stdio 示例及安全说明 | Skill 经受管安装/digest/渲染 smoke；Hook 经真实配置加载与子进程阻断/放行；MCP 完成握手与调用 |
-| OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | Distribution `32365931473` 已在 Xvfb + 隔离 daemon 覆盖激活、命令、新建/恢复 thread 与 diff，并上传 commit-bound JSON；审批 UI 录像/截图仍待产出 |
+| OS5-03 | DONE | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | commit `0e92a3b` 的聚焦 Distribution `32383191953` 在 Xvfb + VS Code 1.134.0 中通过真实 daemon 激活、新建/恢复 thread、diff 与 fail-closed QuickPick 审批；上传 116,036 字节 PNG 和 commit-bound JSON，SHA-256 `a4a3ff2b…b222b` 一致 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
 | OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |
 | OS5-06 | DONE | 公布 HTTP/SSE、Python SDK、stream-json 的兼容、错误与版本策略 | capabilities/响应头/模型默认值/SDK 契约测试；两 minor 且不少于 90 天的弃用窗口写入文档 |

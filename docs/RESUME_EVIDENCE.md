@@ -20,6 +20,7 @@
 | 50 个固定离线任务，baseline 50/50 按预期失败 | `docs/RELEASE_SCORECARD.md`、benchmark fixtures | 只证明 verifier 合同，不是模型 0% 或候选成绩 |
 | 1,000+ 自动测试门禁 | release scorecard 的 dated checkpoint | 使用范围值，避免每次提交后精确数过期 |
 | Windows/Ubuntu/macOS CI 与发行 workflow | commit `fe3bd3b` 的连续三次 CI；commit `a4e4fea` 的 CI `32376296861`、Distribution `32376314295` | 可写“三平台 CI 连续三次及干净发行门禁全绿”，不能扩写为生产就绪 |
+| VS Code 真实 Extension Host 与审批 UI | commit `0e92a3b` 的 Distribution `32383191953`，含 commit-bound JSON 与哈希绑定 PNG | 可写“在真实 VS Code Extension Host 验证 daemon 会话、diff 与审批闭环”，不能写已上架 Marketplace |
 | SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
 
 ## 可引用的历史精确数字

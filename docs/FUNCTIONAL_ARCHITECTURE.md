@@ -1038,7 +1038,8 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    与常驻 LSP 不在当前 Beta 门禁
 10. **外部协议认证范围有限** —— MCP stdio/legacy SSE/Streamable HTTP 的官方 SDK 2.0 固定矩阵已通过，
    OAuth/企业代理/sampling/elicitation 仍无报告；VS Code Extension Host runner 已覆盖真实 daemon 的激活、
-   thread 恢复和 diff，但远端报告及审批 UI 录像尚未产生
+   thread 恢复、diff 与 fail-closed QuickPick 审批，Distribution `32383191953` 已产出 commit-bound JSON 和
+   哈希绑定 PNG，但扩展尚未发布到 Marketplace
 11. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
    仍需运营性维护
 
