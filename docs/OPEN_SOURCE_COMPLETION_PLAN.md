@@ -207,7 +207,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | CI #34/#35 的三平台与 Required CI gate 连续 2/3 次成功；审计器仍要求第 3 次 |
 | OS3-02 | PARTIAL | 三平台运行 sandbox 负例矩阵 | CI #34/#35 的真实/降级边界均通过；逐平台 backend、enforced/degraded、逐项结果 JSON 已在本地候选实现，待远端 artifact |
 | OS3-03 | PARTIAL | 三平台各运行 100 次 daemon 强杀恢复 | run `32358756995` 的 Ubuntu/macOS 各 100/100；Windows 54/54 后探针等待超时，30 秒候选修复待复验 |
-| OS3-04 | PARTIAL | 建立 ProcessSupervisor 资源 P95 基线 | benchmark 报告已投影 wall/CPU/RSS/进程数和完整性；真实三平台报告待产出 |
+| OS3-04 | PARTIAL | 建立 ProcessSupervisor 资源 P95 基线 | 独立固定负载 runner 已输出 commit-bound JSON/Markdown，含 wall/CPU/RSS/进程数 P95 与完整率；Windows 本机 3/3 通过，三平台 CI artifact 待推送产出 |
 | OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security #4 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |
 

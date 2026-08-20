@@ -1022,6 +1022,8 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    portable 和真实 Extension Host 已全绿，但还没有“上一公开版本 → 当前版本 → 回滚”报告
 5. **连续 CI 证据尚差一次** —— CI #34/#35 的三平台与 Required CI gate 已连续 2/3 次成功；远端
    审计器在达到 3 次前仍会 fail closed
+6. **独立资源基线待远端矩阵** —— 固定负载 runner 已在 Windows 本机输出 wall/CPU/RSS/进程数 P95
+   与完整率；Linux/macOS artifact 需当前 workflow 推送后产出，macOS 暂只承诺 wall-time 和不完整标记
 
 ### P1（兼容性和体验限制）
 

@@ -17,6 +17,7 @@
 - Security #4（`702737e`）的 gitleaks、Python/JavaScript CodeQL 与 Required security gate 成功；push 事件下 dependency review 按设计跳过，PR 事件仍有独立门禁。
 - Distribution run `32358752712` 在 `702737e` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP run `32358754512` 同 commit 成功。
 - Crash Recovery run `32358756995` 中 Ubuntu/macOS 各 100/100；Windows 前 54 次全部通过后因模型请求 10 秒等待窗口超时，属于基础设施失败而非 54 次恢复失败。当前本地候选把窗口改为 30 秒，仍需推送复验。
+- ProcessSupervisor 固定负载基线已独立于模型执行链输出 commit-bound JSON/Markdown；Windows 本机 3/3 完整采样通过，记录 wall/CPU/RSS/进程数 P95。Linux/macOS CI artifact 尚待推送，macOS 无受支持 CPU/RSS 采样器时会明确记录 `complete_expected=false`。
 - 统一远端审计器已在真实 GitHub API 上 fail closed 运行；active ruleset、release benchmark、Windows crash 与连续 CI 尚未齐备，不把本地 workflow 定义当远端成绩。
 - Windows portable 与 Docker job 已复用零凭据 installed-runtime smoke，检查配置状态、TUI help、真实 Core 启动与 ping；该 smoke 在本机安装态 6.0 秒通过。本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
 - Aider Polyglot 固定 commit/container runner 与 SWE-bench 标准 prediction exporter 已通过离线契约测试；尚未产出真实模型切片和官方 SWE-bench harness artifact。

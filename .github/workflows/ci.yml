@@ -101,6 +101,19 @@ jobs:
       - name: Installed-wheel smoke
         run: uv run python scripts/smoke_wheel.py dist
 
+      - name: ProcessSupervisor resource baseline
+        run: >-
+          uv run python scripts/run_process_supervisor_benchmark.py
+          --output reports/process-supervisor-${{ runner.os }}.json
+
+      - name: Upload ProcessSupervisor resource evidence
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: process-supervisor-${{ runner.os }}
+          path: reports/process-supervisor-${{ runner.os }}.*
+          if-no-files-found: error
+
       - uses: actions/upload-artifact@v6
         with:
           name: coderook-${{ matrix.os }}
