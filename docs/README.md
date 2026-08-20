@@ -29,6 +29,7 @@
 | [开源补全计划](OPEN_SOURCE_COMPLETION_PLAN.md) | 当前长期 Goal、阶段状态和完成定义 | 每个工作项验收后更新 |
 | [生产差距矩阵](PRODUCTION_GAP_MATRIX.md) | R0-R5 仓库证据与外部证据 | 证据变化时更新 |
 | [发布评分卡](RELEASE_SCORECARD.md) | 唯一 GO/NO-GO 发布结论 | 每次候选发布更新 |
+| [续作报告](CONTINUATION_REPORT.md) | 当前未完成项、外部阻塞、明日顺序与目录规范 | 每次阶段性收尾时更新 |
 
 发生冲突时，运行代码与生成协议优先于手写描述；发布资格以 `RELEASE_SCORECARD.md` 为准。
 

@@ -53,12 +53,12 @@ from code_rook.core.state_migration import migrate_legacy_state
 
 
 # CLI 主入口：无参数启动 TUI，其余参数分发到现有子命令
-def main() -> None:
+def main() -> int:
     if len(sys.argv) == 1:
         from code_rook.tui.__main__ import main as tui_main
 
         tui_main()
-        return
+        return 0
 
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook", description="CodeRook CLI")
@@ -307,7 +307,7 @@ def main() -> None:
 
     if args.version:
         cmd_version()
-        return
+        return 0
 
     config = get_config()
     setup_logging(config)
@@ -334,7 +334,7 @@ def main() -> None:
         else:
             if args.repair:
                 parser.error("--repair requires 'coderook doctor runtime'")
-            cmd_doctor(config, args.route_id, as_json=args.json)
+            return cmd_doctor(config, args.route_id, as_json=args.json)
     elif args.command == "provider":
         if args.provider_command == "list":
             cmd_provider_list(config)
@@ -373,7 +373,7 @@ def main() -> None:
         elif args.provider_command == "use":
             cmd_provider_use(args.route_id)
         elif args.provider_command == "test":
-            cmd_doctor(config, args.route_id, as_json=args.json)
+            return cmd_doctor(config, args.route_id, as_json=args.json)
         else:
             provider_parser.print_help()
             sys.exit(1)
@@ -493,3 +493,4 @@ def main() -> None:
     else:
         parser.print_help()
         sys.exit(1)
+    return 0

@@ -159,13 +159,14 @@ def test_doctor_json_is_redacted(monkeypatch: object, capsys: object) -> None:
         )
 
     monkeypatch.setattr(doctor_command, "diagnose_route", fake_diagnose)  # type: ignore[attr-defined]
-    doctor_command.cmd_doctor(CodeRookConfig(), "work", as_json=True)
+    exit_code = doctor_command.cmd_doctor(CodeRookConfig(), "work", as_json=True)
 
     output = capsys.readouterr().out  # type: ignore[attr-defined]
     payload = json.loads(output)
     assert payload["credential_source"] == "keyring"
     assert payload["category"] == "credential"
     assert "secret" not in output.casefold()
+    assert exit_code == 1
 
 
 # 功能：验证 argparse 的 provider list 路径分发到新的 route 管理命令
@@ -186,3 +187,28 @@ def test_main_dispatches_provider_list(monkeypatch: object) -> None:
     cli_main_module.main()
 
     assert calls == [config]
+
+
+# 功能：验证 provider test 将诊断失败状态传播为进程非零退出码
+# 设计：替换网络诊断并调用真实 argparse 分发，防止 JSON 错误结果被自动化误判为成功
+def test_main_propagates_provider_test_failure(monkeypatch: object) -> None:
+    calls: list[tuple[str | None, bool]] = []
+    config = CodeRookConfig()
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        sys,
+        "argv",
+        ["coderook", "provider", "test", "work", "--json"],
+    )
+    monkeypatch.setattr(cli_main_module, "migrate_legacy_state", lambda: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(cli_main_module, "get_config", lambda: config)  # type: ignore[attr-defined]
+    monkeypatch.setattr(cli_main_module, "setup_logging", lambda _config: None)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        cli_main_module,
+        "cmd_doctor",
+        lambda _config, route_id, *, as_json: calls.append((route_id, as_json)) or 1,
+    )
+
+    exit_code = cli_main_module.main()
+
+    assert exit_code == 1
+    assert calls == [("work", True)]

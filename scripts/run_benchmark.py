@@ -57,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--report-only",
         action="store_true",
-        help="Write a valid candidate report without gating on 100% task success.",
+        help="Write a valid candidate report without gating on 100%% task success.",
     )
     return parser
 

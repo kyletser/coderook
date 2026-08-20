@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from scripts.run_benchmark import _build_parser
 
 from code_rook.benchmark.contract import (
     find_candidate_contract_issues,
@@ -16,6 +17,15 @@ from code_rook.benchmark.loader import (
 )
 from code_rook.benchmark.models import AgentExecution, BenchmarkRunConfig, BenchmarkTask
 from code_rook.benchmark.runner import BenchmarkRunner, verify_benchmark_baseline
+
+
+# 功能：验证 benchmark 命令帮助可以正常渲染并保留百分号说明
+# 设计：直接调用 argparse 格式化入口，覆盖未转义百分号导致 --help 崩溃的真实回归
+def test_benchmark_cli_help_renders() -> None:
+    help_text = _build_parser().format_help()
+
+    assert "without gating on 100%" in help_text
+    assert "task success." in help_text
 
 
 class _EditingExecutor:

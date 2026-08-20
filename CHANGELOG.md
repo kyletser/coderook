@@ -31,6 +31,7 @@
   Extension Host 证据现包含 commit-bound JSON 与哈希绑定审批截图。
 - 增加可按需运行的安装态升级/备份回滚 preflight，报告绑定 baseline/candidate commit、wheel
   哈希、thread 往返计数和备份摘要；无精确 tag 时不冒充跨已发布版本验证。
+- 修复 benchmark `--help` 因百分号格式化崩溃，以及 provider 凭据诊断失败仍返回退出码 0 的问题。
 
 ## [0.1.0] - 2026-08-19
 

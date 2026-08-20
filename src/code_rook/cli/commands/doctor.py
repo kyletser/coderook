@@ -172,18 +172,19 @@ def cmd_doctor(
     route_id: str | None = None,
     *,
     as_json: bool = False,
-) -> None:
+) -> int:
     result = asyncio.run(diagnose_route(config, route_id))
     if as_json:
         print(result.model_dump_json(indent=2))
-        return
-    print(f"route:      {result.route_id}")
-    print(f"status:     {result.status}")
-    print(f"category:   {result.category}")
-    print(f"credential: {result.credential_source}")
-    if result.http_status is not None:
-        print(f"http:       {result.http_status}")
-    print(f"message:    {result.message}")
+    else:
+        print(f"route:      {result.route_id}")
+        print(f"status:     {result.status}")
+        print(f"category:   {result.category}")
+        print(f"credential: {result.credential_source}")
+        if result.http_status is not None:
+            print(f"http:       {result.http_status}")
+        print(f"message:    {result.message}")
+    return 0 if result.status == "ok" else 1
 
 
 # 检查或幂等修复 runtime 投影一致性，并支持稳定 JSON 输出
