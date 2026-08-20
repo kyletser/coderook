@@ -16,6 +16,7 @@ _REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
     "SUPPORT.md",
     "GOVERNANCE.md",
+    "ROADMAP.md",
     "CHANGELOG.md",
     "docs/README.md",
     "docs/OPEN_SOURCE_COMPLETION_PLAN.md",
@@ -24,12 +25,18 @@ _REQUIRED_FILES = (
     "docs/PUBLIC_BENCHMARKS.md",
     "docs/COMPATIBILITY.md",
     "docs/RELEASING.md",
+    "docs/BRANCH_PROTECTION.md",
+    "docs/MAINTAINERS.md",
+    "docs/CONTRIBUTOR_TASKS.md",
     "docs/images/coderook-tui.svg",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/contributor_task.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/CODEOWNERS",
+    ".github/dependabot.yml",
     "examples/README.md",
     "examples/read_only_review.py",
     "examples/automated_fix.py",
@@ -74,7 +81,33 @@ _README_REQUIRED_LINKS = (
     "CHANGELOG.md",
     "LICENSE",
     "docs/COMPATIBILITY.md",
+    "ROADMAP.md",
+    "docs/CONTRIBUTOR_TASKS.md",
+    "docs/MAINTAINERS.md",
 )
+_REQUIRED_WORKFLOW_SNIPPETS = {
+    ".github/workflows/ci.yml": (
+        "name: Required CI gate",
+        "needs: [quality-and-package]",
+        "if: always()",
+    ),
+    ".github/workflows/security.yml": (
+        "name: Required security gate",
+        "needs: [secret-scan, dependency-review, codeql]",
+        "if: always()",
+    ),
+    ".github/dependabot.yml": (
+        "package-ecosystem: uv",
+        "package-ecosystem: npm",
+        "package-ecosystem: github-actions",
+    ),
+    "docs/BRANCH_PROTECTION.md": (
+        "`Required CI gate`",
+        "`Required security gate`",
+        "OS6-05 只能标记 `PARTIAL`",
+    ),
+    ".github/CODEOWNERS": ("* @kyletser",),
+}
 _TRACKED_POLLUTION_PATTERNS = (
     re.compile(r"(^|/)__pycache__/"),
     re.compile(r"\.py[co]$"),
@@ -154,6 +187,23 @@ def find_readme_contract_issues(root: Path = _ROOT) -> list[str]:
     return issues
 
 
+# 校验稳定必需检查、依赖更新、CODEOWNERS 与外部 ruleset 边界没有漂移
+def find_governance_contract_issues(root: Path = _ROOT) -> list[str]:
+    issues: list[str] = []
+    for relative, snippets in _REQUIRED_WORKFLOW_SNIPPETS.items():
+        path = root / relative
+        if not path.is_file():
+            issues.append(f"governance contract file is missing: {relative}")
+            continue
+        content = path.read_text(encoding="utf-8")
+        issues.extend(
+            f"{relative} does not contain required contract: {snippet}"
+            for snippet in snippets
+            if snippet not in content
+        )
+    return issues
+
+
 # 查找被 Git 跟踪的缓存、凭据和本地产物路径
 def find_tracked_pollution(root: Path = _ROOT) -> list[str]:
     result = subprocess.run(
@@ -180,6 +230,7 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues.extend(f"broken markdown link: {link}" for link in find_broken_markdown_links(root))
     issues.extend(find_project_metadata_issues(root))
     issues.extend(find_readme_contract_issues(root))
+    issues.extend(find_governance_contract_issues(root))
     issues.extend(f"tracked local artifact: {path}" for path in find_tracked_pollution(root))
     return issues
 

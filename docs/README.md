@@ -16,6 +16,9 @@
 | [运行手册](../RUNBOOK.md) | 安装、运行、排障与恢复 | 运维行为变化时更新 |
 | [升级与回滚](UPGRADING.md) | 数据备份、版本升级、校验与回滚 | 配置或持久化兼容性变化时更新 |
 | [发行与供应链](RELEASING.md) | tag、版本一致性、SBOM、OIDC provenance、Cosign 与下载验证 | 发行流程或产物变化时更新 |
+| [分支保护](BRANCH_PROTECTION.md) | 稳定必需检查、ruleset 配置与外部审计边界 | CI job 或 GitHub 规则变化时更新 |
+| [维护者边界](MAINTAINERS.md) | 组件责任、权限、评审与总线因子风险 | 维护者或权限变化时更新 |
+| [Contributor Tasks](CONTRIBUTOR_TASKS.md) | 可认领小任务、范围和完成定义 | 任务被认领、完成或替换时更新 |
 | [威胁模型](THREAT_MODEL.md) | 资产、信任边界、攻击面、降级与非目标 | 安全边界或外部能力变化时更新 |
 | [公开 Benchmark](PUBLIC_BENCHMARKS.md) | 内建集、Aider Polyglot、SWE-bench 与回归比较复现协议 | 数据集、格式或门禁变化时更新 |
 | [开源补全计划](OPEN_SOURCE_COMPLETION_PLAN.md) | 当前长期 Goal、阶段状态和完成定义 | 每个工作项验收后更新 |

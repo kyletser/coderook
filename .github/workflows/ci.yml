@@ -98,3 +98,15 @@ jobs:
           name: coderook-vscode
           path: editors/vscode/dist/*.vsix
           if-no-files-found: error
+
+  required-ci-gate:
+    name: Required CI gate
+    needs: [quality-and-package]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every platform job to pass
+        env:
+          MATRIX_RESULT: ${{ needs.quality-and-package.result }}
+        run: test "${MATRIX_RESULT}" = "success"

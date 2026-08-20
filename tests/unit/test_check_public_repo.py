@@ -5,6 +5,7 @@ from pathlib import Path
 
 from scripts.check_public_repo import (
     find_broken_markdown_links,
+    find_governance_contract_issues,
     find_project_metadata_issues,
     find_tracked_pollution,
 )
@@ -63,3 +64,24 @@ def test_find_tracked_pollution_detects_sensitive_artifacts(tmp_path: Path) -> N
     subprocess.run(["git", "add", "-f", "."], cwd=tmp_path, check=True)
 
     assert find_tracked_pollution(tmp_path) == [".env", "pkg/__pycache__/mod.pyc"]
+
+
+# 功能：验证公开仓库合同能发现稳定必需检查或 ruleset 诚实边界被删除
+# 设计：在隔离目录只写不完整 CI 文件，断言缺失文件和缺失汇总门禁都被报告
+def test_find_governance_contract_issues_reports_drift(tmp_path: Path) -> None:
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "ci.yml").write_text("name: Required CI gate\n", encoding="utf-8")
+
+    issues = find_governance_contract_issues(tmp_path)
+
+    assert any("needs: [quality-and-package]" in issue for issue in issues)
+    assert any("security.yml" in issue and "missing" in issue for issue in issues)
+
+
+# 功能：验证真实仓库的 CI、安全、依赖更新、CODEOWNERS 与保护文档使用同一合同
+# 设计：直接检查受版本控制资产，防止任一 workflow 改名后单元夹具仍自洽却让 GitHub ruleset 失效
+def test_repository_governance_contract_is_consistent() -> None:
+    root = Path(__file__).resolve().parents[2]
+
+    assert find_governance_contract_issues(root) == []

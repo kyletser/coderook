@@ -64,3 +64,25 @@ jobs:
       - uses: github/codeql-action/analyze@v4
         with:
           category: /language:${{ matrix.language }}
+
+  required-security-gate:
+    name: Required security gate
+    needs: [secret-scan, dependency-review, codeql]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all applicable security jobs to pass
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
+          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+          CODEQL_RESULT: ${{ needs.codeql.result }}
+        run: |
+          test "${SECRET_SCAN_RESULT}" = "success"
+          test "${CODEQL_RESULT}" = "success"
+          if [[ "${EVENT_NAME}" = "pull_request" ]]; then
+            test "${DEPENDENCY_REVIEW_RESULT}" = "success"
+          else
+            test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"
+          fi

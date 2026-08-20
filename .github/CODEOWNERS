@@ -1,0 +1,12 @@
+# 默认由当前维护者审查；新增维护者后按组件拆分为团队所有权
+* @kyletser
+
+# 安全边界、公共协议和发行链路需要显式维护者审查
+/src/code_rook/core/permissions/ @kyletser
+/src/code_rook/core/sandbox/ @kyletser
+/src/code_rook/core/bus/ @kyletser
+/src/code_rook/core/api/ @kyletser
+/.github/workflows/ @kyletser
+/SECURITY.md @kyletser
+/docs/THREAT_MODEL.md @kyletser
+/docs/RELEASING.md @kyletser

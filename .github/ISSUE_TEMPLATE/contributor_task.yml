@@ -1,0 +1,42 @@
+name: Contributor task
+description: 认领 CONTRIBUTOR_TASKS.md 中已定义边界的小任务
+title: "[Contributor]: "
+labels: ["good first issue", "help wanted", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先阅读 CONTRIBUTING.md 和 docs/CONTRIBUTOR_TASKS.md。一个 Issue 只认领一个 READY 任务；维护者确认没有重复工作后再开始实现。
+  - type: input
+    id: task
+    attributes:
+      label: 任务 ID
+      description: 例如 DOC-001 或 EXAMPLE-001。
+      placeholder: "DOC-001"
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 计划交付
+      description: 用自己的话复述要改的文件、用户结果和验收证据。
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: 计划验证
+      description: 列出准备运行的最小测试或文档复现步骤。
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 范围确认
+      options:
+        - label: 我已确认任务仍标记为 READY，且没有相同认领 Issue。
+          required: true
+        - label: 我会遵守任务的“不在范围内”边界，不顺带重写架构。
+          required: true
+        - label: 我不会提交 API key、token、个人日志、Prompt 或业务数据。
+          required: true

@@ -23,4 +23,9 @@ CodeRook 当前采用维护者主导的开源治理模式。仓库所有者负�
 - 安全事件按 `SECURITY.md` 协调披露。
 - 新维护者权限依据持续、高质量贡献和对安全边界的理解逐步授予。
 
+当前维护者、组件责任、总线因子风险和权限晋升条件见
+[维护者与维护边界](docs/MAINTAINERS.md)。默认分支必须遵循
+[main 分支保护合同](docs/BRANCH_PROTECTION.md)；仓库内 workflow 不能替代 GitHub ruleset 的
+真实启用证据。
+
 治理模型会随贡献者规模调整，变更通过 Pull Request 公开记录。
