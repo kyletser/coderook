@@ -6,6 +6,14 @@ CodeRook 是一个使用 Python 3.12 构建的本地 AI 编程 Agent 运行时�
 
 ![CodeRook TUI](docs/images/coderook-tui.svg)
 
+> 这是由真实 Textual 控件和正式事件结构生成的确定性产品截图，不依赖在线模型或个人数据，
+> 不是手工绘制的效果图。可运行
+> `uv run python scripts/capture_tui_demo.py --output docs/images/coderook-tui.svg`
+> 复现。
+
+截图中的一条任务链同时展示计划、仓库上下文、working set、工具执行、验证门禁和最终回答；
+真实运行还可通过 `/diff` 查看统一改动，并用 `/rewind` 选择恢复点。
+
 ## 核心架构
 
 ```mermaid

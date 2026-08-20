@@ -181,7 +181,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS1-03 | PARTIAL | wheel、Docker、Windows portable 发行流水线 | 三平台 workflow 产物可下载并运行 ping/TUI help |
 | OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册 | 首个公开版本后补“上一版本 → 当前版本 → 回滚”fixture |
 | OS1-05 | DONE | 增加 `examples/`：只读审查、自动修复、MCP 扩展 | 命令契约离线测试；MCP 示例由真实 stdio 客户端握手与调用 |
-| OS1-06 | TODO | 制作真实 TUI 演示 GIF/截图并更新 README 信息架构 | README 首屏能说明价值、安装、证据和限制 |
+| OS1-06 | DONE | 用真实 Textual 控件和确定性正式事件制作可复现 TUI 截图，更新 README 首屏 | `capture_tui_demo.py` 无 daemon/模型生成截图；SVG 内容测试与公开仓库门禁覆盖 |
 
 阶段出口：一个不了解代码库的人能够安装、配置模型、完成任务、退出并恢复会话。
 
@@ -236,8 +236,8 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 | OS5-01 | PARTIAL | 对官方 MCP SDK server 做 stdio/HTTP/SSE 兼容矩阵 | tools/resources/prompts/cancel/reconnect 报告 |
 | OS5-02 | PARTIAL | 提供 3 个最小 Skill/Hook/MCP 示例与安全说明 | MCP stdio 示例已完成真实全链路；Skill/Hook 示例仍待补齐 |
 | OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | UI smoke 录像/截图和 workflow 产物 |
-| OS5-04 | TODO | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 空状态 | Textual snapshot/交互测试覆盖 |
-| OS5-05 | TODO | TUI 统一展示 plan、working set、diff、验证结果和恢复点 | 用户不读原始 JSON 也能判断下一步 |
+| OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
+| OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |
 | OS5-06 | TODO | 公布 HTTP/SSE、Python SDK、stream-json 的兼容与版本策略 | 契约测试和弃用窗口写入文档 |
 
 阶段出口：扩展作者和 IDE 用户都有受支持的最短路径，TUI 仍是首先验收的产品面。

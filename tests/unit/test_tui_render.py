@@ -175,6 +175,80 @@ def test_plan_updated_renders_plan_lines() -> None:
     assert "[x] 抽取 render.py" in joined
 
 
+# 功能：验证 repository context 与 working set 以路径和预算摘要展示而非原始 JSON
+# 设计：连续投递两个上下文事件，检查文件、字符预算和缓存统计都能在日志中直接阅读
+def test_repository_context_and_working_set_render_as_product_summary() -> None:
+    app = _new_app()
+
+    render_event(
+        app,
+        {
+            "type": "context.repository",
+            "paths": ["src/auth.py", "tests/test_auth.py"],
+            "used_chars": 4200,
+            "budget_chars": 12000,
+            "cache_hits": 8,
+            "parsed_files": 2,
+        },
+    )
+    render_event(
+        app,
+        {
+            "type": "context.working_set",
+            "paths": ["src/auth.py"],
+        },
+    )
+
+    joined = "\n".join(
+        _render_text(widget) for widget in app._appended if isinstance(widget, Static)
+    )
+    assert "Repository context" in joined
+    assert "4200/12000" in joined
+    assert "cache=8 parsed=2" in joined
+    assert "Working set" in joined
+    assert "src/auth.py" in joined
+
+
+# 功能：验证结构化验证事件显示通过数、门禁名称、工作集和失败类别
+# 设计：分别投递 pass 与 fail 事件，确认用户无需打开 receipt 即可分辨验证终态和失败原因
+def test_verification_events_render_pass_and_failure_details() -> None:
+    app = _new_app()
+
+    render_event(
+        app,
+        {
+            "type": "verification.completed",
+            "action": "run_tests",
+            "passed": 2,
+            "failed": 0,
+            "paths": ["src/auth.py"],
+            "gates": [{"name": "pytest"}, {"name": "ruff"}],
+        },
+    )
+    render_event(
+        app,
+        {
+            "type": "verification.failed",
+            "action": "run_verifiers",
+            "passed": 1,
+            "failed": 1,
+            "failure_class": "test_failure",
+            "paths": ["src/auth.py"],
+            "gates": [{"name": "mypy"}],
+        },
+    )
+
+    joined = "\n".join(
+        _render_text(widget) for widget in app._appended if isinstance(widget, Static)
+    )
+    assert "Verification passed" in joined
+    assert "2 passed / 0 failed" in joined
+    assert "pytest, ruff" in joined
+    assert "Verification failed" in joined
+    assert "test_failure" in joined
+    assert "mypy" in joined
+
+
 # 功能：验证 user_question.asked 记录待处理问题并切换顶栏状态
 # 设计：匹配会话 id 后断言 _pending_question_id 被记录且 header 变为 question
 def test_user_question_asks_and_switches_header() -> None:
@@ -216,6 +290,31 @@ def test_run_finished_failure_renders_result_and_cleans_steps() -> None:
     assert app._active_run_id is None
     assert "run-1" not in app._current_steps
     assert not app._tool_step_groups
+
+
+# 功能：验证模型调用失败时 TUI 直接给出路由诊断与修复入口
+# 设计：投递标准 llm_error 终态并检查同一失败块含 doctor/provider/config 指引，避免用户只看到内部原因码
+def test_run_finished_model_failure_renders_recovery_guidance() -> None:
+    app = _new_app()
+
+    render_event(
+        app,
+        {
+            "type": "run.finished",
+            "status": "failed",
+            "steps": 1,
+            "reason": "llm_error",
+            "run_id": "run-model",
+        },
+    )
+
+    joined = "\n".join(
+        _render_text(widget) for widget in app._appended if isinstance(widget, Static)
+    )
+    assert "llm_error" in joined
+    assert "/doctor" in joined
+    assert "/provider" in joined
+    assert "/config" in joined
 
 
 # 功能：验证 subagent.started 记录子代理并渲染起始行

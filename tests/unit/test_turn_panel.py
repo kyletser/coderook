@@ -31,8 +31,8 @@ def test_turn_inspector_renders_durable_facts() -> None:
             ],
             "events": [
                 {
-                    "type": "lsp.diagnostics",
-                    "payload": {"tool": "ruff", "status": "ok"},
+                    "type": "verification.completed",
+                    "payload": {"action": "run_tests", "passed": 2, "failed": 0},
                 }
             ],
             "receipt": {
@@ -50,6 +50,10 @@ def test_turn_inspector_renders_durable_facts() -> None:
                 "checkpoints": [],
                 "artifacts": [],
                 "workers": [{"worker_id": "w1", "status": "running"}],
+                "context_selection": {
+                    "paths": ["src/auth.py", "tests/test_auth.py"],
+                    "used_chars": 4200,
+                },
                 "unavailable": ["cost"],
             },
         }
@@ -60,7 +64,9 @@ def test_turn_inspector_renders_durable_facts() -> None:
     assert "gpt-test" in rendered
     assert "read_file" in rendered
     assert "README.md" in rendered
-    assert "ruff" in rendered
+    assert "run_tests" in rendered
+    assert "context_selection" in rendered
+    assert "src/auth.py" in rendered
     assert "1/1/0" in rendered
     assert "修复跨文件缓存缺陷" in rendered
     assert "workers=1/1" in rendered

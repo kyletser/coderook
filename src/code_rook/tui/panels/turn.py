@@ -109,9 +109,19 @@ def render_turn_inspector(payload: dict[str, Any]) -> str:
             f"  [dim]›[/dim] {escape(str(item_payload.get('tool_name', 'tool')))}  "
             f"{_preview(item_payload.get('params', {}), 90)}"
         )
-    diagnostics = [event for event in events if event.get("type") == "lsp.diagnostics"]
-    if diagnostics:
-        lines.append(f"verification {_preview(diagnostics[-1].get('payload', {}))}")
+    verification_events = [
+        event
+        for event in events
+        if event.get("type")
+        in {"lsp.diagnostics", "verification.completed", "verification.failed"}
+    ]
+    if verification_events:
+        lines.append(
+            f"verification {_preview(verification_events[-1].get('payload', {}))}"
+        )
+    context_selection = receipt.get("context_selection")
+    if context_selection:
+        lines.append(f"context_selection {_preview(context_selection)}")
     for label in ("files_changed", "checkpoints", "artifacts", "workers"):
         value = receipt.get(label, [])
         if value:

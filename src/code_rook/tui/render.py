@@ -235,7 +235,7 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         status = event.get("status", "")
         steps = event.get("steps", 0)
         step_label = "step" if steps == 1 else "steps"
-        reason = event.get("reason") or ""
+        reason = str(event.get("reason") or "")
         run_id = str(event.get("run_id", ""))
         app._current_steps.pop(run_id, None)
         for group_key in [
@@ -254,9 +254,16 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
                 classes="run-err",
             ))
         else:
-            detail = f"  [dim]{reason}[/dim]" if reason else ""
+            detail = f"  [dim]{escape(reason)}[/dim]" if reason else ""
+            model_failure = reason == "llm_error" or reason.startswith("model_error")
+            guidance = (
+                "\n[dim]检查 /doctor、/provider 或 /config；修复路由后可重新提交任务。[/dim]"
+                if model_failure
+                else ""
+            )
             app._append(Static(
-                f"[red]×[/red] [dim]Failed after {steps} {step_label}[/dim]{detail}",
+                f"[red]×[/red] [dim]Failed after {steps} {step_label}[/dim]"
+                f"{detail}{guidance}",
                 classes="run-err",
             ))
 
@@ -412,7 +419,67 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
 
 # 处理上下文压缩、权限审批、LSP 诊断与日志等杂项事件
 def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
-    if t == "context.compacted":
+    if t == "context.repository":
+        repository_paths = [str(path) for path in event.get("paths", [])]
+        used = int(event.get("used_chars", 0))
+        budget = int(event.get("budget_chars", 0))
+        cache_hits = int(event.get("cache_hits", 0))
+        parsed = int(event.get("parsed_files", 0))
+        preview = ", ".join(repository_paths[:4]) or "none"
+        suffix = (
+            f" +{len(repository_paths) - 4}" if len(repository_paths) > 4 else ""
+        )
+        app._append(
+            Static(
+                "[bold cyan]Repository context[/bold cyan]  "
+                f"[dim]{len(repository_paths)} files · {used}/{budget} chars · "
+                f"cache={cache_hits} parsed={parsed}[/dim]\n"
+                f"[dim]  {escape(preview)}{suffix}[/dim]",
+                classes="log-line",
+            )
+        )
+
+    elif t == "context.working_set":
+        working_paths = [str(path) for path in event.get("paths", [])]
+        preview = ", ".join(working_paths[:6]) or "none"
+        suffix = f" +{len(working_paths) - 6}" if len(working_paths) > 6 else ""
+        app._append(
+            Static(
+                f"[bold cyan]Working set[/bold cyan]  [dim]{escape(preview)}{suffix}[/dim]",
+                classes="log-line",
+            )
+        )
+
+    elif t in {"verification.completed", "verification.failed"}:
+        passed = int(event.get("passed", 0))
+        failed = int(event.get("failed", 0))
+        action = escape(str(event.get("action", "verify")))
+        verification_paths = ", ".join(
+            str(path) for path in event.get("paths", [])[:3]
+        )
+        raw_gates = event.get("gates", [])
+        gates = raw_gates if isinstance(raw_gates, list) else []
+        gate_names = ", ".join(
+            escape(str(gate.get("name", "gate")))
+            for gate in gates[:4]
+            if isinstance(gate, dict)
+        )
+        if t == "verification.completed":
+            headline = f"[bold green]Verification passed[/bold green]  {action}"
+        else:
+            failure = escape(str(event.get("failure_class", "verification_failed")))
+            headline = (
+                f"[bold red]Verification failed[/bold red]  {action}  "
+                f"[dim]{failure}[/dim]"
+            )
+        detail = f"{passed} passed / {failed} failed"
+        if gate_names:
+            detail += f" · {gate_names}"
+        if verification_paths:
+            detail += f" · {escape(verification_paths)}"
+        app._append(Static(f"{headline}\n[dim]  {detail}[/dim]", classes="log-line"))
+
+    elif t == "context.compacted":
         orig = event.get("original_tokens", 0)
         summary = event.get("summary_tokens", 0)
         compacted = event.get("compacted_tokens", 0)
@@ -496,13 +563,16 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
         status = str(event.get("status", ""))
         tool = escape(str(event.get("tool", "")))
         count = int(event.get("diagnostic_count", 0))
-        paths = ", ".join(str(p) for p in event.get("paths", [])[:3])
+        diagnostic_paths = ", ".join(str(p) for p in event.get("paths", [])[:3])
         if status == "ok" and count == 0:
-            line = f"[green]诊断通过[/green]  [dim]{tool} · {escape(paths)}[/dim]"
+            line = (
+                f"[green]诊断通过[/green]  "
+                f"[dim]{tool} · {escape(diagnostic_paths)}[/dim]"
+            )
         elif status == "ok":
             line = (
                 f"[yellow]诊断发现 {count} 条问题[/yellow]  "
-                f"[dim]{tool} · {escape(paths)}[/dim]"
+                f"[dim]{tool} · {escape(diagnostic_paths)}[/dim]"
             )
         else:
             error = escape(str(event.get("error", ""))[:120])

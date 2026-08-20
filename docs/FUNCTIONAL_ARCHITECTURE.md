@@ -888,6 +888,10 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
   `PermissionSelect`（内联审批卡，方向键/y/a/n/d/Esc）、模型/供应商/会话/检查点/计划评审等选择器
 - **事件订阅**：常驻 socket worker，topics 覆盖最全（含 `subagent.* / plan.* / user_question.* / log.*`），
   支持 `replay_from_run`；**断线 2s 自动重连并恢复会话**；事件 handler 异常隔离
+- **任务证据**：`plan.updated`、`context.repository`、`context.working_set`、`verification.*` 直接渲染为
+  路径、预算、门禁与终态摘要；`/diff`、Turn Inspector 和 checkpoint picker 分别承载改动、receipt 与恢复操作
+- **空状态与故障恢复**：首次无模型不会强制进入配置流程；连接失败、模型调用失败与无 OS 沙箱均给出
+  去重、非阻塞的恢复动作，其中后者明确显示 `DEGRADED`，不把审批链描述成系统隔离
 - **31 个注册斜杠命令**：在原有会话/模型/权限/任务命令上新增 `/help /rename /fork /export /delete
   /cost /mcp /hooks /memory /jobs`；名称/描述模糊匹配，部分命令提供 usage 与参数候选；另支持动态 skill 名
 - **输入与会话体验**：持久输入历史、用户上滚后停止贴底、新内容提示、会话搜索/管理与自动标题、Ctrl+C 复制/取消分流
@@ -895,6 +899,8 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
 - **Plan 模式**：`/plan` 以 PLAN 模式发送 → `plan.ready` → PlanReview 卡 → 批准则切 ACT 自动发实施指令
 - **模型/配置切换**：`app.run()` 返回 `ModelSwitch/ConfigSwitch` → 入口落盘 → `stop_core()` → 循环重启 TUI
 - **剪贴板**：OSC 52 + Windows PowerShell `Set-Clipboard` 双通道（绕终端兼容差异）
+- **可复现产品截图**：`scripts/capture_tui_demo.py` 通过 Textual test driver 向真实控件注入正式事件结构，
+  无 daemon、在线模型和个人数据即可确定性生成 README SVG；内容契约由单元测试固定
 
 ---
 

@@ -31,6 +31,7 @@ _SUBSCRIBE_TOPICS = [
     "log.*",
     "permission.*",
     "context.*",
+    "verification.*",
     "subagent.*",
     "skill.*",
     "plan.*",
@@ -73,6 +74,12 @@ class TuiConnection:
         if inspect.isawaitable(result):
             await result
 
+    # 在真实 App 支持时显示去重的连接恢复建议，同时兼容测试替身
+    def _show_connection_problem(self, kind: str, detail: str) -> None:
+        callback = getattr(self._app, "_show_connection_problem", None)
+        if callable(callback):
+            callback(kind, detail)
+
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连、会话恢复
     async def run(self) -> None:
         header = self._app.query_one("#header", Label)
@@ -87,6 +94,11 @@ class TuiConnection:
             except (ConnectionRefusedError, OSError):
                 log.warning("connection refused %s:%s, retrying", self._host, self._port)
                 self._app._update_header("disconnected")
+                self._app._mark_disconnected()
+                self._show_connection_problem(
+                    "unreachable",
+                    f"cannot connect to {self._host}:{self._port}",
+                )
                 await asyncio.sleep(2)
                 continue
             except IpcError as exc:
@@ -94,6 +106,8 @@ class TuiConnection:
                 header.update(
                     f"[bold]CodeRook[/bold]  [red]authentication failed: {exc}[/red]"
                 )
+                self._app._mark_disconnected()
+                self._show_connection_problem("authentication", str(exc))
                 await asyncio.sleep(2)
                 continue
 
@@ -155,6 +169,7 @@ class TuiConnection:
                 await loop_task
             except IpcError as e:
                 header.update(f"[bold]CodeRook[/bold]  [red]subscribe error: {e}[/red]")
+                self._show_connection_problem("protocol", str(e))
             finally:
                 if not loop_task.done():
                     loop_task.cancel()
@@ -163,6 +178,11 @@ class TuiConnection:
                 self._app._mark_disconnected()
                 self._app._break_llm()
                 await client.close()
+
+            self._show_connection_problem(
+                "disconnected",
+                f"connection to {self._host}:{self._port} closed",
+            )
 
             self._app._update_header("disconnected")
             await asyncio.sleep(2)

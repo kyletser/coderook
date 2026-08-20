@@ -22,6 +22,7 @@ _REQUIRED_FILES = (
     "docs/UPGRADING.md",
     "docs/THREAT_MODEL.md",
     "docs/PUBLIC_BENCHMARKS.md",
+    "docs/images/coderook-tui.svg",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -31,6 +32,8 @@ _REQUIRED_FILES = (
     "examples/read_only_review.py",
     "examples/automated_fix.py",
     "examples/mcp_echo_server.py",
+    "scripts/capture_tui_demo.py",
+    "tests/unit/test_tui_demo.py",
 )
 _REQUIRED_PROJECT_FIELDS = (
     "description",

@@ -7,6 +7,70 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.tui.connection import TuiConnection
 
 
+# 功能：验证 daemon 尚未启动时首次拒绝连接会立即禁用输入并显示恢复建议
+# 设计：让 fake client 在 connect 阶段抛出 ConnectionRefusedError，等首次状态回调后取消重试循环
+async def test_initial_connection_refusal_marks_app_disconnected() -> None:
+    attempted = asyncio.Event()
+
+    class _RefusingSocket:
+        # 模拟目标端口没有监听并通知测试首次尝试已经发生
+        async def connect(self) -> None:
+            attempted.set()
+            raise ConnectionRefusedError
+
+    class _FakeApp:
+        # 初始化断线状态与产品提示记录
+        def __init__(self) -> None:
+            self._client = None
+            self.states: list[str] = []
+            self.disconnected = 0
+            self.problems: list[tuple[str, str]] = []
+
+        # 记录顶栏状态而不依赖 Textual 消息泵
+        def _update_header(self, state: str) -> None:
+            self.states.append(state)
+
+        # 记录输入框被切换为断线状态
+        def _mark_disconnected(self) -> None:
+            self.disconnected += 1
+
+        # 记录产品层恢复建议的类别和详情
+        def _show_connection_problem(self, kind: str, detail: str) -> None:
+            self.problems.append((kind, detail))
+
+        # 提供连接层启动时查询的最小 header 替身
+        def query_one(self, _selector: str, _cls: Any = None) -> Any:
+            class _Header:
+                # 接收 header markup 更新
+                def update(self, *_args: Any, **_kwargs: Any) -> None:
+                    return None
+
+            return _Header()
+
+    app = _FakeApp()
+    connection = TuiConnection(
+        app,
+        None,
+        host="127.0.0.1",
+        port=9999,
+        client_factory=lambda _host, _port, *, auth_token=None: _RefusingSocket(),
+    )
+    task = asyncio.create_task(connection.run())
+    try:
+        await asyncio.wait_for(attempted.wait(), timeout=1)
+        while not app.problems:
+            await asyncio.sleep(0)
+        assert app.states == ["disconnected"]
+        assert app.disconnected == 1
+        assert app.problems == [("unreachable", "cannot connect to 127.0.0.1:9999")]
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 # 功能：验证断线后 TuiConnection 重连并恢复同一会话
 # 设计：注入按序生产的 fake client 工厂模拟“连接→断线→重连”，断言两次 session.resume 命中同一会话 id
 async def test_reconnect_resumes_same_session() -> None:

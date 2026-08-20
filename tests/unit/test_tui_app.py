@@ -1674,8 +1674,8 @@ async def test_permissions_command_opens_picker_on_first_submit() -> None:
         assert not app._busy
 
 
-# 功能：验证 /trust 和 /sandbox 使用独立状态并如实展示 Windows 无隔离后端
-# 设计：让 fake IPC 只接收 trust 局部更新，再检查状态与输出，避免 mode/profile 被连带重置
+# 功能：验证 /trust 和 /sandbox 使用独立状态并如实展示 Windows 降级隔离
+# 设计：让 fake IPC 只接收 trust 局部更新，再检查 DEGRADED 语义，避免把审批链误称为系统沙箱
 async def test_trust_and_sandbox_commands_are_independent() -> None:
     calls: list[dict[str, object]] = []
     appended: list[Widget] = []
@@ -1720,9 +1720,48 @@ async def test_trust_and_sandbox_commands_are_independent() -> None:
     assert "Workspace trust" in output
     assert "trusted" in output
     assert "Sandbox" in output
-    assert "not detected" in output
+    assert "DEGRADED" in output
     assert "windows_none" in output
-    assert "advisory" in output
+    assert "不等同于系统沙箱" in output
+
+
+# 功能：验证首次连接在无模型与无 OS 沙箱时显示非阻塞的可执行空状态
+# 设计：截获 transcript 输出并重复调用启动状态，断言两类提示各出现一次且不会强制打开配置流程
+def test_startup_state_explains_no_model_and_degraded_sandbox_once() -> None:
+    appended: list[Widget] = []
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._sandbox = {
+        "available": False,
+        "kind": "windows_none",
+        "reason": "no OS isolation backend is available on Windows",
+    }
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._show_startup_state()
+    app._show_startup_state()
+
+    output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
+    assert output.count("No active model") == 1
+    assert "会话浏览、帮助和管理命令仍可使用" in output
+    assert output.count("Sandbox DEGRADED") == 1
+    assert "windows_none" in output
+
+
+# 功能：验证连接故障提示按类型去重且恢复后允许再次报告
+# 设计：直接驱动产品提示接口模拟拒绝连接、恢复和再次断线，固定重试循环不会刷屏的交互契约
+def test_connection_problem_notice_deduplicates_until_recovery() -> None:
+    appended: list[Widget] = []
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._show_connection_problem("unreachable", "cannot connect")
+    app._show_connection_problem("unreachable", "cannot connect")
+    app._clear_connection_problems()
+    app._show_connection_problem("unreachable", "cannot connect")
+
+    output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
+    assert output.count("Core unavailable") == 2
+    assert "coderook-core" in output
 
 
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式

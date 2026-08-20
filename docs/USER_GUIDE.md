@@ -231,7 +231,15 @@ Header 会分别显示 Mode、Authority 和 workspace trust，不再把它们合
 
 Trust 是项目是否受信任的独立状态。Sandbox 显示并驱动操作系统真实隔离能力：Linux 的 bwrap
 与 macOS 的 Seatbelt 可在 AUTO_REVIEW 下实际包装 Bash 命令；Windows 没有可用后端时会明确显示
-`unavailable` 并回到审批链，不会把审批或 Full Access 描述成 sandbox。
+`DEGRADED` 并回到 ASK 审批链与工作区边界，不会把审批或 Full Access 描述成 sandbox。
+
+首次启动没有活动模型时，TUI 仍允许查看会话、帮助和管理命令，不会强制弹出 API 配置流程；
+真正执行 Agent 任务前再使用 `/config` 或 `/provider` 即可。连接 Core 失败时输入框会暂时禁用，
+界面显示启动 `coderook-core` 的建议并自动重试。模型调用失败会在任务终态旁提示 `/doctor`、
+`/provider` 和 `/config`，无需从日志猜测内部原因码。
+
+运行过程中，TUI 会直接显示 plan、仓库上下文预算、working set 和结构化验证结果；使用 `/diff`
+查看统一改动，使用 `/rewind` 选择可恢复点，使用 `/turn` 查看包含 context selection 的 receipt。
 
 ### 工具审批
 

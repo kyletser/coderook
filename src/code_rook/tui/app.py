@@ -278,6 +278,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_image_attachments: list[dict[str, object]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
+        self._product_notice_keys: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Label("[bold]CodeRook[/bold]  [dim]connecting...[/dim]", id="header")
@@ -302,6 +303,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
     # 连接建立并完成会话恢复后：还原输入框状态与顶栏
     def _mark_connected(self) -> None:
+        self._clear_connection_problems()
         prompt = self._prompt()
         if prompt is not None:
             prompt.disabled = self._plan_review_pending
@@ -314,6 +316,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.border_title = _PROMPT_READY
                 prompt.focus()
         self._update_header("plan ready" if self._plan_review_pending else "ready")
+        self._show_startup_state()
 
     # 连接断开后：禁用输入框并提示正在重试
     def _mark_disconnected(self) -> None:
@@ -322,6 +325,56 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt.disabled = True
             prompt.read_only = False
             prompt.border_title = "连接已断开 · 正在重试"
+
+    # 向 transcript 追加一次去重的产品状态说明，避免重连循环刷屏
+    def _show_product_notice(self, key: str, message: str) -> None:
+        if key in self._product_notice_keys:
+            return
+        self._product_notice_keys.add(key)
+        self._append(Static(message, classes="log-line"))
+
+    # 展示连接问题及用户可执行的恢复动作
+    def _show_connection_problem(self, kind: str, detail: str) -> None:
+        safe_detail = escape(detail)
+        if kind == "authentication":
+            message = (
+                "[bold red]Core authentication failed[/bold red]  "
+                f"[dim]{safe_detail}[/dim]\n"
+                "[dim]确认 daemon 与 TUI 使用同一 ipc-token；修复后会自动重试。[/dim]"
+            )
+        else:
+            message = (
+                "[bold yellow]Core unavailable[/bold yellow]  "
+                f"[dim]{safe_detail}[/dim]\n"
+                "[dim]输入暂不可用；启动 coderook-core 后本界面会自动重连。[/dim]"
+            )
+        self._show_product_notice(f"connection:{kind}", message)
+
+    # 连接恢复后允许未来的新一轮故障再次显示一次说明
+    def _clear_connection_problems(self) -> None:
+        self._product_notice_keys = {
+            key for key in self._product_notice_keys if not key.startswith("connection:")
+        }
+
+    # 首次连接后非阻塞地说明无模型与降级隔离状态
+    def _show_startup_state(self) -> None:
+        if not self._route and not self._model:
+            self._show_product_notice(
+                "startup:no-model",
+                "[bold yellow]No active model[/bold yellow]  "
+                "[dim]会话浏览、帮助和管理命令仍可使用；执行 Agent 任务前可用 "
+                "/config 或 /provider 配置路由。[/dim]",
+            )
+        if not bool(self._sandbox.get("available", False)):
+            kind = escape(str(self._sandbox.get("kind", "none")))
+            reason = escape(str(self._sandbox.get("reason", "unavailable")))
+            self._show_product_notice(
+                "startup:degraded-sandbox",
+                "[bold yellow]Sandbox DEGRADED[/bold yellow]  "
+                f"[dim]{kind}: {reason}[/dim]\n"
+                "[dim]当前没有 OS 强制隔离；危险动作继续走 ASK 审批和工作区边界，"
+                "但这些机制不等同于系统沙箱。[/dim]",
+            )
 
     # 构建斜杠命令候选列表：内建命令（含 usage）+ 所有已注册 skill（无 usage）
     def _build_slash_items(self) -> list[CompletionItem]:
@@ -985,14 +1038,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         available = bool(self._sandbox.get("available", False))
         kind = escape(str(self._sandbox.get("kind", "none")))
         reason = escape(str(self._sandbox.get("reason", "unavailable")))
-        state = "detected" if available else "not detected"
+        state = "ENFORCED" if available else "DEGRADED"
         color = "green" if available else "yellow"
+        explanation = (
+            "OS 强制隔离后端可用；每次命令的实际隔离计划与结果记录在 receipt 中。"
+            if available
+            else (
+                "当前没有 OS 强制隔离；危险动作继续走 ASK 审批和工作区边界，"
+                "但这些机制不等同于系统沙箱。"
+            )
+        )
         self._append(
             Static(
                 f"[bold cyan]Sandbox[/bold cyan]  [{color}]{state}[/{color}]"
                 f"  [dim]{kind}: {reason}[/dim]\n"
-                "[dim]仅为能力探测（advisory）：当前不会实际隔离命令执行，"
-                "安全依赖审批链与工作区边界。[/dim]",
+                f"[dim]{explanation}[/dim]",
                 classes="log-line",
             )
         )
