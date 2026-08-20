@@ -1,0 +1,42 @@
+name: Official MCP compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 3"
+  pull_request:
+    paths:
+      - "src/code_rook/core/mcp/**"
+      - "scripts/run_mcp_official_interop.py"
+      - "tests/fixtures/mcp_official_server.py"
+      - ".github/workflows/mcp-interop.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-interop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-sdk:
+    name: MCP SDK 2.0 / stdio + SSE + HTTP
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Run pinned official SDK matrix
+        run: >-
+          uv run --no-sync python scripts/run_mcp_official_interop.py
+          --output-dir .interop-results/mcp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-official-interop
+          path: .interop-results/mcp/*
+          if-no-files-found: error

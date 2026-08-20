@@ -31,6 +31,7 @@ _REQUIRED_FILES = (
     "docs/PROJECT_CASE_STUDY.md",
     "docs/RESUME_EVIDENCE.md",
     "docs/INTERVIEW_GUIDE.md",
+    "docs/MCP_COMPATIBILITY.md",
     "docs/postmortems/README.md",
     "docs/postmortems/2026-08-19-cross-platform-ci.md",
     "docs/postmortems/2026-08-17-tui-refactor.md",
@@ -54,6 +55,10 @@ _REQUIRED_FILES = (
     "tests/unit/test_tui_demo.py",
     "scripts/check_release_contract.py",
     "scripts/generate_release_manifest.py",
+    "scripts/run_mcp_official_interop.py",
+    "tests/fixtures/mcp_official_server.py",
+    "tests/unit/test_mcp_interop_report.py",
+    ".github/workflows/mcp-interop.yml",
     "tests/unit/test_release_contract.py",
     ".github/workflows/release.yml",
 )

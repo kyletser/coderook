@@ -765,9 +765,11 @@ UserPromptSubmit/PreToolUse/PostToolUse/Stop 映射）。
 
 ### 14.3 MCP（仅客户端方向）
 
-`McpClient`：手写 JSON-RPC 2.0，支持 stdio（拉子进程）、TCP 与 Streamable HTTP；initialize 握手 +
-tools/list + tools/call。HTTP 传输校验 TLS，携带协议版本与 session id，可解析 JSON 或 SSE 响应；
-stdio/TCP 保持 64MB 流上限、30s 读超时和后台排空 stderr。
+`McpClient`：手写 JSON-RPC 2.0，支持 stdio（拉子进程）、TCP、legacy SSE 与 Streamable HTTP；
+initialize 后分别支持 tools、resources、prompts 与标准取消。legacy SSE 持续消费 GET stream、把响应按
+request id 投递给 POST 请求，并强制 server 公布的 message endpoint 与 stream 同源；Streamable HTTP
+携带协议版本/session id，可解析 JSON 或 SSE response，并支持 GET cursor 有界重连。远端 HTTP/SSE
+必须 TLS，stdio/TCP 保持 64MB 流上限、30s 读超时和后台排空 stderr。
 `McpServerManager`（命名易误导：实为"多 server 连接管理器"）把远端工具包装为 `McpTool`
 （`{server}__{tool}` 前缀、deferred、输出策略 8K/20K spill）注入本地注册表——
 模型侧与内置工具无差别调用，权限按普通工具名评估。**系统不暴露自身为 MCP server**。
@@ -1014,8 +1016,9 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    都会把剪贴板位图转换为可读取路径
 9. **诊断性能没有 P95 基线** —— Python/TypeScript 后端已并发、可取消、去重和按文件过滤；Go/Rust
    与常驻 LSP 不在当前 Beta 门禁
-10. **外部协议缺少认证报告** —— MCP Streamable HTTP 的 GET/reconnect/cancel/resources/prompts 已实现，
-   仍需官方兼容 server 报告；VS Code 已生成 VSIX，但尚未做真实 Extension Host UI 冒烟
+10. **外部协议认证范围有限** —— MCP stdio/legacy SSE/Streamable HTTP 的官方 SDK 2.0 固定矩阵 runner
+   已实现，OAuth/企业代理/sampling/elicitation 仍无报告；VS Code 已生成 VSIX，但尚未做真实 Extension
+   Host UI 冒烟
 11. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
    仍需运营性维护
 

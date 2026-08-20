@@ -12,6 +12,7 @@ build/
 .ruff_cache/
 .pytest_cache/
 .benchmark-results/
+.interop-results/
 reports/
 .vscode/
 .idea/

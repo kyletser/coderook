@@ -330,6 +330,7 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [Wire Protocol](WIRE_PROTOCOL.md)
 - [Runtime API](docs/RUNTIME_API.md)
 - [外部接口兼容与弃用策略](docs/COMPATIBILITY.md)
+- [MCP 官方 SDK 互操作合同](docs/MCP_COMPATIBILITY.md)
 - [运行手册](RUNBOOK.md)
 - [升级、备份与回滚](docs/UPGRADING.md)
 - [发行、SBOM、签名与验证](docs/RELEASING.md)

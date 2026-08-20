@@ -13,6 +13,7 @@
 | [Wire Protocol](../WIRE_PROTOCOL.md) | 由 bus 模型生成的 IPC 契约 | 修改 bus 后自动生成 |
 | [Runtime API](RUNTIME_API.md) | HTTP/SSE 外部接口 | endpoint/schema 变化时更新 |
 | [兼容与弃用策略](COMPATIBILITY.md) | HTTP/SSE、SDK、stream-json 的稳定边界和迁移窗口 | 公共契约或支持窗口变化时更新 |
+| [MCP 互操作](MCP_COMPATIBILITY.md) | stdio、legacy SSE、Streamable HTTP、官方 SDK 矩阵与安全边界 | MCP SDK pin 或 transport 变化时更新 |
 | [运行手册](../RUNBOOK.md) | 安装、运行、排障与恢复 | 运维行为变化时更新 |
 | [升级与回滚](UPGRADING.md) | 数据备份、版本升级、校验与回滚 | 配置或持久化兼容性变化时更新 |
 | [发行与供应链](RELEASING.md) | tag、版本一致性、SBOM、OIDC provenance、Cosign 与下载验证 | 发行流程或产物变化时更新 |

@@ -5,6 +5,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 
@@ -65,6 +66,10 @@ class McpClient:
             maxsize=256
         )
         self._http_last_event_id = ""
+        self._legacy_sse_task: asyncio.Task[None] | None = None
+        self._legacy_sse_ready: asyncio.Future[None] | None = None
+        self._legacy_sse_message_url = ""
+        self._legacy_sse_pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     _STREAM_LIMIT = 64 * 1024 * 1024  # 64 MB，防止大响应触发 LimitOverrunError
 
@@ -113,15 +118,7 @@ class McpClient:
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        parsed = httpx.URL(url)
-        if parsed.scheme not in {"http", "https"}:
-            raise ValueError("MCP Streamable HTTP URL must use http or https")
-        if parsed.scheme == "http" and parsed.host not in {
-            "127.0.0.1",
-            "::1",
-            "localhost",
-        }:
-            raise ValueError("remote MCP Streamable HTTP endpoints require HTTPS")
+        self._validate_http_endpoint(url, transport_name="Streamable HTTP")
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -134,6 +131,47 @@ class McpClient:
         self._http_url = url
         self._transport = "streamable_http"
         await self._initialize()
+
+    # 连接 MCP legacy SSE endpoint，等待 message endpoint 后完成 initialize 握手
+    async def connect_sse(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._validate_http_endpoint(url, transport_name="SSE")
+        self._http_client = httpx.AsyncClient(
+            timeout=30.0,
+            headers={"Accept": "text/event-stream", **(headers or {})},
+            transport=transport,
+        )
+        self._http_url = url
+        self._transport = "legacy_sse"
+        self._legacy_sse_ready = asyncio.get_running_loop().create_future()
+        self._legacy_sse_task = asyncio.create_task(
+            self._run_legacy_sse(),
+            name="mcp-legacy-sse",
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(self._legacy_sse_ready), timeout=10.0)
+            await self._initialize()
+        except BaseException:
+            await self.close()
+            raise
+
+    # 拒绝远端明文 MCP HTTP/SSE endpoint，避免凭据和工具数据裸传
+    @staticmethod
+    def _validate_http_endpoint(url: str, *, transport_name: str) -> None:
+        parsed = httpx.URL(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"MCP {transport_name} URL must use http or https")
+        if parsed.scheme == "http" and parsed.host not in {
+            "127.0.0.1",
+            "::1",
+            "localhost",
+        }:
+            raise ValueError(f"remote MCP {transport_name} endpoints require HTTPS")
 
     # 发送 initialize 请求完成 MCP 握手
     async def _initialize(self) -> None:
@@ -310,6 +348,134 @@ class McpClient:
             reconnects += 1
             await asyncio.sleep(min(0.1 * (2 ** (reconnects - 1)), 1.0))
 
+    # 持续消费 legacy SSE endpoint 与 JSON-RPC message 事件并分派到等待请求
+    async def _run_legacy_sse(self) -> None:
+        if self._http_client is None or not self._http_url:
+            return
+        event_type = ""
+        data_lines: list[str] = []
+        failure: BaseException | None = None
+        try:
+            async with self._http_client.stream("GET", self._http_url) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("event:"):
+                        event_type = line.removeprefix("event:").strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").lstrip())
+                    elif not line:
+                        if data_lines:
+                            self._dispatch_legacy_sse_event(
+                                event_type or "message",
+                                "\n".join(data_lines),
+                            )
+                        event_type = ""
+                        data_lines = []
+                if data_lines:
+                    self._dispatch_legacy_sse_event(
+                        event_type or "message",
+                        "\n".join(data_lines),
+                    )
+            failure = McpServerUnavailableError("MCP SSE stream closed")
+        except asyncio.CancelledError:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            failure = McpServerUnavailableError(
+                f"MCP SSE stream failed: {type(exc).__name__}"
+            )
+        finally:
+            if failure is not None:
+                ready = self._legacy_sse_ready
+                if ready is not None and not ready.done():
+                    ready.set_exception(failure)
+                for pending in list(self._legacy_sse_pending.values()):
+                    if not pending.done():
+                        pending.set_exception(failure)
+
+    # 处理 legacy SSE endpoint 或 message 事件并拒绝跨源回传地址
+    def _dispatch_legacy_sse_event(self, event_type: str, data: str) -> None:
+        if event_type == "endpoint":
+            base = httpx.URL(self._http_url)
+            endpoint = httpx.URL(urljoin(self._http_url, data.strip()))
+            if (
+                endpoint.scheme != base.scheme
+                or endpoint.host != base.host
+                or endpoint.port != base.port
+            ):
+                ready = self._legacy_sse_ready
+                if ready is not None and not ready.done():
+                    ready.set_exception(
+                        McpServerUnavailableError(
+                            "MCP SSE message endpoint must use the stream origin"
+                        )
+                    )
+                return
+            self._legacy_sse_message_url = str(endpoint)
+            ready = self._legacy_sse_ready
+            if ready is not None and not ready.done():
+                ready.set_result(None)
+            return
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            log.debug("mcp SSE ignored malformed event")
+            return
+        if not isinstance(payload, dict):
+            return
+        message_id = payload.get("id")
+        pending = self._legacy_sse_pending.get(str(message_id))
+        if message_id is not None and pending is not None and not pending.done():
+            pending.set_result(payload)
+            return
+        if self._http_stream_messages.full():
+            self._http_stream_messages.get_nowait()
+        self._http_stream_messages.put_nowait(payload)
+
+    # 向 legacy SSE 公布的 message endpoint 发送请求或通知
+    async def _legacy_sse_post(self, payload: dict[str, Any]) -> None:
+        if self._http_client is None or not self._legacy_sse_message_url:
+            raise McpServerUnavailableError("MCP SSE message endpoint unavailable")
+        if self._legacy_sse_task is None or self._legacy_sse_task.done():
+            raise McpServerUnavailableError("MCP SSE stream is not connected")
+        try:
+            response = await self._http_client.post(
+                self._legacy_sse_message_url,
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise McpServerUnavailableError(
+                f"MCP SSE request failed: {type(exc).__name__}"
+            ) from exc
+
+    # 通过 legacy SSE POST 请求并等待 GET stream 上匹配的 JSON-RPC 响应
+    async def _legacy_sse_request(
+        self,
+        request: dict[str, Any],
+        request_id: str,
+    ) -> dict[str, Any]:
+        pending: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._legacy_sse_pending[request_id] = pending
+        try:
+            await self._legacy_sse_post(request)
+            message = await asyncio.wait_for(pending, timeout=30.0)
+        except TimeoutError as exc:
+            raise McpServerUnavailableError("MCP SSE response timeout") from exc
+        finally:
+            self._legacy_sse_pending.pop(request_id, None)
+        if "error" in message:
+            error = message["error"]
+            if isinstance(error, dict):
+                raise McpToolError(
+                    f"{error.get('message', str(error))} "
+                    f"(code={error.get('code')})"
+                )
+            raise McpToolError(str(error))
+        result = message.get("result", {})
+        return dict(result) if isinstance(result, dict) else {}
+
     # 后台任务：持续读取 stderr 并记录日志，防止管道缓冲区满
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
@@ -329,6 +495,17 @@ class McpClient:
 
     # 关闭连接并终止 stdio 子进程
     async def close(self) -> None:
+        if self._legacy_sse_task is not None:
+            self._legacy_sse_task.cancel()
+            try:
+                await self._legacy_sse_task
+            except asyncio.CancelledError:
+                pass
+            self._legacy_sse_task = None
+        for pending in list(self._legacy_sse_pending.values()):
+            if not pending.done():
+                pending.cancel()
+        self._legacy_sse_pending.clear()
         if self._http_stream_task is not None:
             self._http_stream_task.cancel()
             try:
@@ -355,7 +532,7 @@ class McpClient:
                     await writer.wait_closed()
                 except Exception:
                     pass
-        elif self._transport == "streamable_http" and self._http_client is not None:
+        elif self._transport in {"streamable_http", "legacy_sse"} and self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
 
@@ -369,6 +546,8 @@ class McpClient:
             async with self._lock:
                 if self._transport == "streamable_http":
                     return await self._http_request(request, req_id_str)
+                if self._transport == "legacy_sse":
+                    return await self._legacy_sse_request(request, req_id_str)
                 await self._write_line(json.dumps(request))
                 while True:
                     line = await self._read_line()
@@ -407,6 +586,8 @@ class McpClient:
         try:
             if self._transport == "streamable_http":
                 await self._http_request(notification, None)
+            elif self._transport == "legacy_sse":
+                await self._legacy_sse_post(notification)
             else:
                 await self._write_line(json.dumps(notification))
         except (McpServerUnavailableError, McpToolError, OSError):
@@ -417,6 +598,9 @@ class McpClient:
         notification = {"jsonrpc": "2.0", "method": method, "params": params}
         if self._transport == "streamable_http":
             await self._http_request(notification, None)
+            return
+        if self._transport == "legacy_sse":
+            await self._legacy_sse_post(notification)
             return
         await self._write_line(json.dumps(notification))
 

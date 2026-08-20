@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 
 from code_rook.core.mcp.client import McpClient
+
+
+class _QueueSseStream(httpx.AsyncByteStream):
+    # 初始化可由 POST handler 异步投递事件的 SSE 字节队列
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    # 按投递顺序产生 SSE 块，None 表示正常结束
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        while True:
+            chunk = await self.queue.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    # 关闭测试流并唤醒可能等待的消费任务
+    async def aclose(self) -> None:
+        self.queue.put_nowait(None)
 
 
 # 功能：验证 Streamable HTTP 完成 initialize/session 握手并从 SSE 列出工具
@@ -223,3 +242,62 @@ async def test_streamable_http_cancel_notifies_server() -> None:
     await client.close()
 
     assert cancellations == [{"requestId": 2, "reason": "CodeRook cancelled tools/call"}]
+
+
+# 功能：验证 legacy SSE 从 endpoint 事件取得 POST 地址并完成官方 JSON-RPC 调用形态
+# 设计：用队列流模拟长连接，POST handler 把响应送回同一 GET stream，覆盖双向异步传输而非静态响应
+async def test_legacy_sse_initializes_and_lists_tools() -> None:
+    stream = _QueueSseStream()
+    methods: list[str] = []
+    stream.queue.put_nowait(b"event: endpoint\ndata: /messages/?session_id=abc\n\n")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+        assert request.url.path == "/messages/"
+        payload = json.loads(request.content)
+        methods.append(payload["method"])
+        if payload["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        result = (
+            {"protocolVersion": "2024-11-05", "capabilities": {}}
+            if payload["method"] == "initialize"
+            else {
+                "tools": [
+                    {
+                        "name": "official_echo",
+                        "description": "Echo text",
+                        "inputSchema": {"type": "object"},
+                    }
+                ]
+            }
+        )
+        message = {"jsonrpc": "2.0", "id": payload["id"], "result": result}
+        stream.queue.put_nowait(
+            f"event: message\ndata: {json.dumps(message)}\n\n".encode()
+        )
+        return httpx.Response(202)
+
+    client = McpClient()
+    await client.connect_sse(
+        "http://127.0.0.1:3000/sse",
+        transport=httpx.MockTransport(handler),
+    )
+    tools = await client.list_tools()
+    await client.close()
+
+    assert methods == ["initialize", "notifications/initialized", "tools/list"]
+    assert tools[0].name == "official_echo"
+
+
+# 功能：验证 legacy SSE 与 Streamable HTTP 一样拒绝远端明文 endpoint
+# 设计：在创建 HTTP client 前传入非 loopback URL，确保安全校验不依赖任何网络响应
+async def test_legacy_sse_requires_tls_for_remote_endpoint() -> None:
+    client = McpClient()
+
+    with pytest.raises(ValueError, match="require HTTPS"):
+        await client.connect_sse("http://mcp.example.com/sse")
