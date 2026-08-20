@@ -45,3 +45,46 @@ jobs:
           name: crash-recovery-${{ matrix.os }}
           path: reports/crash-recovery.json
           if-no-files-found: error
+
+  aggregate:
+    name: Required crash recovery gate
+    needs: [daemon-crash-matrix]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync locked environment
+        run: uv sync --frozen
+
+      - name: Download platform reports
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          pattern: crash-recovery-*
+          path: reports/raw
+
+      - name: Validate commit-bound three-platform aggregate
+        run: >-
+          uv run python scripts/validate_crash_recovery_reports.py
+          --input-root reports/raw
+          --commit "${{ github.sha }}"
+          --iterations 100
+          --min-rate 0.95
+          --output reports/aggregate/crash-recovery-aggregate.json
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: crash-recovery-aggregate
+          path: reports/aggregate/crash-recovery-aggregate.json
+          if-no-files-found: warn

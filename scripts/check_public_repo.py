@@ -65,6 +65,7 @@ _REQUIRED_FILES = (
     "scripts/run_vscode_extension_host_smoke.py",
     "scripts/audit_github_release_evidence.py",
     "scripts/run_process_supervisor_benchmark.py",
+    "scripts/validate_crash_recovery_reports.py",
     "tests/fixtures/mcp_official_server.py",
     "tests/unit/test_mcp_interop_report.py",
     "tests/unit/test_benchmark_aggregate.py",
@@ -72,11 +73,13 @@ _REQUIRED_FILES = (
     "tests/unit/test_vscode_extension_host.py",
     "tests/unit/test_remote_release_evidence.py",
     "tests/unit/test_process_supervisor_benchmark.py",
+    "tests/unit/test_crash_recovery_aggregate.py",
     ".github/workflows/mcp-interop.yml",
     "tests/unit/test_release_contract.py",
     ".github/workflows/release.yml",
     ".github/workflows/distribution.yml",
     ".github/workflows/remote-evidence.yml",
+    ".github/workflows/crash-recovery.yml",
 )
 _REQUIRED_PROJECT_FIELDS = (
     "description",
@@ -142,6 +145,12 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "Audit remote release evidence",
         "audit_github_release_evidence.py",
         "github-release-evidence",
+    ),
+    ".github/workflows/crash-recovery.yml": (
+        "name: Required crash recovery gate",
+        "needs: [daemon-crash-matrix]",
+        "validate_crash_recovery_reports.py",
+        "crash-recovery-aggregate",
     ),
     "docs/BRANCH_PROTECTION.md": (
         "`Required CI gate`",

@@ -95,11 +95,11 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | 优先级 | 缺口 | 当前判断 |
 |---|---|---|
 | P0 | 真实模型效果 | 50 任务执行器已存在，但没有 pass@1、成本、波动与失败分布 |
-| P0 | 公开 benchmark | 没有 Aider Polyglot 或 SWE-bench 的适配与可复现报告 |
-| P0 | 三平台可信交付 | 最新远端 CI 未绿；distribution、强杀、安全矩阵仍缺真实报告 |
-| P1 | 首次安装体验 | 开发者安装路径存在，PyPI/GHCR/portable 的干净机体验与时长没有证明 |
-| P1 | 供应链安全 | secret/dependency/CodeQL workflow 已落地；SBOM、provenance、签名和远端绿灯仍缺 |
-| P1 | 外部兼容 | MCP 官方 SDK 三 transport 报告已产生；VSIX Extension Host 远端冒烟报告尚未产生 |
+| P0 | 公开 benchmark | Aider Polyglot 与 SWE-bench 标准适配已实现；真实固定切片和官方 harness 报告仍缺 |
+| P0 | 三平台可信交付 | CI、Security、Distribution、MCP 与 schema 3 强杀矩阵均有同一候选 commit `a4e4fea` 的远端成功报告；真实模型 release gate 仍缺 |
+| P1 | 首次安装体验 | 三平台 wheel、Docker clean-image 与 Windows portable 候选 smoke 已通过；公开 PyPI/GHCR/Release 安装仍缺 |
+| P1 | 供应链安全 | secret/CodeQL 远端全绿，SBOM/provenance/Cosign 合同已落地；首次 tag 资产验证仍缺 |
+| P1 | 外部兼容 | MCP 官方 SDK 三 transport 与真实 VSIX Extension Host 报告已产生；审批 UI 视觉证据仍缺 |
 | P2 | 采用与社区 | 版本变更、贡献与支持路径已落地；真实录屏、首批 good first issue 和外部用户反馈仍缺 |
 
 ### 2.3 范围边界
@@ -206,7 +206,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 |---|---|---|---|
 | OS3-01 | DONE | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次三平台与 Required CI gate 全绿 |
 | OS3-02 | DONE | 三平台运行 sandbox 负例矩阵 | CI `32365530943` 上传 Linux bwrap、macOS Seatbelt 强制边界与 Windows `windows_none` 明确降级 JSON，逐项 gate 均通过 |
-| OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | Crash Recovery `32365937235` 的 Ubuntu、macOS、Windows 各 100/100；schema 3 矩阵交替覆盖 LLM 请求中断与未配对工具调用，并以 `orphaned_tool_calls=0` 为硬门禁 |
+| OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | commit `a4e4fea` 的 Crash Recovery `32376310972` 三平台各 100/100；schema 3 各含 50 次 LLM 中断、50 次未配对工具调用且孤儿为 0；新增 aggregate job 对 commit/platform/300 轮统计 fail closed |
 | OS3-04 | DONE | 建立 ProcessSupervisor 资源 P95 基线 | CI `32365530943` 上传三平台 commit-bound JSON/Markdown；Windows/Linux 完整采样率 100%，macOS 明确记录 `complete_expected=false` 与 wall-time |
 | OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security `32368432360` 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |

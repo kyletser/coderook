@@ -19,7 +19,7 @@
 | task/subagent/fleet/worktree/workflow 编排 | workflow IR/ledger 与相关 tests | 可写并发约束，不能写效果提升百分比 |
 | 50 个固定离线任务，baseline 50/50 按预期失败 | `docs/RELEASE_SCORECARD.md`、benchmark fixtures | 只证明 verifier 合同，不是模型 0% 或候选成绩 |
 | 1,000+ 自动测试门禁 | release scorecard 的 dated checkpoint | 使用范围值，避免每次提交后精确数过期 |
-| Windows/Ubuntu/macOS CI 与发行 workflow | commit `fe3bd3b` 的连续三次 CI、Distribution `32365931473` | 可写“三平台 CI 连续三次及干净发行门禁全绿”，不能扩写为生产就绪 |
+| Windows/Ubuntu/macOS CI 与发行 workflow | commit `fe3bd3b` 的连续三次 CI；commit `a4e4fea` 的 CI `32376296861`、Distribution `32376314295` | 可写“三平台 CI 连续三次及干净发行门禁全绿”，不能扩写为生产就绪 |
 | SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
 
 ## 可引用的历史精确数字
@@ -30,10 +30,10 @@
 |---|---|---|
 | `1163 passed, 2 skipped` | 2026-08-20，commit `fe3bd3b` 本地完整 gate | “在 2026-08-20 本地完整门禁中 1,163 项通过、2 项平台跳过” |
 | `8.20 s` | 同一 commit 的 installed-wheel first-run smoke | “该 Windows 本机样本为 8.20 秒”，不写成跨平台 P95 |
-| 三平台各 `100/100` | 2026-08-20，Crash Recovery `32365937235`，commit `3e4a1c4` | 可写“Ubuntu/macOS/Windows 合计 300 次 daemon 强杀恢复全部通过”；不外推整机断电 |
+| 三平台各 `100/100` | 2026-08-20，Crash Recovery `32376310972`，commit `a4e4fea` | 可写“Ubuntu/macOS/Windows 合计 300 次 daemon 强杀恢复全部通过，且孤儿工具调用为 0”；不外推整机断电 |
 | 三平台安全负例 100% | 2026-08-20，CI `32365530943`，commit `3e4a1c4` | 必须同时说明 Windows 是 degraded + ASK，不是 OS sandbox |
 | 连续三次三平台完整 CI | 2026-08-20，`32368432365`、`32368834608`、`32369245347`，commit `fe3bd3b` | 可写 CI 稳定性门禁达标；后续回退必须同步撤回 |
-| 三平台 clean wheel + Docker + Windows portable + VSIX/Extension Host | 2026-08-20，Distribution `32365931473`，commit `3e4a1c4` | 可写候选安装门禁通过；不能写已发布 PyPI/GHCR/Marketplace |
+| 三平台 clean wheel + Docker + Windows portable + VSIX/Extension Host | 2026-08-20，Distribution `32376314295`，commit `a4e4fea` | 可写候选安装门禁通过；不能写已发布 PyPI/GHCR/Marketplace |
 | `4,176 -> ~2,110` 行 | 2026-08-17 TUI 拆分阶段；管理功能加入后约 2,246 行 | 用于解释重构范围，不写“减少 50% 复杂度” |
 | `+95` 个 TUI 相关测试 | 同一 TUI 阶段复盘 | 只描述新增回归保护，不推导缺陷率下降 |
 

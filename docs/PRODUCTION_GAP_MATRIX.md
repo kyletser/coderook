@@ -12,8 +12,8 @@
 | R1 | SandboxBackend 与 Linux/macOS 真实边界 | 完成并远端验证 | `probe/plan/spawn/describe` 后端契约；CI `32365530943` 的 Linux bwrap、macOS Seatbelt 与 Windows degraded JSON artifact 逐项通过 | 按域正向放行仍需可接受的 OS 强制后端 |
 | R1 | Family resolved invocation 管线 | 完成 | backend 参数校验、hook、权限、重试、输出策略统一；相关单测 | 无 |
 | R1 | 稳定 PatchPlan 与逐 hunk 审批 | 完成 | base hash、hunk id、TUI/HTTP/VS Code 选择、落盘 hash | 跨平台端到端人工交互报告 |
-| R2 | ledger checksum、reconcile/repair | 完成并远端验证 | checksum chain、损坏拒写、幂等 repair、runtime doctor；Crash Recovery `32365937235` 三平台各 100/100 | 系统断电级测试不在当前托管 runner 范围 |
-| R2 | 故障注入 | 完成并远端验证 | `run_crash_recovery_matrix.py` 在 100 轮内交替覆盖 LLM 请求中断与未配对工具调用，断开客户端、强杀、重启并重建 receipt；schema 3 自包含 commit/platform 并要求孤儿调用为 0；既有三平台报告合计 300/300 | 报告验证 daemon 强杀恢复，不等同于整机断电恢复 |
+| R2 | ledger checksum、reconcile/repair | 完成并远端验证 | checksum chain、损坏拒写、幂等 repair、runtime doctor；Crash Recovery `32376310972` 三平台各 100/100 | 系统断电级测试不在当前托管 runner 范围 |
+| R2 | 故障注入 | 完成并远端验证 | `run_crash_recovery_matrix.py` 在 100 轮内交替覆盖 LLM 请求中断与未配对工具调用，断开客户端、强杀、重启并重建 receipt；commit `a4e4fea` 的三平台 schema 3 报告合计 300/300、孤儿为 0；aggregate job 对身份和统计 fail closed | 报告验证 daemon 强杀恢复，不等同于整机断电恢复 |
 | R2 | Durable usage/cost/router | 完成 | pricing source/date、持久 usage、receipt、cost-budget 同源读取 | 真实模型成本分位数 |
 | R2 | Headless 提问等待策略 | 完成 | fail-fast/timeout/preset、interrupt/shutdown 清理 | 无 |
 | R2 | ProcessSupervisor 与持久 Shell | 完成 | shell/search/git/worktree/diagnostics/hooks/MCP/fleet/background 统一监管；Windows kill-on-close Job Object；Windows Job Accounting 与 Linux `/proc` 进程组采样统一记录 wall/CPU/峰值内存/进程数/完整性，事件、runtime、TurnReceipt 和 TUI 可离线审计 | Job Object 明确不是文件系统安全边界；macOS 资源采样当前只保证 wall-time 与完整性标记 |
@@ -30,7 +30,7 @@
 | R5 | 长任务单屏状态 | 完成 | Turn Inspector 同屏展示目标、活跃 worker、成本、待审批、失败原因与 sandbox backend | 真实长任务人工可用性报告 |
 | R5 | 升级/降级阻断 | 完成实现 | runtime/session/routes/policy 未来 schema fixture 均阻断且保持原文件 | 跨已发布版本的干净机升级报告 |
 | R5 | doctor 与脱敏诊断包 | 完成 | 环境/端口/sandbox/工具/磁盘/runtime 汇总；确认导出 ZIP | 无 |
-| R5 | wheel/Docker/Windows 安装与 portable | 远端候选通过 | Distribution `32365931473` 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 全绿 | 签名 Windows 安装包和跨已发布版本升级/回滚报告 |
+| R5 | wheel/Docker/Windows 安装与 portable | 远端候选通过 | Distribution `32376314295` 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 全绿 | 签名 Windows 安装包和跨已发布版本升级/回滚报告 |
 | R5 | 三平台 CI | 完成并连续验证 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与汇总 gate 全绿 | 无；后续提交仍需维持门禁 |
 
 ## 当前发布结论
