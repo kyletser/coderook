@@ -943,6 +943,9 @@ ruff check → check_brand.py（品牌契约）→ mypy strict → pytest -q
 
 Linux job 额外对 `editors/vscode` 执行 TypeScript strict typecheck。真实模型 benchmark 由独立
 nightly/release workflow 执行，不允许普通 CI 隐式消费 API key。
+`remote-evidence.yml` 每日通过只读 GitHub REST API 汇总默认分支 SHA、连续三次 CI、Security、
+Distribution、Crash Recovery、MCP、release benchmark 与 active branch ruleset；API 不可见和未运行都按
+未通过记录。通用 Actions 已升级到 Node 24 代际，消除 CI #31 中 checkout/setup 的 Node 20 弃用警告。
 
 公开评测适配器位于 `benchmark/polyglot.py` 与 `benchmark/swebench.py`。Polyglot runner 绑定干净的上游
 commit，复刻官方 solution/test/prompt 选择并强制容器执行；SWE-bench exporter 校验实例 base commit，使用

@@ -35,8 +35,8 @@ jobs:
       CODEROOK_LLM_API_KEY_ENV: CODEROOK_RELEASE_API_KEY
       CODEROOK_RELEASE_API_KEY: ${{ secrets[matrix.secret] }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -51,7 +51,7 @@ jobs:
           uv run python scripts/run_benchmark.py --suite release
           --report-only
           --output .benchmark-results/${{ matrix.route }}-${{ matrix.repeat }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: benchmark-${{ matrix.route }}-${{ matrix.repeat }}
@@ -66,13 +66,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv python install 3.12
       - run: uv sync --frozen
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: benchmark-*
           path: .benchmark-results/raw
@@ -94,7 +94,7 @@ jobs:
           --min-read-only-pass-rate 0.90
           --min-security-pass-rate 1.0
           --max-pass-rate-spread 0.10
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: benchmark-release-aggregate

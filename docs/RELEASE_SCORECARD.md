@@ -14,6 +14,7 @@
 - VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；distribution workflow 会在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
 - 本机完整 pytest 为 1107 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建、8.73 秒 installed-wheel first-run smoke、VS Code typecheck 与含许可证 VSIX 打包全部通过。
 - 2026-08-19 的远端 CI #31 在测试阶段失败：Ubuntu/macOS 各 3 项，Windows 1 项。当前候选已修复 POSIX shell 转义、宿主沙箱探测耦合和 Windows OEM 编码假设，并在本机完整 unit 中通过，仍需新一次远端 run 确认。
+- 2026-08-20 用公开 GitHub API 运行统一远端审计器：默认分支仍是 `1a93b3b`，CI 最新为 failure；尚未推送的 Security/Distribution/MCP workflow 返回 404，active ruleset 未通过。报告逻辑 fail closed，不把本地定义当远端证据。
 - Windows portable 与 Docker job 已复用零凭据 installed-runtime smoke，检查配置状态、TUI help、真实 Core 启动与 ping；该 smoke 在本机安装态 6.0 秒通过。本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
 - Aider Polyglot 固定 commit/container runner 与 SWE-bench 标准 prediction exporter 已通过离线契约测试；尚未产出真实模型切片和官方 SWE-bench harness artifact。
 - release workflow 会把原始失败分为六个效果域；单项优化必须绑定前后完整 commit、报告 SHA-256 与不变评测合同，真实候选报告产生前不宣称收益。
@@ -70,5 +71,6 @@ P95 成本/耗时显著上涨视为失败。资源字段和比较门禁已有离
 - ProcessSupervisor 已把 wall-time、CPU、峰值内存、进程数与采样完整性投影到事件、runtime、统一 TurnReceipt 和 TUI；macOS 当前只保证 wall-time 与完整性标记。
 - README 的 TUI SVG 由真实 Textual 控件与正式事件结构确定性生成；它证明当前界面渲染契约，不代表在线模型效果或真实 benchmark 成绩。
 - Tag release workflow 已配置版本/Changelog/协议/评分卡一致性、三平台 distribution、SPDX SBOM、SHA256SUMS、GitHub OIDC provenance 与 Cosign keyless 签名；评分卡为 NO-GO 时会在推送镜像和创建 Release 前失败，远端产物尚未生成。
+- 通用 checkout/setup-node/artifact/setup-uv Actions 已升级到 Node 24 代际；远端证据 workflow 每日审计六类 workflow、连续 CI 与 active ruleset，并上传机器可读 JSON。
 - VS Code 的真实 daemon Extension Host runner 已实现但远端 JSON 尚未产生；审批 UI 仍缺录像/截图，也未发布到 Marketplace。
 - 未达到本页全部量化门禁前，不发布 `0.2.0-beta`，也不宣称生产就绪。

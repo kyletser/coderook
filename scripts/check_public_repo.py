@@ -63,15 +63,18 @@ _REQUIRED_FILES = (
     "scripts/benchmark_optimization.py",
     "scripts/smoke_installed_runtime.py",
     "scripts/run_vscode_extension_host_smoke.py",
+    "scripts/audit_github_release_evidence.py",
     "tests/fixtures/mcp_official_server.py",
     "tests/unit/test_mcp_interop_report.py",
     "tests/unit/test_benchmark_aggregate.py",
     "tests/unit/test_distribution_smoke.py",
     "tests/unit/test_vscode_extension_host.py",
+    "tests/unit/test_remote_release_evidence.py",
     ".github/workflows/mcp-interop.yml",
     "tests/unit/test_release_contract.py",
     ".github/workflows/release.yml",
     ".github/workflows/distribution.yml",
+    ".github/workflows/remote-evidence.yml",
 )
 _REQUIRED_PROJECT_FIELDS = (
     "description",
@@ -130,6 +133,11 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "smoke_installed_runtime.py",
         "Real daemon Extension Host smoke",
         "artifacts/vscode-extension-host.json",
+    ),
+    ".github/workflows/remote-evidence.yml": (
+        "Audit remote release evidence",
+        "audit_github_release_evidence.py",
+        "github-release-evidence",
     ),
     "docs/BRANCH_PROTECTION.md": (
         "`Required CI gate`",

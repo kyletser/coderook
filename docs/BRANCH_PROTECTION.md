@@ -28,15 +28,17 @@ Ruleset 只绑定以下两个稳定名称，不直接绑定会随矩阵变化的
 5. `CODEOWNERS` 已声明高风险路径，但“Require review from Code Owners”同样在第二位维护者加入后启用，
    不能把自审伪装成双人复核。
 
-配置完成后用 GitHub CLI 保存审计证据：
+配置完成后运行统一远端证据审计器；它同时检查 active ruleset、两个稳定必需检查、连续三次 CI，
+以及 Security、Distribution、Crash Recovery、MCP 和 release benchmark 的最新成功记录：
 
 ```bash
-gh api repos/kyletser/coderook/rulesets \
-  --jq '.[] | {name,enforcement,target,conditions,rules}' \
-  > branch-ruleset-evidence.json
+uv run python scripts/audit_github_release_evidence.py \
+  --repo kyletser/coderook \
+  --output reports/github-release-evidence.json
 ```
 
-证据文件可能包含仓库配置细节，不直接提交；在 `docs/RELEASE_SCORECARD.md` 记录 run URL 或审核日期。
+每日 `remote-evidence.yml` 会用只读 `GITHUB_TOKEN` 执行同一命令并上传 JSON；任一 API 不可见、workflow
+缺失或结论失败都 fail closed。证据文件不直接提交；在 `docs/RELEASE_SCORECARD.md` 记录 artifact/run URL。
 如果 ruleset 尚未启用，OS6-05 只能标记 `PARTIAL`，不能因为本文件存在就声明 main 已受保护。
 
 ## 变更规则

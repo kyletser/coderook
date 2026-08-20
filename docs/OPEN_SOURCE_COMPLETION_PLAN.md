@@ -204,11 +204,11 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | 默认分支至少 3 次连续全绿 |
+| OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | 远端审计器强制默认分支连续 3 次成功；2026-08-20 公开 API 实测最新仍为 CI #31 failure |
 | OS3-02 | EXTERNAL | 三平台运行 sandbox 负例矩阵 | artifact 记录 backend、enforced/degraded 与每项结果 |
 | OS3-03 | EXTERNAL | 三平台各运行 100 次 daemon 强杀恢复 | 每平台 ≥95%，孤儿 tool call=0 |
 | OS3-04 | PARTIAL | 建立 ProcessSupervisor 资源 P95 基线 | benchmark 报告已投影 wall/CPU/RSS/进程数和完整性；真实三平台报告待产出 |
-| OS3-05 | PARTIAL | 增加 CodeQL、dependency review、Dependabot 和 secret scan | `security.yml` 与 `dependabot.yml` 已配置；首次远端结果待产出 |
+| OS3-05 | PARTIAL | 增加 CodeQL、dependency review、Dependabot 和 secret scan | `security.yml` 与 `dependabot.yml` 已配置；2026-08-20 远端因未推送该 workflow 返回 404，首次结果待产出 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |
 
 阶段出口：安全能力以“支持/降级/拒绝”三态表达，所有可靠性数字来自真实进程和真实 OS。
@@ -250,7 +250,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 | OS6-02 | PARTIAL | 为 wheel/sdist/portable/VSIX/容器生成 SPDX SBOM、manifest 与 checksums | 生成脚本和 workflow 合同已完成；首次真实 Release 页面资产待 OS6-04 |
 | OS6-03 | PARTIAL | 使用 GitHub OIDC、actions/attest 与 Cosign keyless 签名下载资产和容器 digest | 无长期发布密钥；本地合同已完成，远端 attestation/bundle 验证待首次 tag |
 | OS6-04 | EXTERNAL | 发布 PyPI 包、GHCR 镜像和 GitHub Release 候选 | 干净机从公开地址安装成功 |
-| OS6-05 | PARTIAL | 以稳定汇总 job 固定 CI/Security 必需检查，提交 CODEOWNERS、Dependabot 与 main ruleset 配置/审计合同 | 仓库合同与离线检查已完成；GitHub active ruleset API 证据仍属外部状态，未启用前不宣称 main 已保护 |
+| OS6-05 | PARTIAL | 以稳定汇总 job 固定 CI/Security 必需检查，提交 CODEOWNERS、Dependabot 与 main ruleset 配置/审计合同 | 每日审计器已 fail-closed 检查 workflows 与 active ruleset；2026-08-20 实测 ruleset failed，未启用前不宣称 main 已保护 |
 | OS6-06 | DONE | 建立 outcome-based Roadmap、4 个 READY contributor task、认领模板、支持升级路径和单维护者边界 | 陌生贡献者可按 ID 选择、认领、验证一个小任务；文档明确总线因子与权限边界 |
 
 阶段出口：`0.2.0-beta` 是可验证的公开发行，而不是仓库中的版本字符串。
