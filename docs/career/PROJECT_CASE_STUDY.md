@@ -55,12 +55,12 @@ daemon 是状态所有者，客户端可退出和重连；文件 ledger 保存�
 
 | 结果 | 可复现证据 | 能证明什么 |
 |---|---|---|
-| 双进程 durable runtime、TUI/SDK/HTTP 接口 | `docs/FUNCTIONAL_ARCHITECTURE.md`、协议与集成测试 | 生命周期与接口合同成立 |
-| File/Git/Bash/Run、PatchPlan、权限与恢复 | 单元/集成测试、`docs/THREAT_MODEL.md` | 内部安全边界和降级行为成立 |
+| 双进程 durable runtime、TUI/SDK/HTTP 接口 | `docs/reference/FUNCTIONAL_ARCHITECTURE.md`、协议与集成测试 | 生命周期与接口合同成立 |
+| File/Git/Bash/Run、PatchPlan、权限与恢复 | 单元/集成测试、`docs/reference/THREAT_MODEL.md` | 内部安全边界和降级行为成立 |
 | task/subagent/fleet/worktree/workflow | workflow ledger、租约、写声明和恢复测试 | 编排与并发约束成立 |
-| 50 任务评测集与公开适配器 | `docs/PUBLIC_BENCHMARKS.md`、离线 verifier 合同 | harness 可复现，不代表真实模型成绩 |
-| 1,000+ 自动测试与三平台 workflow | `docs/RELEASE_SCORECARD.md`、`.github/workflows/` | 本地工程门禁完整；远端最新状态需另查 |
-| SBOM、checksums、OIDC attestation、keyless signing | `docs/RELEASING.md` | 发布链路定义完整；首次真实 tag 仍未产生 |
+| 50 任务评测集与公开适配器 | `docs/reference/PUBLIC_BENCHMARKS.md`、离线 verifier 合同 | harness 可复现，不代表真实模型成绩 |
+| 1,000+ 自动测试与三平台 workflow | `docs/status/RELEASE_SCORECARD.md`、`.github/workflows/` | 本地工程门禁完整；远端最新状态需另查 |
+| SBOM、checksums、OIDC attestation、keyless signing | `docs/operations/RELEASING.md` | 发布链路定义完整；首次真实 tag 仍未产生 |
 
 当前最重要的未完成项不是继续堆功能，而是真实模型 pass@1、公开 benchmark 官方判分、active main
 ruleset、跨已发布 tag 升级和首次公开 attestation。三平台 clean distribution、官方 MCP、三平台各

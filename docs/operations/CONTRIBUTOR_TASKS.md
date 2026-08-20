@@ -9,7 +9,7 @@
 ### DOC-001：复现一条跨平台安装路径
 
 - **用户结果**：陌生用户能在 Windows、Ubuntu 或 macOS 按公开文档完成一种安装并看到版本输出；
-- **范围**：选择 `README.md`、`docs/USER_GUIDE.md` 或 `docs/UPGRADING.md` 的一条路径，在干净临时环境
+- **范围**：选择 `README.md`、`docs/guides/USER_GUIDE.md` 或 `docs/guides/UPGRADING.md` 的一条路径，在干净临时环境
   逐条运行；修复发现的一个具体错误或补充缺失前置条件；
 - **验收**：PR 记录 OS、Python/uv 版本、实际命令和已脱敏结果；`check_public_repo.py` 通过；
 - **不在范围内**：发布包、修改运行时、提交本机路径/API key、笼统重写全部文档。

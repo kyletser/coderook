@@ -1,7 +1,7 @@
 # 发行、SBOM、签名与验证
 
 CodeRook 的公开发行由 tag 驱动，但 tag 不是绕过质量门禁的快捷方式。仓库当前评分卡仍是
-`NO-GO`；在 `docs/RELEASE_SCORECARD.md` 变为 `GO` 之前，`release.yml` 会在创建任何 Release
+`NO-GO`；在 `docs/status/RELEASE_SCORECARD.md` 变为 `GO` 之前，`release.yml` 会在创建任何 Release
 或推送 GHCR 镜像前失败。
 
 ## 版本规则

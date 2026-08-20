@@ -5,11 +5,40 @@ from pathlib import Path
 
 from scripts.check_public_repo import (
     find_broken_markdown_links,
+    find_docs_layout_issues,
     find_governance_contract_issues,
     find_project_metadata_issues,
     find_resume_evidence_contract_issues,
     find_tracked_pollution,
 )
+
+
+# 功能：验证文档顶层只允许索引文件和约定用途目录
+# 设计：先构造完整分类再加入散落 Markdown，覆盖规范结构与重新变乱两个分支
+def test_find_docs_layout_issues_rejects_flat_markdown(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "README.md").write_text("# index\n", encoding="utf-8")
+    for name in (
+        "archive",
+        "career",
+        "evidence",
+        "guides",
+        "images",
+        "operations",
+        "plans",
+        "postmortems",
+        "reference",
+        "status",
+    ):
+        (docs / name).mkdir()
+
+    assert find_docs_layout_issues(tmp_path) == []
+
+    (docs / "LOOSE_NOTES.md").write_text("# loose\n", encoding="utf-8")
+    assert find_docs_layout_issues(tmp_path) == [
+        "unexpected docs root file: LOOSE_NOTES.md"
+    ]
 
 
 # 功能：验证 Markdown 本地链接检查能区分存在目标与断链目标

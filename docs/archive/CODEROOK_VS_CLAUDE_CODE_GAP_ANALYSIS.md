@@ -1,15 +1,15 @@
 # CodeRook 与 Claude Code 能力差距分析
 
 > 历史快照：本文保留早期对标过程，其中功能缺口和比例不代表当前状态。当前体验矩阵见
-> [CLAUDE_CODE_EXPERIENCE_PARITY.md](CLAUDE_CODE_EXPERIENCE_PARITY.md)，发布结论见
-> [RELEASE_SCORECARD.md](RELEASE_SCORECARD.md)。
+> [CLAUDE_CODE_EXPERIENCE_PARITY.md](../plans/CLAUDE_CODE_EXPERIENCE_PARITY.md)，发布结论见
+> [RELEASE_SCORECARD.md](../status/RELEASE_SCORECARD.md)。
 
 > 本文是初始审计快照，其中部分 P0/P1 缺口已经修复。当前代码证据与未完成项请以
 > `IMPLEMENTATION_PROGRESS.md` 和 `LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md` 为准。
 
 > 本文是差距审计快照。2026-07-16 之后的已实现项、测试基线和下一步执行顺序，
 > 以 [IMPLEMENTATION_PROGRESS.md](IMPLEMENTATION_PROGRESS.md) 为准；PC 桌面版路线见
-> [PC_DESKTOP_MIGRATION_PLAN.md](PC_DESKTOP_MIGRATION_PLAN.md)。
+> [PC_DESKTOP_MIGRATION_PLAN.md](../plans/PC_DESKTOP_MIGRATION_PLAN.md)。
 
 > 审计日期：2026-07-15
 > 审计对象：当前工作区 `C:/Users/Administrator/Desktop/coderook` 的真实代码
@@ -96,12 +96,12 @@ CodeRook 已经具备一个“小型本地 Coding Agent Runtime”的主要骨�
 
 关键代码证据：
 
-- Agent 工具循环与顺序执行：[core/loop.py](../src/code_rook/core/loop.py#L85)
-- 工具注册：[core/runner.py](../src/code_rook/core/runner.py#L97)
-- 上下文文件加载：[core/runner.py](../src/code_rook/core/runner.py#L163)
-- Session 执行入口：[core/session/manager.py](../src/code_rook/core/session/manager.py#L74)
-- Core 对外命令：[core/app.py](../src/code_rook/core/app.py#L259)
-- 事件顺序发布：[core/events/bus.py](../src/code_rook/core/events/bus.py#L17)
+- Agent 工具循环与顺序执行：[core/loop.py](../../src/code_rook/core/loop.py#L85)
+- 工具注册：[core/runner.py](../../src/code_rook/core/runner.py#L97)
+- 上下文文件加载：[core/runner.py](../../src/code_rook/core/runner.py#L163)
+- Session 执行入口：[core/session/manager.py](../../src/code_rook/core/session/manager.py#L74)
+- Core 对外命令：[core/app.py](../../src/code_rook/core/app.py#L259)
+- 事件顺序发布：[core/events/bus.py](../../src/code_rook/core/events/bus.py#L17)
 
 ### 3.3 已经做得较好的部分
 
@@ -135,11 +135,11 @@ Subagent 有前台/后台执行、角色配置、嵌套深度和结果查询；M
 
 | 文档/配置表象 | 真实代码 | 影响 |
 |---|---|---|
-| 架构文档称自动压缩默认阈值为 0.80 | 配置默认值是 0.0，即默认关闭：[config.py](../src/code_rook/core/config.py#L58) | 长对话默认不会自动压缩 |
-| 配置支持 `llm.router` | 除解析和保存配置外没有路由器消费它：[config.py](../src/code_rook/core/config.py#L39) | “多模型路由”目前只是配置占位 |
-| Agent Profile 支持 `model` | Loader 读取该字段，但 SpawnAgent 未使用它：[agents/loader.py](../src/code_rook/core/agents/loader.py#L14) | 不同子 Agent 实际共用父 Provider |
-| 配置支持 `tool_result_limit/keep` | 读取历史时调用的是模块固定常量 8000/4000：[compact/budget.py](../src/code_rook/core/compact/budget.py#L5) | 用户配置不生效 |
-| Runner 注释称后台任务注册表跨 run 共享 | Session 每次发消息都会 factory 新建 Runner：[session/manager.py](../src/code_rook/core/session/manager.py#L121)，factory 位于 [app.py](../src/code_rook/core/app.py#L240) | 后台 Agent 结果不能可靠跨 turn 查询 |
+| 架构文档称自动压缩默认阈值为 0.80 | 配置默认值是 0.0，即默认关闭：[config.py](../../src/code_rook/core/config.py#L58) | 长对话默认不会自动压缩 |
+| 配置支持 `llm.router` | 除解析和保存配置外没有路由器消费它：[config.py](../../src/code_rook/core/config.py#L39) | “多模型路由”目前只是配置占位 |
+| Agent Profile 支持 `model` | Loader 读取该字段，但 SpawnAgent 未使用它：[agents/loader.py](../../src/code_rook/core/agents/loader.py#L14) | 不同子 Agent 实际共用父 Provider |
+| 配置支持 `tool_result_limit/keep` | 读取历史时调用的是模块固定常量 8000/4000：[compact/budget.py](../../src/code_rook/core/compact/budget.py#L5) | 用户配置不生效 |
+| Runner 注释称后台任务注册表跨 run 共享 | Session 每次发消息都会 factory 新建 Runner：[session/manager.py](../../src/code_rook/core/session/manager.py#L121)，factory 位于 [app.py](../../src/code_rook/core/app.py#L240) | 后台 Agent 结果不能可靠跨 turn 查询 |
 | 架构文档描述 unit/integration/e2e 三层 | 当前只有 `tests/unit` 和 `tests/integration` | 缺少真实终端、daemon 重启和跨平台 E2E |
 | 架构文档包含生产部署方向 | `Dockerfile` 当前为空，仓库也无 CI 配置 | 尚无可验证的生产交付路径 |
 
@@ -178,14 +178,14 @@ Subagent 有前台/后台执行、角色配置、嵌套深度和结果查询；M
 #### 当前实现
 
 - 每一步先调用 LLM。
-- 模型返回多个 tool calls 时，通过 `for` 循环依次执行：[loop.py](../src/code_rook/core/loop.py#L93)。
+- 模型返回多个 tool calls 时，通过 `for` 循环依次执行：[loop.py](../../src/code_rook/core/loop.py#L93)。
 - 支持 `end_turn`、`max_steps`、LLM 异常和自动压缩检查。
 - Core 将每个 session send 作为异步 task 启动，但没有公开 cancel handler。
 
 #### 与 Claude Code 的差距
 
 - 没有用户按键中断正在执行的工具。
-- 没有在 Agent 运行期间输入新指令进行 steering；Session lock 忙时直接返回 `SESSION_BUSY`：[session/manager.py](../src/code_rook/core/session/manager.py#L77)。
+- 没有在 Agent 运行期间输入新指令进行 steering；Session lock 忙时直接返回 `SESSION_BUSY`：[session/manager.py](../../src/code_rook/core/session/manager.py#L77)。
 - 没有 `run.cancel`、`task.stop` 或进程树取消协议。
 - 无 Plan mode、AskUserQuestion、明确的“执行前计划审批”。
 - 无依赖感知的并行 tool calls；模型即使一次返回多个独立读取，也会串行执行。
@@ -208,7 +208,7 @@ Subagent 有前台/后台执行、角色配置、嵌套深度和结果查询；M
 
 #### 当前实现
 
-核心工具只有 ReadFile、ListDir、WriteFile、Bash，加上 Task、Note、Subagent、MCP：[runner.py](../src/code_rook/core/runner.py#L97)。
+核心工具只有 ReadFile、ListDir、WriteFile、Bash，加上 Task、Note、Subagent、MCP：[runner.py](../../src/code_rook/core/runner.py#L97)。
 
 模型可以借助 Bash 调 `rg`，但这不等价于稳定的 Grep/Glob 工具：
 
@@ -239,7 +239,7 @@ Subagent 有前台/后台执行、角色配置、嵌套深度和结果查询；M
 
 #### 当前风险
 
-`WriteFileTool` 直接调用 `Path.write_text` 覆盖整个文件：[write_file.py](../src/code_rook/core/tools/builtin/write_file.py#L59)。
+`WriteFileTool` 直接调用 `Path.write_text` 覆盖整个文件：[write_file.py](../../src/code_rook/core/tools/builtin/write_file.py#L59)。
 
 缺少：
 
@@ -276,17 +276,17 @@ Claude Code 的 Edit 会做精确替换、匹配唯一性和文件状态校验�
 
 Read/Write/List 工具只检查 `Path(path).parts` 是否包含 `..`：
 
-- [read_file.py](../src/code_rook/core/tools/builtin/read_file.py#L40)
-- [write_file.py](../src/code_rook/core/tools/builtin/write_file.py#L48)
-- [list_dir.py](../src/code_rook/core/tools/builtin/list_dir.py#L49)
+- [read_file.py](../../src/code_rook/core/tools/builtin/read_file.py#L40)
+- [write_file.py](../../src/code_rook/core/tools/builtin/write_file.py#L48)
+- [list_dir.py](../../src/code_rook/core/tools/builtin/list_dir.py#L49)
 
-它们没有检查 `is_absolute()`，也没有在 `resolve()` 后验证目标位于 workspace root。Windows 的 `C:/...` 和 Unix 的 `/...` 都可能直接访问工作区外文件。与此同时，read/list 默认自动允许：[permissions/policy.py](../src/code_rook/core/permissions/policy.py#L43)。
+它们没有检查 `is_absolute()`，也没有在 `resolve()` 后验证目标位于 workspace root。Windows 的 `C:/...` 和 Unix 的 `/...` 都可能直接访问工作区外文件。与此同时，read/list 默认自动允许：[permissions/policy.py](../../src/code_rook/core/permissions/policy.py#L43)。
 
 这使工具描述中的“必须是相对路径”没有被真正执行。
 
 #### P0-2：所有 runtime_error 都会重试
 
-调用器把 `runtime_error` 和 `rate_limited` 都标记为可重试，并最多执行三次：[tools/invocation.py](../src/code_rook/core/tools/invocation.py#L27)、[tools/invocation.py](../src/code_rook/core/tools/invocation.py#L144)。
+调用器把 `runtime_error` 和 `rate_limited` 都标记为可重试，并最多执行三次：[tools/invocation.py](../../src/code_rook/core/tools/invocation.py#L27)、[tools/invocation.py](../../src/code_rook/core/tools/invocation.py#L144)。
 
 这可能重复执行：
 
@@ -298,7 +298,7 @@ Read/Write/List 工具只检查 `Path(path).parts` 是否包含 `..`：
 
 #### P0-3：Bash 无 OS 级隔离
 
-`BashTool` 直接使用 `create_subprocess_shell`：[bash.py](../src/code_rook/core/tools/builtin/bash.py#L48)。目前有超时和 64 KB 输出截断，这是优点；但没有：
+`BashTool` 直接使用 `create_subprocess_shell`：[bash.py](../../src/code_rook/core/tools/builtin/bash.py#L48)。目前有超时和 64 KB 输出截断，这是优点；但没有：
 
 - 文件系统沙箱。
 - 网络域名限制。
@@ -334,7 +334,7 @@ Read/Write/List 工具只检查 `Path(path).parts` 是否包含 `..`：
 - 默认 policy + allow/deny regex + outside-cwd heuristic。
 - 支持 allow once、deny once、always allow、always deny。
 - session cache key 是 `(session_id, tool_name)`。
-- 持久 cache key 只有 `tool_name`：[permissions/manager.py](../src/code_rook/core/permissions/manager.py#L48)。
+- 持久 cache key 只有 `tool_name`：[permissions/manager.py](../../src/code_rook/core/permissions/manager.py#L48)。
 
 #### 问题
 
@@ -384,12 +384,12 @@ SessionStore 能写 `meta.json`、`thread.jsonl`、`notes.md`，压缩前也会�
 
 #### 关键缺陷
 
-1. `SessionManager` 的索引只在 `_sessions` 内存字典：[session/manager.py](../src/code_rook/core/session/manager.py#L50)。
-2. `_get_session` 找不到内存对象时直接返回 SESSION_NOT_FOUND，不会从 `meta.json` 重建：[session/manager.py](../src/code_rook/core/session/manager.py#L190)。
+1. `SessionManager` 的索引只在 `_sessions` 内存字典：[session/manager.py](../../src/code_rook/core/session/manager.py#L50)。
+2. `_get_session` 找不到内存对象时直接返回 SESSION_NOT_FOUND，不会从 `meta.json` 重建：[session/manager.py](../../src/code_rook/core/session/manager.py#L190)。
 3. Core 启动时创建空 SessionManager，没有扫描已有 session。
-4. TUI 每次启动都调用 `session.create`：[tui/app.py](../src/code_rook/tui/app.py#L843)。
+4. TUI 每次启动都调用 `session.create`：[tui/app.py](../../src/code_rook/tui/app.py#L843)。
 5. 没有 list、resume、rename、fork、delete、export RPC。
-6. 本轮 assistant/tool messages 在 run 完成后才批量落盘：[runner.py](../src/code_rook/core/runner.py#L249)。进程崩溃时可能只留下 user message 和 events，thread 不完整。
+6. 本轮 assistant/tool messages 在 run 完成后才批量落盘：[runner.py](../../src/code_rook/core/runner.py#L249)。进程崩溃时可能只留下 user message 和 events，thread 不完整。
 7. 同一 Session 忙时拒绝新消息，无法把消息排队为 steering。
 
 因此当前的“SessionResumedEvent”只表示同一 daemon 进程中的 waiting session 再次收到消息，不代表退出后可恢复。
@@ -414,7 +414,7 @@ Claude Code 会持续保存会话，支持 session picker、continue/resume、�
 
 #### 当前实现
 
-- 只加载 `~/.coderook/context.md` 与项目根 `.coderook/context.md`：[runner.py](../src/code_rook/core/runner.py#L163)。
+- 只加载 `~/.coderook/context.md` 与项目根 `.coderook/context.md`：[runner.py](../../src/code_rook/core/runner.py#L163)。
 - Session notes 会加入 system context。
 - tool results 在读取 transcript 时截断。
 - 支持手动 `/compact` 和可配置自动阈值。
@@ -426,7 +426,7 @@ Claude Code 会持续保存会话，支持 session picker、continue/resume、�
 - 没有目录嵌套规则、按路径按需加载的 rules。
 - 没有 `@import` 或动态上下文。
 - 无自动记忆提取、记忆查看/编辑、过期和来源标记。
-- 只用字符数除以 4 粗估 token：[compact/compactor.py](../src/code_rook/core/compact/compactor.py#L113)。
+- 只用字符数除以 4 粗估 token：[compact/compactor.py](../../src/code_rook/core/compact/compactor.py#L113)。
 - 自动压缩默认关闭。
 - 压缩把整个历史替换为 summary + ack，缺少“保留最近窗口、分层裁剪、去重、压缩抖动保护”。
 - 配置中的 tool-result 截断值没有接线。
@@ -460,7 +460,7 @@ Claude Code 支持多层 CLAUDE.md、目录规则、imports、auto memory 和上
 
 #### 差距
 
-- OpenAI-compatible 实际是一次性 HTTP POST，响应完成后才发布整段 token：[openai_compatible.py](../src/code_rook/core/llm/openai_compatible.py#L89)。
+- OpenAI-compatible 实际是一次性 HTTP POST，响应完成后才发布整段 token：[openai_compatible.py](../../src/code_rook/core/llm/openai_compatible.py#L89)。
 - OpenAI-compatible 无明确重试、退避、Retry-After、流式 tool-call delta 处理。
 - 模型 context window 依赖硬编码映射。
 - `llm.router` 未实现。
@@ -468,7 +468,7 @@ Claude Code 支持多层 CLAUDE.md、目录规则、imports、auto memory 和上
 - 无运行时 `/model`、effort/thinking、fast mode。
 - 无 fallback、熔断、预算上限和 per-run cost。
 - Provider 错误没有统一的可诊断分类。
-- Trace 默认包含 LLM payload：[config.py](../src/code_rook/core/config.py#L48)，可能将源码、提示词、tool output 和秘密长期写盘。
+- Trace 默认包含 LLM payload：[config.py](../../src/code_rook/core/config.py#L48)，可能将源码、提示词、tool output 和秘密长期写盘。
 
 #### 建议
 
@@ -489,12 +489,12 @@ Claude Code 支持多层 CLAUDE.md、目录规则、imports、auto memory 和上
 
 - 支持 builtin、user、project 三层查找。
 - 支持 `name`、`description`、`allowed_tools`。
-- 仅在用户消息以 `/` 开头时显式触发：[session/manager.py](../src/code_rook/core/session/manager.py#L103)。
+- 仅在用户消息以 `/` 开头时显式触发：[session/manager.py](../../src/code_rook/core/session/manager.py#L103)。
 
 #### 差距
 
-- frontmatter 是手写行解析器，不是 YAML parser：[skills/loader.py](../src/code_rook/core/skills/loader.py#L27)。
-- 任意以 `- ` 开头的 frontmatter list item 都可能被当成 allowed tool：[skills/loader.py](../src/code_rook/core/skills/loader.py#L53)。
+- frontmatter 是手写行解析器，不是 YAML parser：[skills/loader.py](../../src/code_rook/core/skills/loader.py#L27)。
+- 任意以 `- ` 开头的 frontmatter list item 都可能被当成 allowed tool：[skills/loader.py](../../src/code_rook/core/skills/loader.py#L53)。
 - 不支持自动模型调用、禁用模型调用、是否用户可见、model、context fork、agent、hooks 等字段。
 - 不会把 skills 的描述清单暴露给模型做自动选择。
 - 缺少 supporting files、scripts、assets、动态 context、命名空间和版本。
@@ -515,9 +515,9 @@ Claude Code Skills 支持开放 Agent Skills 结构、自动/显式调用、supp
 
 #### 差距
 
-- 子 Agent 不继承 global/project context、notes、skills 或完整父上下文：[subagent/tool.py](../src/code_rook/core/subagent/tool.py#L123)。
+- 子 Agent 不继承 global/project context、notes、skills 或完整父上下文：[subagent/tool.py](../../src/code_rook/core/subagent/tool.py#L123)。
 - profile.model 被解析但不生效。
-- 子 Agent registry 不包含父级 MCP 和 Note 工具：[subagent/tool.py](../src/code_rook/core/subagent/tool.py#L235)。
+- 子 Agent registry 不包含父级 MCP 和 Note 工具：[subagent/tool.py](../../src/code_rook/core/subagent/tool.py#L235)。
 - 无 resume、send message、stop、steer。
 - 无共享任务认领、依赖和 mailbox。
 - 后台 registry 生命周期绑定 Runner，而 Runner 每个 turn 重建。
@@ -545,7 +545,7 @@ Claude Code 的 subagents 支持独立模型/权限/skills/MCP、恢复和隔离
 - 完成 initialize、notifications/initialized、tools/list、tools/call。
 - 工具自动注册进 ToolRegistry。
 
-代码证据：[mcp/client.py](../src/code_rook/core/mcp/client.py#L72)、[mcp/server.py](../src/code_rook/core/mcp/server.py#L57)。
+代码证据：[mcp/client.py](../../src/code_rook/core/mcp/client.py#L72)、[mcp/server.py](../../src/code_rook/core/mcp/server.py#L57)。
 
 #### 差距
 
@@ -594,9 +594,9 @@ Claude Code 还可通过 Plugins 打包 Skills、Agents、Hooks、MCP 和配置�
 - 无连接认证和 TLS。
 - host 可配置；若绑定非 loopback，任何可访问端口的进程都可能发命令。
 - Socket handler task 用 `create_task` 启动但没有完整生命周期和配额管理。
-- EventBus 按订阅顺序逐个 await：[events/bus.py](../src/code_rook/core/events/bus.py#L17)。
-- EventWriter 在 event loop 中同步 write + flush：[events/writer.py](../src/code_rook/core/events/writer.py#L32)。
-- Broadcaster 对每个客户端逐个 `drain`：[transport/ipc_broadcaster.py](../src/code_rook/core/transport/ipc_broadcaster.py#L59)。
+- EventBus 按订阅顺序逐个 await：[events/bus.py](../../src/code_rook/core/events/bus.py#L17)。
+- EventWriter 在 event loop 中同步 write + flush：[events/writer.py](../../src/code_rook/core/events/writer.py#L32)。
+- Broadcaster 对每个客户端逐个 `drain`：[transport/ipc_broadcaster.py](../../src/code_rook/core/transport/ipc_broadcaster.py#L59)。
 
 慢磁盘或慢客户端可能拖慢 Agent loop。也缺少队列上限、丢弃策略、断线重放游标和协议版本协商。
 
@@ -623,8 +623,8 @@ TUI 已能显示 token、工具块、权限审批、上下文水位、Skill 和 
 - 快捷键和主题不可配置。
 - 无模型、权限模式、成本、git branch 等状态栏。
 - 无图片/文件预览和链接导航。
-- CLI 子命令仅 ping/chat/run/core/trace：[cli/main.py](../src/code_rook/cli/main.py#L22)。
-- `coderook run` 不订阅 permission 事件，也没有批准回调：[cli/commands/run.py](../src/code_rook/cli/commands/run.py#L89)。当工具需要审批时，一次性运行可能一直等到权限超时。
+- CLI 子命令仅 ping/chat/run/core/trace：[cli/main.py](../../src/code_rook/cli/main.py#L22)。
+- `coderook run` 不订阅 permission 事件，也没有批准回调：[cli/commands/run.py](../../src/code_rook/cli/commands/run.py#L89)。当工具需要审批时，一次性运行可能一直等到权限超时。
 - 无 `--resume`、`--model`、`--permission-mode`、`--output-format json`、`--json-schema`。
 - 无 Python/TypeScript SDK、IDE、Desktop、Web 或 CI 原生接口。
 

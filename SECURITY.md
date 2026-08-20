@@ -40,4 +40,4 @@ MCP server、Skill、Hook 和外部网页视为不受信任输入。
 - 第三方 MCP/Skill/Hook 具有其声明能力范围内的风险，只安装可信来源并审查自动批准规则。
 - API key 应存放在凭据存储或环境变量中，不应写入项目 TOML、Prompt、trace 或 Issue。
 
-完整资产、信任边界、攻击面、非目标和事件响应见[威胁模型](docs/THREAT_MODEL.md)。
+完整资产、信任边界、攻击面、非目标和事件响应见[威胁模型](docs/reference/THREAT_MODEL.md)。

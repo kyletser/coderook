@@ -374,7 +374,7 @@ TUI 顶部会显示当前上下文占用。CodeRook 默认在上下文接近 80%
 也可以用 `/compact` 手动压缩。`/context` 还会显示 durable usage、working set、项目
 memory 数量、最近压缩摘要路径，以及 system prompt 和 tool schema 的 token 开销估算。
 
-本地 HTTP/SSE SDK 接口、鉴权与断线重连方式见 [Runtime API](RUNTIME_API.md)。
+本地 HTTP/SSE SDK 接口、鉴权与断线重连方式见 [Runtime API](../reference/RUNTIME_API.md)。
 
 ### 管理 Skills
 
@@ -550,7 +550,7 @@ on_failure = "closed"
 会脱敏、超大工具结果会截断。`blocking = false` 的 Hook 使用有界队列。
 
 可直接安装的 focused-fix Skill、可审查的敏感文件 Hook 和最小 MCP stdio server 见
-[可运行扩展示例](../examples/README.md)。复制项目 Hook 时应合并 TOML，不要覆盖已有配置。
+[可运行扩展示例](../../examples/README.md)。复制项目 Hook 时应合并 TOML，不要覆盖已有配置。
 
 配置优先级由低到高为：
 

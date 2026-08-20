@@ -43,10 +43,10 @@ uv run python scripts/audit_github_release_evidence.py \
 ```
 
 每日 `remote-evidence.yml` 会用只读 `GITHUB_TOKEN` 执行同一命令并上传 JSON；任一 API 不可见、workflow
-缺失或结论失败都 fail closed。证据文件不直接提交；在 `docs/RELEASE_SCORECARD.md` 记录 artifact/run URL。
+缺失或结论失败都 fail closed。证据文件不直接提交；在 `docs/status/RELEASE_SCORECARD.md` 记录 artifact/run URL。
 如果 ruleset 尚未启用，OS6-05 只能标记 `PARTIAL`，不能因为本文件存在就声明 main 已受保护。
 
 ## 变更规则
 
 修改 workflow job 名、降低权限、允许失败、删除安全检查或改变 bypass 规则，必须同步本文件、
-`CODEOWNERS`、公开仓库合同与 Changelog。发布 tag 另受 `docs/RELEASING.md` 的评分卡 GO 门禁约束。
+`CODEOWNERS`、公开仓库合同与 Changelog。发布 tag 另受 `docs/operations/RELEASING.md` 的评分卡 GO 门禁约束。

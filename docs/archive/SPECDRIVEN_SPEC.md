@@ -77,7 +77,7 @@ Work Graph、Hooks、Skills、Memory、Sandbox、Runtime API、TUI 命令和相�
 - `docs/AUTOMATIC_WORKFLOWS.md`
 - `docs/WORKFLOW_AUTHORING.md`
 - `docs/FLEET.md`
-- `docs/RUNTIME_API.md`
+- `docs/reference/RUNTIME_API.md`
 - `docs/RECEIPTS.md`
 
 ### 1.2 必须保留的事实限定

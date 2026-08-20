@@ -14,15 +14,15 @@
 
 | 简历事实 | 公开证据 | 使用边界 |
 |---|---|---|
-| daemon/client 双进程，本地 loopback JSON-RPC/NDJSON + HTTP/SSE | `docs/FUNCTIONAL_ARCHITECTURE.md`、`WIRE_PROTOCOL.md` | 可写“设计并实现”，不要写分布式集群 |
+| daemon/client 双进程，本地 loopback JSON-RPC/NDJSON + HTTP/SSE | `docs/reference/FUNCTIONAL_ARCHITECTURE.md`、`WIRE_PROTOCOL.md` | 可写“设计并实现”，不要写分布式集群 |
 | File/Git/Bash/Run 四类工具与六层权限决策 | architecture、threat model、permission tests | 四类是 action family，不等于只有四个工具 |
 | task/subagent/fleet/worktree/workflow 编排 | workflow IR/ledger 与相关 tests | 可写并发约束，不能写效果提升百分比 |
-| 50 个固定离线任务，baseline 50/50 按预期失败 | `docs/RELEASE_SCORECARD.md`、benchmark fixtures | 只证明 verifier 合同，不是模型 0% 或候选成绩 |
+| 50 个固定离线任务，baseline 50/50 按预期失败 | `docs/status/RELEASE_SCORECARD.md`、benchmark fixtures | 只证明 verifier 合同，不是模型 0% 或候选成绩 |
 | 1,000+ 自动测试门禁 | release scorecard 的 dated checkpoint | 使用范围值，避免每次提交后精确数过期 |
 | Windows/Ubuntu/macOS CI 与发行 workflow | commit `fe3bd3b` 的连续三次 CI；commit `a4e4fea` 的 CI `32376296861`、Distribution `32376314295` | 可写“三平台 CI 连续三次及干净发行门禁全绿”，不能扩写为生产就绪 |
 | VS Code 真实 Extension Host 与审批 UI | commit `0e92a3b` 的 Distribution `32383191953`，含 commit-bound JSON 与哈希绑定 PNG | 可写“在真实 VS Code Extension Host 验证 daemon 会话、diff 与审批闭环”，不能写已上架 Marketplace |
 | 三平台安装态升级/备份回滚 preflight | commit `cd2bba5` 的 Distribution `32385785977`，三份原始 JSON 与聚合 gate | 可写“验证历史 wheel 到候选 wheel 的状态保留与备份回滚”；baseline 无 tag，不能写“跨已发布版本升级” |
-| SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
+| SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/operations/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
 
 ## 可引用的历史精确数字
 
@@ -39,7 +39,7 @@
 | `4,176 -> ~2,110` 行 | 2026-08-17 TUI 拆分阶段；管理功能加入后约 2,246 行 | 用于解释重构范围，不写“减少 50% 复杂度” |
 | `+95` 个 TUI 相关测试 | 同一 TUI 阶段复盘 | 只描述新增回归保护，不推导缺陷率下降 |
 
-精确数字的权威入口是 `docs/RELEASE_SCORECARD.md` 和带 commit 的复盘。运行新完整 gate 后，应新增
+精确数字的权威入口是 `docs/status/RELEASE_SCORECARD.md` 和带 commit 的复盘。运行新完整 gate 后，应新增
 日期记录或更新数字，不静默把旧 checkpoint 当成 HEAD 结果。
 
 ## 等真实报告后才能替换的句子
@@ -61,7 +61,7 @@
 - “多 Agent 提升 X%”“降低成本 X%”“用户增长 X%”；
 - Windows 有 OS 文件系统/网络沙箱，或支持按域名强制联网白名单。
 
-这些结论目前在 `docs/RELEASE_SCORECARD.md` 中明确为未运行或外部门禁；已经取得的 CI、安全与恢复数字必须带 commit/run 限定。
+这些结论目前在 `docs/status/RELEASE_SCORECARD.md` 中明确为未运行或外部门禁；已经取得的 CI、安全与恢复数字必须带 commit/run 限定。
 
 ## 本人与第三方边界
 

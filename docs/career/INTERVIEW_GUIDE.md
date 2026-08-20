@@ -49,7 +49,7 @@ ruleset、跨已发布 tag 升级和首次公开发行仍未完成；三平台�
 2. 本地启动 daemon/TUI，展示无模型状态、sandbox status、一次只读任务与 Turn Inspector；
 3. 展示一个受审批的 diff/verification 事件和 receipt；
 4. 运行 `scripts/check_release_contract.py --tag v0.1.0`，再说明 `--require-go` 为什么会失败；
-5. 打开 `docs/RELEASE_SCORECARD.md`，主动指出尚未完成的真实模型和远端证据。
+5. 打开 `docs/status/RELEASE_SCORECARD.md`，主动指出尚未完成的真实模型和远端证据。
 
 不在面试现场临时运行收费 benchmark、创建 tag、改评分卡为 GO 或展示个人 API key。
 
@@ -60,9 +60,9 @@ ruleset、跨已发布 tag 升级和首次公开发行仍未完成；三平台�
 | 为什么不是单进程 CLI？ | 后台任务、客户端重启、统一权限、事件 replay 的收益与复杂度 | `core/app.py`、transport、runtime integration tests |
 | 为什么双存储？ | ledger 易审计/恢复，SQLite 易查询；reconcile 明确主从关系 | session store、runtime reconcile tests |
 | 如何防模型覆盖用户修改？ | preimage hash、PatchPlan、逐 hunk 决策、冲突拒绝 | patching engine、`test_apply_patch.py` |
-| 沙箱真的安全吗？ | Linux/macOS 后端可强制；Windows 明确 degraded；域白名单无后端就拒绝 | `docs/THREAT_MODEL.md`、sandbox boundary script |
+| 沙箱真的安全吗？ | Linux/macOS 后端可强制；Windows 明确 degraded；域白名单无后端就拒绝 | `docs/reference/THREAT_MODEL.md`、sandbox boundary script |
 | 多 Agent 如何避免互相写坏？ | task scope、write claims、worktree、lease、预算和 ledger | subagent/fleet/workflow tests |
-| 50 个任务是不是刷题自证？ | baseline 50/50 按预期失败只证明 verifier；真实效果必须固定模型和公开 harness | `docs/PUBLIC_BENCHMARKS.md` |
+| 50 个任务是不是刷题自证？ | baseline 50/50 按预期失败只证明 verifier；真实效果必须固定模型和公开 harness | `docs/reference/PUBLIC_BENCHMARKS.md` |
 | 有什么失败案例？ | CI #31 的平台假设、CI #34/#35 的闭环与为何仍要求连续 3 次 | `postmortems/2026-08-19-cross-platform-ci.md` |
 | 有什么工程优化？ | TUI 4,176 行拆分，未硬追 <500 行，95 个测试守护行为 | `postmortems/2026-08-17-tui-refactor.md` |
 

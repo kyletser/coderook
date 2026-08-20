@@ -94,12 +94,16 @@ def validate_release_contract(
         issues.append(f"CHANGELOG.md has no [{semver}] release link for {tag}")
     if f"compare/{tag}...HEAD" not in changelog:
         issues.append(f"CHANGELOG.md Unreleased link does not start at {tag}")
-    compatibility = (root / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")
+    compatibility = (root / "docs" / "reference" / "COMPATIBILITY.md").read_text(
+        encoding="utf-8"
+    )
     if f"`{HTTP_API_VERSION}`" not in compatibility:
         issues.append(f"compatibility doc does not declare HTTP {HTTP_API_VERSION}")
     if not (root / "WIRE_PROTOCOL.md").is_file():
         issues.append("WIRE_PROTOCOL.md is missing")
-    scorecard = (root / "docs" / "RELEASE_SCORECARD.md").read_text(encoding="utf-8")
+    scorecard = (root / "docs" / "status" / "RELEASE_SCORECARD.md").read_text(
+        encoding="utf-8"
+    )
     scorecard_match = re.search(r"候选状态：\*\*(NO-GO|GO)", scorecard)
     readiness = scorecard_match.group(1) if scorecard_match is not None else "UNKNOWN"
     if require_go and readiness != "GO":

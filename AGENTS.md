@@ -61,7 +61,7 @@ coderook (CLI)   coderook-tui (TUI, primary frontend)
 
 **`coderook-tui` is the primary frontend.** All user-facing work on task management, observability, and interaction should be designed for and validated in the TUI first. The `coderook` CLI exists only for quick scripted testing and debugging — it is not a product surface. Note that `coderook` with **no arguments launches the TUI**; subcommands are the CLI surface.
 
-**`docs/FUNCTIONAL_ARCHITECTURE.md` is the authoritative architecture reference** (generated from a full code read; regenerate its claims against code when in doubt). The summary below is the orientation map.
+**`docs/reference/FUNCTIONAL_ARCHITECTURE.md` is the authoritative architecture reference** (generated from a full code read; regenerate its claims against code when in doubt). The summary below is the orientation map.
 
 ### Protocol layer (`src/code_rook/core/bus/`)
 
@@ -165,7 +165,7 @@ The planning documents live in `../docs/` (sibling of this repo, not committed h
 - `agent_functional_outline.md` — full feature catalogue
 
 In-repo documentation lives in `docs/`:
-- `docs/FUNCTIONAL_ARCHITECTURE.md` — authoritative functional architecture (component deep-dives, data flows, known issues)
-- `docs/USER_GUIDE.md` / `docs/USAGE_GUIDE.md` — end-user guides
-- `docs/ADR_RUNTIME_CONTRACT.md` — durable runtime contract decisions
+- `docs/reference/FUNCTIONAL_ARCHITECTURE.md` — authoritative functional architecture (component deep-dives, data flows, known issues)
+- `docs/guides/USER_GUIDE.md` / `docs/guides/USAGE_GUIDE.md` — end-user guides
+- `docs/reference/ADR_RUNTIME_CONTRACT.md` — durable runtime contract decisions
 - `RUNBOOK.md`, `WIRE_PROTOCOL.md` — operations and protocol references

@@ -1,6 +1,6 @@
 # CodeRook 公开 Benchmark 复现指南
 
-本文只描述与第三方任务集兼容的执行协议。发布结论仍以[发布评分卡](RELEASE_SCORECARD.md)为准；
+本文只描述与第三方任务集兼容的执行协议。发布结论仍以[发布评分卡](../status/RELEASE_SCORECARD.md)为准；
 没有真实 artifact 时，不把“适配器通过单测”写成公开榜单成绩。
 
 ## 1. 证据层级

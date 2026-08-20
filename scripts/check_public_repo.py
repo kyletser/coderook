@@ -20,19 +20,19 @@ _REQUIRED_FILES = (
     "ROADMAP.md",
     "CHANGELOG.md",
     "docs/README.md",
-    "docs/OPEN_SOURCE_COMPLETION_PLAN.md",
-    "docs/UPGRADING.md",
-    "docs/THREAT_MODEL.md",
-    "docs/PUBLIC_BENCHMARKS.md",
-    "docs/COMPATIBILITY.md",
-    "docs/RELEASING.md",
-    "docs/BRANCH_PROTECTION.md",
-    "docs/MAINTAINERS.md",
-    "docs/CONTRIBUTOR_TASKS.md",
-    "docs/PROJECT_CASE_STUDY.md",
-    "docs/RESUME_EVIDENCE.md",
-    "docs/INTERVIEW_GUIDE.md",
-    "docs/MCP_COMPATIBILITY.md",
+    "docs/status/OPEN_SOURCE_COMPLETION_PLAN.md",
+    "docs/guides/UPGRADING.md",
+    "docs/reference/THREAT_MODEL.md",
+    "docs/reference/PUBLIC_BENCHMARKS.md",
+    "docs/reference/COMPATIBILITY.md",
+    "docs/operations/RELEASING.md",
+    "docs/operations/BRANCH_PROTECTION.md",
+    "docs/operations/MAINTAINERS.md",
+    "docs/operations/CONTRIBUTOR_TASKS.md",
+    "docs/career/PROJECT_CASE_STUDY.md",
+    "docs/career/RESUME_EVIDENCE.md",
+    "docs/career/INTERVIEW_GUIDE.md",
+    "docs/reference/MCP_COMPATIBILITY.md",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.md",
     "docs/postmortems/README.md",
@@ -102,6 +102,19 @@ _SKIP_PARTS = {
     "dist",
     "node_modules",
 }
+_DOCS_ROOT_FILES = {"README.md"}
+_DOCS_ROOT_DIRECTORIES = {
+    "archive",
+    "career",
+    "evidence",
+    "guides",
+    "images",
+    "operations",
+    "plans",
+    "postmortems",
+    "reference",
+    "status",
+}
 _README_REQUIRED_LINKS = (
     "CONTRIBUTING.md",
     "SECURITY.md",
@@ -110,11 +123,11 @@ _README_REQUIRED_LINKS = (
     "GOVERNANCE.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/COMPATIBILITY.md",
+    "docs/reference/COMPATIBILITY.md",
     "ROADMAP.md",
-    "docs/CONTRIBUTOR_TASKS.md",
-    "docs/MAINTAINERS.md",
-    "docs/PROJECT_CASE_STUDY.md",
+    "docs/operations/CONTRIBUTOR_TASKS.md",
+    "docs/operations/MAINTAINERS.md",
+    "docs/career/PROJECT_CASE_STUDY.md",
 )
 _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/ci.yml": (
@@ -162,7 +175,7 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "validate_crash_recovery_reports.py",
         "crash-recovery-aggregate",
     ),
-    "docs/BRANCH_PROTECTION.md": (
+    "docs/operations/BRANCH_PROTECTION.md": (
         "`Required CI gate`",
         "`Required security gate`",
         "OS6-05 只能标记 `PARTIAL`",
@@ -170,18 +183,18 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/CODEOWNERS": ("* @kyletser",),
 }
 _REQUIRED_RESUME_SNIPPETS = {
-    "docs/PROJECT_CASE_STUDY.md": (
+    "docs/career/PROJECT_CASE_STUDY.md": (
         "评分卡为 **NO-GO**",
         "我独立设计并实现",
         "第三方",
     ),
-    "docs/RESUME_EVIDENCE.md": (
+    "docs/career/RESUME_EVIDENCE.md": (
         "## 当前禁止宣称",
         "## 可引用的历史精确数字",
         "日期/基线",
         "production-ready",
     ),
-    "docs/INTERVIEW_GUIDE.md": (
+    "docs/career/INTERVIEW_GUIDE.md": (
         "3 分钟版本",
         "10 分钟版本",
         "当前评分卡仍 NO-GO",
@@ -246,6 +259,28 @@ def find_broken_markdown_links(root: Path = _ROOT) -> list[str]:
                 relative = path.relative_to(root).as_posix()
                 findings.append(f"{relative} -> {match.group(1).strip()}")
     return findings
+
+
+# 校验 docs 顶层只保留索引并按稳定用途目录分组
+def find_docs_layout_issues(root: Path = _ROOT) -> list[str]:
+    docs = root / "docs"
+    if not docs.is_dir():
+        return ["docs directory is missing"]
+    files = {path.name for path in docs.iterdir() if path.is_file()}
+    directories = {path.name for path in docs.iterdir() if path.is_dir()}
+    issues = [
+        f"unexpected docs root file: {name}"
+        for name in sorted(files - _DOCS_ROOT_FILES)
+    ]
+    issues.extend(
+        f"missing docs category: {name}"
+        for name in sorted(_DOCS_ROOT_DIRECTORIES - directories)
+    )
+    issues.extend(
+        f"unexpected docs category: {name}"
+        for name in sorted(directories - _DOCS_ROOT_DIRECTORIES)
+    )
+    return issues
 
 
 # 校验构建元数据是否包含公开发行所需字段与链接
@@ -365,6 +400,7 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues: list[str] = []
     issues.extend(f"missing required file: {path}" for path in find_missing_required_files(root))
     issues.extend(f"broken markdown link: {link}" for link in find_broken_markdown_links(root))
+    issues.extend(find_docs_layout_issues(root))
     issues.extend(find_project_metadata_issues(root))
     issues.extend(find_readme_contract_issues(root))
     issues.extend(find_governance_contract_issues(root))

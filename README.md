@@ -55,7 +55,7 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 ## 快速开始
 
 如果只想安装并开始使用，请直接阅读
-[《CodeRook 使用说明》](docs/USER_GUIDE.md)，其中包含首次配置、快捷键、模型切换、
+[《CodeRook 使用说明》](docs/guides/USER_GUIDE.md)，其中包含首次配置、快捷键、模型切换、
 权限模式、Plan Mode、会话恢复和常见问题。
 
 ### 环境要求
@@ -323,27 +323,27 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 ## 设计文档
 
 - [文档权威索引](docs/README.md)
-- [功能架构](docs/FUNCTIONAL_ARCHITECTURE.md)
-- [2026 H2 优化路线图与 Stage 0–4 复盘](docs/OPTIMIZATION_ROADMAP.md)
-- [生产就绪改造计划](docs/PRODUCTION_READINESS_PLAN.md)
-- [开源级补全计划](docs/OPEN_SOURCE_COMPLETION_PLAN.md)
+- [功能架构](docs/reference/FUNCTIONAL_ARCHITECTURE.md)
+- [2026 H2 优化路线图与 Stage 0–4 复盘](docs/plans/OPTIMIZATION_ROADMAP.md)
+- [生产就绪改造计划](docs/plans/PRODUCTION_READINESS_PLAN.md)
+- [开源级补全计划](docs/status/OPEN_SOURCE_COMPLETION_PLAN.md)
 - [Wire Protocol](WIRE_PROTOCOL.md)
-- [Runtime API](docs/RUNTIME_API.md)
-- [外部接口兼容与弃用策略](docs/COMPATIBILITY.md)
-- [MCP 官方 SDK 互操作合同](docs/MCP_COMPATIBILITY.md)
+- [Runtime API](docs/reference/RUNTIME_API.md)
+- [外部接口兼容与弃用策略](docs/reference/COMPATIBILITY.md)
+- [MCP 官方 SDK 互操作合同](docs/reference/MCP_COMPATIBILITY.md)
 - [运行手册](RUNBOOK.md)
-- [升级、备份与回滚](docs/UPGRADING.md)
-- [发行、SBOM、签名与验证](docs/RELEASING.md)
+- [升级、备份与回滚](docs/guides/UPGRADING.md)
+- [发行、SBOM、签名与验证](docs/operations/RELEASING.md)
 - [Roadmap](ROADMAP.md)
-- [项目案例与简历证据](docs/PROJECT_CASE_STUDY.md)
-- [新贡献者小任务](docs/CONTRIBUTOR_TASKS.md)
-- [维护者与维护边界](docs/MAINTAINERS.md)
-- [Main 分支保护合同](docs/BRANCH_PROTECTION.md)
-- [威胁模型](docs/THREAT_MODEL.md)
-- [公开 Benchmark 复现](docs/PUBLIC_BENCHMARKS.md)
-- [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
-- [与 Claude Code 的差距分析](docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
-- [learn-claude-code 机制移植说明](docs/LEARN_CLAUDE_CODE_PORT.md)
+- [项目案例与简历证据](docs/career/PROJECT_CASE_STUDY.md)
+- [新贡献者小任务](docs/operations/CONTRIBUTOR_TASKS.md)
+- [维护者与维护边界](docs/operations/MAINTAINERS.md)
+- [Main 分支保护合同](docs/operations/BRANCH_PROTECTION.md)
+- [威胁模型](docs/reference/THREAT_MODEL.md)
+- [公开 Benchmark 复现](docs/reference/PUBLIC_BENCHMARKS.md)
+- [轻量 Agent 完成度审计](docs/archive/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
+- [与 Claude Code 的差距分析](docs/archive/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
+- [learn-claude-code 机制移植说明](docs/archive/LEARN_CLAUDE_CODE_PORT.md)
 
 ## 项目定位
 
@@ -355,7 +355,7 @@ CodeRook 适合作为 AI Agent 工程方向的学习与求职项目，因为它�
 - 如何隔离并行子 Agent 的代码修改？
 - 如何用事件、Trace 和测试证明 Agent 不是黑盒？
 
-项目仍处于候选 Beta 前的工程验证阶段，不宣称一比一复刻 Claude Code 或 Codex，也不在真实模型、三平台安全、强杀恢复和分发评分卡达标前宣称生产就绪。当前门禁见 [发布评分卡](docs/RELEASE_SCORECARD.md)。
+项目仍处于候选 Beta 前的工程验证阶段，不宣称一比一复刻 Claude Code 或 Codex，也不在真实模型、三平台安全、强杀恢复和分发评分卡达标前宣称生产就绪。当前门禁见 [发布评分卡](docs/status/RELEASE_SCORECARD.md)。
 
 ## 参与贡献与安全
 

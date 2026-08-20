@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        请先阅读 CONTRIBUTING.md 和 docs/CONTRIBUTOR_TASKS.md。一个 Issue 只认领一个 READY 任务；维护者确认没有重复工作后再开始实现。
+        请先阅读 CONTRIBUTING.md 和 docs/operations/CONTRIBUTOR_TASKS.md。一个 Issue 只认领一个 READY 任务；维护者确认没有重复工作后再开始实现。
   - type: input
     id: task
     attributes:

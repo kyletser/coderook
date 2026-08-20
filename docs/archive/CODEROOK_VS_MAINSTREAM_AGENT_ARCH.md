@@ -1,14 +1,14 @@
 # CodeRook 与主流 Agent 架构对比及后续改造方向
 
 > 历史快照：本文保留早期结构性分析，正文中的“当前状态”和评分已经过期。当前架构见
-> [FUNCTIONAL_ARCHITECTURE.md](FUNCTIONAL_ARCHITECTURE.md)，开源补全工作见
-> [OPEN_SOURCE_COMPLETION_PLAN.md](OPEN_SOURCE_COMPLETION_PLAN.md)。
+> [FUNCTIONAL_ARCHITECTURE.md](../reference/FUNCTIONAL_ARCHITECTURE.md)，开源补全工作见
+> [OPEN_SOURCE_COMPLETION_PLAN.md](../status/OPEN_SOURCE_COMPLETION_PLAN.md)。
 
 > Generated Time: 2026-07-21 10:01
 >
 > 审计对象：当前工作区 `C:/Users/Administrator/Desktop/coderook` 的真实代码
 > 对标对象：当前业界主流 Agent 架构范式（Coding-Loop / Graph-State / 对话型多 Agent / Handoff-SDK / 远程持久化）
-> 结论口径：以代码证据为准，与 [CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md](./CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md) 互补，本文聚焦"结构性差异"，不重复逐条产品差距清单
+> 结论口径：以代码证据为准，与 [CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md](CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md) 互补，本文聚焦"结构性差异"，不重复逐条产品差距清单
 
 本报告不重复公开文档所能给出的"功能清单"对比，而是从**控制流范式、状态分布、扩展协议、执行隔离、可恢复性**五个工程维度，把 CodeRook 与主流架构做结构性对照，并据此提出后续改造方向。
 
@@ -34,7 +34,7 @@ CodeRook 已经具备了一个"单循环 Coding Agent + Daemon"的可运行实�
 但与主流架构相比，**差距的主要来源不是"少几个工具"，而是控制流抽象层次**：
 
 1. **单一 ReAct 循环 = 唯一控制流**。主流都至少提供"图/状态机"或"handoff"之一作为第二层编排；CodeRook 只有线性 loop + forward-only 的 `spawn_agent`，没有任务边、没有 handoff、没有 group chat。
-2. **Agent 看作"提示词+工具白名单"**，而主流把 Agent 看作"可携带上下文、可路由、可交接的结构体"。`AgentProfile` 只有 5 个字段，`profile.model` 已解析但不接线（见 [loader.py](../src/code_rook/core/agents/loader.py#L14)）。
+2. **Agent 看作"提示词+工具白名单"**，而主流把 Agent 看作"可携带上下文、可路由、可交接的结构体"。`AgentProfile` 只有 5 个字段，`profile.model` 已解析但不接线（见 [loader.py](../../src/code_rook/core/agents/loader.py#L14)）。
 3. **Daemon 进程模型相对独特**。多数竞品（Claude Code、Codex CLI、Cursor、Aider）都是单进程 CLI 或 IDE 内嵌，CodeRook 的 daemon-IPC 解耦是一个优点，但 CodeRook 的 daemon 本身没有"跨进程的行为市场"——它只是一个本地服务。
 4. **运行状态无法跨步恢复**。LangGraph 有 Checkpointer、AutoGen 有终止/接续 API、Codex 有 session resume，CodeRook 的控制态（loop 状态、tool_call 队列、permission future）都在内存，崩溃即丢，文件有 checkpoint 但 run 不可续。
 5. **可观测性有事件总线，但没有 trace-as-graph**。主流架构（LangGraph Studio、OpenTelemetry、AGENTS.md-based provenance）能给"决定路径"而不是"事件流"；CodeRook 的 `events.jsonl` 是平面流。
@@ -67,9 +67,9 @@ coderook-core (daemon)
 
 关键约束：
 
-- `AgentRunner` 每个 turn 重建：[session/manager.py](../src/code_rook/core/session/manager.py)、[app.py](../src/code_rook/core/app.py)。
-- 一个 run 只对应一个 `ExecutionContext`、一个 `ToolRegistry`、一个 `AgentLoop` 实例：[loop.py](../src/code_rook/core/loop.py#L112)、[runner.py](../src/code_rook/core/runner.py)、[subagent/tool.py](../src/code_rook/core/subagent/tool.py)。
-- 多 Agent 只有 forward委托（父→子），子 Agent 把结果以字符串回填给父循环：[subagent/tool.py](../src/code_rook/core/subagent/tool.py#L63)。
+- `AgentRunner` 每个 turn 重建：[session/manager.py](../../src/code_rook/core/session/manager.py)、[app.py](../../src/code_rook/core/app.py)。
+- 一个 run 只对应一个 `ExecutionContext`、一个 `ToolRegistry`、一个 `AgentLoop` 实例：[loop.py](../../src/code_rook/core/loop.py#L112)、[runner.py](../../src/code_rook/core/runner.py)、[subagent/tool.py](../../src/code_rook/core/subagent/tool.py)。
+- 多 Agent 只有 forward委托（父→子），子 Agent 把结果以字符串回填给父循环：[subagent/tool.py](../../src/code_rook/core/subagent/tool.py#L63)。
 
 ### 2.2 对标主流范式
 
@@ -96,7 +96,7 @@ CodeRook 明确属于 **Coding-Loop** 范式，因此主要的结构性对标对
 
 核心结构：`State(TypedDict)` + `节点函数(State)->State` + `边`，由 `Checkpointer`（Memory/Sqlite/Redis）写入每个 super-step 的状态快照，可在任意节点 `interrupt()` 等待人工，并 `update_state` 注入。可行性：
 
-- 可以表达"planner → executor → reviewer → accept(条件回边)"这种条件环，CodeRook 的 `AgentProfile` 三角色（[agents/builtin/](../src/code_rook/core/agents/builtin/)）本来目标就是这样，但没有"边"把它们组织起来，目前只是靠 `spawn_agent` 的字符串结果隐式回路。
+- 可以表达"planner → executor → reviewer → accept(条件回边)"这种条件环，CodeRook 的 `AgentProfile` 三角色（[agents/builtin/](../../src/code_rook/core/agents/builtin)）本来目标就是这样，但没有"边"把它们组织起来，目前只是靠 `spawn_agent` 的字符串结果隐式回路。
 - 可以表达 streaming partial，CodeRook 的 `llm.token` 只到事件层而不到状态层。
 
 ### 3.3 对话型多 Agent（AutoGen / CrewAI）
@@ -115,23 +115,23 @@ CodeRook 明确属于 **Coding-Loop** 范式，因此主要的结构性对标对
 
 核心：把每一步执行视为一个 durable workflow，可 `sleep(seconds)`、`wait_for_signal`、`checkpoint`。即便进程崩溃，runtime 也按事件日志重放。`agent_step` 永不丢。
 
-与 CodeRook 的差异：CodeRook 的"恢复"只覆盖文件和 transcript；run 状态不可续，后台 subagent 与 Runner 同生命周期（[runner.py](../src/code_rook/core/runner.py#L373) cancel_descendants），等于放弃了 durable orchestration。
+与 CodeRook 的差异：CodeRook 的"恢复"只覆盖文件和 transcript；run 状态不可续，后台 subagent 与 Runner 同生命周期（[runner.py](../../src/code_rook/core/runner.py#L373) cancel_descendants），等于放弃了 durable orchestration。
 
 ## 4. 真实映射：架构现状点评
 
 ### 4.1 循环（loop.py）
 
-`AgentLoop.run` 是一个 `while not is_done()` 的 plan-act-observe：[loop.py#L112](../src/code_rook/core/loop.py#L112)。
+`AgentLoop.run` 是一个 `while not is_done()` 的 plan-act-observe：[loop.py#L112](../../src/code_rook/core/loop.py#L112)。
 
-- 仅有一个"模型→工具"选择点；模型在一轮里返回多个 tool_use 时 **总是串行**：[loop.py#L200](../src/code_rook/core/loop.py#L200)。
+- 仅有一个"模型→工具"选择点；模型在一轮里返回多个 tool_use 时 **总是串行**：[loop.py#L200](../../src/code_rook/core/loop.py#L200)。
 - 终止条件只有 `end_turn` / `max_steps` / `llm_error`；没有"目标完成判断"、"plan 不变式"、"verification 工具回边"。
-- 上下文溢出触发一次反应式压缩，之后不再触发：[loop.py#L160](../src/code_rook/core/loop.py#L160)。
+- 上下文溢出触发一次反应式压缩，之后不再触发：[loop.py#L160](../../src/code_rook/core/loop.py#L160)。
 
 这定下了 CodeRook 的控制流表达力上限：**等同于早期 ReAct，没有 LangGraph 那种可由开发者加密的环，也没有 Claude Code 的 TodoWrite 软状态机**。
 
 ### 4.2 工具系统（tools/）
 
-- 工具是用 dataclass + Pydantic params 注册的，schema 走 JSON Schema，调用器有结构化错误分类（schema/timeout/permission/rate_limit/runtime）：[tools/errors.py](../src/code_rook/core/tools/errors.py)。
+- 工具是用 dataclass + Pydantic params 注册的，schema 走 JSON Schema，调用器有结构化错误分类（schema/timeout/permission/rate_limit/runtime）：[tools/errors.py](../../src/code_rook/core/tools/errors.py)。
 - 但**没有工具能力的显式声明**：`side_effect`、`idempotency`、`retry_policy`、`composable`、`requires_permission_signoff` 都隐含在代码里。这导致：
   - `runtime_error` 默认三次重试，可能副作用放大（详见 CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS §6.4 P0-2）。
   - 并行执行策略无法确定哪些工具可并行。
@@ -140,16 +140,16 @@ CodeRook 明确属于 **Coding-Loop** 范式，因此主要的结构性对标对
 
 ### 4.3 多 Agent / 子 Agent（subagent/）
 
-`SpawnAgentTool` 是 forward-only 委托：[subagent/tool.py#L63](../src/code_rook/core/subagent/tool.py#L63)。
+`SpawnAgentTool` 是 forward-only 委托：[subagent/tool.py#L63](../../src/code_rook/core/subagent/tool.py#L63)。
 
 - 子 Agent 用全新 `ExecutionContext`，prompt 是父 Agent 写的字符串（即"模型即模型编排器"，而非 LangGraph 显式边）。
 - 不能让子 Agent 在自己循环里 `request_human`、`handoff` 回父、或 Update 共享状态。
-- `profile.model` / permissions / skills / MCP 在子 Agent 上没有真正接线，子 Agent 只继承父 provider：[subagent/tool.py](../src/code_rook/core/subagent/tool.py#L123)。
+- `profile.model` / permissions / skills / MCP 在子 Agent 上没有真正接线，子 Agent 只继承父 provider：[subagent/tool.py](../../src/code_rook/core/subagent/tool.py#L123)。
 - `BackgroundTaskRegistry` 跟 Runner 同生命周期，而 Runner 每 turn 重建（runner.py / app.py / session/manager.py），等于说后台 subagent 不能跨 turn 被找到。
 
 ### 4.4 任务系统（task/ + tools/builtin/task_*）
 
-CodeRook 有 TaskManager 与 `task_create / claim / update / list / get` 工具，且 task_claim 是原子认领：[task/manager.py](../src/code_rook/core/task/manager.py)。这是一个亮点。但它和主流的差距是**任务对象不是 Agent 的状态机**：
+CodeRook 有 TaskManager 与 `task_create / claim / update / list / get` 工具，且 task_claim 是原子认领：[task/manager.py](../../src/code_rook/core/task/manager.py)。这是一个亮点。但它和主流的差距是**任务对象不是 Agent 的状态机**：
 
 - 任务没有 `assigned_agent_id`、`dependencies`、`subtasks`、`status machine`（只有 pending/in_progress/completed）。
 - 没有让 loop 根据 task 状态选择下一步——loop 仍然让模型自由 step；任务只是"便签"。
@@ -160,28 +160,28 @@ CodeRook 有 TaskManager 与 `task_create / claim / update / list / get` 工具�
 
 ### 4.5 权限与人类介入（permissions/）
 
-- 4 层静态 + ASK Future 机制是成熟 Agent 都有的：[permissions/manager.py](../src/code_rook/core/permissions/manager.py)。
+- 4 层静态 + ASK Future 机制是成熟 Agent 都有的：[permissions/manager.py](../../src/code_rook/core/permissions/manager.py)。
 - 但只有"工具调用层"的人类介入；主流还有**Plan 审批、目标澄清、Steering**（运行中注入新消息、打断当前 step）。CodeRook 没有 `AskUserQuestion`、`Plan mode`、`session.send_message` 在 run 期间入队机制（manager 在忙时直接拒：CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS §6.1）。
 - `permission.respond` 走 IPC 异步回，这是好的；但**没有 permission 的细粒度规则**（路径 glob、命令 prefix、domain、MCP server、Agent type）。
 
 ### 4.6 持久化与会话（session/）
 
-- `SessionStore` 写 meta/thread/notes、压缩前备份：[session/store.py](../src/code_rook/core/session/store.py)。
-- 但 transcript **批量落盘**：run 结束才写新消息：[runner.py](../src/code_rook/core/runner.py#L249)，崩溃丢本轮。
+- `SessionStore` 写 meta/thread/notes、压缩前备份：[session/store.py](../../src/code_rook/core/session/store.py)。
+- 但 transcript **批量落盘**：run 结束才写新消息：[runner.py](../../src/code_rook/core/runner.py#L249)，崩溃丢本轮。
 - run 控制状态（当前 step、tool_use 在等谁、compaction 是否已触发）**完全在内存**。
 - 没有 store schema_version、迁移器、损坏 JSONL 修复、retention。
 - 与 LangGraph Checkpointer 的最大差异：CodeRook 把"事实"和"状态"混在 transcript，没有独立的"运行状态"快照层。
 
 ### 4.7 可观测性（events/ + trace/）
 
-- 事件总线覆盖 Run/Step/Tool/LLM/Permission/Session/Compaction/Subagent/Background/Skill，并写 `events.jsonl` + 脱敏 Trace：[events/bus.py](../src/code_rook/core/events/bus.py)、[trace/](../src/code_rook/core/trace/)。
+- 事件总线覆盖 Run/Step/Tool/LLM/Permission/Session/Compaction/Subagent/Background/Skill，并写 `events.jsonl` + 脱敏 Trace：[events/bus.py](../../src/code_rook/core/events/bus.py)、[trace/](../../src/code_rook/core/trace)。
 - 但事件是平面流，**不能重组为执行图**：没有 `decision_path`、没有 `subagent.parent_run_id` 的回放事件树（事件里有 `parent_run_id` 字段但 viewer 没有重建）、没有 OpenTelemetry export、没有 cost/cost 汇总。
 - LangGraph Studio / Sentry for Agents / Arize Phoenix 都把 trace 当成"图视图"，CodeRook 没有这一层 UI。
 
 ### 4.8 扩展协议（skills + mcp + hooks）
 
-- Skills 显式 `/slash` 触发，frontmatter 是自写行解析（不安全）：[skills/loader.py](../src/code_rook/core/skills/loader.py)，参见 CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS §6.9。
-- MCP 只到 tools/list + tools/call，stdio/raw tcp，无 HTTP/SSE/OAuth/resources/prompts/sampling：[mcp/client.py](../src/code_rook/core/mcp/client.py)。
+- Skills 显式 `/slash` 触发，frontmatter 是自写行解析（不安全）：[skills/loader.py](../../src/code_rook/core/skills/loader.py)，参见 CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS §6.9。
+- MCP 只到 tools/list + tools/call，stdio/raw tcp，无 HTTP/SSE/OAuth/resources/prompts/sampling：[mcp/client.py](../../src/code_rook/core/mcp/client.py)。
 - Hooks 有 `UserPromptSubmit / PreToolUse / PostToolUse / Stop`（loop.py 末尾 + runner.py 起点），但没有 `SessionStart/End / PreCompact / SubagentStart / Permission / Notification`，也无法改 prompt 或返回 additional context。
 
 ## 5. 逐维度结构性对比矩阵
@@ -218,11 +218,11 @@ CodeRook 把 Agent 等同于"system_prompt + 工具白名单 + 单循环"（Agen
 - `triage agent handoff -> frontend_agent | backend_agent | db_agent`（OpenAI Agents SDK 标准模板）
 - `sequential crew with review step`（CrewAI 标准模板）
 
-`spawn_agent` 是"父→子委托回字符串"，子 Agent 无法把当前会话所有权交回或交给别人，无法让 reviewer 修改 executor 的计划再让 executor 重跑。`AgentProfile` 三角色文件已经存在（[agents/builtin/](../src/code_rook/core/agents/builtin/) `executor.toml / planner.toml / reviewer.toml`），但**没有把这些角色编排起来的执行器**——这是一个"差最后一层胶水"的状态。
+`spawn_agent` 是"父→子委托回字符串"，子 Agent 无法把当前会话所有权交回或交给别人，无法让 reviewer 修改 executor 的计划再让 executor 重跑。`AgentProfile` 三角色文件已经存在（[agents/builtin/](../../src/code_rook/core/agents/builtin) `executor.toml / planner.toml / reviewer.toml`），但**没有把这些角色编排起来的执行器**——这是一个"差最后一层胶水"的状态。
 
 ### F2. 运行不可恢复（durable gap）
 
-`ExecutionContext` 是运行时唯一状态对象，且只在内存：[context.py](../src/code_rook/core/context.py)。
+`ExecutionContext` 是运行时唯一状态对象，且只在内存：[context.py](../../src/code_rook/core/context.py)。
 
 - `step`、`status`、`reason`、`result`、`_reactive_compaction_attempted` 都不持久。
 - crash 后只能用 transcript 拼回一段没有控制状态的对话。
@@ -232,7 +232,7 @@ CodeRook 把 Agent 等同于"system_prompt + 工具白名单 + 单循环"（Agen
 
 ### F3. 工具能力模型缺失
 
-`BaseTool` 没有 `side_effect / idempotency / retry_policy / needs_permission / can_parallel`：[tools/base.py](../src/code_rook/core/tools/base.py)。
+`BaseTool` 没有 `side_effect / idempotency / retry_policy / needs_permission / can_parallel`：[tools/base.py](../../src/code_rook/core/tools/base.py)。
 
 后果：
 
@@ -278,7 +278,7 @@ CodeRook 没有 plan presentation、没有 ask、没有 steering 消息队列（
 
 目标：让 `spawn_agent` 之外出现 **handoff** 和 **group collaboration** 两类缺的多 Agent 模式。
 
-1. **AgentProfile 真正生效**。解析 `model / allowed_tools / system_prompt / inherits_parent_context / mcp_scope / permission_scope`，并让 SpawnAgentTool 用它：[agents/loader.py#L14](../src/code_rook/core/agents/loader.py#L14)。
+1. **AgentProfile 真正生效**。解析 `model / allowed_tools / system_prompt / inherits_parent_context / mcp_scope / permission_scope`，并让 SpawnAgentTool 用它：[agents/loader.py#L14](../../src/code_rook/core/agents/loader.py#L14)。
    - 验收：reviewer 用便宜 model；executor 用强 model；reviewer 不能执行 bash。
 2. **Handoff 工具**。新增 `agent_handoff(target, carry_context=True)`：把当前 ExecutionContext 的所有权交给目标 Agent，并允许目标 Agent 在结束后把控制权还回。与 `spawn_agent`（fork + 等结果）并列。
    - 验收：triage agent 能 handoff 给 frontend_agent，frontend 完成后会话所有权回到 triage。
@@ -293,7 +293,7 @@ CodeRook 没有 plan presentation、没有 ask、没有 steering 消息队列（
 
 1. **RunStateStore（运行态快照）**。把 `ExecutionContext.__dict__` 的运行态字段（step/status/reason/_reactive_compaction_attempted/tool_use_pending/permission_pending）每步写 `run_path/state.jsonl`，append-only。
    - 验收：daemon kill 后重启能识别 interrupted run，并能用命令继续或干净结束。
-2. **transcript 增量落盘**。assistant message 与 tool_result 在每个 step 完成（含 sub-step）立即 append 已带 seq number；删除批量落盘路径：[runner.py#L249](../src/code_rook/core/runner.py#L249)。
+2. **transcript 增量落盘**。assistant message 与 tool_result 在每个 step 完成（含 sub-step）立即 append 已带 seq number；删除批量落盘路径：[runner.py#L249](../../src/code_rook/core/runner.py#L249)。
    - 验收：强杀进程后 thread 不会有 orphan `tool_use`。
 3. **后台 subagent 状态持久**。Phase B 的后台 AgentRegistry 用 RunStateStore 做状态表，崩溃后可标记 interrupted 并能被父 Agent 看见。
 4. **SessionRepository**。daemon 启动扫描 meta + schema_version 迁移 + 懒加载 transcript（与 CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS §6.6 同一建议）。
@@ -378,7 +378,7 @@ CodeRook 的"差异化资产"是**类型化协议 + daemon 解耦 + 工具权限
 
 主流资料按范式，不一一列具体版本：
 
-- Coding-Loop：Claude Code 官方文档（见 [CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md](./CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md) §13）、OpenAI Codex CLI / Codex agent、Cursor agent docs。
+- Coding-Loop：Claude Code 官方文档（见 [CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md](CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md) §13）、OpenAI Codex CLI / Codex agent、Cursor agent docs。
 - Graph-State：LangGraph docs（StateGraph / Checkpointer / interrupt / Command）。
 - 对话型多 Agent：AutoGen v0.4 / AG2 docs、CrewAI Concepts（Crew/Task/Process）、MetaGPT。
 - Handoff-SDK：OpenAI Agents SDK（Agent / Handoff / Guardrail / Runner）、Google Agent Development Kit（Sub-agents / Transfers）。

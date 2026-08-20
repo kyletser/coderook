@@ -119,7 +119,7 @@ flowchart LR
 外部消费者以 `/v1/capabilities` 和 `X-CodeRook-API-Version` 协商 HTTP/SSE 版本；Python SDK
 同步/异步客户端都暴露 `capabilities()` 与 `usage()`。`stream-json` 每行携带 schema version，
 公共接口的兼容变化、错误稳定边界和“两 minor 且不少于 90 天”弃用窗口由
-`docs/COMPATIBILITY.md` 统一定义。
+`docs/reference/COMPATIBILITY.md` 统一定义。
 | hooks/MCP/git/rg/pyright/tsc 子进程 | 瞬态 | 由 daemon 或工具层按需拉起，全部有超时与进程树终止保护 |
 
 ### 2.2 端口与本地端点
@@ -986,7 +986,7 @@ VSIX job 则通过 `@vscode/test-electron` 在 Xvfb 的真实 Extension Host 中
 Syft 为可下载产物与镜像生成 SPDX JSON SBOM；`generate_release_manifest.py` 流式生成
 `SHA256SUMS` 和机器可读 manifest；`actions/attest` 使用 GitHub OIDC 生成构建来源与 SBOM
 attestation；Cosign 使用短期 OIDC 身份签名容器和校验和文件，不在仓库或 Secrets 中保存长期
-签名私钥。`docs/RELEASING.md` 给出消费者侧验证命令。以上代码只能证明链路定义完整；首次真实
+签名私钥。`docs/operations/RELEASING.md` 给出消费者侧验证命令。以上代码只能证明链路定义完整；首次真实
 tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发布评分卡中的外部证据。
 
 ---

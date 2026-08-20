@@ -68,7 +68,7 @@
 ## 3. R0：真实任务 Benchmark 与发布评分卡
 
 > 实施状态（2026-08-18）：50 个任务、类别/预算/suite 契约校验、fixture 隔离、真实 `AgentRunner` 执行、文件改动审计、verifier、JSON/Markdown 报告和 quick/nightly/release workflow 已落地；尚未形成真实模型基线。
-> 各工作项的实时证据与剩余门禁见 `docs/PRODUCTION_GAP_MATRIX.md`；未列为完成的项目不得仅凭路线图文本视为已交付。
+> 各工作项的实时证据与剩余门禁见 `docs/status/PRODUCTION_GAP_MATRIX.md`；未列为完成的项目不得仅凭路线图文本视为已交付。
 
 ### 3.1 目标
 
@@ -133,7 +133,7 @@ src/code_rook/benchmark/    # 任务加载、运行、评分、报告
 
 #### R0.4 发布评分卡
 
-在 `docs/RELEASE_SCORECARD.md` 维护最近一次候选发布的：
+在 `docs/status/RELEASE_SCORECARD.md` 维护最近一次候选发布的：
 
 - commit、模型与配置指纹。
 - 各类别成功率和成本分位数。

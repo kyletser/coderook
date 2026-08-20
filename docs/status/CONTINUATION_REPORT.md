@@ -44,7 +44,7 @@
 `.mypy_cache/`、`.pytest_cache/`、`.ruff_cache/` 均为可再生成且被 Git 忽略的本地产物，阶段收尾时可清理；
 `.venv/`、`.coderook/` 与 `.workbuddy/` 分别属于开发环境、项目运行状态和工具状态，不应随意删除。
 
-历史规格已统一放入 `docs/SPECDRIVEN_SPEC.md`，权限诊断入口已放入
+历史规格已统一放入 `docs/archive/SPECDRIVEN_SPEC.md`，权限诊断入口已放入
 `scripts/trace_permission_flow.py`；根目录不再混放专题文档或维护脚本。
 
 ## 明日开始顺序

@@ -1,7 +1,7 @@
 # CodeRook 升级、备份与回滚
 
 本文档适用于从 PyPI wheel、源码检出或发行包安装的 CodeRook。公开版本发布前，升级兼容性仍以
-[发布评分卡](RELEASE_SCORECARD.md)为准；没有完成跨版本 fixture 的版本不得宣称无损升级已经验证。
+[发布评分卡](../status/RELEASE_SCORECARD.md)为准；没有完成跨版本 fixture 的版本不得宣称无损升级已经验证。
 
 ## 升级前先备份
 

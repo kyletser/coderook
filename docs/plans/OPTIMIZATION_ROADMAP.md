@@ -3,13 +3,13 @@
 - 生成日期：2026-08-16
 - 基准代码版本：`817cce1`（feat: expand LLM provider support, runtime service, and project docs）
 - 时间跨度：约 14 周（3-6 个月），综合路线：体验快赢 → 生态兼容 + 感知能力 → 智能与经济性 → 安全与可信 → TUI 重构 + 管理面板 → 形态扩展
-- 现状基准：`docs/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
+- 现状基准：`docs/reference/FUNCTIONAL_ARCHITECTURE.md` v1.1 §20（2026-08-06）
 - **进度基线（2026-08-18 更新）**：阶段 0、1、2、3、4 全部完成（阶段 2 收尾见 §5.6、阶段 3 见 §5.7、阶段 4 见 §5.8 复盘）；原阶段 5 保留为形态扩展方向占位，实际执行顺序由生产就绪计划接管。各工作项状态见正文 ✅/⏸/⬜ 标注与各阶段复盘记录。
-- **后续执行计划**：Stage 5 不再直接按形态扩展顺序开工；先执行 `docs/PRODUCTION_READINESS_PLAN.md` 的 R0–R2（真实任务证据、安全与 durable 一致性），达到公开 Beta 门禁后再推进 SDK、MCP 与 IDE。
+- **后续执行计划**：Stage 5 不再直接按形态扩展顺序开工；先执行 `docs/plans/PRODUCTION_READINESS_PLAN.md` 的 R0–R2（真实任务证据、安全与 durable 一致性），达到公开 Beta 门禁后再推进 SDK、MCP 与 IDE。
 - 本文档**取代**以下历史差距分析（它们描述的缺口多数已修复或已过时）：
-  - `docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
-  - `docs/CLAUDE_CODE_EXPERIENCE_PARITY.md` 的 2026-07-30 旧版（81/100 计分已撤销；当前文件已重写为无虚假分数的发布边界）
-  - `docs/IMPLEMENTATION_PROGRESS.md` / `docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md`（2026-07-16，历史快照）
+  - `docs/archive/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md`（2026-07-15，35-45% parity，历史快照）
+  - `docs/plans/CLAUDE_CODE_EXPERIENCE_PARITY.md` 的 2026-07-30 旧版（81/100 计分已撤销；当前文件已重写为无虚假分数的发布边界）
+  - `docs/archive/IMPLEMENTATION_PROGRESS.md` / `docs/archive/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md`（2026-07-16，历史快照）
 
 ---
 
@@ -319,7 +319,7 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 > 目标：先拆上帝类（执行项目自己的 TUI_REFACTOR_PLAN.md），再在干净骨架上补管理面板——顺序不可颠倒，否则 app.py 会继续膨胀。
 
 **W4.1 执行 TUI 五阶段拆分**（G25）✅
-- 按 `docs/TUI_REFACTOR_PLAN.md`：控件外迁（widgets/）→ 连接层（client/）→ 命令注册表（commands/）→ IPC 封装（ipc_actions/）→ 事件渲染器（render/）；不改交互语义。
+- 按 `docs/plans/TUI_REFACTOR_PLAN.md`：控件外迁（widgets/）→ 连接层（client/）→ 命令注册表（commands/）→ IPC 封装（ipc_actions/）→ 事件渲染器（render/）；不改交互语义。
 - 拆分后单文件 <500 行；`/` 命令注册表化使新命令 = 一个声明 + 一个 handler（为 W4.2/W4.3 降成本）。
 - 每拆一阶段跑全量 TUI 单测（65 个）+ 手工冒烟清单。
 - **落地结果**：app.py 在五阶段拆分完成时由 4,176 行降至 ~2,110 行；随后合入管理面板与输入体验后，最终为约 2,246 行（5 个独立重构提交，每阶段一次，均通过完整 CI gate）。单文件 **<500 行未达成**——剩余为 App 编排/状态/一次性流程（会话选择、权限卡编排、steer 等），与 Textual 消息泵强耦合，脱离会引入不必要抽象，计划阶段的"收益递减即停"职责已触发。**结构性目标达成**：连机、命令、IPC、事件渲染均模块化，新增一条斜杠命令实测 ≤30 行（W4.2 的管理四条）。详见 §5.8 复盘。
@@ -349,7 +349,7 @@ CodeRook 在"工程系统"维度（持久化、权限、编排、可观测、恢
 1. **IDE 集成（VS Code 扩展）**——技术基础最好：HTTP API（7438）+ SSE 游标回放已就绪，扩展只需消费 thread/turn/items 接口；收益是打开 CodeRook 到 IDE 用户群。
 2. **headless SDK**：`coderook run --output-format json|stream-json`（对标 `claude -p --output-format stream-json`、Codex exec），解锁 CI/脚本编排场景——durable runtime 本就是这个场景的卖点。
 3. **MCP 协议补全**：Streamable HTTP transport、OAuth、resources/prompts 入口、断线重连——跟随 MCP 生态演进。
-4. **Desktop（Tauri）**：`docs/PC_DESKTOP_MIGRATION_PLAN.md` 已有方案；触发条件 = TUI 重构完成且 IDE 扩展验证了 HTTP API 稳定性。
+4. **Desktop（Tauri）**：`docs/plans/PC_DESKTOP_MIGRATION_PLAN.md` 已有方案；触发条件 = TUI 重构完成且 IDE 扩展验证了 HTTP API 稳定性。
 5. **插件市场 / 跨设备同步 / 云协同**：远期，与"本地优先"定位的张力需单独决策（可参考 opencode 的 share links 作为轻量折中）。
 
 ---
@@ -450,14 +450,14 @@ W2.5 步数续跑与 W2.3 增量缓存断点的 WIP 缺陷已修复并提交：
 
 | 文档 | 状态 | 说明 |
 |---|---|---|
-| docs/FUNCTIONAL_ARCHITECTURE.md v1.2 | ✅ 现行权威 | 架构深描 + §20 已知问题清单（本路线图的输入） |
-| docs/TUI_REFACTOR_PLAN.md | ✅ 现行 | 阶段 4 W4.1 的执行依据 |
-| docs/ADR_RUNTIME_CONTRACT.md | ✅ 现行 | 持久运行时契约决策 |
-| docs/OPTIMIZATION_ROADMAP.md（本文档） | ✅ 现行 | 产品优化路线图（取代下列历史差距文档） |
-| docs/PRODUCTION_READINESS_PLAN.md | ✅ 现行 | Stage 4 后的生产就绪执行计划与量化发布门禁 |
-| docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md | 🗄 历史 | 2026-07-15 快照，缺口多数已修复 |
-| docs/CLAUDE_CODE_EXPERIENCE_PARITY.md | 🗄 历史 | 2026-07-30 评分 81/100，早于 R1-R9 批次 |
-| docs/IMPLEMENTATION_PROGRESS.md | 🗄 历史 | 2026-07-16 快照 |
-| docs/PC_DESKTOP_MIGRATION_PLAN.md | ✅ 远期参考 | 阶段 5 Desktop 方案 |
+| docs/reference/FUNCTIONAL_ARCHITECTURE.md v1.2 | ✅ 现行权威 | 架构深描 + §20 已知问题清单（本路线图的输入） |
+| docs/plans/TUI_REFACTOR_PLAN.md | ✅ 现行 | 阶段 4 W4.1 的执行依据 |
+| docs/reference/ADR_RUNTIME_CONTRACT.md | ✅ 现行 | 持久运行时契约决策 |
+| docs/plans/OPTIMIZATION_ROADMAP.md（本文档） | ✅ 现行 | 产品优化路线图（取代下列历史差距文档） |
+| docs/plans/PRODUCTION_READINESS_PLAN.md | ✅ 现行 | Stage 4 后的生产就绪执行计划与量化发布门禁 |
+| docs/archive/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md | 🗄 历史 | 2026-07-15 快照，缺口多数已修复 |
+| docs/plans/CLAUDE_CODE_EXPERIENCE_PARITY.md | 🗄 历史 | 2026-07-30 评分 81/100，早于 R1-R9 批次 |
+| docs/archive/IMPLEMENTATION_PROGRESS.md | 🗄 历史 | 2026-07-16 快照 |
+| docs/plans/PC_DESKTOP_MIGRATION_PLAN.md | ✅ 远期参考 | 阶段 5 Desktop 方案 |
 
 > 维护约定：本路线图按阶段推进时更新各工作项状态（未开始/进行中/已完成/已裁剪），每阶段收尾追加"阶段复盘"小节（实际工时 vs 估计、指标变化）。下一次全量差距重估建议在阶段 3 结束时进行。
