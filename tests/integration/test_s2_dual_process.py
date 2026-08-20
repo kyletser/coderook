@@ -92,10 +92,8 @@ async def test_two_clients_both_receive_broadcast(
         await client2.close()
 
 
-# 功能：验证客户端断开后使用 replay_from_run 重连，订阅响应中 replayed_count > 0
-# 设计：client1 触发 run 并等到 run.started 落盘（run.started 在 LLM 调用前写入 events.jsonl），
-#       稍作等待后断开；client2 用 replay_from_run=run_id 订阅，断言 replayed_count > 0，
-#       不依赖 API Key，只需验证 replay 机制读出了已落盘的 run.started
+# 功能：验证客户端收到 run.started 后立即重连仍可按 run_id 回放持久化事件
+# 设计：不增加磁盘等待时间，直接以 replayed_count 断言持久化先于对外广播的运行时契约
 async def test_disconnect_and_replay_from_run(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
@@ -127,9 +125,6 @@ async def test_disconnect_and_replay_from_run(
 
     assert run_id_holder, "run.started was never received"
     run_id = run_id_holder[0]
-
-    # Brief pause to ensure the event is flushed to disk before we replay
-    await asyncio.sleep(0.05)
 
     # Phase 2: reconnect with replay_from_run and verify replayed_count > 0
     client2 = SocketClient("127.0.0.1", free_port, auth_token=ipc_token)

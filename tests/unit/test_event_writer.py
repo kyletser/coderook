@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
 from code_rook.core.events.bus import EventBus
@@ -72,6 +73,45 @@ async def test_event_writer_subscribe_via_bus(tmp_path: Path) -> None:
     lines = path.read_text().strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["run_id"] == "r1"
+
+
+# 功能：验证外部订阅者收到事件时对应 JSONL 已经完成持久化
+# 设计：先注册观察者再接入写入器，并在观察者回调内读取文件以锁定持久化优先契约
+async def test_event_writer_persists_before_other_subscribers(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    bus = EventBus()
+    persisted: list[bool] = []
+
+    # 在观察者收到事件时检查持久化文件内容
+    async def observer(event: BaseModel) -> None:
+        persisted.append(path.exists() and '"type":"run.started"' in path.read_text())
+
+    bus.subscribe(observer)
+    async with EventWriter(path) as writer:
+        writer.subscribe(bus)
+        await bus.publish(
+            RunStartedEvent(run_id="r1", goal="g", ts="2026-05-11T00:00:00Z")
+        )
+
+    assert persisted == [True]
+
+
+# 功能：验证 EventWriter 离开上下文后会从事件总线注销
+# 设计：上下文结束后再次发布并断言文件仍只有一行，避免依赖私有订阅者集合
+async def test_event_writer_unsubscribes_on_exit(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    bus = EventBus()
+
+    async with EventWriter(path) as writer:
+        writer.subscribe(bus)
+        await bus.publish(
+            RunStartedEvent(run_id="r1", goal="g", ts="2026-05-11T00:00:00Z")
+        )
+
+    await bus.publish(
+        RunFinishedEvent(run_id="r1", status="success", steps=1, ts="2026-05-11T00:00:01Z")
+    )
+    assert len(path.read_text().splitlines()) == 1
 
 
 # 功能：验证文件未通过 async with 打开时 handle 静默返回、不抛异常

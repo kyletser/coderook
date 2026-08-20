@@ -60,6 +60,42 @@ async def test_subscribers_called_in_order() -> None:
     assert order == [1, 2]
 
 
+# 功能：验证 first 订阅者先于已有普通订阅者接收事件
+# 设计：先注册普通处理器再前插边界处理器，直接断言调用轨迹以覆盖优先顺序契约
+async def test_first_subscriber_runs_before_existing_subscribers() -> None:
+    bus = EventBus()
+    order: list[str] = []
+
+    # 记录普通订阅者的调用位置
+    async def normal(event: BaseModel) -> None:
+        order.append("normal")
+
+    # 记录优先订阅者的调用位置
+    async def first(event: BaseModel) -> None:
+        order.append("first")
+
+    bus.subscribe(normal)
+    bus.subscribe(first, first=True)
+    await bus.publish(_FakeEvent(value="x"))
+    assert order == ["first", "normal"]
+
+
+# 功能：验证注销后的处理器不再接收后续事件
+# 设计：发布前移除唯一处理器并断言收集列表为空，覆盖短生命周期订阅者清理路径
+async def test_unsubscribe_stops_future_delivery() -> None:
+    bus = EventBus()
+    received: list[BaseModel] = []
+
+    # 收集仍被投递给处理器的事件
+    async def handler(event: BaseModel) -> None:
+        received.append(event)
+
+    bus.subscribe(handler)
+    bus.unsubscribe(handler)
+    await bus.publish(_FakeEvent(value="x"))
+    assert received == []
+
+
 # 功能：验证无订阅者时 publish 不抛异常（空 bus 边界条件）
 # 设计：只调用 publish，不断言返回值，以"不引发异常"作为唯一判据
 async def test_no_subscribers_publish_is_noop() -> None:
