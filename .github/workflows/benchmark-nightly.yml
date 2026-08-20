@@ -19,7 +19,7 @@ jobs:
       CODEROOK_LLM_API_KEY_ENV: CODEROOK_BENCHMARK_API_KEY
       CODEROOK_BENCHMARK_API_KEY: ${{ secrets.CODEROOK_BENCHMARK_API_KEY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
