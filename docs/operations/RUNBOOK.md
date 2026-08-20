@@ -124,7 +124,7 @@ scripts\build_windows_portable.ps1
 ```
 
 portable ZIP 自带 uv 管理的 Python 3.12。容器使用 `Dockerfile` 或
-`docker compose -f docker-compose.example.yml up --build`；示例只映射 loopback，若改为非回环监听，
+`docker compose -f deploy/docker-compose.example.yml up --build`；示例只映射 loopback，若改为非回环监听，
 必须设置长随机 `CODEROOK_API_TOKEN`。
 
 ## 沙箱边界

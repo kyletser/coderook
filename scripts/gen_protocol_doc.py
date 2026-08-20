@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate WIRE_PROTOCOL.md from pydantic models in code_rook.core.bus."""
+"""Generate docs/reference/WIRE_PROTOCOL.md from typed bus models."""
 from __future__ import annotations
 
 import argparse
@@ -156,7 +156,7 @@ from code_rook.core.bus.events import (
     UserQuestionAskedEvent,
 )
 
-_OUTPUT_PATH = Path(__file__).parent.parent / "WIRE_PROTOCOL.md"
+_OUTPUT_PATH = Path(__file__).parent.parent / "docs" / "reference" / "WIRE_PROTOCOL.md"
 
 
 # 从 pydantic 模型生成一个带字段表、JSON Schema 和可选示例的 Markdown 小节
@@ -184,7 +184,7 @@ def _model_section(name: str, model: type, example: dict | None = None) -> str: 
     return f"### {name}\n{table}{schema_block}{example_block}"
 
 
-# 生成完整的 WIRE_PROTOCOL.md 文档字符串
+# 生成完整的 Wire Protocol 文档字符串
 def generate() -> str:
     run_id = "20260516-100000-abc123"
     ts = "2026-05-16T10:00:00.001Z"
@@ -657,9 +657,9 @@ def generate() -> str:
     return "".join(sections)
 
 
-# 解析命令行参数，写出或校验 WIRE_PROTOCOL.md
+# 解析命令行参数，写出或校验 Wire Protocol 文档
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate WIRE_PROTOCOL.md")
+    parser = argparse.ArgumentParser(description="Generate the Wire Protocol reference")
     parser.add_argument("--check", action="store_true", help="Verify file matches generated output")
     parser.add_argument("--output", default=str(_OUTPUT_PATH))
     args = parser.parse_args()

@@ -38,9 +38,9 @@
 | `benchmarks/` | 任务清单、fixture 与公开 benchmark 容器 | 稳定 task id 使用小写 kebab-case |
 | `editors/` | IDE 集成 | 按编辑器名称分子目录 |
 | `examples/` | 从零可运行示例、Hook、Skill、MCP | 示例文件使用用途明确的 `snake_case` |
-| `.github/` | Actions、Issue/PR 模板、CODEOWNERS 与依赖配置 | workflow 使用小写 kebab-case |
+| `.github/` | 社区规范、Actions、Issue/PR 模板、CODEOWNERS 与依赖配置 | workflow 使用小写 kebab-case |
 
-根目录只保留社区治理、构建入口和最高层用户文档。`dist*`、`reports/`、`.interop-results/`、
+根目录只保留构建入口、项目元数据、工具发现文件和最高层用户文档。`dist*`、`reports/`、`.interop-results/`、
 `.mypy_cache/`、`.pytest_cache/`、`.ruff_cache/` 均为可再生成且被 Git 忽略的本地产物，阶段收尾时可清理；
 `.venv/`、`.coderook/` 与 `.workbuddy/` 分别属于开发环境、项目运行状态和工具状态，不应随意删除。
 

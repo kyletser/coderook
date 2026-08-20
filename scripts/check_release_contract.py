@@ -99,8 +99,9 @@ def validate_release_contract(
     )
     if f"`{HTTP_API_VERSION}`" not in compatibility:
         issues.append(f"compatibility doc does not declare HTTP {HTTP_API_VERSION}")
-    if not (root / "WIRE_PROTOCOL.md").is_file():
-        issues.append("WIRE_PROTOCOL.md is missing")
+    wire_protocol = "docs/reference/WIRE_PROTOCOL.md"
+    if not (root / wire_protocol).is_file():
+        issues.append(f"{wire_protocol} is missing")
     scorecard = (root / "docs" / "status" / "RELEASE_SCORECARD.md").read_text(
         encoding="utf-8"
     )
@@ -122,7 +123,7 @@ def validate_release_contract(
             "http_api": HTTP_API_VERSION,
             "runtime_event_schema": RUNTIME_EVENT_SCHEMA_VERSION,
             "stream_json_schemas": list(STREAM_JSON_SCHEMA_VERSIONS),
-            "ipc_contract": "WIRE_PROTOCOL.md",
+            "ipc_contract": wire_protocol,
         },
     }
 

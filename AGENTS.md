@@ -20,10 +20,10 @@ uv run pytest tests/ -v               # all
 # Single test
 uv run pytest tests/unit/test_envelope.py::test_request_roundtrip -v
 
-# Regenerate WIRE_PROTOCOL.md after changing bus models
+# Regenerate docs/reference/WIRE_PROTOCOL.md after changing bus models
 uv run python scripts/gen_protocol_doc.py
 
-# Verify WIRE_PROTOCOL.md is in sync (used in CI equivalent)
+# Verify docs/reference/WIRE_PROTOCOL.md is in sync (used in CI equivalent)
 uv run python scripts/gen_protocol_doc.py --check
 
 # Reproduce the complete CI gate before every push
@@ -71,7 +71,7 @@ All IPC messages are typed pydantic v2 models with a **discriminated union on th
 - `commands.py` — `Command` union across core/auth, headless run (`agent.run`), event subscribe/replay, durable `thread.*`/`turn.*`, `session.*`, permission/question responses, worker/workflow, workspace/turn inspection, and MCP/Hooks/Memory/background/artifact management
 - `events.py` — `Event` union across run/step lifecycle, `agent.decision`, `tool.call_*`, `llm.*`, `context.*`, `permission.*`, `plan.*`, `subagent.*`, `background.*`, extensions, diagnostics and durable runtime events
 
-`WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
+`docs/reference/WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
 
 ### Transport layer (`src/code_rook/core/transport/`)
 
@@ -126,7 +126,7 @@ Never push changes until the complete CI gate listed in **Commands** passes loca
 
 - On Windows, run both normal Mypy and `mypy --platform linux`; Windows-only `ctypes` attributes can pass locally but fail on Ubuntu.
 - Integration fixtures must be self-contained. They must not depend on a developer `.env`, a real API key, or a GitHub Secret unless the test is explicitly marked and skipped when the secret is absent.
-- After any change under `src/code_rook/core/bus/` or `scripts/gen_protocol_doc.py`, regenerate `WIRE_PROTOCOL.md`, commit the generated file, and run `--check`.
+- After any change under `src/code_rook/core/bus/` or `scripts/gen_protocol_doc.py`, regenerate `docs/reference/WIRE_PROTOCOL.md`, commit the generated file, and run `--check`.
 - Generated text must use explicit UTF-8 and deterministic LF comparison. Prefer ASCII punctuation in generated protocol text when typography has no semantic value.
 - Before pushing, inspect `git status --short` and the staged diff so generated files and test fixes are included in the same commit.
 - A failed command blocks the push. Fix the failure and rerun the complete gate from the beginning.
@@ -168,4 +168,4 @@ In-repo documentation lives in `docs/`:
 - `docs/reference/FUNCTIONAL_ARCHITECTURE.md` — authoritative functional architecture (component deep-dives, data flows, known issues)
 - `docs/guides/USER_GUIDE.md` / `docs/guides/USAGE_GUIDE.md` — end-user guides
 - `docs/reference/ADR_RUNTIME_CONTRACT.md` — durable runtime contract decisions
-- `RUNBOOK.md`, `WIRE_PROTOCOL.md` — operations and protocol references
+- `docs/operations/RUNBOOK.md`, `docs/reference/WIRE_PROTOCOL.md` — operations and protocol references

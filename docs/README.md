@@ -25,11 +25,11 @@
 | [用户指南](guides/USER_GUIDE.md) | TUI 主产品面的完整使用说明 | 命令、快捷键、配置变化时更新 |
 | [功能架构](reference/FUNCTIONAL_ARCHITECTURE.md) | 当前代码架构、数据流和诚实技术债 | 子系统或契约变化时更新 |
 | [Runtime ADR](reference/ADR_RUNTIME_CONTRACT.md) | durable thread/turn 与 API 设计决策 | 契约决策变化时更新 |
-| [Wire Protocol](../WIRE_PROTOCOL.md) | 由 bus 模型生成的 IPC 契约 | 修改 bus 后自动生成 |
+| [Wire Protocol](reference/WIRE_PROTOCOL.md) | 由 bus 模型生成的 IPC 契约 | 修改 bus 后自动生成 |
 | [Runtime API](reference/RUNTIME_API.md) | HTTP/SSE 外部接口 | endpoint/schema 变化时更新 |
 | [兼容与弃用策略](reference/COMPATIBILITY.md) | HTTP/SSE、SDK、stream-json 的稳定边界和迁移窗口 | 公共契约或支持窗口变化时更新 |
 | [MCP 互操作](reference/MCP_COMPATIBILITY.md) | stdio、legacy SSE、Streamable HTTP、官方 SDK 矩阵与安全边界 | MCP SDK pin 或 transport 变化时更新 |
-| [运行手册](../RUNBOOK.md) | 安装、运行、排障与恢复 | 运维行为变化时更新 |
+| [运行手册](operations/RUNBOOK.md) | 安装、运行、排障与恢复 | 运维行为变化时更新 |
 | [升级与回滚](guides/UPGRADING.md) | 数据备份、版本升级、校验与回滚 | 配置或持久化兼容性变化时更新 |
 | [发行与供应链](operations/RELEASING.md) | tag、版本一致性、SBOM、OIDC provenance、Cosign 与下载验证 | 发行流程或产物变化时更新 |
 | [分支保护](operations/BRANCH_PROTECTION.md) | 稳定必需检查、ruleset 配置与外部审计边界 | CI job 或 GitHub 规则变化时更新 |
@@ -42,6 +42,7 @@
 | [威胁模型](reference/THREAT_MODEL.md) | 资产、信任边界、攻击面、降级与非目标 | 安全边界或外部能力变化时更新 |
 | [公开 Benchmark](reference/PUBLIC_BENCHMARKS.md) | 内建集、Aider Polyglot、SWE-bench 与回归比较复现协议 | 数据集、格式或门禁变化时更新 |
 | [开源补全计划](status/OPEN_SOURCE_COMPLETION_PLAN.md) | 当前长期 Goal、阶段状态和完成定义 | 每个工作项验收后更新 |
+| [Roadmap](status/ROADMAP.md) | 面向公开贡献者的近期结果与方向 | 阶段优先级变化时更新 |
 | [生产差距矩阵](status/PRODUCTION_GAP_MATRIX.md) | R0-R5 仓库证据与外部证据 | 证据变化时更新 |
 | [发布评分卡](status/RELEASE_SCORECARD.md) | 唯一 GO/NO-GO 发布结论 | 每次候选发布更新 |
 | [续作报告](status/CONTINUATION_REPORT.md) | 当前未完成项、外部阻塞、明日顺序与目录规范 | 每次阶段性收尾时更新 |

@@ -9,8 +9,50 @@ from scripts.check_public_repo import (
     find_governance_contract_issues,
     find_project_metadata_issues,
     find_resume_evidence_contract_issues,
+    find_root_layout_issues,
     find_tracked_pollution,
 )
+
+
+# 功能：验证仓库顶层拒绝未归类文件但容许本地环境目录
+# 设计：构造最小允许集合并加入 loose 文件，覆盖行业结构与开发者缓存豁免
+def test_find_root_layout_issues_rejects_loose_entries(tmp_path: Path) -> None:
+    for name in (
+        ".dockerignore",
+        ".env.example",
+        ".gitignore",
+        ".python-version",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CLAUDE.md",
+        "Dockerfile",
+        "LICENSE",
+        "Makefile",
+        "README.md",
+        "pyproject.toml",
+        "uv.lock",
+    ):
+        (tmp_path / name).write_text("placeholder\n", encoding="utf-8")
+    for name in (
+        ".github",
+        "benchmarks",
+        "deploy",
+        "docs",
+        "editors",
+        "examples",
+        "scripts",
+        "src",
+        "tests",
+        ".venv",
+    ):
+        (tmp_path / name).mkdir()
+
+    assert find_root_layout_issues(tmp_path) == []
+
+    (tmp_path / "random-notes.md").write_text("# loose\n", encoding="utf-8")
+    assert find_root_layout_issues(tmp_path) == [
+        "unexpected repository root entry: random-notes.md"
+    ]
 
 
 # 功能：验证文档顶层只允许索引文件和约定用途目录

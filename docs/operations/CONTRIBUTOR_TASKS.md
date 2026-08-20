@@ -39,6 +39,6 @@
 
 ## 完成定义
 
-认领 Issue 获得维护者确认后再编码；PR 必须链接 Issue、遵守 `CONTRIBUTING.md`、列出实际验证，
+认领 Issue 获得维护者确认后再编码；PR 必须链接 Issue、遵守 `.github/CONTRIBUTING.md`、列出实际验证，
 并保持任务边界。合并后维护者将条目标为 `DONE` 或替换为新的等价小任务。任务不是悬赏，也不承诺
-合并；安全、正确性和维护成本仍按 `GOVERNANCE.md` 评审。
+合并；安全、正确性和维护成本仍按 `.github/GOVERNANCE.md` 评审。

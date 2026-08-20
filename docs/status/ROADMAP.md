@@ -1,8 +1,8 @@
 # CodeRook Roadmap
 
 Roadmap 按可验证用户结果排序，不承诺日期。单个工作项的精确状态与证据以
-[开源补全计划](docs/status/OPEN_SOURCE_COMPLETION_PLAN.md)和
-[发布评分卡](docs/status/RELEASE_SCORECARD.md)为准；Issue 或外部贡献不会自动改变发布结论。
+[开源补全计划](OPEN_SOURCE_COMPLETION_PLAN.md)和
+[发布评分卡](RELEASE_SCORECARD.md)为准；Issue 或外部贡献不会自动改变发布结论。
 
 ## Now：公开 Beta 证据
 
@@ -33,4 +33,4 @@ Roadmap 按可验证用户结果排序，不承诺日期。单个工作项的精
 - 为追逐框架名词重写已工作的双进程核心。
 
 想贡献一个边界明确的小改动，请从
-[Contributor Tasks](docs/operations/CONTRIBUTOR_TASKS.md)选择 `READY` 项并按模板认领；大型方向先开 Feature Request。
+[Contributor Tasks](../operations/CONTRIBUTOR_TASKS.md)选择 `READY` 项并按模板认领；大型方向先开 Feature Request。

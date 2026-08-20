@@ -177,7 +177,7 @@ cp .env.example .env
 ```
 
 Windows 安装与自带解释器的 portable ZIP 分别使用 `scripts\install-windows.ps1`、
-`scripts\build_windows_portable.ps1`。容器入口为 `Dockerfile` 和 `docker-compose.example.yml`。
+`scripts\build_windows_portable.ps1`。容器入口为 `Dockerfile` 和 `deploy/docker-compose.example.yml`。
 
 ### 3.3 配置模型
 

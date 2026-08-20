@@ -20,10 +20,10 @@ uv run pytest tests/ -v               # all
 # Single test
 uv run pytest tests/unit/test_envelope.py::test_request_roundtrip -v
 
-# Regenerate WIRE_PROTOCOL.md after changing bus models
+# Regenerate docs/reference/WIRE_PROTOCOL.md after changing bus models
 uv run python scripts/gen_protocol_doc.py
 
-# Verify WIRE_PROTOCOL.md is in sync (used in CI equivalent)
+# Verify docs/reference/WIRE_PROTOCOL.md is in sync (used in CI equivalent)
 uv run python scripts/gen_protocol_doc.py --check
 
 # Run daemon manually
@@ -56,7 +56,7 @@ All IPC messages are typed pydantic v2 models with a **discriminated union on th
 - `commands.py` — `Command` union; currently only `PingCommand` + `PongResult`
 - `events.py` — `Event` union; currently only `CoreStartedEvent`
 
-`WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
+`docs/reference/WIRE_PROTOCOL.md` is **generated** from these models by `scripts/gen_protocol_doc.py`. Always regenerate and commit it after changing bus models.
 
 ### Transport layer (`src/code_rook/core/transport/`)
 

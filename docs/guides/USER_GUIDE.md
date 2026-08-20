@@ -23,7 +23,7 @@ macOS 和 Linux 使用相同命令。
 
 Windows 可用 `scripts\install-windows.ps1` 安装本地 checkout；运行
 `scripts\build_windows_portable.ps1` 可生成自带 Python 3.12 的 ZIP。容器方式见根目录
-`Dockerfile` 和 `docker-compose.example.yml`。
+`Dockerfile` 和 `deploy/docker-compose.example.yml`。
 
 ### 启动
 

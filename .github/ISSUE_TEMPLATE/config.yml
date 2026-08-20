@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/kyletser/coderook/security/advisories/new
     about: 请通过私下渠道报告安全漏洞，不要创建公开 Issue。
   - name: Support policy
-    url: https://github.com/kyletser/coderook/blob/main/SUPPORT.md
+    url: https://github.com/kyletser/coderook/blob/main/.github/SUPPORT.md
     about: 提问前请阅读支持范围和诊断要求。

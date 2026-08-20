@@ -25,4 +25,4 @@ ruleset 修改、Secret 配置、tag、正式发布和安全公告。外部贡�
 
 新增第二位活跃维护者后，应更新 `CODEOWNERS` 为真实组件所有权、把 main ruleset 的批准数改为 1，
 并要求高风险路径的 code owner review。维护者退出时先撤销外部权限和发布凭据，再更新本文件与
-`GOVERNANCE.md`；无人维护时应明确归档，而不是继续接受无法处理的安全报告。
+`.github/GOVERNANCE.md`；无人维护时应明确归档，而不是继续接受无法处理的安全报告。

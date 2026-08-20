@@ -76,7 +76,7 @@ uv sync
 
 Windows 也可运行 `scripts\install-windows.ps1`。`scripts\build_windows_portable.ps1`
 会生成自带 Python 3.12 的 portable ZIP。容器部署使用 `Dockerfile` 或
-`docker-compose.example.yml`；对外监听 HTTP API 时必须配置长随机 Bearer token。
+`deploy/docker-compose.example.yml`；对外监听 HTTP API 时必须配置长随机 Bearer token。
 
 ### 2. 配置模型
 
@@ -327,14 +327,14 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [2026 H2 优化路线图与 Stage 0–4 复盘](docs/plans/OPTIMIZATION_ROADMAP.md)
 - [生产就绪改造计划](docs/plans/PRODUCTION_READINESS_PLAN.md)
 - [开源级补全计划](docs/status/OPEN_SOURCE_COMPLETION_PLAN.md)
-- [Wire Protocol](WIRE_PROTOCOL.md)
+- [Wire Protocol](docs/reference/WIRE_PROTOCOL.md)
 - [Runtime API](docs/reference/RUNTIME_API.md)
 - [外部接口兼容与弃用策略](docs/reference/COMPATIBILITY.md)
 - [MCP 官方 SDK 互操作合同](docs/reference/MCP_COMPATIBILITY.md)
-- [运行手册](RUNBOOK.md)
+- [运行手册](docs/operations/RUNBOOK.md)
 - [升级、备份与回滚](docs/guides/UPGRADING.md)
 - [发行、SBOM、签名与验证](docs/operations/RELEASING.md)
-- [Roadmap](ROADMAP.md)
+- [Roadmap](docs/status/ROADMAP.md)
 - [项目案例与简历证据](docs/career/PROJECT_CASE_STUDY.md)
 - [新贡献者小任务](docs/operations/CONTRIBUTOR_TASKS.md)
 - [维护者与维护边界](docs/operations/MAINTAINERS.md)
@@ -360,11 +360,11 @@ CodeRook 适合作为 AI Agent 工程方向的学习与求职项目，因为它�
 ## 参与贡献与安全
 
 - 可运行示例：[examples/README.md](examples/README.md)
-- 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
-- 安全报告与边界：[SECURITY.md](SECURITY.md)
-- 支持范围：[SUPPORT.md](SUPPORT.md)
-- 社区行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- 项目治理：[GOVERNANCE.md](GOVERNANCE.md)
+- 贡献流程：[CONTRIBUTING.md](.github/CONTRIBUTING.md)
+- 安全报告与边界：[SECURITY.md](.github/SECURITY.md)
+- 支持范围：[SUPPORT.md](.github/SUPPORT.md)
+- 社区行为准则：[CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md)
+- 项目治理：[GOVERNANCE.md](.github/GOVERNANCE.md)
 - 版本变化：[CHANGELOG.md](CHANGELOG.md)
 
 ## License

@@ -12,14 +12,16 @@ _ROOT = Path(__file__).resolve().parent.parent
 _REQUIRED_FILES = (
     "LICENSE",
     "README.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "CODE_OF_CONDUCT.md",
-    "SUPPORT.md",
-    "GOVERNANCE.md",
-    "ROADMAP.md",
+    ".github/CONTRIBUTING.md",
+    ".github/SECURITY.md",
+    ".github/CODE_OF_CONDUCT.md",
+    ".github/SUPPORT.md",
+    ".github/GOVERNANCE.md",
+    "docs/status/ROADMAP.md",
     "CHANGELOG.md",
     "docs/README.md",
+    "docs/operations/RUNBOOK.md",
+    "docs/reference/WIRE_PROTOCOL.md",
     "docs/status/OPEN_SOURCE_COMPLETION_PLAN.md",
     "docs/guides/UPGRADING.md",
     "docs/reference/THREAT_MODEL.md",
@@ -39,6 +41,7 @@ _REQUIRED_FILES = (
     "docs/postmortems/2026-08-19-cross-platform-ci.md",
     "docs/postmortems/2026-08-17-tui-refactor.md",
     "docs/images/coderook-tui.svg",
+    "deploy/docker-compose.example.yml",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -115,16 +118,57 @@ _DOCS_ROOT_DIRECTORIES = {
     "reference",
     "status",
 }
+_ROOT_FILES = {
+    ".dockerignore",
+    ".env.example",
+    ".gitignore",
+    ".python-version",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "CLAUDE.md",
+    "Dockerfile",
+    "LICENSE",
+    "Makefile",
+    "README.md",
+    "pyproject.toml",
+    "uv.lock",
+}
+_ROOT_DIRECTORIES = {
+    ".github",
+    "benchmarks",
+    "deploy",
+    "docs",
+    "editors",
+    "examples",
+    "scripts",
+    "src",
+    "tests",
+}
+_ROOT_LOCAL_ENTRIES = {
+    ".benchmark-results",
+    ".coderook",
+    ".env",
+    ".git",
+    ".interop-results",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".workbuddy",
+    "build",
+    "dist",
+    "reports",
+}
 _README_REQUIRED_LINKS = (
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "SUPPORT.md",
-    "CODE_OF_CONDUCT.md",
-    "GOVERNANCE.md",
+    ".github/CONTRIBUTING.md",
+    ".github/SECURITY.md",
+    ".github/SUPPORT.md",
+    ".github/CODE_OF_CONDUCT.md",
+    ".github/GOVERNANCE.md",
     "CHANGELOG.md",
     "LICENSE",
     "docs/reference/COMPATIBILITY.md",
-    "ROADMAP.md",
+    "docs/status/ROADMAP.md",
     "docs/operations/CONTRIBUTOR_TASKS.md",
     "docs/operations/MAINTAINERS.md",
     "docs/career/PROJECT_CASE_STUDY.md",
@@ -283,6 +327,17 @@ def find_docs_layout_issues(root: Path = _ROOT) -> list[str]:
     return issues
 
 
+# 校验仓库顶层只保留构建入口、工具发现文件和稳定源码目录
+def find_root_layout_issues(root: Path = _ROOT) -> list[str]:
+    entries = {
+        path.name
+        for path in root.iterdir()
+        if path.name not in _ROOT_LOCAL_ENTRIES
+    }
+    allowed = _ROOT_FILES | _ROOT_DIRECTORIES
+    return [f"unexpected repository root entry: {name}" for name in sorted(entries - allowed)]
+
+
 # 校验构建元数据是否包含公开发行所需字段与链接
 def find_project_metadata_issues(root: Path = _ROOT) -> list[str]:
     pyproject_path = root / "pyproject.toml"
@@ -400,6 +455,7 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues: list[str] = []
     issues.extend(f"missing required file: {path}" for path in find_missing_required_files(root))
     issues.extend(f"broken markdown link: {link}" for link in find_broken_markdown_links(root))
+    issues.extend(find_root_layout_issues(root))
     issues.extend(find_docs_layout_issues(root))
     issues.extend(find_project_metadata_issues(root))
     issues.extend(find_readme_contract_issues(root))

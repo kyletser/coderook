@@ -7,6 +7,6 @@
 /src/code_rook/core/bus/ @kyletser
 /src/code_rook/core/api/ @kyletser
 /.github/workflows/ @kyletser
-/SECURITY.md @kyletser
+/.github/SECURITY.md @kyletser
 /docs/reference/THREAT_MODEL.md @kyletser
 /docs/operations/RELEASING.md @kyletser
