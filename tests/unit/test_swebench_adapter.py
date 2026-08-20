@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -71,13 +72,24 @@ def test_load_swebench_instances_accepts_official_jsonl_and_rejects_duplicates(
         load_swebench_instances(dataset)
 
 
-# 功能：验证标准 patch 同时包含已跟踪修改和未跟踪新增文件且不污染真实 index
-# 设计：导出前后比较 staged diff，并断言 prediction 只有官方要求的三个字段
+# 功能：验证标准 patch 在 Git racy-clean 条件下仍包含已跟踪修改和未跟踪新增文件
+# 设计：恢复同尺寸修改的 mtime 并禁用 ctime 信任，证明临时 index 全量重建且不污染真实 index
 def test_build_swebench_prediction_includes_untracked_files_without_staging(
     tmp_path: Path,
 ) -> None:
     workspace, commit = _repository(tmp_path)
-    (workspace / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+    tracked = workspace / "tracked.py"
+    original_stat = tracked.stat()
+    subprocess.run(
+        ["git", "config", "core.trustctime", "false"],
+        cwd=workspace,
+        check=True,
+    )
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    os.utime(
+        tracked,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
     (workspace / "test_regression.py").write_text("assert True\n", encoding="utf-8")
 
     prediction = build_swebench_prediction(

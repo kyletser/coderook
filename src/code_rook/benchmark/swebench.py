@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -89,22 +88,17 @@ def validate_swebench_workspace(instance: SWEbenchInstance, workspace: Path) -> 
 # 使用临时 Git index 生成同时包含 tracked 与 untracked 文件的标准二进制 patch
 def build_swebench_patch(instance: SWEbenchInstance, workspace: Path) -> str:
     validate_swebench_workspace(instance, workspace)
-    git_dir_text = _run_git(workspace, ["rev-parse", "--git-dir"]).stdout.strip()
-    git_dir = Path(git_dir_text)
-    if not git_dir.is_absolute():
-        git_dir = (workspace / git_dir).resolve()
-    source_index = git_dir / "index"
     with tempfile.TemporaryDirectory(prefix="coderook-swebench-index-") as temp_dir:
         temp_index = Path(temp_dir) / "index"
-        if source_index.is_file():
-            shutil.copyfile(source_index, temp_index)
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = str(temp_index)
-        _run_git(workspace, ["add", "--intent-to-add", "--all", "--", "."], env=env)
+        _run_git(workspace, ["read-tree", instance.base_commit], env=env)
+        _run_git(workspace, ["add", "--all", "--", "."], env=env)
         result = _run_git(
             workspace,
             [
                 "diff",
+                "--cached",
                 "--binary",
                 "--no-ext-diff",
                 "--no-color",
