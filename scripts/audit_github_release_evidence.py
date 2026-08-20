@@ -35,6 +35,7 @@ class WorkflowEvidence(BaseModel):
     workflow: str
     required_consecutive_successes: int = Field(ge=1)
     consecutive_successes: int = Field(ge=0)
+    head_matches_default: bool
     passed: bool
     latest_run_id: int | None = None
     latest_url: str | None = None
@@ -109,6 +110,7 @@ def _fetch_json(path: str, token: str) -> FetchResult:
 def _workflow_evidence(
     workflow: str,
     required: int,
+    default_sha: str,
     payload: JsonValue | None,
     error: str | None,
 ) -> WorkflowEvidence:
@@ -117,6 +119,7 @@ def _workflow_evidence(
             workflow=workflow,
             required_consecutive_successes=required,
             consecutive_successes=0,
+            head_matches_default=False,
             passed=False,
             error=error or "invalid_payload",
         )
@@ -129,20 +132,21 @@ def _workflow_evidence(
         if run.get("conclusion") != "success":
             break
         consecutive += 1
+    latest_head_sha = str(latest["head_sha"]) if latest.get("head_sha") else None
+    head_matches_default = default_sha != "unknown" and latest_head_sha == default_sha
     return WorkflowEvidence(
         workflow=workflow,
         required_consecutive_successes=required,
         consecutive_successes=consecutive,
-        passed=consecutive >= required,
+        head_matches_default=head_matches_default,
+        passed=consecutive >= required and head_matches_default,
         latest_run_id=(
             int(latest["id"]) if isinstance(latest.get("id"), int) else None
         ),
         latest_url=(
             str(latest["html_url"]) if latest.get("html_url") else None
         ),
-        latest_head_sha=(
-            str(latest["head_sha"]) if latest.get("head_sha") else None
-        ),
+        latest_head_sha=latest_head_sha,
         latest_status=(str(latest["status"]) if latest.get("status") else None),
         latest_conclusion=(
             str(latest["conclusion"]) if latest.get("conclusion") else None
@@ -157,6 +161,7 @@ def _workflow_evidence(
 def _ruleset_evidence(
     payload: JsonValue | None,
     error: str | None,
+    default_branch: str,
 ) -> RulesetEvidence:
     if error is not None:
         return RulesetEvidence(status="unknown", error=error)
@@ -169,14 +174,25 @@ def _ruleset_evidence(
         and item.get("target") == "branch"
         and item.get("enforcement") == "active"
     ]
+    applicable = []
+    for item in active:
+        conditions = item.get("conditions", {})
+        ref_name = conditions.get("ref_name", {}) if isinstance(conditions, dict) else {}
+        include = ref_name.get("include", []) if isinstance(ref_name, dict) else []
+        exclude = ref_name.get("exclude", []) if isinstance(ref_name, dict) else []
+        default_refs = {"~DEFAULT_BRANCH", default_branch, f"refs/heads/{default_branch}"}
+        included = not include or bool(default_refs.intersection(map(str, include)))
+        excluded = bool(default_refs.intersection(map(str, exclude)))
+        if included and not excluded:
+            applicable.append(item)
     ruleset_ids = sorted(
         int(item["id"])
-        for item in active
+        for item in applicable
         if isinstance(item.get("id"), int)
     )
     rule_types: set[str] = set()
     checks: set[str] = set()
-    for item in active:
+    for item in applicable:
         rules = item.get("rules", [])
         if not isinstance(rules, list):
             continue
@@ -197,7 +213,11 @@ def _ruleset_evidence(
                     if isinstance(context, dict) and context.get("context"):
                         checks.add(str(context["context"]))
     required_types = {"pull_request", "deletion", "non_fast_forward"}
-    passed = bool(active) and required_types <= rule_types and _REQUIRED_CHECKS <= checks
+    passed = (
+        bool(applicable)
+        and required_types <= rule_types
+        and _REQUIRED_CHECKS <= checks
+    )
     return RulesetEvidence(
         status="passed" if passed else "failed",
         active_ruleset_ids=ruleset_ids,
@@ -258,7 +278,15 @@ def collect_github_release_evidence(
             f"?branch={default_branch}&per_page=20",
             token,
         )
-        workflows.append(_workflow_evidence(workflow, required, payload, error))
+        workflows.append(
+            _workflow_evidence(
+                workflow,
+                required,
+                default_sha,
+                payload,
+                error,
+            )
+        )
     rulesets, ruleset_error = fetcher(
         f"/repos/{repository}/rulesets?includes_parents=false",
         token,
@@ -270,12 +298,19 @@ def collect_github_release_evidence(
             token,
             fetcher,
         )
-    ruleset = _ruleset_evidence(rulesets, ruleset_error)
-    reasons = [
-        f"workflow_not_ready:{workflow.workflow}"
-        for workflow in workflows
-        if not workflow.passed
-    ]
+    ruleset = _ruleset_evidence(rulesets, ruleset_error, default_branch)
+    reasons = []
+    for evidence in workflows:
+        if evidence.passed:
+            continue
+        reason = (
+            "workflow_stale"
+            if evidence.consecutive_successes
+            >= evidence.required_consecutive_successes
+            and not evidence.head_matches_default
+            else "workflow_not_ready"
+        )
+        reasons.append(f"{reason}:{evidence.workflow}")
     if default_sha == "unknown":
         reasons.append("default_branch_sha_unknown")
     if ruleset.status != "passed":

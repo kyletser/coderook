@@ -34,6 +34,9 @@ def test_remote_release_evidence_requires_complete_external_proof() -> None:
             "id": 7,
             "target": "branch",
             "enforcement": "active",
+            "conditions": {
+                "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+            },
             "rules": [
                 {"type": "pull_request"},
                 {"type": "deletion"},
@@ -79,6 +82,7 @@ def test_remote_release_evidence_requires_complete_external_proof() -> None:
     assert report.ruleset.status == "passed"
     ci = next(item for item in report.workflows if item.workflow == "ci.yml")
     assert ci.consecutive_successes == 3
+    assert ci.head_matches_default is True
 
 
 # 功能：验证最新 CI 失败、缺失 workflow 与不可读 ruleset 都会保留独立失败原因
@@ -108,6 +112,43 @@ def test_remote_release_evidence_fails_closed_on_missing_proof() -> None:
     assert "workflow_not_ready:distribution.yml" in report.gate_reasons
     assert "ruleset_unknown" in report.gate_reasons
     assert report.ruleset.error == "http_403"
+
+
+# 功能：验证旧 commit 成功记录与不适用于 main 的 ruleset 不能证明当前候选就绪
+# 设计：让三次 CI 全绿但 head SHA 落后，并让 active ruleset 只匹配 dev，断言分别报告 stale 与 failed
+def test_remote_release_evidence_rejects_stale_runs_and_other_branch_rules() -> None:
+    ruleset = {
+        "id": 8,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {"include": ["refs/heads/dev"], "exclude": []}
+        },
+        "rules": [],
+    }
+
+    # 返回旧 commit 的成功 run 和只保护 dev 的规则集
+    def fetcher(path: str, _token: str) -> FetchResult:
+        if path == "/repos/kyletser/coderook":
+            return {"default_branch": "main"}, None
+        if path.endswith("/branches/main"):
+            return {"commit": {"sha": "b" * 40}}, None
+        if "/rulesets?" in path:
+            return [{"id": 8}], None
+        if path.endswith("/rulesets/8"):
+            return ruleset, None
+        return _runs("success", "success", "success"), None
+
+    report = collect_github_release_evidence(
+        "kyletser/coderook",
+        "main",
+        "",
+        fetcher=fetcher,
+    )
+
+    assert "workflow_stale:ci.yml" in report.gate_reasons
+    assert report.workflows[0].head_matches_default is False
+    assert report.ruleset.status == "failed"
 
 
 # 功能：验证远端证据 workflow 和通用 Actions 不再使用已触发 Node 20 警告的旧代际
