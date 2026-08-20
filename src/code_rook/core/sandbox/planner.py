@@ -382,7 +382,7 @@ def build_seatbelt_profile(
         "(deny default)\n"
         "(allow file-read*)\n"
         "(allow process*)\n"
-        "(allow sysctl-read*)\n"
+        "(allow sysctl-read)\n"
         + (f"    {write_rules}\n" if write_rules else "")
         + (f"    {network_rules}\n" if network_rules else "")
     )

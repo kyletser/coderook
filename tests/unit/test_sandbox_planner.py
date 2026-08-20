@@ -65,6 +65,8 @@ def test_plan_sandbox_seatbelt_profile_toggles_write() -> None:
     ro_profile = " ".join(ro.wrapper[2:])
     assert "file-write*" in rw_profile
     assert "file-write*" not in ro_profile
+    assert "(allow sysctl-read)" in rw_profile
+    assert "sysctl-read*" not in rw_profile
 
 
 # 功能：AUTO_REVIEW 姿态在无沙箱时返回 NONE，使权限决策回落 ASK
