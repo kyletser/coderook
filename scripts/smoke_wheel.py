@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path
 
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+_CORE_START_TIMEOUT_S = 30.0
 
 
 # 定位待验证目录中唯一的 wheel 文件
@@ -93,7 +94,7 @@ def _first_run_environment(home: Path, site: Path) -> dict[str, str]:
 
 # 等待 wheel 中启动的 Core 开始监听或提前失败
 async def _wait_until_listening(port: int, process: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + _CORE_START_TIMEOUT_S
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stdout, stderr = process.communicate()
@@ -108,7 +109,10 @@ async def _wait_until_listening(port: int, process: subprocess.Popen[str]) -> No
         writer.close()
         await writer.wait_closed()
         return
-    raise TimeoutError("wheel Core did not listen within 10 seconds")
+    raise TimeoutError(
+        f"wheel Core did not listen within {_CORE_START_TIMEOUT_S:g} seconds "
+        f"(pid={process.pid}, returncode={process.poll()})"
+    )
 
 
 # 在 Windows daemon 退出后的短暂句柄释放窗口内重试删除隔离目录

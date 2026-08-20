@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+_CORE_START_TIMEOUT_S = 30.0
 
 
 # 向操作系统申请一个临时可用的 loopback 端口
@@ -79,7 +80,7 @@ async def _wait_until_listening(
     port: int,
     process: subprocess.Popen[str],
 ) -> None:
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + _CORE_START_TIMEOUT_S
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stdout, stderr = process.communicate()
@@ -95,7 +96,10 @@ async def _wait_until_listening(
         writer.close()
         await writer.wait_closed()
         return
-    raise TimeoutError("installed Core did not listen within 10 seconds")
+    raise TimeoutError(
+        f"installed Core did not listen within {_CORE_START_TIMEOUT_S:g} seconds "
+        f"(pid={process.pid}, returncode={process.poll()})"
+    )
 
 
 # 验证已安装 runtime 的版本、TUI help、零凭据状态与真实 daemon ping
