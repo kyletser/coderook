@@ -18,6 +18,7 @@ concurrency:
 jobs:
   secret-scan:
     name: Secret history scan
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -33,7 +34,10 @@ jobs:
 
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.actor != 'dependabot[bot]' &&
+      vars.DEPENDENCY_REVIEW_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -46,6 +50,7 @@ jobs:
 
   codeql:
     name: CodeQL / ${{ matrix.language }}
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -74,14 +79,21 @@ jobs:
     steps:
       - name: Require all applicable security jobs to pass
         env:
+          ACTOR: ${{ github.actor }}
           EVENT_NAME: ${{ github.event_name }}
           SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
           DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
         run: |
+          if [[ "${ACTOR}" = "dependabot[bot]" ]]; then
+            test "${SECRET_SCAN_RESULT}" = "skipped"
+            test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"
+            test "${CODEQL_RESULT}" = "skipped"
+            exit 0
+          fi
           test "${SECRET_SCAN_RESULT}" = "success"
           test "${CODEQL_RESULT}" = "success"
-          if [[ "${EVENT_NAME}" = "pull_request" ]]; then
+          if [[ "${EVENT_NAME}" = "pull_request" && "${{ vars.DEPENDENCY_REVIEW_ENABLED }}" = "true" ]]; then
             test "${DEPENDENCY_REVIEW_RESULT}" = "success"
           else
             test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"

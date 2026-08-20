@@ -14,7 +14,7 @@
 - VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；Distribution `32365931473` 已在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
 - commit `a4e4fea` 的本机完整 pytest 为 1168 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 7.67 秒 installed-wheel first-run smoke 全部通过。
 - 同一 commit 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与 Required CI gate 全绿；期间暴露并修复 Windows 事件回放、wheel 冷启动窗口与 Git racy-clean 三类竞态。
-- Security `32376297003` 在 commit `a4e4fea` 上完成 gitleaks、Python/JavaScript CodeQL 与 Required security gate；push 事件下 dependency review 按设计跳过，PR 事件仍有独立门禁。
+- Security `32376297003` 在 commit `a4e4fea` 上完成 gitleaks、Python/JavaScript CodeQL 与 Required security gate。仓库当前未启用 GitHub Dependency Graph，dependency review 因而 fail closed 为显式 opt-in，不能计作已有安全证据。
 - Distribution `32376314295` 在 commit `a4e4fea` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP `32376317570` 同 commit 成功。
 - Crash Recovery `32376310972` 在 commit `a4e4fea` 上完成 Ubuntu、macOS、Windows 各 100/100；每个平台 schema 3 报告各含 50 次 LLM 请求中断和 50 次未配对工具调用，三个报告均为 `infrastructure_error=null`、`orphaned_tool_calls=0`。聚合校验器进一步拒绝 commit/platform/轮次/相位不一致。
 - CI `32365530943` 上传三平台 ProcessSupervisor 固定负载基线与沙箱边界 JSON/Markdown；Windows/Linux 资源采样完整率 100%，macOS 诚实记录 `complete_expected=false` 与 wall-time。

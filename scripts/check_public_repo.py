@@ -118,6 +118,7 @@ _README_REQUIRED_LINKS = (
 )
 _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/ci.yml": (
+        "branches: [main]",
         "name: Required CI gate",
         "needs: [quality-and-package]",
         "if: always()",
@@ -125,6 +126,8 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "process-supervisor-${{ runner.os }}",
     ),
     ".github/workflows/security.yml": (
+        "github.actor != 'dependabot[bot]'",
+        "vars.DEPENDENCY_REVIEW_ENABLED == 'true'",
         "name: Required security gate",
         "needs: [secret-scan, dependency-review, codeql]",
         "if: always()",
@@ -133,6 +136,9 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "package-ecosystem: uv",
         "package-ecosystem: npm",
         "package-ecosystem: github-actions",
+        "interval: monthly",
+        "open-pull-requests-limit: 1",
+        "patterns: [\"*\"]",
     ),
     ".github/workflows/distribution.yml": (
         "Container zero-credential Core, ping and TUI smoke",

@@ -11,10 +11,15 @@ Ruleset 只绑定以下两个稳定名称，不直接绑定会随矩阵变化的
 | 必需检查 | 汇总范围 |
 |---|---|
 | `Required CI gate` | Windows、Ubuntu、macOS 的 lint、类型、测试、benchmark/sandbox 合同、协议、构建与安装 smoke |
-| `Required security gate` | Gitleaks 历史扫描、PR dependency review、Python 与 JavaScript/TypeScript CodeQL |
+| `Required security gate` | Gitleaks 历史扫描、Python 与 JavaScript/TypeScript CodeQL；仓库启用 Dependency Graph 后再开启 PR dependency review |
 
-两个汇总 job 均使用 `if: always()`；上游失败、取消或缺失时不会被“跳过即成功”掩盖。Dependabot
-每周检查 uv、npm 和 GitHub Actions 依赖，但自动更新 PR 仍必须经过同一门禁。
+两个汇总 job 均使用 `if: always()`；上游失败、取消或缺失时不会被“跳过即成功”掩盖。当前仓库尚未启用
+GitHub Dependency Graph，因此 `dependency-review` 由仓库变量 `DEPENDENCY_REVIEW_ENABLED=true` 显式开启，
+未开启时汇总门禁只接受该 job 为 `skipped`，不会制造已知必失败的通知。Dependabot PR 跳过重复的 Gitleaks
+和 CodeQL，但仍运行完整 CI；合并到 `main` 后安全扫描会再次完整执行。
+
+Dependabot 每月分别将 uv、npm 和 GitHub Actions 更新合并为每个生态一个 PR，且每个生态最多保留一个
+版本更新 PR。CI 的 push 触发仅限 `main`，避免同一 Dependabot 更新同时以分支 push 和 PR 运行两遍。
 
 ## GitHub ruleset 配置
 

@@ -168,7 +168,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS0-03 | DONE | 增加 bug/feature/config Issue 表单和 PR 模板 | 表单要求版本、平台、sandbox、脱敏诊断与验收条件 |
 | OS0-04 | DONE | 完善 `pyproject.toml` 包元数据与项目 URL | `check_public_repo.py` 校验字段；wheel METADATA 随完整 gate 复验 |
 | OS0-05 | DONE | 清理历史文档过时结论，建立文档状态/更新时间/权威来源 | `docs/README.md` 建立权威/专题/历史分层，关键旧文档增加快照提示 |
-| OS0-06 | DONE | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁与公开仓库检查通过；Security `32368432360` 的 gitleaks、Python/JS CodeQL 和汇总 gate 成功，Dependabot/dependency review 合同已配置 |
+| OS0-06 | DONE | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁与公开仓库检查通过；Security `32368432360` 的 gitleaks、Python/JS CodeQL 和汇总 gate 成功；Dependabot 已配置，dependency review 待仓库启用 Dependency Graph 后显式开启 |
 
 阶段出口：公开仓库不再出现断链许可证、相互矛盾的启动说明或无法报告安全问题的状态。
 
@@ -208,7 +208,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS3-02 | DONE | 三平台运行 sandbox 负例矩阵 | CI `32365530943` 上传 Linux bwrap、macOS Seatbelt 强制边界与 Windows `windows_none` 明确降级 JSON，逐项 gate 均通过 |
 | OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | commit `a4e4fea` 的 Crash Recovery `32376310972` 三平台各 100/100；schema 3 各含 50 次 LLM 中断、50 次未配对工具调用且孤儿为 0；新增 aggregate job 对 commit/platform/300 轮统计 fail closed |
 | OS3-04 | DONE | 建立 ProcessSupervisor 资源 P95 基线 | CI `32365530943` 上传三平台 commit-bound JSON/Markdown；Windows/Linux 完整采样率 100%，macOS 明确记录 `complete_expected=false` 与 wall-time |
-| OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security `32368432360` 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
+| OS3-05 | DONE | 增加 CodeQL、可选 dependency review、Dependabot 和 secret scan | Security `32368432360` 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；Dependabot 每月按生态聚合；dependency review 仅在 Dependency Graph 可用且仓库变量显式开启后进入 PR 门禁 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |
 
 阶段出口：安全能力以“支持/降级/拒绝”三态表达，所有可靠性数字来自真实进程和真实 OS。

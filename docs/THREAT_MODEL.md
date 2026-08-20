@@ -52,7 +52,7 @@ CodeRook 是在单个用户本机运行的 Coding Agent。核心安全目标是�
 | TM-09 | Hook 执行任意本地代码、阻塞 daemon 或泄露上下文 | workspace trust gate、固定 argv、超时、输出上限、有界队列、ProcessSupervisor、审计事件、fail-open/closed 显式配置 | **高风险扩展**；可信 project/user Hook 与手工脚本等价，不提供语言级 sandbox |
 | TM-10 | 崩溃导致 ledger 尾部损坏、孤儿 tool call 或 SQLite 投影漂移 | checksum chain、尾部恢复、SQLite 投影、runtime doctor/reconcile、强杀矩阵、turn 终态配对校验 | 仓库内控制 **支持**；三平台 100 次外部报告仍是发布门禁 |
 | TM-11 | 多 Agent 并发覆盖文件或未审查合并 | WriteClaim 静态冲突、resource claims、worktree 隔离、review gate、checkpoint hash 冲突 | **支持已声明范围**；错误或过宽的协调契约仍需 owner/reviewer 判断 |
-| TM-12 | 依赖、workflow 或发布产物被供应链污染 | CI 最小权限、Dependabot、dependency review、CodeQL、Gitleaks、构建/smoke | **部分支持**；SBOM、provenance、签名与远端首次绿灯仍待完成 |
+| TM-12 | 依赖、workflow 或发布产物被供应链污染 | CI 最小权限、Dependabot、可选 dependency review、CodeQL、Gitleaks、构建/smoke | **部分支持**；dependency review 待仓库启用 Dependency Graph，SBOM、provenance、签名与远端首次绿灯仍待完成 |
 | TM-13 | 超大/恶意工具输出耗尽内存或污染长期上下文 | transport/tool/frame 上限、输出蒸馏/截断/artifact spill、context compaction、MCP/Web 大小限制 | **支持有界处理**；允许的 artifact 仍占本地磁盘，由 GC 和磁盘 doctor 管理 |
 
 ## 4. 权限与沙箱判定
