@@ -112,7 +112,7 @@ jobs:
           sbom-path: container-metadata/coderook-container.spdx.json
           push-to-registry: true
           create-storage-record: false
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: coderook-container
           path: container-metadata/*

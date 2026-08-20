@@ -39,7 +39,7 @@ jobs:
           --min-rate 0.95
           --output reports/crash-recovery.json
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: crash-recovery-${{ matrix.os }}
@@ -82,7 +82,7 @@ jobs:
           --min-rate 0.95
           --output reports/aggregate/crash-recovery-aggregate.json
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: crash-recovery-aggregate

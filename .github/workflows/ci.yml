@@ -73,7 +73,7 @@ jobs:
           --output reports/sandbox-boundary-${{ runner.os }}.json
 
       - name: Upload sandbox boundary evidence
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: sandbox-boundary-${{ runner.os }}
@@ -107,20 +107,20 @@ jobs:
           --output reports/process-supervisor-${{ runner.os }}.json
 
       - name: Upload ProcessSupervisor resource evidence
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: process-supervisor-${{ runner.os }}
           path: reports/process-supervisor-${{ runner.os }}.*
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: coderook-${{ matrix.os }}
           path: dist/*
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux'
         with:
           name: coderook-vscode

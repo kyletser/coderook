@@ -33,7 +33,7 @@ jobs:
           test -n "$CODEROOK_BENCHMARK_API_KEY"
       - name: Run complete real-model suite
         run: uv run python scripts/run_benchmark.py --suite nightly --output .benchmark-results/nightly
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark-nightly
