@@ -17,6 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+_READ_RETRY_TIMEOUT_S = 15.0
+_RETRYABLE_READ_STATUSES = frozenset({404, 409, 500, 502, 503, 504})
+
 
 class _BlockingModelHandler(BaseHTTPRequestHandler):
     request_started = threading.Condition()
@@ -110,7 +113,17 @@ def _start_daemon(env: dict[str, str], home: Path, api_port: int) -> subprocess.
     raise RuntimeError("daemon did not become ready within 15 seconds")
 
 
-# 调用 runtime HTTP API 并返回 JSON 对象；重启后的只读查询允许短暂连接拒绝重试
+# 把 HTTP 错误转换为包含方法、路径、状态和脱敏响应摘要的稳定诊断
+def _http_error(method: str, path: str, exc: urllib.error.HTTPError) -> RuntimeError:
+    try:
+        body = exc.read(512).decode("utf-8", errors="replace").strip()
+    except OSError:
+        body = ""
+    detail = body or str(exc.reason)
+    return RuntimeError(f"{method} {path} returned HTTP {exc.code}: {detail}")
+
+
+# 调用 runtime HTTP API 并返回 JSON 对象；重启后的只读查询允许短暂连接或服务错误重试
 def _request_json(
     api_port: int,
     token: str,
@@ -128,12 +141,17 @@ def _request_json(
             "Content-Type": "application/json",
         },
     )
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + _READ_RETRY_TIMEOUT_S
     while True:
         try:
             with urllib.request.urlopen(request, timeout=5.0) as response:
                 payload = json.loads(response.read())
             break
+        except urllib.error.HTTPError as exc:
+            retryable = method == "GET" and exc.code in _RETRYABLE_READ_STATUSES
+            if not retryable or time.monotonic() >= deadline:
+                raise _http_error(method, path, exc) from exc
+            time.sleep(0.05)
         except (ConnectionError, OSError, urllib.error.URLError):
             if method != "GET" or time.monotonic() >= deadline:
                 raise

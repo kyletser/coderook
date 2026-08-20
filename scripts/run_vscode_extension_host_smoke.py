@@ -11,12 +11,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-from scripts.smoke_installed_runtime import (
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from scripts.smoke_installed_runtime import (  # noqa: E402
     _wait_until_listening,
     first_run_environment,
 )
 
-_ROOT = Path(__file__).resolve().parent.parent
 _EXTENSION = _ROOT / "editors" / "vscode"
 
 

@@ -39,3 +39,25 @@ def test_distribution_workflow_smokes_container_and_portable_runtime() -> None:
     assert workflow.count("smoke_installed_runtime.py") == 2
     assert "Container zero-credential Core, ping and TUI smoke" in workflow
     assert "Portable zero-credential Core, ping and TUI smoke" in workflow
+
+
+# 功能：验证 Docker 构建包含包元数据声明的许可证文件
+# 设计：直接锁定 COPY 合同，避免 clean context 到 Hatchling metadata 阶段才发现 LICENSE 缺失
+def test_docker_builder_copies_license_metadata() -> None:
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY pyproject.toml README.md LICENSE ./" in dockerfile
+
+
+# 功能：验证 portable 构建显式允许安装到已复制的 uv-managed Python 副本
+# 设计：锁定 break-system-packages 参数，防止新版 uv 的 externally-managed 保护再次阻断打包
+def test_portable_builder_allows_managed_runtime_copy() -> None:
+    root = Path(__file__).resolve().parents[2]
+    builder = (root / "scripts" / "build_windows_portable.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--directory ([System.IO.Path]::GetTempPath())" in builder
+    assert "python find --managed-python 3.12" in builder
+    assert "--python $portablePython --break-system-packages" in builder

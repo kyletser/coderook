@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,3 +49,25 @@ def test_distribution_runs_extension_host_smoke() -> None:
     assert '"test:host"' in package
     for capability in ("create_thread", "resume_thread", "open_diff"):
         assert capability in suite
+
+
+# 功能：验证 Extension Host smoke 可按文件路径直接启动并显示帮助
+# 设计：使用真实 Python 子进程清除测试进程的包导入偶然性，覆盖 CI 中 scripts 包无法解析的入口
+def test_extension_host_smoke_direct_entrypoint() -> None:
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "run_vscode_extension_host_smoke.py"),
+            "--help",
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Run the VS Code extension" in result.stdout

@@ -32,6 +32,7 @@ from code_rook.core.tools.builtin.git_diff import GitDiffTool
 from code_rook.core.workspace import WorkspaceBoundary
 
 logger = logging.getLogger(__name__)
+_TURN_DURABILITY_TIMEOUT_S = 10.0
 
 
 class RuntimeApiService:
@@ -167,7 +168,7 @@ class RuntimeApiService:
             ),
             name=f"api-turn:{run_id}",
         )
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + _TURN_DURABILITY_TIMEOUT_S
         while True:
             try:
                 return await self._runtime.get_turn(run_id)
@@ -178,7 +179,10 @@ class RuntimeApiService:
                 if remaining <= 0:
                     break
                 await self.wait_for_change(min(remaining, 0.1))
-        raise TimeoutError("turn did not enter durable runtime within two seconds")
+        raise TimeoutError(
+            "turn did not enter durable runtime within "
+            f"{_TURN_DURABILITY_TIMEOUT_S:g} seconds"
+        )
 
     # 列出指定 thread 的 durable turns
     async def list_turns(self, thread_id: str) -> list[TurnRecord]:

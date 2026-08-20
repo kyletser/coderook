@@ -26,7 +26,7 @@ $wheel = Get-ChildItem -LiteralPath $distRoot -Filter "coderook-*.whl" |
 if ($null -eq $wheel) {
     throw "built wheel was not found"
 }
-$pythonExe = (& uv python find 3.12).Trim()
+$pythonExe = (& uv --directory ([System.IO.Path]::GetTempPath()) python find --managed-python 3.12).Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pythonExe)) {
     throw "uv-managed Python 3.12 was not found"
 }
@@ -38,7 +38,7 @@ $runtime = Join-Path $target "runtime"
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item -LiteralPath $pythonRoot -Destination $runtime -Recurse
 $portablePython = Join-Path $runtime "python.exe"
-& uv pip install --python $portablePython $wheel.FullName
+& uv pip install --python $portablePython --break-system-packages $wheel.FullName
 if ($LASTEXITCODE -ne 0) {
     throw "portable dependency installation failed"
 }
