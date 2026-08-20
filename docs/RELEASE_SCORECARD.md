@@ -12,7 +12,7 @@
 - stream-json、resume、SDK、HTTP/SSE、MCP、PatchPlan、Artifact、ledger checksum、doctor 和配置事务均有针对性测试。
 - 本机 Windows 沙箱检查结果是 `DEGRADED (windows_none)`；AUTO_REVIEW 不会把该状态当作强制隔离。Windows Job Object 后代终止测试通过，但只计为进程治理。
 - VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；distribution workflow 会在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
-- commit `7732514` 的本机完整 pytest 为 1155 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 8.72 秒 installed-wheel first-run smoke 全部通过；该 commit 因当前 GitHub OAuth 凭据缺少 `workflow` scope 尚未推送，不能当作远端证据。
+- commit `703a602` 的本机完整 pytest 为 1159 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 7.58 秒 installed-wheel first-run smoke 全部通过；该 commit 因当前 GitHub 凭据缺少 `workflow` scope 尚未推送，不能当作远端证据。
 - 远端 CI #34（`0bf6c11`）与 CI #35（`702737e`）连续两次三平台全绿；CI #35 的 Required CI gate 成功。评分卡要求连续三次，当前是 2/3。
 - Security #4（`702737e`）的 gitleaks、Python/JavaScript CodeQL 与 Required security gate 成功；push 事件下 dependency review 按设计跳过，PR 事件仍有独立门禁。
 - Distribution run `32358752712` 在 `702737e` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP run `32358754512` 同 commit 成功。
