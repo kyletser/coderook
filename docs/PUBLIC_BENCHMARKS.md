@@ -41,6 +41,12 @@ JSON 的 `task_contracts` 保存每项预算、允许工具、task/fixture hash�
 task/fixture/budget/candidate 指纹。比较器默认要求这些合同与基线一致；只有明确使用
 `--allow-contract-change` 才能生成非同题比较，且不应据此宣传效果提升。
 
+`benchmark-release.yml` 的四个矩阵 job 使用 `--report-only` 保存原始结果，不要求单次 100% 才产报告；
+唯一 aggregate job 随后要求两个不同 wire format、每组两次、相同 commit/task/fixture/budget，并按评分卡
+门禁总体 ≥80%、多文件 ≥75%、只读解释 ≥90%、安全负例 100%，同时限制两次 pass@1 差值 ≤10%。
+聚合 JSON/Markdown 会列出每组均值/极值、成本/耗时和重复间不稳定任务；aggregate job 的退出码才是
+release benchmark 的最终结论。
+
 ## 3. Aider Polyglot pass@1
 
 CodeRook 复刻官方 harness 的以下输入契约：从 `.meta/config.json` 读取 solution/test/example 文件；只允许

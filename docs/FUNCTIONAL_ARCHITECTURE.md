@@ -950,6 +950,10 @@ commit，复刻官方 solution/test/prompt 选择并强制容器执行；SWE-ben
 安全负例、pass@1、verifier、P95 成本和耗时回归门禁。适配器通过只表示格式/执行契约成立，真实成绩仍必须由
 固定模型报告和官方 harness artifact 证明。
 
+release benchmark 采用 2 wire format × 2 repeats：矩阵 job 即使任务未全通过也先保留有效原始报告，
+aggregate job 再验证 candidate contract、相同任务/fixture/预算、分类成功率和重复波动，并输出不稳定任务；
+避免用“单次必须 100%”替代评分卡阈值，也避免只挑四次中的最好一次。
+
 本地完整复现（AGENTS.md 要求推送前全绿）：
 
 ```bash

@@ -25,6 +25,16 @@ uv run python scripts/run_benchmark.py --suite release
 每个任务的 baseline、允许工具、max steps/wall time/token/cost 预算与 task/fixture hash。修改 verifier、
 fixture 或预算后，比较器默认拒绝与旧报告直接比较，避免把题目变化误报成模型效果提升。
 
+四份 release 矩阵报告可离线聚合：
+
+```bash
+uv run python scripts/aggregate_benchmark_reports.py \
+  --input-root .benchmark-results/raw \
+  --output .benchmark-results/aggregate
+```
+
+默认合同为两个 wire format × 两次重复，并执行发布评分卡的分类阈值与重复波动门禁。
+
 ## 清单约束
 
 - verifier 使用 argv 数组直接启动，不经过 shell。

@@ -47,6 +47,40 @@ def candidate_fingerprint(
     )
 
 
+# 从逐任务合同重算 catalog、fixture 与预算三个独立指纹
+def task_contract_fingerprints(
+    contracts: list[BenchmarkTaskContract],
+) -> tuple[str, str, str]:
+    rows = [contract.model_dump(mode="json") for contract in contracts]
+    task_catalog = canonical_fingerprint(
+        [
+            {
+                "task_id": row["task_id"],
+                "baseline_commit": row["baseline_commit"],
+                "allowed_tools": row["allowed_tools"],
+                "task_fingerprint": row["task_fingerprint"],
+            }
+            for row in rows
+        ]
+    )
+    fixtures = canonical_fingerprint(
+        [
+            {
+                "task_id": row["task_id"],
+                "fixture_fingerprint": row["fixture_fingerprint"],
+            }
+            for row in rows
+        ]
+    )
+    budgets = canonical_fingerprint(
+        [
+            {"task_id": row["task_id"], "budgets": row["budgets"]}
+            for row in rows
+        ]
+    )
+    return task_catalog, fixtures, budgets
+
+
 # 返回真实候选报告缺失的 route、commit、任务、预算或指纹合同项
 def find_candidate_contract_issues(report: BenchmarkReport) -> list[str]:
     config = report.run_config
@@ -75,6 +109,15 @@ def find_candidate_contract_issues(report: BenchmarkReport) -> list[str]:
         issues.append("task contracts do not match report results")
     if config.task_count != len(report.task_contracts):
         issues.append("run_config.task_count does not match task contracts")
+    task_catalog, fixtures, budgets = task_contract_fingerprints(
+        report.task_contracts
+    )
+    if config.task_catalog_fingerprint != task_catalog:
+        issues.append("run_config.task_catalog_fingerprint does not match tasks")
+    if config.fixture_fingerprint != fixtures:
+        issues.append("run_config.fixture_fingerprint does not match tasks")
+    if config.budget_fingerprint != budgets:
+        issues.append("run_config.budget_fingerprint does not match tasks")
     expected_candidate = candidate_fingerprint(
         config,
         report.task_contracts,

@@ -49,10 +49,49 @@ jobs:
       - name: Run candidate suite
         run: >-
           uv run python scripts/run_benchmark.py --suite release
+          --report-only
           --output .benchmark-results/${{ matrix.route }}-${{ matrix.repeat }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: benchmark-${{ matrix.route }}-${{ matrix.repeat }}
           path: .benchmark-results/${{ matrix.route }}-${{ matrix.repeat }}
+          if-no-files-found: warn
+
+  aggregate:
+    name: Aggregate 2 wire formats x 2 repeats
+    needs: [benchmark]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-*
+          path: .benchmark-results/raw
+      - name: Enforce aggregate release thresholds
+        run: >-
+          uv run python scripts/aggregate_benchmark_reports.py
+          --input-root .benchmark-results/raw
+          --output .benchmark-results/aggregate
+          --expected-groups 2
+          --expected-repeats 2
+          --expected-wire-formats 2
+          --min-overall-pass-rate 0.80
+          --min-multi-file-pass-rate 0.75
+          --min-read-only-pass-rate 0.90
+          --min-security-pass-rate 1.0
+          --max-pass-rate-spread 0.10
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-release-aggregate
+          path: .benchmark-results/aggregate/*
           if-no-files-found: warn

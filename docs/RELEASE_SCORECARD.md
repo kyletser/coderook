@@ -54,7 +54,7 @@ uv run python scripts/compare_benchmark_reports.py \
 uv run python scripts/run_crash_recovery_matrix.py --iterations 100 --min-rate 0.95
 ```
 
-远端 workflow：`benchmark-nightly.yml` 使用单一固定 route；`benchmark-release.yml` 对 Anthropic Messages 与 OpenAI Responses 各重复两次。报告作为 Actions artifact 保存。
+远端 workflow：`benchmark-nightly.yml` 使用单一固定 route；`benchmark-release.yml` 对 Anthropic Messages 与 OpenAI Responses 各重复两次，先保存四份 candidate contract 原始报告，再由唯一 aggregate job 检查报告数、合同一致性、评分卡分类阈值与 ≤10% 重复波动。原始和聚合报告均作为 Actions artifact 保存；真实报告尚未产生。
 
 每份真实模型报告现已包含任务 P50/P95 耗时、进程 wall/CPU、峰值 RSS、进程数和采样完整性；
 `compare_benchmark_reports.py` 输出稳定 JSON/Markdown 差异，并默认把任务回退、安全负例失败、总体效果下降及

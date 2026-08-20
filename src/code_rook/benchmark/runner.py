@@ -14,7 +14,11 @@ from typing import Literal, Protocol
 
 import pathspec
 
-from code_rook.benchmark.contract import candidate_fingerprint, canonical_fingerprint
+from code_rook.benchmark.contract import (
+    candidate_fingerprint,
+    canonical_fingerprint,
+    task_contract_fingerprints,
+)
 from code_rook.benchmark.loader import LoadedBenchmarkTask
 from code_rook.benchmark.models import (
     AgentExecution,
@@ -64,32 +68,8 @@ def complete_run_config(
     repository_commit: str,
     suite: str | None,
 ) -> BenchmarkRunConfig:
-    contract_rows = [contract.model_dump(mode="json") for contract in contracts]
-    task_catalog_fingerprint = canonical_fingerprint(
-        [
-            {
-                "task_id": row["task_id"],
-                "baseline_commit": row["baseline_commit"],
-                "allowed_tools": row["allowed_tools"],
-                "task_fingerprint": row["task_fingerprint"],
-            }
-            for row in contract_rows
-        ]
-    )
-    fixture_fingerprint = canonical_fingerprint(
-        [
-            {
-                "task_id": row["task_id"],
-                "fixture_fingerprint": row["fixture_fingerprint"],
-            }
-            for row in contract_rows
-        ]
-    )
-    budget_fingerprint = canonical_fingerprint(
-        [
-            {"task_id": row["task_id"], "budgets": row["budgets"]}
-            for row in contract_rows
-        ]
+    task_catalog_fingerprint, fixture_fingerprint, budget_fingerprint = (
+        task_contract_fingerprints(contracts)
     )
     material = run_config.model_dump(mode="json")
     material.update(

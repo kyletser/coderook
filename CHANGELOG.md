@@ -15,6 +15,7 @@
 - MCP legacy SSE 同源安全客户端与固定官方 SDK 2.0 的 stdio/SSE/Streamable HTTP 互操作 runner。
 - 绑定 commit/platform/SDK 的官方 MCP 三 transport 互操作 JSON/Markdown 证据。
 - 强制 benchmark candidate contract：完整 commit、显式 route/model/wire、逐任务预算及五类 SHA-256 身份，并阻断 fixture/预算漂移比较。
+- 两个 wire format × 两次 release benchmark 聚合器，统一门禁分类成功率、合同漂移、重复波动和不稳定任务。
 
 ### Changed
 

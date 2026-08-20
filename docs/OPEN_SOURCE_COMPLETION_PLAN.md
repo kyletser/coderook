@@ -218,7 +218,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
 | OS4-01 | DONE | 固化 50 任务真实模型候选协议 | 落盘前强制完整 commit、route/model/wire、配置/task/fixture/budget/candidate SHA-256；逐任务公开允许工具与四类预算，比较器拒绝合同漂移 |
-| OS4-02 | EXTERNAL | 跑两个 wire format × 两次候选集 | 4 份原始报告和聚合报告 |
+| OS4-02 | EXTERNAL | 跑两个 wire format × 两次候选集 | 四原始报告 + 唯一 aggregate gate 的代码/工作流已完成；真实模型凭据触发后才产生 pass@1、分类阈值、成本、波动和不稳定任务报告 |
 | OS4-03 | PARTIAL | 适配 Aider Polyglot benchmark，使用隔离容器执行 | 官方目录/prompt/test loader、固定 commit、容器入口和统一报告已实现；真实固定切片待跑 |
 | OS4-04 | PARTIAL | 增加 SWE-bench Lite/Verified 小规模适配 smoke | 标准三字段 JSONL、基线校验、含新增文件 patch 与官方 harness 命令已实现；官方 Docker 判分 artifact 待产出 |
 | OS4-05 | DONE | 建立回归比较器：基线/候选、显著退化、失败聚类 | `compare_benchmark_reports.py` 输出 JSON/Markdown，门禁任务回退、安全负例、效果、P95 成本/耗时和任务集漂移 |

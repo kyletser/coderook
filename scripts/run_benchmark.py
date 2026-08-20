@@ -54,6 +54,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Fixed provider sampling temperature for reproducible model runs.",
     )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Write a valid candidate report without gating on 100% task success.",
+    )
     return parser
 
 
@@ -178,7 +183,7 @@ async def _run(args: argparse.Namespace, root: Path) -> int:
     write_markdown_report(report, output / "report.md")
     print(f"Benchmark pass@1: {report.passed}/{report.total} ({report.pass_rate:.1%})")
     print(f"Reports: {output}")
-    return 0 if report.passed == report.total else 1
+    return 0 if args.report_only or report.passed == report.total else 1
 
 
 # 解析参数并进入异步主流程
