@@ -1015,8 +1015,9 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    route/model 的 pass@1、分类成功率、成本与波动报告
 2. **公开 benchmark 尚无模型成绩** —— Aider Polyglot 与 SWE-bench 适配合同已实现，但没有官方
    harness 对固定模型切片的判分 artifact，不能把离线适配测试写成榜单成绩
-3. **跨版本升级尚无公开报告** —— Distribution `32365931473` 的三平台 wheel、Docker、Windows
-   portable 和真实 Extension Host 已全绿，但还没有“上一公开版本 → 当前版本 → 回滚”报告
+3. **跨已发布版本升级尚无公开报告** —— Distribution `32385785977` 已在三平台完成历史 `0.0.1`
+   commit → 当前 `0.1.0` → 恢复备份回滚 `0.0.1` 的安装态 preflight，旧 thread 保留且计数 `1→2→1`；
+   baseline 没有精确 Git tag，因此仍不能替代“上一公开版本 → 当前版本 → 回滚”报告
 4. **主分支尚未保护** —— 远端仓库当前没有 active ruleset；CI/Security 虽有稳定汇总 job，但在启用
    required checks 前不能宣称 main 受保护
 5. **公开发行和供应链证明尚未产生** —— Release workflow 已包含 SBOM、checksum、OIDC provenance

@@ -143,12 +143,6 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/distribution.yml": (
         "Run the full distribution gate or one focused job",
         "inputs.target == 'vscode'",
-        "inputs.target == 'upgrade'",
-        "run_upgrade_preflight.py",
-        "upgrade-preflight-${{ runner.os }}",
-        "name: Required upgrade preflight gate",
-        "validate_upgrade_preflight_reports.py",
-        "upgrade-preflight-aggregate",
         "Container zero-credential Core, ping and TUI smoke",
         "Portable zero-credential Core, ping and TUI smoke",
         "smoke_installed_runtime.py",

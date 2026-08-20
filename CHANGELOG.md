@@ -29,6 +29,8 @@
   `main` 合并后重复执行的安全扫描，减少重复 Actions 与已知失败通知。
 - VS Code 审批改为关闭时默认拒绝的 QuickPick，并为 Distribution 增加单 job 聚焦入口；真实
   Extension Host 证据现包含 commit-bound JSON 与哈希绑定审批截图。
+- 增加可按需运行的安装态升级/备份回滚 preflight，报告绑定 baseline/candidate commit、wheel
+  哈希、thread 往返计数和备份摘要；无精确 tag 时不冒充跨已发布版本验证。
 
 ## [0.1.0] - 2026-08-19
 

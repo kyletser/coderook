@@ -16,6 +16,7 @@
 - 同一 commit 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与 Required CI gate 全绿；期间暴露并修复 Windows 事件回放、wheel 冷启动窗口与 Git racy-clean 三类竞态。
 - Security `32376297003` 在 commit `a4e4fea` 上完成 gitleaks、Python/JavaScript CodeQL 与 Required security gate。仓库当前未启用 GitHub Dependency Graph，dependency review 因而 fail closed 为显式 opt-in，不能计作已有安全证据。
 - Distribution `32376314295` 在 commit `a4e4fea` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP `32376317570` 同 commit 成功。
+- commit `cd2bba5` 的聚焦 Distribution `32385785977` 在 Ubuntu、macOS、Windows 分别构建历史 `0.0.1` 与候选 `0.1.0` wheel，验证旧 thread 保留、候选 thread 可写、完整备份恢复后回滚到 `0.0.1`；三份 clean-candidate JSON 的 thread 计数均为 `1→2→1`，Required upgrade preflight gate 聚合成功。baseline commit 没有精确 tag，所以这不是跨已发布版本成绩。
 - Crash Recovery `32376310972` 在 commit `a4e4fea` 上完成 Ubuntu、macOS、Windows 各 100/100；每个平台 schema 3 报告各含 50 次 LLM 请求中断和 50 次未配对工具调用，三个报告均为 `infrastructure_error=null`、`orphaned_tool_calls=0`。聚合校验器进一步拒绝 commit/platform/轮次/相位不一致。
 - CI `32365530943` 上传三平台 ProcessSupervisor 固定负载基线与沙箱边界 JSON/Markdown；Windows/Linux 资源采样完整率 100%，macOS 诚实记录 `complete_expected=false` 与 wall-time。
 - 统一远端审计 `32377486987` 已在真实 GitHub API 上 fail closed 运行：CI、Security、Distribution、Crash Recovery、MCP 均命中 commit `a4e4fea`，唯一失败原因是 active ruleset 与 release benchmark 仍缺。
@@ -36,7 +37,7 @@
 | 安全负例 | 三平台 100% | CI `32365530943` 的 Linux bwrap、macOS Seatbelt 与 Windows degraded/ASK 逐平台 JSON 均通过 |
 | 强杀恢复 | 100 次中 ≥95%，孤儿工具调用 0 | Crash Recovery `32376310972` 三平台各 100/100、合计 300/300；schema 3 报告孤儿均为 0，跨平台 aggregate 合同拒绝身份或统计漂移 |
 | 两 wire format × 两次 | 4 份候选报告 | workflow 已配置，报告未产生 |
-| 安装/升级 | 三平台、wheel、容器、portable | Distribution `32376314295` 的三平台 wheel、Docker、Windows portable、VSIX/Extension Host 全绿；跨已发布版本升级/回滚仍无 fixture |
+| 安装/升级 | 三平台、wheel、容器、portable | Distribution `32376314295` 的三平台 wheel、Docker、Windows portable、VSIX/Extension Host 全绿；`32385785977` 的三平台安装态升级/备份回滚候选 preflight 全绿；跨已发布 tag 的升级/回滚仍无报告 |
 | 完整 CI | 连续 3 次全绿 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次全绿 |
 
 ## 运行方式

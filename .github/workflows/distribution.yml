@@ -2,12 +2,6 @@ name: Distribution gate
 
 on:
   workflow_call:
-    inputs:
-      baseline_ref:
-        description: Immutable baseline commit or release tag for upgrade preflight
-        required: false
-        default: 8cb9e1e421f16a246908c4d1b69840036a35237d
-        type: string
   workflow_dispatch:
     inputs:
       target:
@@ -21,12 +15,6 @@ on:
           - container
           - windows-portable
           - vscode
-          - upgrade
-      baseline_ref:
-        description: Immutable baseline commit or release tag for upgrade preflight
-        required: true
-        default: 8cb9e1e421f16a246908c4d1b69840036a35237d
-        type: string
 
 permissions:
   contents: read
@@ -137,71 +125,4 @@ jobs:
             editors/vscode/dist/*.vsix
             artifacts/vscode-extension-host.json
             artifacts/vscode-approval.png
-          if-no-files-found: error
-
-  upgrade:
-    name: Installed upgrade and rollback / ${{ matrix.os }}
-    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'upgrade'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - run: uv python install 3.12
-      - run: uv sync --frozen
-      - name: Build baseline and candidate, upgrade state, then restore rollback backup
-        run: >-
-          uv run python scripts/run_upgrade_preflight.py
-          --baseline-ref "${{ inputs.baseline_ref }}"
-          --evidence "artifacts/upgrade-preflight-${{ runner.os }}.json"
-      - uses: actions/upload-artifact@v6
-        with:
-          name: upgrade-preflight-${{ runner.os }}
-          path: artifacts/upgrade-preflight-${{ runner.os }}.json
-          if-no-files-found: error
-
-  upgrade-aggregate:
-    name: Required upgrade preflight gate
-    needs: [upgrade]
-    if: >-
-      always() &&
-      (github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'upgrade')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Require every platform job to pass
-        env:
-          UPGRADE_RESULT: ${{ needs.upgrade.result }}
-        run: test "${UPGRADE_RESULT}" = "success"
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: upgrade-preflight-*
-          path: upgrade-reports
-          merge-multiple: true
-      - name: Validate cross-platform identity and rollback invariants
-        run: >-
-          python scripts/validate_upgrade_preflight_reports.py
-          upgrade-reports/*.json
-          --expected-commit "${GITHUB_SHA}"
-          --expected-baseline-ref "${{ inputs.baseline_ref }}"
-          --output-dir artifacts/upgrade-preflight-aggregate
-      - uses: actions/upload-artifact@v6
-        with:
-          name: upgrade-preflight-aggregate
-          path: artifacts/upgrade-preflight-aggregate/*
           if-no-files-found: error

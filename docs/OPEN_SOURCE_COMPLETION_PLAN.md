@@ -179,7 +179,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | OS1-01 | DONE | 统一无配置启动、`/config`、`coderook configure` 与 provider doctor | TUI 不调用强制向导；配置/TUI 相关 27 项测试通过 |
 | OS1-02 | DONE | 建立 10 分钟 quickstart 与脚本化 first-run smoke | Distribution `32365931473` 的 Ubuntu/Windows/macOS clean wheel 与零凭据 Core/ping/TUI smoke 成功 |
 | OS1-03 | DONE | wheel、Docker、Windows portable 发行流水线 | 同一远端 run 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 六个 job 全绿并上传产物 |
-| OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册 | 首个公开版本后补“上一版本 → 当前版本 → 回滚”fixture |
+| OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册，并完成安装态 preflight | commit `cd2bba5` 的 Distribution `32385785977` 在 Ubuntu/macOS/Windows 完成历史 `0.0.1` commit → 当前 `0.1.0` → 恢复备份回滚 `0.0.1`，thread 数均为 `1→2→1` 且聚合 gate 通过；baseline 无精确 Git tag，因此仍不能记作“跨已发布版本”完成 |
 | OS1-05 | DONE | 增加 `examples/`：只读审查、自动修复、MCP 扩展 | 命令契约离线测试；MCP 示例由真实 stdio 客户端握手与调用 |
 | OS1-06 | DONE | 用真实 Textual 控件和确定性正式事件制作可复现 TUI 截图，更新 README 首屏 | `capture_tui_demo.py` 无 daemon/模型生成截图；SVG 内容测试与公开仓库门禁覆盖 |
 

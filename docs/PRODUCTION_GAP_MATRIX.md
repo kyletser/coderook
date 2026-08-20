@@ -28,7 +28,7 @@
 | R4 | VS Code 扩展 | 完成并远端验证 | HTTP/SSE、创建/恢复、发送、审批/逐 hunk、diff、steer/interrupt；commit `0e92a3b` 的 Distribution `32383191953` 在真实 VS Code 1.134.0 + Xvfb 中产出可读 QuickPick 审批 PNG，JSON 绑定 commit、字节数与 SHA-256 | Marketplace 发布 |
 | R5 | 共享 ConfigurationService | 完成 | CLI/TUI 共用 route/credential 事务；默认 doctor 后一次原子提交 | 无 |
 | R5 | 长任务单屏状态 | 完成 | Turn Inspector 同屏展示目标、活跃 worker、成本、待审批、失败原因与 sandbox backend | 真实长任务人工可用性报告 |
-| R5 | 升级/降级阻断 | 完成实现 | runtime/session/routes/policy 未来 schema fixture 均阻断且保持原文件 | 跨已发布版本的干净机升级报告 |
+| R5 | 升级/降级阻断 | 完成实现并通过候选 preflight | runtime/session/routes/policy 未来 schema fixture 均阻断且保持原文件；commit `cd2bba5` 的 Distribution `32385785977` 在三平台从历史 `0.0.1` wheel 升级到 `0.1.0`，保留旧 thread、写入新 thread，再恢复备份回滚，聚合计数均为 `1→2→1` | baseline commit 无精确 Git tag，仍缺跨已发布版本报告 |
 | R5 | doctor 与脱敏诊断包 | 完成 | 环境/端口/sandbox/工具/磁盘/runtime 汇总；确认导出 ZIP | 无 |
 | R5 | wheel/Docker/Windows 安装与 portable | 远端候选通过 | Distribution `32376314295` 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 全绿 | 签名 Windows 安装包和跨已发布版本升级/回滚报告 |
 | R5 | 三平台 CI | 完成并连续验证 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与汇总 gate 全绿 | 无；后续提交仍需维持门禁 |

@@ -57,6 +57,24 @@ coderook ping
 4. `~/.coderook/` 中的 session ledger 和数据库仍可读取；
 5. 若使用 MCP、Hook 或 workspace Skill，逐项运行它们的 doctor 或最小示例。
 
+## 按需安装态 preflight
+
+维护者可在不调用模型的情况下，从一个不可变历史 commit 或 tag 构建 baseline wheel，再构建当前
+candidate wheel，依次验证：baseline 创建持久 thread、candidate 安装后保留旧 thread 并写入新 thread、
+恢复完整备份并重新安装 baseline 后只剩旧 thread。
+
+```bash
+uv run python scripts/run_upgrade_preflight.py \
+  --baseline-ref <full-commit-or-tag> \
+  --evidence artifacts/upgrade-preflight.json
+```
+
+普通候选 preflight 接受完整 commit；正式跨已发布版本验收必须额外传入
+`--require-baseline-tag`。该参数会要求 baseline commit 有精确 Git tag，不能用 Changelog 链接、版本号
+字符串或未发布 commit 冒充公开版本。该检查不放入日常 CI；发布维护者按需运行并归档 JSON 证据，
+避免每次提交都重复构建历史 wheel、创建隔离环境和执行回滚。历史候选曾在 Ubuntu、macOS、Windows
+完成一次同 commit 验证；因为 baseline 没有精确 tag，只作为候选兼容性证据，不算跨已发布版本验收。
+
 ## 回滚
 
 若升级失败，停止 daemon，重新安装之前记录的版本，再恢复完整备份。恢复 SQLite 时必须同时恢复同一次备份中的

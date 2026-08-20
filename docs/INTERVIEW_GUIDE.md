@@ -22,9 +22,9 @@ HTTP/SSE。daemon 持有 session、permission、worker 和 ledger；客户端重
 **2:10–2:40，证据。** 仓库有 50 个固定任务、1,000+ 自动测试、三平台 CI、公开 benchmark 适配器，
 发布链生成 SBOM/checksums/provenance。但离线 verifier 通过不等于模型效果。
 
-**2:40–3:00，诚实边界。** 当前评分卡仍 NO-GO：真实模型 pass@1、Windows 100 次强杀、active ruleset
-和首次公开发行证据未完成；Ubuntu/macOS 各 100 次与干净发行矩阵已有报告。这说明我把“代码实现”和
-“生产证据”分开管理。
+**2:40–3:00，诚实边界。** 当前评分卡仍 NO-GO：真实模型 pass@1、公开 benchmark 官方判分、active
+ruleset、跨已发布 tag 升级和首次公开发行仍未完成；三平台合计 300 次强杀、干净发行和候选升级/回滚
+已有报告。这说明我把“代码实现”和“生产证据”分开管理。
 
 ## 10 分钟版本
 
@@ -35,7 +35,7 @@ HTTP/SSE。daemon 持有 session、permission、worker 和 ledger；客户端重
 3. **一次工具调用（2 分钟）**：从 model decision 到 schema、Hook、permission、sandbox、ProcessSupervisor、
    tool result、verification 和 receipt；重点讲 Windows degraded + ASK。
 4. **持久化与恢复（1.5 分钟）**：ledger checksum、SQLite projection、强杀截断、reconcile、幂等；说明
-   本机 smoke、Ubuntu/macOS 100/100 与 Windows 探针超时的区别。
+   Ubuntu/macOS/Windows 各 100/100 只证明 daemon 强杀恢复，不外推为整机断电恢复。
 5. **多 Agent 约束（1 分钟）**：何时拆任务，write claim 如何防冲突，budget/lease 如何终止失控 worker；
    承认小任务多 Agent 可能只增加成本。
 6. **评测与发行（1.5 分钟）**：50 任务 verifier、Aider Polyglot/SWE-bench 适配、pass@1/成本/P95 比较，

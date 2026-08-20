@@ -21,6 +21,7 @@
 | 1,000+ 自动测试门禁 | release scorecard 的 dated checkpoint | 使用范围值，避免每次提交后精确数过期 |
 | Windows/Ubuntu/macOS CI 与发行 workflow | commit `fe3bd3b` 的连续三次 CI；commit `a4e4fea` 的 CI `32376296861`、Distribution `32376314295` | 可写“三平台 CI 连续三次及干净发行门禁全绿”，不能扩写为生产就绪 |
 | VS Code 真实 Extension Host 与审批 UI | commit `0e92a3b` 的 Distribution `32383191953`，含 commit-bound JSON 与哈希绑定 PNG | 可写“在真实 VS Code Extension Host 验证 daemon 会话、diff 与审批闭环”，不能写已上架 Marketplace |
+| 三平台安装态升级/备份回滚 preflight | commit `cd2bba5` 的 Distribution `32385785977`，三份原始 JSON 与聚合 gate | 可写“验证历史 wheel 到候选 wheel 的状态保留与备份回滚”；baseline 无 tag，不能写“跨已发布版本升级” |
 | SBOM、SHA256SUMS、OIDC provenance、Cosign keyless workflow | `docs/RELEASING.md` | 可写“设计链路”，首次真实 Release 前不能写“已发布可验证产物” |
 
 ## 可引用的历史精确数字

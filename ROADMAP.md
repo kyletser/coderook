@@ -7,7 +7,7 @@ Roadmap 按可验证用户结果排序，不承诺日期。单个工作项的精
 ## Now：公开 Beta 证据
 
 - 固定模型/route 运行 50 任务与公开 benchmark 适配器，公布 pass@1、成本、耗时和失败聚类；
-- 在 Ubuntu、macOS、Windows 完成安全负例、100 次强杀恢复、安装/升级/回滚矩阵；
+- 在已有三平台安全、强杀恢复和候选升级/回滚证据上，补真实模型与跨已发布 tag 的升级报告；
 - 启用 main ruleset，完成首次可验证的 GitHub Release、GHCR 镜像、SBOM 与 attestation；
 - 只有评分卡全部达到阈值后才发布 `0.2.0-beta`。
 

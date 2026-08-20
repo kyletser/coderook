@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from scripts.run_upgrade_preflight import (
-    _DEFAULT_BASELINE_REF,
     _resolve_commit,
     _runtime_schema,
     _tree_sha256,
@@ -19,13 +18,53 @@ from scripts.run_upgrade_preflight import (
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-# 功能：验证默认安装基线是当前 HEAD 的真实祖先且版本比较只接受稳定三段版本
-# 设计：直接查询仓库历史并覆盖相等版本拒绝，防止 preflight 用同一提交或模糊版本伪造升级
-def test_upgrade_preflight_baseline_identity_and_version_order() -> None:
-    baseline = _resolve_commit(_DEFAULT_BASELINE_REF)
-    candidate = _resolve_commit("HEAD")
+# 功能：验证 baseline 必须是候选真实祖先且版本比较只接受稳定三段版本
+# 设计：构造两提交临时仓库，避免日常 CI 浅克隆缺历史，同时覆盖相等身份和模糊版本拒绝
+def test_upgrade_preflight_baseline_identity_and_version_order(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    tracked = repository / "state.txt"
+    tracked.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "state.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CodeRook Test",
+            "-c",
+            "user.email=test@coderook.invalid",
+            "commit",
+            "-m",
+            "baseline",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    baseline = _resolve_commit("HEAD", root=repository)
+    tracked.write_text("candidate\n", encoding="utf-8")
+    subprocess.run(["git", "add", "state.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=CodeRook Test",
+            "-c",
+            "user.email=test@coderook.invalid",
+            "commit",
+            "-m",
+            "candidate",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    candidate = _resolve_commit("HEAD", root=repository)
 
-    _validate_commit_order(baseline, candidate)
+    _validate_commit_order(baseline, candidate, root=repository)
+    with pytest.raises(RuntimeError, match="must differ"):
+        _validate_commit_order(candidate, candidate, root=repository)
     assert _version_triplet("0.1.0") > _version_triplet("0.0.1")
     with pytest.raises(RuntimeError, match="stable x.y.z"):
         _version_triplet("0.2.0-beta.1")
@@ -85,21 +124,6 @@ def test_upgrade_preflight_rejects_identical_commits_before_build(
         )
 
     assert not evidence.exists()
-
-
-# 功能：验证 Distribution 可聚焦运行三平台安装态升级与备份回滚 preflight
-# 设计：锁定显式 baseline、三平台矩阵、完整 Git 历史和逐平台 artifact，避免退化为源码级迁移单测
-def test_distribution_declares_cross_platform_upgrade_preflight() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "distribution.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert f"default: {_DEFAULT_BASELINE_REF}" in workflow
-    assert "inputs.target == 'upgrade'" in workflow
-    assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
-    assert "fetch-depth: 0" in workflow
-    assert "run_upgrade_preflight.py" in workflow
-    assert "upgrade-preflight-${{ runner.os }}" in workflow
 
 
 # 功能：验证升级 preflight 可按脚本路径直接启动并公开 tag 严格模式
