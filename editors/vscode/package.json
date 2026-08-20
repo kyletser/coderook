@@ -8,18 +8,42 @@
     "type": "git",
     "url": "https://github.com/kyletser/coderook.git"
   },
-  "engines": {"vscode": "^1.95.0"},
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./out/extension.js",
-  "activationEvents": ["onCommand:coderook.send"],
+  "activationEvents": [
+    "onCommand:coderook.send"
+  ],
   "contributes": {
     "commands": [
-      {"command": "coderook.newThread", "title": "CodeRook: New Thread"},
-      {"command": "coderook.resumeThread", "title": "CodeRook: Resume Thread"},
-      {"command": "coderook.send", "title": "CodeRook: Send Task"},
-      {"command": "coderook.steer", "title": "CodeRook: Steer Active Turn"},
-      {"command": "coderook.interrupt", "title": "CodeRook: Interrupt Active Turn"},
-      {"command": "coderook.openDiff", "title": "CodeRook: Open Workspace Diff"}
+      {
+        "command": "coderook.newThread",
+        "title": "CodeRook: New Thread"
+      },
+      {
+        "command": "coderook.resumeThread",
+        "title": "CodeRook: Resume Thread"
+      },
+      {
+        "command": "coderook.send",
+        "title": "CodeRook: Send Task"
+      },
+      {
+        "command": "coderook.steer",
+        "title": "CodeRook: Steer Active Turn"
+      },
+      {
+        "command": "coderook.interrupt",
+        "title": "CodeRook: Interrupt Active Turn"
+      },
+      {
+        "command": "coderook.openDiff",
+        "title": "CodeRook: Open Workspace Diff"
+      }
     ],
     "configuration": {
       "title": "CodeRook",
@@ -40,12 +64,14 @@
   "scripts": {
     "compile": "tsc -p ./",
     "check": "tsc --noEmit -p ./",
+    "test:host": "npm run compile && node ./out/test/runTest.js",
     "prepackage": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\"",
     "package": "npm run compile && vsce package --no-dependencies --out dist/coderook-vscode.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.7.2"
   }

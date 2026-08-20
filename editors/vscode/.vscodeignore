@@ -1,5 +1,6 @@
 node_modules/**
 src/**
+out/test/**
 dist/**
 .gitignore
 .vscodeignore

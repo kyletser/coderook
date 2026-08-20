@@ -51,11 +51,11 @@ async function ensureThread(): Promise<string> {
   return threadId;
 }
 
-// 交互创建并选中新的 durable thread。
-async function newThread(): Promise<void> {
-  const title = await vscode.window.showInputBox({prompt: "Thread title", value: "VS Code"});
+// 交互创建并选中新的 durable thread，并允许 Extension Host smoke 直接传入标题。
+async function newThread(titleOverride?: string): Promise<string | undefined> {
+  const title = titleOverride ?? await vscode.window.showInputBox({prompt: "Thread title", value: "VS Code"});
   if (title === undefined) {
-    return;
+    return undefined;
   }
   const created = await request("/v1/threads", {
     method: "POST",
@@ -65,26 +65,32 @@ async function newThread(): Promise<void> {
   turnId = "";
   eventCursor = 0;
   vscode.window.showInformationMessage(`CodeRook thread: ${threadId}`);
+  return threadId;
 }
 
-// 从服务端 durable thread 列表恢复用户选择的 thread。
-async function resumeThread(): Promise<void> {
-  const threads = await request("/v1/threads") as JsonObject[];
-  const picked = await vscode.window.showQuickPick(
-    threads.map(item => ({
-      label: String(item.title || item.id),
-      description: String(item.id),
-      id: String(item.id),
-    })),
-    {placeHolder: "Resume a CodeRook thread"},
-  );
-  if (!picked) {
-    return;
+// 从服务端 durable thread 列表恢复选择项，并允许 smoke 按 id 无交互恢复。
+async function resumeThread(threadOverride?: string): Promise<string | undefined> {
+  let selected = threadOverride;
+  if (!selected) {
+    const threads = await request("/v1/threads") as JsonObject[];
+    const picked = await vscode.window.showQuickPick(
+      threads.map(item => ({
+        label: String(item.title || item.id),
+        description: String(item.id),
+        id: String(item.id),
+      })),
+      {placeHolder: "Resume a CodeRook thread"},
+    );
+    if (!picked) {
+      return undefined;
+    }
+    selected = picked.id;
   }
-  threadId = picked.id;
+  threadId = selected;
   turnId = "";
   eventCursor = 0;
   await startEventStream();
+  return threadId;
 }
 
 // 创建一个 act turn 并启动按游标恢复的事件流。
@@ -267,17 +273,20 @@ async function interrupt(): Promise<void> {
 }
 
 // 选择变更文件并以 VS Code diff 文档打开服务端生成的 unified diff。
-async function openDiff(): Promise<void> {
+async function openDiff(pathOverride?: string): Promise<string | undefined> {
   const overview = await request("/v1/workspace/diff?scope=all") as JsonObject;
   const files = Array.isArray(overview.files) ? overview.files as JsonObject[] : [];
-  const picked = await vscode.window.showQuickPick(
-    files.map(file => ({
-      label: String(file.path ?? ""),
-      description: String(file.status ?? "changed"),
-    })),
-    {placeHolder: "Open CodeRook workspace diff"},
-  );
-  const selectedPath = picked?.label || ".";
+  let selectedPath = pathOverride;
+  if (!selectedPath) {
+    const picked = await vscode.window.showQuickPick(
+      files.map(file => ({
+        label: String(file.path ?? ""),
+        description: String(file.status ?? "changed"),
+      })),
+      {placeHolder: "Open CodeRook workspace diff"},
+    );
+    selectedPath = picked?.label || ".";
+  }
   const diff = selectedPath === "." ? overview : await request(
     `/v1/workspace/diff?scope=all&path=${encodeURIComponent(selectedPath)}`,
   ) as JsonObject;
@@ -286,15 +295,19 @@ async function openDiff(): Promise<void> {
     content: String(diff.diff ?? "No textual diff available."),
   });
   await vscode.window.showTextDocument(document, {preview: true});
+  return document.uri.toString();
 }
 
 // 为命令统一捕获异常并显示简洁错误。
-function guarded(action: () => Promise<void>): () => Promise<void> {
-  return async () => {
+function guarded<TArgs extends unknown[], TResult>(
+  action: (...args: TArgs) => Promise<TResult>,
+): (...args: TArgs) => Promise<TResult | undefined> {
+  return async (...args: TArgs) => {
     try {
-      await action();
+      return await action(...args);
     } catch (error) {
       vscode.window.showErrorMessage(`CodeRook: ${String(error)}`);
+      return undefined;
     }
   };
 }

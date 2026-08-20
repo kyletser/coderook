@@ -975,6 +975,8 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 候选产物包括 wheel、sdist、Windows portable、VSIX 和带不可变 digest 的 GHCR 镜像。
 wheel、容器和 portable 的发行检查不止打印版本：`smoke_installed_runtime.py` 会清除继承凭据与
 `CODEROOK_*` 状态，在临时 HOME 和随机 loopback 端口验证未配置状态、TUI help、真实 Core 启动与 ping。
+VSIX job 则通过 `@vscode/test-electron` 在 Xvfb 的真实 Extension Host 中连接隔离 daemon，检查扩展
+激活、命令注册、新建/恢复 durable thread 和 workspace diff，并上传绑定 commit 的 JSON 证据。
 Syft 为可下载产物与镜像生成 SPDX JSON SBOM；`generate_release_manifest.py` 流式生成
 `SHA256SUMS` 和机器可读 manifest；`actions/attest` 使用 GitHub OIDC 生成构建来源与 SBOM
 attestation；Cosign 使用短期 OIDC 身份签名容器和校验和文件，不在仓库或 Secrets 中保存长期
@@ -1025,9 +1027,9 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
    都会把剪贴板位图转换为可读取路径
 9. **诊断性能没有 P95 基线** —— Python/TypeScript 后端已并发、可取消、去重和按文件过滤；Go/Rust
    与常驻 LSP 不在当前 Beta 门禁
-10. **外部协议认证范围有限** —— MCP stdio/legacy SSE/Streamable HTTP 的官方 SDK 2.0 固定矩阵 runner
-   已实现，OAuth/企业代理/sampling/elicitation 仍无报告；VS Code 已生成 VSIX，但尚未做真实 Extension
-   Host UI 冒烟
+10. **外部协议认证范围有限** —— MCP stdio/legacy SSE/Streamable HTTP 的官方 SDK 2.0 固定矩阵已通过，
+   OAuth/企业代理/sampling/elicitation 仍无报告；VS Code Extension Host runner 已覆盖真实 daemon 的激活、
+   thread 恢复和 diff，但远端报告及审批 UI 录像尚未产生
 11. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
    仍需运营性维护
 

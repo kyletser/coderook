@@ -74,11 +74,17 @@ jobs:
           if-no-files-found: error
 
   vscode:
-    name: VS Code VSIX
+    name: VS Code VSIX and Extension Host smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -86,10 +92,19 @@ jobs:
           cache-dependency-path: editors/vscode/package-lock.json
       - working-directory: editors/vscode
         run: npm ci
+      - name: Install virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Real daemon Extension Host smoke
+        run: >-
+          uv run python scripts/run_vscode_extension_host_smoke.py
+          --headless
+          --evidence artifacts/vscode-extension-host.json
       - working-directory: editors/vscode
         run: npm run check && npm run package
       - uses: actions/upload-artifact@v4
         with:
           name: coderook-vscode
-          path: editors/vscode/dist/*.vsix
+          path: |
+            editors/vscode/dist/*.vsix
+            artifacts/vscode-extension-host.json
           if-no-files-found: error
