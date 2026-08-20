@@ -206,7 +206,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 |---|---|---|---|
 | OS3-01 | DONE | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次三平台与 Required CI gate 全绿 |
 | OS3-02 | DONE | 三平台运行 sandbox 负例矩阵 | CI `32365530943` 上传 Linux bwrap、macOS Seatbelt 强制边界与 Windows `windows_none` 明确降级 JSON，逐项 gate 均通过 |
-| OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | Crash Recovery `32365937235` 的 Ubuntu、macOS、Windows 各 100/100，三平台均无 infrastructure error |
+| OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | Crash Recovery `32365937235` 的 Ubuntu、macOS、Windows 各 100/100；schema 3 矩阵交替覆盖 LLM 请求中断与未配对工具调用，并以 `orphaned_tool_calls=0` 为硬门禁 |
 | OS3-04 | DONE | 建立 ProcessSupervisor 资源 P95 基线 | CI `32365530943` 上传三平台 commit-bound JSON/Markdown；Windows/Linux 完整采样率 100%，macOS 明确记录 `complete_expected=false` 与 wall-time |
 | OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security `32368432360` 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |

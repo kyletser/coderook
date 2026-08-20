@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -25,18 +26,52 @@ _RETRYABLE_READ_STATUSES = frozenset({404, 409, 500, 502, 503, 504})
 class _BlockingModelHandler(BaseHTTPRequestHandler):
     request_started = threading.Condition()
     request_count = 0
+    request_phase = "llm_request_in_flight"
 
-    # 接收 OpenAI-compatible 请求并短暂阻塞，为 daemon 强杀提供稳定窗口
+    # 按故障阶段阻塞模型请求或返回一个待恢复的工具调用
     def do_POST(self) -> None:  # noqa: N802
         content_length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(content_length)
         with self.request_started:
             type(self).request_count += 1
+            phase = type(self).request_phase
             self.request_started.notify_all()
-        time.sleep(3.0)
-        payload = json.dumps({"error": "delayed crash-matrix model"}).encode("utf-8")
+        if phase == "llm_request_in_flight":
+            time.sleep(3.0)
+            status = 503
+            response = {"error": "delayed crash-matrix model"}
+        else:
+            status = 200
+            response = {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "crash-matrix-tool-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "Bash",
+                                        "arguments": json.dumps(
+                                            {
+                                                "action": "run",
+                                                "command": "echo crash-matrix",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        payload = json.dumps(response).encode("utf-8")
         try:
-            self.send_response(503)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -124,14 +159,14 @@ def _http_error(method: str, path: str, exc: urllib.error.HTTPError) -> RuntimeE
     return RuntimeError(f"{method} {path} returned HTTP {exc.code}: {detail}")
 
 
-# 调用 runtime HTTP API 并返回 JSON 对象；重启后的只读查询允许短暂连接或服务错误重试
-def _request_json(
+# 调用 runtime HTTP API 并返回 JSON 值；重启后的只读查询允许短暂连接或服务错误重试
+def _request_value(
     api_port: int,
     token: str,
     method: str,
     path: str,
     body: dict[str, object] | None = None,
-) -> dict[str, Any]:
+) -> Any:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         f"http://127.0.0.1:{api_port}{path}",
@@ -157,8 +192,33 @@ def _request_json(
             if method != "GET" or time.monotonic() >= deadline:
                 raise
             time.sleep(0.05)
+    return payload
+
+
+# 调用 runtime HTTP API 并要求响应为 JSON 对象
+def _request_json(
+    api_port: int,
+    token: str,
+    method: str,
+    path: str,
+    body: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    payload = _request_value(api_port, token, method, path, body)
     if not isinstance(payload, dict):
         raise RuntimeError(f"API returned non-object payload for {path}")
+    return payload
+
+
+# 调用 runtime HTTP API 并要求响应为对象列表
+def _request_list(
+    api_port: int,
+    token: str,
+    method: str,
+    path: str,
+) -> list[dict[str, Any]]:
+    payload = _request_value(api_port, token, method, path)
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise RuntimeError(f"API returned non-object-list payload for {path}")
     return payload
 
 
@@ -176,6 +236,76 @@ def _wait_for_model_request(expected_count: int) -> None:
             _BlockingModelHandler.request_started.wait(timeout=remaining)
 
 
+# 等待运行时投影出未完成工具调用，确保强杀覆盖调用与终态结果之间的窗口
+def _wait_for_tool_call(api_port: int, token: str, turn_id: str) -> None:
+    deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
+    while time.monotonic() < deadline:
+        items = _request_list(
+            api_port,
+            token,
+            "GET",
+            f"/v1/turns/{turn_id}/items",
+        )
+        if any(item.get("kind") == "tool_call" for item in items):
+            return
+        time.sleep(0.05)
+    raise RuntimeError(
+        "tool call did not become durable within "
+        f"{_MODEL_REQUEST_TIMEOUT_S:g} seconds"
+    )
+
+
+# 返回工具调用中没有对应终态结果的稳定标识
+def _unmatched_tool_call_ids(items: list[dict[str, Any]]) -> list[str]:
+    calls = {
+        str(item.get("tool_call_id"))
+        for item in items
+        if item.get("kind") == "tool_call" and item.get("tool_call_id")
+    }
+    results = {
+        str(item.get("tool_call_id"))
+        for item in items
+        if item.get("kind") == "tool_result" and item.get("tool_call_id")
+    }
+    return sorted(calls - results)
+
+
+# 返回报告使用的完整 commit，优先采用 Actions 注入值并拒绝缩写
+def _git_commit() -> str:
+    candidate = os.environ.get("GITHUB_SHA", "").strip()
+    if len(candidate) >= 40 and all(char in "0123456789abcdefABCDEF" for char in candidate):
+        return candidate.lower()
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    resolved = result.stdout.strip()
+    return resolved if result.returncode == 0 and len(resolved) >= 40 else "unknown"
+
+
+# 判断恢复率、完成数、基础设施与孤儿调用是否同时满足门禁
+def _gate_passed(
+    *,
+    iterations: int,
+    completed_iterations: int,
+    recovery_rate: float,
+    min_rate: float,
+    orphaned_tool_calls: int,
+    infrastructure_error: str | None,
+) -> bool:
+    return (
+        infrastructure_error is None
+        and completed_iterations == iterations
+        and recovery_rate >= min_rate
+        and orphaned_tool_calls == 0
+    )
+
+
 # 强制终止 daemon 并等待 OS 回收，模拟电源中断或进程强杀
 def _hard_kill(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is None:
@@ -184,7 +314,12 @@ def _hard_kill(process: subprocess.Popen[bytes]) -> None:
 
 
 # 执行真实 daemon 活动 turn 强杀/重启循环并输出逐轮 receipt 证据
-def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
+def run_matrix(
+    iterations: int,
+    output: Path,
+    *,
+    min_rate: float = 0.95,
+) -> dict[str, Any]:
     ipc_port = _free_port()
     api_port = _free_port()
     while api_port == ipc_port:
@@ -219,6 +354,13 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
             )
             thread_id = str(thread["id"])
             for index in range(iterations):
+                phase = (
+                    "llm_request_in_flight"
+                    if index % 2 == 0
+                    else "tool_call_unresolved"
+                )
+                with _BlockingModelHandler.request_started:
+                    _BlockingModelHandler.request_phase = phase
                 turn = _request_json(
                     api_port,
                     token,
@@ -228,6 +370,8 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
                 )
                 turn_id = str(turn["id"])
                 _wait_for_model_request(index + 1)
+                if phase == "tool_call_unresolved":
+                    _wait_for_tool_call(api_port, token, turn_id)
                 _hard_kill(process)
                 process = _start_daemon(env, home, api_port)
                 recovered = _request_json(
@@ -242,21 +386,34 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
                     "GET",
                     f"/v1/turns/{turn_id}/receipt",
                 )
+                items = _request_list(
+                    api_port,
+                    token,
+                    "GET",
+                    f"/v1/turns/{turn_id}/items",
+                )
+                unmatched_tool_calls = _unmatched_tool_call_ids(items)
                 status = str(recovered.get("status", ""))
                 error = dict(recovered.get("error") or {})
+                expected_tool_calls = 1 if phase == "tool_call_unresolved" else 0
                 passed = (
                     status == "interrupted"
                     and error.get("reason") == "daemon_restarted"
                     and receipt.get("status") == "interrupted"
                     and receipt.get("finished_at") is not None
+                    and receipt.get("tool_call_count") == expected_tool_calls
+                    and not unmatched_tool_calls
                 )
                 results.append(
                     {
                         "iteration": index + 1,
+                        "phase": phase,
                         "turn_id": turn_id,
                         "status": status,
                         "reason": error.get("reason"),
                         "receipt_status": receipt.get("status"),
+                        "tool_call_count": receipt.get("tool_call_count"),
+                        "orphaned_tool_call_ids": unmatched_tool_calls,
                         "passed": passed,
                     }
                 )
@@ -279,23 +436,44 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
         if temp_root is not None and temp_root.name.startswith("coderook-crash-matrix-"):
             shutil.rmtree(temp_root, ignore_errors=True)
         passed = sum(bool(item["passed"]) for item in results)
+        orphaned_tool_calls = sum(
+            len(item.get("orphaned_tool_call_ids", [])) for item in results
+        )
+        recovery_rate = passed / iterations if iterations else 0.0
+        completed_iterations = len(results)
         report = {
-            "schema_version": 2,
+            "schema_version": 3,
             "generated_at": datetime.now(UTC).isoformat(),
+            "commit": _git_commit(),
+            "platform": platform.system(),
+            "architecture": platform.machine(),
+            "python_version": platform.python_version(),
             "iterations": iterations,
+            "min_rate": min_rate,
             "model_request_timeout_s": _MODEL_REQUEST_TIMEOUT_S,
-            "completed_iterations": len(results),
+            "completed_iterations": completed_iterations,
             "passed": passed,
-            "recovery_rate": passed / iterations if iterations else 0.0,
+            "recovery_rate": recovery_rate,
+            "orphaned_tool_calls": orphaned_tool_calls,
             "infrastructure_error": infrastructure_error,
             "coverage": [
                 "user_message_durable",
                 "llm_request_in_flight",
+                "tool_call_unresolved",
                 "client_disconnect",
                 "daemon_hard_kill",
                 "restart_reconcile",
+                "orphan_tool_call_repair",
                 "receipt_rebuild",
             ],
+            "gate_passed": _gate_passed(
+                iterations=iterations,
+                completed_iterations=completed_iterations,
+                recovery_rate=recovery_rate,
+                min_rate=min_rate,
+                orphaned_tool_calls=orphaned_tool_calls,
+                infrastructure_error=infrastructure_error,
+            ),
             "results": results,
         }
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +501,7 @@ def main() -> int:
     if not 0.0 <= args.min_rate <= 1.0:
         parser.error("--min-rate must be between 0 and 1")
     try:
-        report = run_matrix(args.iterations, args.output)
+        report = run_matrix(args.iterations, args.output, min_rate=args.min_rate)
     except (OSError, RuntimeError, urllib.error.URLError) as exc:
         print(f"crash recovery matrix failed: {exc}", file=sys.stderr)
         return 2
@@ -332,7 +510,7 @@ def main() -> int:
         f"crash recovery: {report['passed']}/{report['iterations']} "
         f"({rate:.1%}); evidence={args.output}"
     )
-    return 0 if rate >= args.min_rate else 1
+    return 0 if report["gate_passed"] else 1
 
 
 if __name__ == "__main__":

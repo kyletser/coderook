@@ -85,3 +85,43 @@ def test_request_json_retries_transient_read_error(
 # 设计：锁定 30 秒下限，同时保持等待函数仍要求真实 request_count 达标而非按时间自动成功
 def test_model_request_timeout_allows_slow_runner_jitter() -> None:
     assert crash_matrix._MODEL_REQUEST_TIMEOUT_S >= 30.0
+
+
+# 功能：验证孤立工具调用检测只返回缺少终态结果的调用标识
+# 设计：混合已配对、未配对与普通消息，直接断言排序结果以覆盖报告的零孤儿门禁
+def test_unmatched_tool_call_ids_reports_only_orphans() -> None:
+    items = [
+        {"kind": "tool_call", "tool_call_id": "paired"},
+        {"kind": "tool_result", "tool_call_id": "paired"},
+        {"kind": "tool_call", "tool_call_id": "orphan-b"},
+        {"kind": "message", "tool_call_id": None},
+        {"kind": "tool_call", "tool_call_id": "orphan-a"},
+    ]
+
+    assert crash_matrix._unmatched_tool_call_ids(items) == ["orphan-a", "orphan-b"]
+
+
+# 功能：验证 Actions 完整 SHA 会直接写入强杀报告身份字段
+# 设计：注入大小写混合的 40 位 GITHUB_SHA，断言规范化小写且不依赖本地 Git 状态
+def test_git_commit_prefers_complete_actions_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+    monkeypatch.setenv("GITHUB_SHA", sha)
+
+    assert crash_matrix._git_commit() == sha.lower()
+
+
+# 功能：验证恢复率达标时仍会因一个孤儿工具调用拒绝强杀门禁
+# 设计：固定其余条件全部成功，仅切换孤儿数量，隔离验证零孤儿是独立硬条件
+def test_gate_rejects_orphaned_tool_call() -> None:
+    common = {
+        "iterations": 100,
+        "completed_iterations": 100,
+        "recovery_rate": 1.0,
+        "min_rate": 0.95,
+        "infrastructure_error": None,
+    }
+
+    assert crash_matrix._gate_passed(**common, orphaned_tool_calls=0)
+    assert not crash_matrix._gate_passed(**common, orphaned_tool_calls=1)

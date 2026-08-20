@@ -13,7 +13,7 @@
 | R1 | Family resolved invocation 管线 | 完成 | backend 参数校验、hook、权限、重试、输出策略统一；相关单测 | 无 |
 | R1 | 稳定 PatchPlan 与逐 hunk 审批 | 完成 | base hash、hunk id、TUI/HTTP/VS Code 选择、落盘 hash | 跨平台端到端人工交互报告 |
 | R2 | ledger checksum、reconcile/repair | 完成并远端验证 | checksum chain、损坏拒写、幂等 repair、runtime doctor；Crash Recovery `32365937235` 三平台各 100/100 | 系统断电级测试不在当前托管 runner 范围 |
-| R2 | 故障注入 | 完成并远端验证 | `run_crash_recovery_matrix.py` 真实阻塞模型请求、断开客户端、强杀、重启并重建 receipt；Ubuntu/macOS/Windows 合计 300/300 | 报告验证 daemon 强杀恢复，不等同于整机断电恢复 |
+| R2 | 故障注入 | 完成并远端验证 | `run_crash_recovery_matrix.py` 在 100 轮内交替覆盖 LLM 请求中断与未配对工具调用，断开客户端、强杀、重启并重建 receipt；schema 3 自包含 commit/platform 并要求孤儿调用为 0；既有三平台报告合计 300/300 | 报告验证 daemon 强杀恢复，不等同于整机断电恢复 |
 | R2 | Durable usage/cost/router | 完成 | pricing source/date、持久 usage、receipt、cost-budget 同源读取 | 真实模型成本分位数 |
 | R2 | Headless 提问等待策略 | 完成 | fail-fast/timeout/preset、interrupt/shutdown 清理 | 无 |
 | R2 | ProcessSupervisor 与持久 Shell | 完成 | shell/search/git/worktree/diagnostics/hooks/MCP/fleet/background 统一监管；Windows kill-on-close Job Object；Windows Job Accounting 与 Linux `/proc` 进程组采样统一记录 wall/CPU/峰值内存/进程数/完整性，事件、runtime、TurnReceipt 和 TUI 可离线审计 | Job Object 明确不是文件系统安全边界；macOS 资源采样当前只保证 wall-time 与完整性标记 |
