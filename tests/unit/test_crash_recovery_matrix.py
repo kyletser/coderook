@@ -87,6 +87,12 @@ def test_model_request_timeout_allows_slow_runner_jitter() -> None:
     assert crash_matrix._MODEL_REQUEST_TIMEOUT_S >= 30.0
 
 
+# 功能：验证重启后 durable 读取为 Windows runner 抖动保留至少三十秒重试窗口
+# 设计：直接锁定矩阵常量下限，防止优化运行时间时重新引入第九十轮后的偶发超时
+def test_read_retry_timeout_allows_slow_runner_jitter() -> None:
+    assert crash_matrix._READ_RETRY_TIMEOUT_S >= 30.0
+
+
 # 功能：验证孤立工具调用检测只返回缺少终态结果的调用标识
 # 设计：混合已配对、未配对与普通消息，直接断言排序结果以覆盖报告的零孤儿门禁
 def test_unmatched_tool_call_ids_reports_only_orphans() -> None:

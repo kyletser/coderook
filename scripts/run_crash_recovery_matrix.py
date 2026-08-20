@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-_READ_RETRY_TIMEOUT_S = 15.0
+_READ_RETRY_TIMEOUT_S = 30.0
 _MODEL_REQUEST_TIMEOUT_S = 30.0
 _RETRYABLE_READ_STATUSES = frozenset({404, 409, 500, 502, 503, 504})
 
@@ -331,6 +331,10 @@ def run_matrix(
     process: subprocess.Popen[bytes] | None = None
     temp_root: Path | None = None
     infrastructure_error: str | None = None
+    failure_context: dict[str, object] | None = None
+    current_iteration: int | None = None
+    current_phase: str | None = None
+    current_stage = "initialize"
     report: dict[str, Any] = {}
     try:
         with tempfile.TemporaryDirectory(
@@ -354,13 +358,16 @@ def run_matrix(
             )
             thread_id = str(thread["id"])
             for index in range(iterations):
+                current_iteration = index + 1
                 phase = (
                     "llm_request_in_flight"
                     if index % 2 == 0
                     else "tool_call_unresolved"
                 )
+                current_phase = phase
                 with _BlockingModelHandler.request_started:
                     _BlockingModelHandler.request_phase = phase
+                current_stage = "create_turn"
                 turn = _request_json(
                     api_port,
                     token,
@@ -369,23 +376,30 @@ def run_matrix(
                     {"content": f"crash injection {index + 1}", "mode": "act"},
                 )
                 turn_id = str(turn["id"])
+                current_stage = "wait_for_model_request"
                 _wait_for_model_request(index + 1)
                 if phase == "tool_call_unresolved":
+                    current_stage = "wait_for_tool_call"
                     _wait_for_tool_call(api_port, token, turn_id)
+                current_stage = "hard_kill"
                 _hard_kill(process)
+                current_stage = "restart_daemon"
                 process = _start_daemon(env, home, api_port)
+                current_stage = "read_turn"
                 recovered = _request_json(
                     api_port,
                     token,
                     "GET",
                     f"/v1/turns/{turn_id}",
                 )
+                current_stage = "read_receipt"
                 receipt = _request_json(
                     api_port,
                     token,
                     "GET",
                     f"/v1/turns/{turn_id}/receipt",
                 )
+                current_stage = "read_items"
                 items = _request_list(
                     api_port,
                     token,
@@ -417,11 +431,18 @@ def run_matrix(
                         "passed": passed,
                     }
                 )
+                current_stage = "iteration_complete"
+            current_stage = "terminate_daemon"
             process.terminate()
             process.wait(timeout=5.0)
             process = None
     except Exception as exc:
         infrastructure_error = f"{type(exc).__name__}: {exc}"
+        failure_context = {
+            "iteration": current_iteration,
+            "phase": current_phase,
+            "stage": current_stage,
+        }
         raise
     finally:
         if process is not None and process.poll() is None:
@@ -456,6 +477,7 @@ def run_matrix(
             "recovery_rate": recovery_rate,
             "orphaned_tool_calls": orphaned_tool_calls,
             "infrastructure_error": infrastructure_error,
+            "failure_context": failure_context,
             "coverage": [
                 "user_message_durable",
                 "llm_request_in_flight",
