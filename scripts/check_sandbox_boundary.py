@@ -106,7 +106,8 @@ def _check_enforced_boundary(workspace: Path) -> None:
         _expect_denied(writable, symlink_command, outside, "symlink boundary escape")
 
         child_command = (
-            f"(sleep 0.05; printf child > {shlex.quote(outside.as_posix())}) & wait"
+            f"(sleep 0.05; printf child > {shlex.quote(outside.as_posix())}) & "
+            'child_pid=$!; wait "$child_pid"'
         )
         _expect_denied(writable, child_command, outside, "child-process escape")
 
