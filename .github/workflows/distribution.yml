@@ -93,12 +93,13 @@ jobs:
       - working-directory: editors/vscode
         run: npm ci
       - name: Install virtual display
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: sudo apt-get update && sudo apt-get install -y imagemagick xdotool xvfb
       - name: Real daemon Extension Host smoke
         run: >-
           uv run python scripts/run_vscode_extension_host_smoke.py
           --headless
           --evidence artifacts/vscode-extension-host.json
+          --screenshot artifacts/vscode-approval.png
       - working-directory: editors/vscode
         run: npm run check && npm run package
       - uses: actions/upload-artifact@v6
@@ -107,4 +108,5 @@ jobs:
           path: |
             editors/vscode/dist/*.vsix
             artifacts/vscode-extension-host.json
+            artifacts/vscode-approval.png
           if-no-files-found: error

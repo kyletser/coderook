@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import os
 import platform
 import shutil
@@ -34,6 +36,11 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=_ROOT / "artifacts" / "vscode-extension-host.json",
     )
+    parser.add_argument(
+        "--screenshot",
+        type=Path,
+        default=_ROOT / "artifacts" / "vscode-approval.png",
+    )
     return parser.parse_args()
 
 
@@ -55,6 +62,7 @@ def _git_commit() -> str:
 def _extension_environment(
     home: Path,
     evidence: Path,
+    screenshot: Path | None = None,
 ) -> dict[str, str]:
     env = first_run_environment(home)
     api_token = env["CODEROOK_IPC_TOKEN"]
@@ -65,10 +73,18 @@ def _extension_environment(
                 f"http://127.0.0.1:{env['CODEROOK_API_PORT']}"
             ),
             "CODEROOK_VSCODE_EVIDENCE_PATH": str(evidence),
+            "CODEROOK_VSCODE_TEST_MODE": "1",
             "CODEROOK_VSCODE_TEST_COMMIT": _git_commit(),
             "CODEROOK_VSCODE_WORKSPACE": str(_ROOT),
         }
     )
+    if screenshot is not None:
+        env.update(
+            {
+                "CODEROOK_VSCODE_CAPTURE_APPROVAL": "1",
+                "CODEROOK_VSCODE_SCREENSHOT_PATH": str(screenshot),
+            }
+        )
     return env
 
 
@@ -81,17 +97,65 @@ def _npm_command() -> str:
     return resolved
 
 
+# 校验 Extension Host JSON 与真实审批 PNG 的身份、能力和内容哈希
+def _validate_evidence(
+    evidence: Path,
+    *,
+    expected_commit: str,
+    screenshot: Path | None,
+) -> None:
+    try:
+        payload = json.loads(evidence.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Extension Host produced invalid JSON evidence") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "passed":
+        raise RuntimeError("Extension Host evidence is not passed")
+    if payload.get("commit") != expected_commit:
+        raise RuntimeError("Extension Host evidence commit mismatch")
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, dict):
+        raise RuntimeError("Extension Host evidence capabilities are missing")
+    required = {"activation", "create_thread", "resume_thread", "open_diff"}
+    if any(capabilities.get(name) is not True for name in required):
+        raise RuntimeError("Extension Host evidence is missing a required capability")
+    if screenshot is None:
+        return
+    if capabilities.get("approval_visual") is not True:
+        raise RuntimeError("Extension Host approval visual capability is missing")
+    try:
+        image = screenshot.read_bytes()
+    except OSError as exc:
+        raise RuntimeError("Extension Host approval screenshot is missing") from exc
+    if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("Extension Host approval screenshot is not a PNG")
+    screenshot_evidence = payload.get("approval_screenshot")
+    if not isinstance(screenshot_evidence, dict):
+        raise RuntimeError("Extension Host screenshot evidence is missing")
+    digest = hashlib.sha256(image).hexdigest()
+    if screenshot_evidence.get("sha256") != digest:
+        raise RuntimeError("Extension Host approval screenshot hash mismatch")
+    if screenshot_evidence.get("bytes") != len(image):
+        raise RuntimeError("Extension Host approval screenshot size mismatch")
+
+
 # 执行真实 Extension Host smoke 并确保 daemon 被回收
-def smoke(*, headless: bool, evidence: Path) -> None:
+def smoke(*, headless: bool, evidence: Path, screenshot: Path) -> None:
     evidence = evidence.resolve()
+    screenshot = screenshot.resolve()
     evidence.parent.mkdir(parents=True, exist_ok=True)
+    capture_approval = headless and platform.system() == "Linux"
+    approval_path = screenshot if capture_approval else None
+    evidence.unlink(missing_ok=True)
+    if approval_path is not None:
+        approval_path.parent.mkdir(parents=True, exist_ok=True)
+        approval_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(
         prefix="coderook-vscode-host-",
         ignore_cleanup_errors=True,
     ) as raw_temp:
         home = Path(raw_temp) / "home"
         home.mkdir()
-        env = _extension_environment(home, evidence)
+        env = _extension_environment(home, evidence, approval_path)
         daemon = subprocess.Popen(
             [
                 sys.executable,
@@ -125,6 +189,11 @@ def smoke(*, headless: bool, evidence: Path) -> None:
             )
             if not evidence.is_file():
                 raise RuntimeError("Extension Host did not produce evidence")
+            _validate_evidence(
+                evidence,
+                expected_commit=env["CODEROOK_VSCODE_TEST_COMMIT"],
+                screenshot=approval_path,
+            )
         finally:
             if daemon.poll() is None:
                 daemon.terminate()
@@ -138,7 +207,11 @@ def smoke(*, headless: bool, evidence: Path) -> None:
 # 运行 Extension Host smoke 命令
 def main() -> int:
     args = _parse_args()
-    smoke(headless=args.headless, evidence=args.evidence)
+    smoke(
+        headless=args.headless,
+        evidence=args.evidence,
+        screenshot=args.screenshot,
+    )
     print(f"VS Code Extension Host smoke passed: {args.evidence.resolve()}")
     return 0
 

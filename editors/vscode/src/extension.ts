@@ -170,6 +170,14 @@ async function respondToPermission(record: JsonObject): Promise<void> {
   });
 }
 
+// 仅在 Extension Host smoke 中打开真实审批模态框，生产环境拒绝测试入口。
+export async function showPermissionPromptForTest(record: JsonObject): Promise<void> {
+  if (process.env.CODEROOK_VSCODE_TEST_MODE !== "1") {
+    throw new Error("permission prompt test entry is disabled");
+  }
+  await respondToPermission(record);
+}
+
 // 去重处理 runtime 事件并触发审批与终态反馈。
 async function handleEvent(record: JsonObject): Promise<void> {
   const seq = Number(record.seq ?? 0);

@@ -140,6 +140,8 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "smoke_installed_runtime.py",
         "Real daemon Extension Host smoke",
         "artifacts/vscode-extension-host.json",
+        "artifacts/vscode-approval.png",
+        "imagemagick xdotool xvfb",
     ),
     ".github/workflows/remote-evidence.yml": (
         "Audit remote release evidence",
