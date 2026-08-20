@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
-"""
-端到端权限审批流程诊断脚本
-
-模拟 TUI 的完整链路：
-  1. 连接 coderook-core，订阅事件
-  2. 创建 session，发消息触发 bash 工具（bash 总是需要审批）
-  3. 收到 permission.requested → 自动回复 allow_once
-  4. 等待 run.finished，打印全部事件日志
-
-运行：uv run python trace_permission_flow.py
-"""
+# 端到端诊断 TUI 的连接、会话、Bash 审批和运行结束事件链路
+# 运行：uv run python scripts/trace_permission_flow.py
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +13,7 @@ PORT = 7437
 GOAL = "用 bash 执行 `echo hello_permission_test`，把结果告诉我"
 
 
+# 发送一条 NDJSON JSON-RPC 请求并返回请求编号
 async def send(writer: asyncio.StreamWriter, method: str, params: dict[str, Any]) -> str:
     req_id = str(uuid.uuid4())
     msg = json.dumps({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
@@ -30,6 +22,7 @@ async def send(writer: asyncio.StreamWriter, method: str, params: dict[str, Any]
     return req_id
 
 
+# 运行权限审批端到端诊断并输出事件摘要
 async def main() -> None:
     print(f"[connect] {HOST}:{PORT}")
     reader, writer = await asyncio.open_connection(HOST, PORT, limit=2 * 1024 * 1024)
@@ -41,6 +34,7 @@ async def main() -> None:
     finished = asyncio.Event()
 
     # ── 读循环 ────────────────────────────────────────────────────────
+    # 持续读取 RPC 响应和事件推送并自动处理审批请求
     async def read_loop() -> None:
         nonlocal permission_event
         while True:
@@ -134,6 +128,7 @@ async def main() -> None:
         print("\n[OK] 完整流程走通，permission.requested 已收到并回复。")
 
 
+# 将事件压缩成适合终端显示的单行摘要
 def _brief(e: dict[str, Any]) -> str:
     skip = {"type", "ts", "run_id", "session_id"}
     parts = [f"{k}={v!r}" for k, v in e.items() if k not in skip]

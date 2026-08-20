@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-04
-- 适用范围：`specdriven.md` P0、R1–R9
+- 适用范围：`SPECDRIVEN_SPEC.md` P0、R1–R9
 
 ## 背景
 

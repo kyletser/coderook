@@ -1,6 +1,6 @@
 # CodeRook Spec-Driven 改造执行计划
 
-> 依据：[specdriven.md](../specdriven.md)  
+> 依据：[SPECDRIVEN_SPEC.md](SPECDRIVEN_SPEC.md)
 > 计划基线：`39fd86d39b7d39ff20cd963de7f094c40ca527f5`  
 > 计划目标：把 R1-R9 转换为可按 PR 实施、可独立验证、可安全回滚的工程任务  
 > 计划方式：不按日期承诺进度，以阶段门禁和验收证据推进
