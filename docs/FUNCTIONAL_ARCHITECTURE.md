@@ -772,6 +772,10 @@ stdio/TCP 保持 64MB 流上限、30s 读超时和后台排空 stderr。
 （`{server}__{tool}` 前缀、deferred、输出策略 8K/20K spill）注入本地注册表——
 模型侧与内置工具无差别调用，权限按普通工具名评估。**系统不暴露自身为 MCP server**。
 
+`examples/` 给出三条经离线 smoke 的最短扩展路径：focused-fix Skill 走受管安装、digest 复检与
+参数渲染；敏感文件 Hook 走真实 TOML 加载、可信项目检查和子进程阻断/放行；MCP echo server
+走 initialize、tools/list、tools/call 与进程回收。
+
 ### 14.4 Agent Profiles（内置角色）
 
 TOML 配置，优先级 project > user > builtin：

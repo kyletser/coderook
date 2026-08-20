@@ -33,6 +33,9 @@ _REQUIRED_FILES = (
     "examples/read_only_review.py",
     "examples/automated_fix.py",
     "examples/mcp_echo_server.py",
+    "examples/skills/focused-fix/SKILL.md",
+    "examples/hooks/guard_sensitive_files.py",
+    "examples/hooks/hooks.toml",
     "scripts/capture_tui_demo.py",
     "tests/unit/test_tui_demo.py",
 )

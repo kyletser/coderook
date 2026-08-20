@@ -1,0 +1,10 @@
+[[hooks]]
+id = "guard-sensitive-files"
+event = "tool_call_before"
+timeout_ms = 2000
+blocking = true
+command = ["python", ".coderook/hooks/guard_sensitive_files.py"]
+conditions = { tool_name = "File" }
+trusted_scope = "project"
+on_failure = "closed"
+max_output_bytes = 4096

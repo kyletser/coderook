@@ -234,7 +234,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
 | OS5-01 | PARTIAL | 对官方 MCP SDK server 做 stdio/HTTP/SSE 兼容矩阵 | tools/resources/prompts/cancel/reconnect 报告 |
-| OS5-02 | PARTIAL | 提供 3 个最小 Skill/Hook/MCP 示例与安全说明 | MCP stdio 示例已完成真实全链路；Skill/Hook 示例仍待补齐 |
+| OS5-02 | DONE | 提供可安装 focused-fix Skill、敏感文件阻断 Hook 与 MCP stdio 示例及安全说明 | Skill 经受管安装/digest/渲染 smoke；Hook 经真实配置加载与子进程阻断/放行；MCP 完成握手与调用 |
 | OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | UI smoke 录像/截图和 workflow 产物 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
 | OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |

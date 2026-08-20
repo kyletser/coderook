@@ -549,6 +549,9 @@ on_failure = "closed"
 `worker_finished`、`turn_stop`、`session_stop`。Hook 通过 stdin 接收版本化 JSON；其中 secret
 会脱敏、超大工具结果会截断。`blocking = false` 的 Hook 使用有界队列。
 
+可直接安装的 focused-fix Skill、可审查的敏感文件 Hook 和最小 MCP stdio server 见
+[可运行扩展示例](../examples/README.md)。复制项目 Hook 时应合并 TOML，不要覆盖已有配置。
+
 配置优先级由低到高为：
 
 ```text

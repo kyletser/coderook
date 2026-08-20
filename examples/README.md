@@ -45,3 +45,41 @@ args = ["/absolute/path/to/coderook/examples/mcp_echo_server.py"]
 ```bash
 python examples/mcp_echo_server.py --self-test
 ```
+
+## 4. 项目级 focused-fix Skill
+
+`skills/focused-fix/SKILL.md` 演示一个有界编码流程：先理解仓库，只做最小修改，运行聚焦验证，
+最后检查 diff。先预览安装内容，再显式确认并信任这份已审查的本地源码：
+
+```bash
+uv run coderook skills install examples/skills/focused-fix --scope project --trust
+uv run coderook skills install examples/skills/focused-fix --scope project --trust --yes
+uv run coderook skills audit
+```
+
+之后在 TUI 输入：
+
+```text
+/focused-fix 修复一个具体失败并运行相关测试
+```
+
+Skill 正文会进入模型上下文，因此即使来源于本地也应先审查；安装后的 digest 变化会在执行前失败，
+但“通过完整性校验”不等于“内容安全”。
+
+## 5. 阻止敏感文件写入的 Hook
+
+该项目级 Hook 在 `File` 写入发生前检查目标，阻止 `.env`、私钥和常见凭据文件。复制示例后再授予
+工作区信任；未受信任项目中的 project hook 会被跳过并写入审计事件。
+
+```bash
+mkdir -p .coderook/hooks
+cp examples/hooks/guard_sensitive_files.py .coderook/hooks/guard_sensitive_files.py
+cp examples/hooks/hooks.toml .coderook/hooks.example.toml
+uv run python .coderook/hooks/guard_sensitive_files.py --self-test
+```
+
+审查 `.coderook/hooks.example.toml` 后，把其中 `[[hooks]]` 块合并进现有
+`.coderook/hooks.toml`（不要覆盖已有配置）。在 TUI 中执行 `/trust grant` 后重启 Core，再用
+`/hooks` 查看加载与执行审计。示例采用 blocking +
+fail-closed：进程失败或超时会拒绝对应工具调用。Hook 是本机子进程执行边界，必须固定命令、限制输出、
+避免联网，并把 stdin 当作已脱敏但仍然敏感的任务元数据。
