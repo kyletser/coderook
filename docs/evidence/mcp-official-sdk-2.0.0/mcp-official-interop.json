@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-20T08:49:44.438610+00:00",
+  "commit": "c47ae2369775ca1460527b324dbcb8848ddd45fb",
+  "official_sdk": "mcp[cli]==2.0.0",
+  "platform": "windows",
+  "results": [
+    {
+      "transport": "stdio",
+      "status": "passed",
+      "tools": true,
+      "resources": true,
+      "prompts": true,
+      "cancellation": true,
+      "reconnect": true,
+      "duration_ms": 2469
+    },
+    {
+      "transport": "sse",
+      "status": "passed",
+      "tools": true,
+      "resources": true,
+      "prompts": true,
+      "cancellation": true,
+      "reconnect": true,
+      "duration_ms": 1875
+    },
+    {
+      "transport": "streamable-http",
+      "status": "passed",
+      "tools": true,
+      "resources": true,
+      "prompts": true,
+      "cancellation": true,
+      "reconnect": true,
+      "duration_ms": 1858
+    }
+  ]
+}

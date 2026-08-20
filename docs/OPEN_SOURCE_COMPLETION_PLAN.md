@@ -233,7 +233,7 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS5-01 | PARTIAL | 对官方 MCP SDK server 做 stdio/HTTP/SSE 兼容矩阵 | tools/resources/prompts/cancel/reconnect 报告 |
+| OS5-01 | DONE | 对固定官方 MCP Python SDK 2.0 server 完成 stdio/legacy SSE/Streamable HTTP 兼容矩阵 | Windows dated JSON/Markdown 绑定 commit c47ae23，三种 transport 的 tools/resources/prompts/cancel/reconnect 全通过；Ubuntu workflow 持续复验 |
 | OS5-02 | DONE | 提供可安装 focused-fix Skill、敏感文件阻断 Hook 与 MCP stdio 示例及安全说明 | Skill 经受管安装/digest/渲染 smoke；Hook 经真实配置加载与子进程阻断/放行；MCP 完成握手与调用 |
 | OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | UI smoke 录像/截图和 workflow 产物 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |

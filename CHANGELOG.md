@@ -13,6 +13,7 @@
 - 稳定 CI/Security 汇总门禁、CODEOWNERS、分支保护合同、Roadmap、维护者边界与可认领 Contributor Tasks。
 - 项目案例、简历证据账本、3/10 分钟面试讲解，以及跨平台 CI 失败和 TUI 重构复盘。
 - MCP legacy SSE 同源安全客户端与固定官方 SDK 2.0 的 stdio/SSE/Streamable HTTP 互操作 runner。
+- 绑定 commit/platform/SDK 的官方 MCP 三 transport 互操作 JSON/Markdown 证据。
 
 ### Changed
 

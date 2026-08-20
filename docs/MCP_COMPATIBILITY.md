@@ -29,6 +29,10 @@ uv run python scripts/run_mcp_official_interop.py \
 输出 `mcp-official-interop.json` 和 Markdown 矩阵。该命令会从包索引下载固定 SDK；普通 `pytest` 不会
 联网或运行它。GitHub 的 `mcp-interop.yml` 在 MCP 相关 PR、每周计划和手动触发时保存相同 artifact。
 
+当前 checked-in 证据为 [SDK 2.0.0 / Windows / commit c47ae23](evidence/mcp-official-sdk-2.0.0/mcp-official-interop.md)，
+三种 transport 的 tools/resources/prompts/cancellation/reconnect 均通过。对应 JSON 保留逐项布尔值和
+完整 commit，由公开仓库检查器验证，不把 Markdown 总结当唯一证据。
+
 仓库中的 dated 报告只证明报告所列 commit、平台和 SDK 版本；SDK 升级必须先修改 pin，审查协议差异，
 再生成新报告。一次 fixture 通过不代表所有 server、OAuth provider、sampling、elicitation 或扩展都兼容。
 

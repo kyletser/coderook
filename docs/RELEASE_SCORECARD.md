@@ -15,6 +15,7 @@
 - 2026-08-19 的远端 CI #31 在测试阶段失败：Ubuntu/macOS 各 3 项，Windows 1 项。当前候选已修复 POSIX shell 转义、宿主沙箱探测耦合和 Windows OEM 编码假设，并在本机完整 unit 中通过，仍需新一次远端 run 确认。
 - Windows 安装/portable 与 Docker 构建入口已经纳入 `distribution.yml`；本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
 - Aider Polyglot 固定 commit/container runner 与 SWE-bench 标准 prediction exporter 已通过离线契约测试；尚未产出真实模型切片和官方 SWE-bench harness artifact。
+- 官方 MCP Python SDK 2.0 在 commit `c47ae23` 的 Windows 实测中，stdio、legacy SSE、Streamable HTTP 的 tools/resources/prompts/cancellation/reconnect 全通过；报告不覆盖 OAuth、sampling、elicitation 或任意第三方 server。
 
 这些证据证明运行时契约和安全降级行为，不证明真实模型编码效果。
 

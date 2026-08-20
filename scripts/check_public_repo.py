@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tomllib
@@ -32,6 +33,8 @@ _REQUIRED_FILES = (
     "docs/RESUME_EVIDENCE.md",
     "docs/INTERVIEW_GUIDE.md",
     "docs/MCP_COMPATIBILITY.md",
+    "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json",
+    "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.md",
     "docs/postmortems/README.md",
     "docs/postmortems/2026-08-19-cross-platform-ci.md",
     "docs/postmortems/2026-08-17-tui-refactor.md",
@@ -257,6 +260,40 @@ def find_resume_evidence_contract_issues(root: Path = _ROOT) -> list[str]:
     return issues
 
 
+# 校验官方 MCP 报告绑定固定 SDK/commit 且三种 transport 的逐项结果全通过
+def find_mcp_evidence_contract_issues(root: Path = _ROOT) -> list[str]:
+    relative = "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json"
+    path = root / relative
+    if not path.is_file():
+        return [f"MCP evidence file is missing: {relative}"]
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return [f"MCP evidence is unreadable: {type(exc).__name__}"]
+    issues: list[str] = []
+    if report.get("official_sdk") != "mcp[cli]==2.0.0":
+        issues.append("MCP evidence does not pin official SDK 2.0.0")
+    commit = report.get("commit")
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        issues.append("MCP evidence does not bind a full Git commit")
+    results = {
+        result.get("transport"): result
+        for result in report.get("results", [])
+        if isinstance(result, dict)
+    }
+    required_capabilities = ("tools", "resources", "prompts", "cancellation", "reconnect")
+    for transport in ("stdio", "sse", "streamable-http"):
+        result = results.get(transport, {})
+        if result.get("status") != "passed":
+            issues.append(f"MCP evidence transport did not pass: {transport}")
+        issues.extend(
+            f"MCP evidence {transport} did not pass {capability}"
+            for capability in required_capabilities
+            if result.get(capability) is not True
+        )
+    return issues
+
+
 # 查找被 Git 跟踪的缓存、凭据和本地产物路径
 def find_tracked_pollution(root: Path = _ROOT) -> list[str]:
     result = subprocess.run(
@@ -285,6 +322,7 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues.extend(find_readme_contract_issues(root))
     issues.extend(find_governance_contract_issues(root))
     issues.extend(find_resume_evidence_contract_issues(root))
+    issues.extend(find_mcp_evidence_contract_issues(root))
     issues.extend(f"tracked local artifact: {path}" for path in find_tracked_pollution(root))
     return issues
 
