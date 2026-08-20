@@ -334,6 +334,7 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [升级、备份与回滚](docs/UPGRADING.md)
 - [发行、SBOM、签名与验证](docs/RELEASING.md)
 - [Roadmap](ROADMAP.md)
+- [项目案例与简历证据](docs/PROJECT_CASE_STUDY.md)
 - [新贡献者小任务](docs/CONTRIBUTOR_TASKS.md)
 - [维护者与维护边界](docs/MAINTAINERS.md)
 - [Main 分支保护合同](docs/BRANCH_PROTECTION.md)

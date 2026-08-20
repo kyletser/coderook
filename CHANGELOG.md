@@ -11,6 +11,7 @@
 - GitHub Issue/PR 模板与公开仓库一致性门禁。
 - Tag 驱动的版本合同、跨平台发行门禁、SPDX SBOM、checksums、OIDC provenance 与 Cosign keyless 签名流程。
 - 稳定 CI/Security 汇总门禁、CODEOWNERS、分支保护合同、Roadmap、维护者边界与可认领 Contributor Tasks。
+- 项目案例、简历证据账本、3/10 分钟面试讲解，以及跨平台 CI 失败和 TUI 重构复盘。
 
 ### Changed
 

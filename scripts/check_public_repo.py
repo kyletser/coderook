@@ -28,6 +28,12 @@ _REQUIRED_FILES = (
     "docs/BRANCH_PROTECTION.md",
     "docs/MAINTAINERS.md",
     "docs/CONTRIBUTOR_TASKS.md",
+    "docs/PROJECT_CASE_STUDY.md",
+    "docs/RESUME_EVIDENCE.md",
+    "docs/INTERVIEW_GUIDE.md",
+    "docs/postmortems/README.md",
+    "docs/postmortems/2026-08-19-cross-platform-ci.md",
+    "docs/postmortems/2026-08-17-tui-refactor.md",
     "docs/images/coderook-tui.svg",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -84,6 +90,7 @@ _README_REQUIRED_LINKS = (
     "ROADMAP.md",
     "docs/CONTRIBUTOR_TASKS.md",
     "docs/MAINTAINERS.md",
+    "docs/PROJECT_CASE_STUDY.md",
 )
 _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/ci.yml": (
@@ -107,6 +114,30 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "OS6-05 只能标记 `PARTIAL`",
     ),
     ".github/CODEOWNERS": ("* @kyletser",),
+}
+_REQUIRED_RESUME_SNIPPETS = {
+    "docs/PROJECT_CASE_STUDY.md": (
+        "评分卡为 **NO-GO**",
+        "我独立设计并实现",
+        "第三方",
+    ),
+    "docs/RESUME_EVIDENCE.md": (
+        "## 当前禁止宣称",
+        "`1107 passed, 2 skipped`",
+        "production-ready",
+    ),
+    "docs/INTERVIEW_GUIDE.md": (
+        "3 分钟版本",
+        "10 分钟版本",
+        "当前评分卡仍 NO-GO",
+    ),
+    "docs/postmortems/2026-08-19-cross-platform-ci.md": (
+        "远端三平台复验仍待新 run",
+    ),
+    "docs/postmortems/2026-08-17-tui-refactor.md": (
+        "未达到的目标与停止理由",
+        "不能从行数和测试数推导",
+    ),
 }
 _TRACKED_POLLUTION_PATTERNS = (
     re.compile(r"(^|/)__pycache__/"),
@@ -204,6 +235,23 @@ def find_governance_contract_issues(root: Path = _ROOT) -> list[str]:
     return issues
 
 
+# 校验简历材料始终保留职责归因、NO-GO 和历史数字限定词
+def find_resume_evidence_contract_issues(root: Path = _ROOT) -> list[str]:
+    issues: list[str] = []
+    for relative, snippets in _REQUIRED_RESUME_SNIPPETS.items():
+        path = root / relative
+        if not path.is_file():
+            issues.append(f"resume evidence file is missing: {relative}")
+            continue
+        content = path.read_text(encoding="utf-8")
+        issues.extend(
+            f"{relative} does not contain required evidence boundary: {snippet}"
+            for snippet in snippets
+            if snippet not in content
+        )
+    return issues
+
+
 # 查找被 Git 跟踪的缓存、凭据和本地产物路径
 def find_tracked_pollution(root: Path = _ROOT) -> list[str]:
     result = subprocess.run(
@@ -231,6 +279,7 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues.extend(find_project_metadata_issues(root))
     issues.extend(find_readme_contract_issues(root))
     issues.extend(find_governance_contract_issues(root))
+    issues.extend(find_resume_evidence_contract_issues(root))
     issues.extend(f"tracked local artifact: {path}" for path in find_tracked_pollution(root))
     return issues
 

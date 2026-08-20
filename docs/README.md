@@ -19,6 +19,10 @@
 | [分支保护](BRANCH_PROTECTION.md) | 稳定必需检查、ruleset 配置与外部审计边界 | CI job 或 GitHub 规则变化时更新 |
 | [维护者边界](MAINTAINERS.md) | 组件责任、权限、评审与总线因子风险 | 维护者或权限变化时更新 |
 | [Contributor Tasks](CONTRIBUTOR_TASKS.md) | 可认领小任务、范围和完成定义 | 任务被认领、完成或替换时更新 |
+| [项目案例](PROJECT_CASE_STUDY.md) | 一页问题、架构、职责、取舍、结果与当前边界 | 架构或关键证据变化时更新 |
+| [简历证据](RESUME_EVIDENCE.md) | 可用数字、历史 checkpoint、禁止宣称与第三方边界 | 新完整 gate/benchmark/发行后更新 |
+| [面试讲解](INTERVIEW_GUIDE.md) | 3/10 分钟讲解、演示路径与追问证据 | 主要能力或失败案例变化时更新 |
+| [工程复盘](postmortems/README.md) | 失败与优化的根因、证据和未解决项 | 发生重要失败或完成结构优化后更新 |
 | [威胁模型](THREAT_MODEL.md) | 资产、信任边界、攻击面、降级与非目标 | 安全边界或外部能力变化时更新 |
 | [公开 Benchmark](PUBLIC_BENCHMARKS.md) | 内建集、Aider Polyglot、SWE-bench 与回归比较复现协议 | 数据集、格式或门禁变化时更新 |
 | [开源补全计划](OPEN_SOURCE_COMPLETION_PLAN.md) | 当前长期 Goal、阶段状态和完成定义 | 每个工作项验收后更新 |
