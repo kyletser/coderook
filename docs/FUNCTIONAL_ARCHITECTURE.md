@@ -1013,17 +1013,18 @@ tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发�
 
 1. **真实模型效果尚未测量** —— 50 个任务和 quick/nightly/release 执行链已实现，但没有固定
    route/model 的 pass@1、分类成功率、成本与波动报告
-2. **三平台安全 artifact 尚未最终产出** —— CI #34/#35 已真实运行 bwrap、Seatbelt 与 Windows
-   `windows_none` 降级负例；逐平台 backend/enforced/degraded/逐项 JSON 已在本地候选实现，受 GitHub
-   凭据缺少 `workflow` scope 阻塞推送复验
-3. **Windows 100 次恢复尚未完成** —— run `32358756995` 的 Ubuntu/macOS 各 100/100；Windows 前
-   54 次全部通过后因模型请求 10 秒窗口超时，30 秒慢 runner 修复待远端复验
-4. **跨版本升级尚无公开报告** —— Distribution `32358752712` 的三平台 wheel、Docker、Windows
+2. **公开 benchmark 尚无模型成绩** —— Aider Polyglot 与 SWE-bench 适配合同已实现，但没有官方
+   harness 对固定模型切片的判分 artifact，不能把离线适配测试写成榜单成绩
+3. **跨版本升级尚无公开报告** —— Distribution `32365931473` 的三平台 wheel、Docker、Windows
    portable 和真实 Extension Host 已全绿，但还没有“上一公开版本 → 当前版本 → 回滚”报告
-5. **连续 CI 证据尚差一次** —— CI #34/#35 的三平台与 Required CI gate 已连续 2/3 次成功；远端
-   审计器在达到 3 次前仍会 fail closed
-6. **独立资源基线待远端矩阵** —— 固定负载 runner 已在 Windows 本机输出 wall/CPU/RSS/进程数 P95
-   与完整率；Linux/macOS artifact 需当前 workflow 推送后产出，macOS 暂只承诺 wall-time 和不完整标记
+4. **主分支尚未保护** —— 远端仓库当前没有 active ruleset；CI/Security 虽有稳定汇总 job，但在启用
+   required checks 前不能宣称 main 受保护
+5. **公开发行和供应链证明尚未产生** —— Release workflow 已包含 SBOM、checksum、OIDC provenance
+   与 keyless 签名合同，仍需首次合格 tag、PyPI/GHCR/GitHub Release 和公开地址安装复验
+
+已关闭的远端证据：CI `32365530943` 的三平台沙箱 artifact、Crash Recovery `32365937235` 的
+三平台各 100/100，以及 commit `fe3bd3b` 的连续三次完整 CI 均已通过。资源基线 artifact 同样已在
+三平台产出；macOS 按能力边界只承诺 wall-time 与 `complete_expected=false`。
 
 ### P1（兼容性和体验限制）
 

@@ -4,7 +4,7 @@
 
 **制定日期**：2026-08-20
 
-**适用基线**：CodeRook 0.1.0，commit `1a93b3bc971ca233bd345835b2a4e10bac9a5a71` 及当前工作树
+**适用基线**：CodeRook 0.1.0，远端证据基线 commit `fe3bd3bcff3f55bf26a469786e7ad49ca1b05887` 及当前工作树
 
 **目标**：把 CodeRook 从“功能完整但证据不足的个人工程”推进为“陌生用户能够安装、理解、验证、贡献和安全使用的开源 Coding Agent”。
 
@@ -163,12 +163,12 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS0-01 | DONE | 增加 MIT LICENSE，并校准 README 的 License 链接 | `LICENSE` 与 README 本地链接门禁通过；GitHub 识别待推送复验 |
+| OS0-01 | DONE | 增加 MIT LICENSE，并校准 README 的 License 链接 | `LICENSE` 与 README 本地链接门禁通过；GitHub API 已识别 SPDX `MIT` |
 | OS0-02 | DONE | 增加 CONTRIBUTING、SECURITY、CODE_OF_CONDUCT、SUPPORT、CHANGELOG | 贡献、私下安全报告、支持边界、行为与版本记录均已落盘 |
 | OS0-03 | DONE | 增加 bug/feature/config Issue 表单和 PR 模板 | 表单要求版本、平台、sandbox、脱敏诊断与验收条件 |
 | OS0-04 | DONE | 完善 `pyproject.toml` 包元数据与项目 URL | `check_public_repo.py` 校验字段；wheel METADATA 随完整 gate 复验 |
 | OS0-05 | DONE | 清理历史文档过时结论，建立文档状态/更新时间/权威来源 | `docs/README.md` 建立权威/专题/历史分层，关键旧文档增加快照提示 |
-| OS0-06 | DONE | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁与公开仓库检查通过；Security #4 的 gitleaks、Python/JS CodeQL 和汇总 gate 成功，Dependabot/dependency review 合同已配置 |
+| OS0-06 | DONE | 删除 fixture/cache/本地产物污染，增加 secret/history 扫描 | 跟踪产物门禁与公开仓库检查通过；Security `32368432360` 的 gitleaks、Python/JS CodeQL 和汇总 gate 成功，Dependabot/dependency review 合同已配置 |
 
 阶段出口：公开仓库不再出现断链许可证、相互矛盾的启动说明或无法报告安全问题的状态。
 
@@ -177,7 +177,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
 | OS1-01 | DONE | 统一无配置启动、`/config`、`coderook configure` 与 provider doctor | TUI 不调用强制向导；配置/TUI 相关 27 项测试通过 |
-| OS1-02 | DONE | 建立 10 分钟 quickstart 与脚本化 first-run smoke | Distribution `32358752712` 的 Ubuntu/Windows/macOS clean wheel 与零凭据 Core/ping/TUI smoke 成功 |
+| OS1-02 | DONE | 建立 10 分钟 quickstart 与脚本化 first-run smoke | Distribution `32365931473` 的 Ubuntu/Windows/macOS clean wheel 与零凭据 Core/ping/TUI smoke 成功 |
 | OS1-03 | DONE | wheel、Docker、Windows portable 发行流水线 | 同一远端 run 的三平台 wheel、Docker clean-image、Windows portable 与 VSIX/Extension Host 六个 job 全绿并上传产物 |
 | OS1-04 | PARTIAL | 已提供升级、配置、数据备份与回滚手册 | 首个公开版本后补“上一版本 → 当前版本 → 回滚”fixture |
 | OS1-05 | DONE | 增加 `examples/`：只读审查、自动修复、MCP 扩展 | 命令契约离线测试；MCP 示例由真实 stdio 客户端握手与调用 |
@@ -204,11 +204,11 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS3-01 | PARTIAL | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | CI #34/#35 的三平台与 Required CI gate 连续 2/3 次成功；审计器仍要求第 3 次 |
-| OS3-02 | PARTIAL | 三平台运行 sandbox 负例矩阵 | CI #34/#35 的真实/降级边界均通过；逐平台 backend、enforced/degraded、逐项结果 JSON 已在本地候选实现，待远端 artifact |
-| OS3-03 | PARTIAL | 三平台各运行 100 次 daemon 强杀恢复 | run `32358756995` 的 Ubuntu/macOS 各 100/100；Windows 54/54 后探针等待超时，30 秒候选修复待复验 |
-| OS3-04 | PARTIAL | 建立 ProcessSupervisor 资源 P95 基线 | 独立固定负载 runner 已输出 commit-bound JSON/Markdown，含 wall/CPU/RSS/进程数 P95 与完整率；Windows 本机 3/3 通过，三平台 CI artifact 待推送产出 |
-| OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security #4 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
+| OS3-01 | DONE | 恢复 Ubuntu/Windows/macOS CI 全绿并连续验证 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次三平台与 Required CI gate 全绿 |
+| OS3-02 | DONE | 三平台运行 sandbox 负例矩阵 | CI `32365530943` 上传 Linux bwrap、macOS Seatbelt 强制边界与 Windows `windows_none` 明确降级 JSON，逐项 gate 均通过 |
+| OS3-03 | DONE | 三平台各运行 100 次 daemon 强杀恢复 | Crash Recovery `32365937235` 的 Ubuntu、macOS、Windows 各 100/100，三平台均无 infrastructure error |
+| OS3-04 | DONE | 建立 ProcessSupervisor 资源 P95 基线 | CI `32365530943` 上传三平台 commit-bound JSON/Markdown；Windows/Linux 完整采样率 100%，macOS 明确记录 `complete_expected=false` 与 wall-time |
+| OS3-05 | DONE | 增加 CodeQL、dependency review、Dependabot 和 secret scan | Security `32368432360` 的 gitleaks、Python/JS CodeQL 和 Required security gate 成功；PR dependency review 与 Dependabot 配置受仓库合同保护 |
 | OS3-06 | DONE | 明确模型、MCP、Skill、Hook、shell、网络、workspace 与供应链 threat model | `THREAT_MODEL.md` 与 SECURITY 互链，含支持/降级/拒绝、非目标和响应流程 |
 
 阶段出口：安全能力以“支持/降级/拒绝”三态表达，所有可靠性数字来自真实进程和真实 OS。
@@ -233,9 +233,9 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS5-01 | DONE | 对固定官方 MCP Python SDK 2.0 server 完成 stdio/legacy SSE/Streamable HTTP 兼容矩阵 | Windows dated JSON/Markdown 绑定 commit c47ae23，三种 transport 的 tools/resources/prompts/cancel/reconnect 全通过；Ubuntu workflow 持续复验 |
+| OS5-01 | DONE | 对固定官方 MCP Python SDK 2.0 server 完成 stdio/legacy SSE/Streamable HTTP 兼容矩阵 | MCP `32365934460` 的 Linux JSON/Markdown 绑定 commit `3e4a1c4`，三种 transport 的 tools/resources/prompts/cancel/reconnect 全通过 |
 | OS5-02 | DONE | 提供可安装 focused-fix Skill、敏感文件阻断 Hook 与 MCP stdio 示例及安全说明 | Skill 经受管安装/digest/渲染 smoke；Hook 经真实配置加载与子进程阻断/放行；MCP 完成握手与调用 |
-| OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | Distribution `32358752712` 已在 Xvfb + 隔离 daemon 覆盖激活、命令、新建/恢复 thread 与 diff，并上传 commit-bound JSON；审批 UI 录像/截图仍待产出 |
+| OS5-03 | PARTIAL | VSIX 在真实 Extension Host 中连接 daemon、审批、diff、恢复 | Distribution `32365931473` 已在 Xvfb + 隔离 daemon 覆盖激活、命令、新建/恢复 thread 与 diff，并上传 commit-bound JSON；审批 UI 录像/截图仍待产出 |
 | OS5-04 | DONE | TUI 首次使用、连接失败、无模型、模型失败、degraded sandbox 状态均给出非阻塞恢复建议 | 真实 Textual 截图 + app/connection/render 交互测试覆盖，重连提示去重 |
 | OS5-05 | DONE | TUI 统一展示 plan、repository context、working set、diff、验证结果、receipt context 与恢复点 | 正式事件渲染与 Turn Inspector 测试；用户无需读取原始 JSON |
 | OS5-06 | DONE | 公布 HTTP/SSE、Python SDK、stream-json 的兼容、错误与版本策略 | capabilities/响应头/模型默认值/SDK 契约测试；两 minor 且不少于 90 天的弃用窗口写入文档 |

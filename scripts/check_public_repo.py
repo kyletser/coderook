@@ -158,7 +158,8 @@ _REQUIRED_RESUME_SNIPPETS = {
     ),
     "docs/RESUME_EVIDENCE.md": (
         "## 当前禁止宣称",
-        "`1155 passed, 2 skipped`",
+        "## 可引用的历史精确数字",
+        "日期/基线",
         "production-ready",
     ),
     "docs/INTERVIEW_GUIDE.md": (

@@ -2,7 +2,7 @@
 
 更新日期：2026-08-20
 
-候选状态：**NO-GO（真实模型门禁未运行，Windows 100 次恢复与 main ruleset 未通过）**
+候选状态：**NO-GO（真实模型/公开 benchmark 门禁未运行，main ruleset 与公开发行未完成）**
 
 ## 已有确定性证据
 
@@ -11,14 +11,14 @@
 - 未修改 fixture 的 50 个 baseline 均按预期失败，证明 verifier 不是天然通过。
 - stream-json、resume、SDK、HTTP/SSE、MCP、PatchPlan、Artifact、ledger checksum、doctor 和配置事务均有针对性测试。
 - 本机 Windows 沙箱检查结果是 `DEGRADED (windows_none)`；AUTO_REVIEW 不会把该状态当作强制隔离。Windows Job Object 后代终止测试通过，但只计为进程治理。
-- VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；distribution workflow 会在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
-- commit `703a602` 的本机完整 pytest 为 1159 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 7.58 秒 installed-wheel first-run smoke 全部通过；该 commit 因当前 GitHub 凭据缺少 `workflow` scope 尚未推送，不能当作远端证据。
-- 远端 CI #34（`0bf6c11`）与 CI #35（`702737e`）连续两次三平台全绿；CI #35 的 Required CI gate 成功。评分卡要求连续三次，当前是 2/3。
-- Security #4（`702737e`）的 gitleaks、Python/JavaScript CodeQL 与 Required security gate 成功；push 事件下 dependency review 按设计跳过，PR 事件仍有独立门禁。
-- Distribution run `32358752712` 在 `702737e` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP run `32358754512` 同 commit 成功。
-- Crash Recovery run `32358756995` 中 Ubuntu/macOS 各 100/100；Windows 前 54 次全部通过后因模型请求 10 秒等待窗口超时，属于基础设施失败而非 54 次恢复失败。当前本地候选把窗口改为 30 秒，仍需推送复验。
-- ProcessSupervisor 固定负载基线已独立于模型执行链输出 commit-bound JSON/Markdown；Windows 本机 3/3 完整采样通过，记录 wall/CPU/RSS/进程数 P95。Linux/macOS CI artifact 尚待推送，macOS 无受支持 CPU/RSS 采样器时会明确记录 `complete_expected=false`。
-- 统一远端审计器已在真实 GitHub API 上 fail closed 运行；active ruleset、release benchmark、Windows crash 与连续 CI 尚未齐备，不把本地 workflow 定义当远端成绩。
+- VS Code 扩展已通过 TypeScript strict typecheck，并在本机实际生成 VSIX；Distribution `32365931473` 已在 Xvfb 中连接隔离真实 daemon，验证激活、新建/恢复 thread 与 diff 后上传 commit-bound JSON。
+- commit `fe3bd3b` 的本机完整 pytest 为 1163 项通过（2 项平台跳过）。Ruff、品牌检查、公开仓库契约、Mypy 本机/Linux、协议生成、wheel/sdist 构建与 8.20 秒 installed-wheel first-run smoke 全部通过。
+- 同一 commit 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次 Ubuntu/Windows/macOS 与 Required CI gate 全绿；期间暴露并修复 Windows 事件回放、wheel 冷启动窗口与 Git racy-clean 三类竞态。
+- Security `32368432360` 的 gitleaks、Python/JavaScript CodeQL 与 Required security gate 成功；push 事件下 dependency review 按设计跳过，PR 事件仍有独立门禁。
+- Distribution `32365931473` 在 commit `3e4a1c4` 上完成三平台 clean wheel、Docker clean-image、Windows portable 和真实 VS Code Extension Host smoke，全部成功；官方 MCP `32365934460` 同 commit 成功。
+- Crash Recovery `32365937235` 在 commit `3e4a1c4` 上完成 Ubuntu、macOS、Windows 各 100/100，三个报告均为 `infrastructure_error=null`，合计恢复率 100%。
+- CI `32365530943` 上传三平台 ProcessSupervisor 固定负载基线与沙箱边界 JSON/Markdown；Windows/Linux 资源采样完整率 100%，macOS 诚实记录 `complete_expected=false` 与 wall-time。
+- 统一远端审计器已在真实 GitHub API 上 fail closed 运行；三平台 crash 与连续 CI 已齐备，active ruleset 和 release benchmark 仍缺，不把本地 workflow 定义当远端成绩。
 - Windows portable 与 Docker job 已复用零凭据 installed-runtime smoke，检查配置状态、TUI help、真实 Core 启动与 ping；该 smoke 在本机安装态 6.0 秒通过。本机 Docker Linux engine 未运行，不能把容器或干净机 portable 记为通过。
 - Aider Polyglot 固定 commit/container runner 与 SWE-bench 标准 prediction exporter 已通过离线契约测试；尚未产出真实模型切片和官方 SWE-bench harness artifact。
 - release workflow 会把原始失败分为六个效果域；单项优化必须绑定前后完整 commit、报告 SHA-256 与不变评测合同，真实候选报告产生前不宣称收益。
@@ -33,11 +33,11 @@
 | 总体 pass@1 | ≥80% | 未运行真实模型候选集 |
 | 多文件修改 | ≥75% | 未运行 |
 | 只读分析 | ≥90% | 未运行 |
-| 安全负例 | 三平台 100% | CI #34/#35 的 Linux bwrap、macOS Seatbelt 与 Windows degraded/ASK 负例均通过；逐平台 JSON artifact 已在本地候选实现，待推送复验 |
-| 强杀恢复 | 100 次中 ≥95% | Ubuntu 100/100、macOS 100/100；Windows 54/54 后基础设施超时，30 秒候选修复待远端复验 |
+| 安全负例 | 三平台 100% | CI `32365530943` 的 Linux bwrap、macOS Seatbelt 与 Windows degraded/ASK 逐平台 JSON 均通过 |
+| 强杀恢复 | 100 次中 ≥95% | Crash Recovery `32365937235` 三平台各 100/100，均无基础设施错误 |
 | 两 wire format × 两次 | 4 份候选报告 | workflow 已配置，报告未产生 |
-| 安装/升级 | 三平台、wheel、容器、portable | Distribution `32358752712` 的三平台 wheel、Docker、Windows portable、VSIX/Extension Host 全绿；跨已发布版本升级/回滚仍无 fixture |
-| 完整 CI | 连续 3 次全绿 | CI #34/#35 三平台及汇总 gate 连续 2/3 次成功 |
+| 安装/升级 | 三平台、wheel、容器、portable | Distribution `32365931473` 的三平台 wheel、Docker、Windows portable、VSIX/Extension Host 全绿；跨已发布版本升级/回滚仍无 fixture |
+| 完整 CI | 连续 3 次全绿 | commit `fe3bd3b` 的 CI `32368432365`、`32368834608`、`32369245347` 连续三次全绿 |
 
 ## 运行方式
 
@@ -76,5 +76,5 @@ P95 成本/耗时显著上涨视为失败。资源字段和比较门禁已有离
 - README 的 TUI SVG 由真实 Textual 控件与正式事件结构确定性生成；它证明当前界面渲染契约，不代表在线模型效果或真实 benchmark 成绩。
 - Tag release workflow 已配置版本/Changelog/协议/评分卡一致性、三平台 distribution、SPDX SBOM、SHA256SUMS、GitHub OIDC provenance 与 Cosign keyless 签名；评分卡为 NO-GO 时会在推送镜像和创建 Release 前失败，远端产物尚未生成。
 - 通用 checkout/setup-node/artifact/setup-uv Actions 已升级到 Node 24 代际；远端证据 workflow 每日审计六类 workflow、连续 CI 与 active ruleset，并上传机器可读 JSON。
-- VS Code 的真实 daemon Extension Host runner 已实现但远端 JSON 尚未产生；审批 UI 仍缺录像/截图，也未发布到 Marketplace。
+- VS Code 的真实 daemon Extension Host JSON 已在 Distribution `32365931473` 产生；审批 UI 仍缺录像/截图，也未发布到 Marketplace。
 - 未达到本页全部量化门禁前，不发布 `0.2.0-beta`，也不宣称生产就绪。
