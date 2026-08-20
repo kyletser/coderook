@@ -222,6 +222,49 @@ def _request_list(
     return payload
 
 
+# 创建 turn；若 POST 响应超时则用隔离 thread 的新增 durable turn 安全恢复响应
+def _create_turn_resilient(
+    api_port: int,
+    token: str,
+    thread_id: str,
+    content: str,
+    known_turn_ids: set[str],
+) -> dict[str, Any]:
+    try:
+        return _request_json(
+            api_port,
+            token,
+            "POST",
+            f"/v1/threads/{thread_id}/turns",
+            {"content": content, "mode": "act"},
+        )
+    except (ConnectionError, OSError, urllib.error.URLError) as exc:
+        deadline = time.monotonic() + _READ_RETRY_TIMEOUT_S
+        while True:
+            turns = _request_list(
+                api_port,
+                token,
+                "GET",
+                f"/v1/threads/{thread_id}/turns",
+            )
+            created = [
+                turn
+                for turn in turns
+                if str(turn.get("id", "")) not in known_turn_ids
+            ]
+            if len(created) == 1:
+                return created[0]
+            if len(created) > 1:
+                raise RuntimeError(
+                    "turn POST outcome is ambiguous: multiple new durable turns"
+                ) from exc
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "turn POST outcome remained unknown after durable readback"
+                ) from exc
+            time.sleep(0.05)
+
+
 # 等待阻塞模型确认收到本轮请求，确保强杀发生在活动 turn 内
 def _wait_for_model_request(expected_count: int) -> None:
     deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
@@ -357,6 +400,15 @@ def run_matrix(
                 {"title": "crash matrix", "mode": "chat"},
             )
             thread_id = str(thread["id"])
+            known_turn_ids = {
+                str(turn.get("id", ""))
+                for turn in _request_list(
+                    api_port,
+                    token,
+                    "GET",
+                    f"/v1/threads/{thread_id}/turns",
+                )
+            }
             for index in range(iterations):
                 current_iteration = index + 1
                 phase = (
@@ -368,14 +420,15 @@ def run_matrix(
                 with _BlockingModelHandler.request_started:
                     _BlockingModelHandler.request_phase = phase
                 current_stage = "create_turn"
-                turn = _request_json(
+                turn = _create_turn_resilient(
                     api_port,
                     token,
-                    "POST",
-                    f"/v1/threads/{thread_id}/turns",
-                    {"content": f"crash injection {index + 1}", "mode": "act"},
+                    thread_id,
+                    f"crash injection {index + 1}",
+                    known_turn_ids,
                 )
                 turn_id = str(turn["id"])
+                known_turn_ids.add(turn_id)
                 current_stage = "wait_for_model_request"
                 _wait_for_model_request(index + 1)
                 if phase == "tool_call_unresolved":

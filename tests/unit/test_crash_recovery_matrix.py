@@ -81,6 +81,38 @@ def test_request_json_retries_transient_read_error(
     assert payload == {"status": "interrupted"}
 
 
+# 功能：验证 create-turn 响应超时后可从隔离 thread 的新增 durable turn 恢复
+# 设计：让 POST 固定抛超时并返回一个已知与一个新增 turn，证明不会盲目重试写请求
+def test_create_turn_recovers_timeout_from_durable_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes = 0
+
+    # 模拟服务端已提交 turn 但客户端没有收到 POST 响应
+    def timeout_after_commit(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal writes
+        writes += 1
+        raise TimeoutError("timed out")
+
+    # 返回隔离 thread 中唯一新增的 durable turn
+    def list_committed_turns(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        return [{"id": "known"}, {"id": "recovered"}]
+
+    monkeypatch.setattr(crash_matrix, "_request_json", timeout_after_commit)
+    monkeypatch.setattr(crash_matrix, "_request_list", list_committed_turns)
+
+    turn = crash_matrix._create_turn_resilient(
+        7438,
+        "test-token",
+        "thread-1",
+        "work",
+        {"known"},
+    )
+
+    assert writes == 1
+    assert turn["id"] == "recovered"
+
+
 # 功能：验证 Windows 慢 runner 的模型到达窗口保留足够抖动余量
 # 设计：锁定 30 秒下限，同时保持等待函数仍要求真实 request_count 达标而非按时间自动成功
 def test_model_request_timeout_allows_slow_runner_jitter() -> None:
