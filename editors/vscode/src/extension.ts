@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 
 type JsonObject = Record<string, unknown>;
+type PermissionDecision = "allow_once" | "deny_once";
+type PermissionChoice = vscode.QuickPickItem & {decision: PermissionDecision};
 
 let threadId = "";
 let turnId = "";
@@ -144,38 +146,91 @@ async function selectPatchHunks(params: JsonObject): Promise<{
   };
 }
 
-// 显示审批详情，支持普通允许/拒绝和 PatchPlan 的逐 hunk 选择。
+// 把 PatchPlan 或普通工具参数整理为审批列表中可读的单行详情。
+function permissionDetail(params: JsonObject): string {
+  const context = (params._approval_context ?? {}) as JsonObject;
+  const plan = (context.patch_plan ?? {}) as JsonObject;
+  const files = Array.isArray(plan.files) ? plan.files as JsonObject[] : [];
+  const changes = files.flatMap(file => {
+    const filePath = String(file.path ?? "file");
+    const hunks = Array.isArray(file.hunks) ? file.hunks as JsonObject[] : [];
+    return hunks.map(hunk => (
+      `${filePath} ${String(hunk.header ?? "hunk")} ` +
+      `(+${String(hunk.additions ?? 0)} -${String(hunk.removals ?? 0)})`
+    ));
+  });
+  const detail = changes.length ? changes.join(" | ") : JSON.stringify(params);
+  return detail.length > 600 ? `${detail.slice(0, 597)}...` : detail;
+}
+
+// 用可测试的 QuickPick 展示审批详情并收集允许、拒绝及 PatchPlan hunk 选择。
+async function promptPermission(record: JsonObject): Promise<{
+  decision: PermissionDecision;
+  selectedHunks?: string[];
+  patchPlanId?: string;
+}> {
+  const payload = (record.payload ?? {}) as JsonObject;
+  const params = (payload.params ?? {}) as JsonObject;
+  const toolName = String(payload.tool_name ?? "tool");
+  const detail = permissionDetail(params);
+  const choice = await vscode.window.showQuickPick<PermissionChoice>(
+    [
+      {
+        label: "$(check) Allow once",
+        description: toolName,
+        detail,
+        decision: "allow_once",
+      },
+      {
+        label: "$(close) Deny",
+        description: toolName,
+        detail: "Reject this tool call without changing persistent policy.",
+        decision: "deny_once",
+      },
+    ],
+    {
+      title: `CodeRook requests ${toolName} permission`,
+      placeHolder: "Review the requested operation before choosing",
+      ignoreFocusOut: true,
+      matchOnDescription: true,
+      matchOnDetail: true,
+    },
+  );
+  const decision = choice?.decision ?? "deny_once";
+  const selection = decision === "allow_once" ? await selectPatchHunks(params) : {};
+  return {
+    decision,
+    selectedHunks: selection.selectedHunks,
+    patchPlanId: selection.patchPlanId,
+  };
+}
+
+// 显示审批详情并把普通允许、拒绝或 PatchPlan hunk 选择提交给 daemon。
 async function respondToPermission(record: JsonObject): Promise<void> {
   const payload = (record.payload ?? {}) as JsonObject;
   const toolUseId = String(payload.tool_use_id ?? "");
   if (!toolUseId) {
     return;
   }
-  const params = (payload.params ?? {}) as JsonObject;
-  const choice = await vscode.window.showWarningMessage(
-    `CodeRook requests ${String(payload.tool_name ?? "tool")} permission`,
-    {modal: true, detail: JSON.stringify(params, null, 2)},
-    "Allow once",
-    "Deny",
-  );
-  const decision = choice === "Allow once" ? "allow_once" : "deny_once";
-  const selection = decision === "allow_once" ? await selectPatchHunks(params) : {};
+  const response = await promptPermission(record);
   await request(`/v1/permissions/${encodeURIComponent(toolUseId)}`, {
     method: "POST",
     body: JSON.stringify({
-      decision,
-      selected_hunks: selection.selectedHunks,
-      patch_plan_id: selection.patchPlanId,
+      decision: response.decision,
+      selected_hunks: response.selectedHunks,
+      patch_plan_id: response.patchPlanId,
     }),
   });
 }
 
-// 仅在 Extension Host smoke 中打开真实审批模态框，生产环境拒绝测试入口。
-export async function showPermissionPromptForTest(record: JsonObject): Promise<void> {
+// 仅在 Extension Host smoke 中打开真实审批 QuickPick，生产环境拒绝测试入口。
+export async function showPermissionPromptForTest(
+  record: JsonObject,
+): Promise<PermissionDecision> {
   if (process.env.CODEROOK_VSCODE_TEST_MODE !== "1") {
     throw new Error("permission prompt test entry is disabled");
   }
-  await respondToPermission(record);
+  return (await promptPermission(record)).decision;
 }
 
 // 去重处理 runtime 事件并触发审批与终态反馈。

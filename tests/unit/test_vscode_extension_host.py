@@ -53,6 +53,8 @@ def test_distribution_runs_extension_host_smoke() -> None:
 
     assert "Real daemon Extension Host smoke" in workflow
     assert "run_vscode_extension_host_smoke.py" in workflow
+    assert "target:" in workflow
+    assert "inputs.target == 'vscode'" in workflow
     assert "artifacts/vscode-extension-host.json" in workflow
     assert "artifacts/vscode-approval.png" in workflow
     assert "imagemagick xdotool xvfb" in workflow
@@ -64,6 +66,13 @@ def test_distribution_runs_extension_host_smoke() -> None:
         "approval_visual",
     ):
         assert capability in suite
+
+    extension = (root / "editors" / "vscode" / "src" / "extension.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "showQuickPick<PermissionChoice>" in extension
+    assert "modal: true" not in extension
+    assert 'choice?.decision ?? "deny_once"' in extension
 
 
 # 功能：验证 Extension Host 视觉证据必须绑定真实 PNG 的大小与 SHA-256

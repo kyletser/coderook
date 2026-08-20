@@ -141,6 +141,8 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "patterns: [\"*\"]",
     ),
     ".github/workflows/distribution.yml": (
+        "Run the full distribution gate or one focused job",
+        "inputs.target == 'vscode'",
         "Container zero-credential Core, ping and TUI smoke",
         "Portable zero-credential Core, ping and TUI smoke",
         "smoke_installed_runtime.py",

@@ -3,6 +3,18 @@ name: Distribution gate
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Run the full distribution gate or one focused job
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - wheel
+          - container
+          - windows-portable
+          - vscode
 
 permissions:
   contents: read
@@ -10,6 +22,7 @@ permissions:
 jobs:
   wheel:
     name: Clean wheel smoke / ${{ matrix.os }}
+    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'wheel'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -34,6 +47,7 @@ jobs:
 
   container:
     name: Docker clean-image smoke
+    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'container'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -49,6 +63,7 @@ jobs:
 
   windows-portable:
     name: Windows portable smoke
+    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'windows-portable'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -75,6 +90,7 @@ jobs:
 
   vscode:
     name: VS Code VSIX and Extension Host smoke
+    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'vscode'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -17,7 +17,7 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-// 在 Xvfb 中等待审批模态框出现，截取真实根窗口并关闭模态框。
+// 在 Xvfb 中等待审批 QuickPick 出现，截取真实根窗口并用 Escape 安全拒绝。
 function captureApprovalScreenshot(target: string): Promise<void> {
   fs.mkdirSync(path.dirname(target), {recursive: true});
   return new Promise((resolve, reject) => {
@@ -25,7 +25,7 @@ function captureApprovalScreenshot(target: string): Promise<void> {
       "sleep 1",
       "status=0",
       'import -window root "$1" || status=$?',
-      "xdotool key Escape",
+      "xdotool key --clearmodifiers Escape",
       "exit $status",
     ].join("; ");
     const child = spawn("bash", ["-lc", script, "capture", target], {
@@ -50,7 +50,7 @@ async function captureApprovalVisual(): Promise<{
 }> {
   const screenshotPath = requiredEnv("CODEROOK_VSCODE_SCREENSHOT_PATH");
   const capture = captureApprovalScreenshot(screenshotPath);
-  await showPermissionPromptForTest({
+  const decision = await showPermissionPromptForTest({
     payload: {
       tool_use_id: "vscode-smoke-approval",
       tool_name: "File",
@@ -74,6 +74,7 @@ async function captureApprovalVisual(): Promise<{
       },
     },
   });
+  assert.equal(decision, "deny_once", "Escape must fail closed to a one-shot denial");
   await capture;
   const image = fs.readFileSync(screenshotPath);
   assert.ok(image.length >= 20_000, "approval screenshot is unexpectedly small");
