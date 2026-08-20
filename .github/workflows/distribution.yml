@@ -1,0 +1,86 @@
+name: Distribution gate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Clean wheel smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv build
+      - run: uv run python scripts/smoke_wheel.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  container:
+    name: Docker clean-image smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag coderook:candidate .
+      - run: docker run --rm coderook:candidate coderook --version
+
+  windows-portable:
+    name: Windows portable smoke
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - shell: pwsh
+        run: ./scripts/build_windows_portable.ps1
+      - shell: pwsh
+        run: ./dist/coderook-windows-portable/portable-coderook.cmd --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coderook-windows-portable
+          path: dist/coderook-windows-portable.zip
+          if-no-files-found: error
+
+  vscode:
+    name: VS Code VSIX
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - working-directory: editors/vscode
+        run: npm ci
+      - working-directory: editors/vscode
+        run: npm run check && npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coderook-vscode
+          path: editors/vscode/dist/*.vsix
+          if-no-files-found: error

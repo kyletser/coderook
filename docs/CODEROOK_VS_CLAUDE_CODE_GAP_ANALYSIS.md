@@ -1,5 +1,9 @@
 # CodeRook 与 Claude Code 能力差距分析
 
+> 历史快照：本文保留早期对标过程，其中功能缺口和比例不代表当前状态。当前体验矩阵见
+> [CLAUDE_CODE_EXPERIENCE_PARITY.md](CLAUDE_CODE_EXPERIENCE_PARITY.md)，发布结论见
+> [RELEASE_SCORECARD.md](RELEASE_SCORECARD.md)。
+
 > 本文是初始审计快照，其中部分 P0/P1 缺口已经修复。当前代码证据与未完成项请以
 > `IMPLEMENTATION_PROGRESS.md` 和 `LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md` 为准。
 

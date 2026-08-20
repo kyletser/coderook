@@ -67,6 +67,7 @@ class CodeRookBenchmarkExecutor:
         wire_format = ""
         temperature: float | None = None
         diagnostic_durations_ms: list[int] = []
+        process_usage: list[dict[str, object]] = []
 
         # 收集 token、step 和工具调用数量，不保存可能含敏感内容的事件正文
         async def capture(event: BaseModel) -> None:
@@ -74,6 +75,9 @@ class CodeRookBenchmarkExecutor:
             nonlocal retry_count, rollback_count, steps, tool_calls
             nonlocal model, route_id, wire_format
             nonlocal temperature
+            raw_process_usage = getattr(event, "process_usage", None)
+            if isinstance(raw_process_usage, dict) and raw_process_usage:
+                process_usage.append(dict(raw_process_usage))
             if isinstance(event, LlmUsageEvent):
                 usage_events.append(event)
             elif isinstance(event, RunFinishedEvent):
@@ -163,6 +167,15 @@ class CodeRookBenchmarkExecutor:
             event.cache_creation_input_tokens for event in usage_events
         )
         estimated_cost, pricing_evidence = self._estimate_usage_cost(usage_events)
+        process_wall_ms = sum(
+            self._nonnegative_int(record.get("wall_time_ms"))
+            for record in process_usage
+        )
+        process_cpu_ms = sum(
+            self._nonnegative_int(record.get("user_cpu_ms"))
+            + self._nonnegative_int(record.get("system_cpu_ms"))
+            for record in process_usage
+        )
         return AgentExecution(
             run_id=run_id,
             status=status,
@@ -187,9 +200,33 @@ class CodeRookBenchmarkExecutor:
             compaction_count=compaction_count,
             daemon_restart_count=0,
             diagnostic_durations_ms=diagnostic_durations_ms,
+            process_usage_records=len(process_usage),
+            complete_process_records=sum(
+                record.get("complete") is True for record in process_usage
+            ),
+            process_wall_ms=process_wall_ms,
+            process_cpu_ms=process_cpu_ms,
+            peak_memory_bytes=max(
+                (
+                    self._nonnegative_int(record.get("peak_memory_bytes"))
+                    for record in process_usage
+                ),
+                default=0,
+            ),
+            process_count=sum(
+                self._nonnegative_int(record.get("process_count"))
+                for record in process_usage
+            ),
             first_edit_correct=first_edit_correct,
             timed_out=timed_out,
         )
+
+    # 将事件中的任意 JSON 数值安全收敛为非负整数
+    @staticmethod
+    def _nonnegative_int(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        return max(0, int(value))
 
     # 判断工具调用是否可能修改 benchmark 工作区，用于首次编辑正确率探针
     @staticmethod

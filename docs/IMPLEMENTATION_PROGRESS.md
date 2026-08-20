@@ -1,5 +1,9 @@
 # CodeRook 功能完善进度
 
+> 历史快照：本文记录早期实现阶段，不再作为当前完成度或发布状态依据。当前事实见
+> [功能架构](FUNCTIONAL_ARCHITECTURE.md)、[生产差距矩阵](PRODUCTION_GAP_MATRIX.md) 与
+> [发布评分卡](RELEASE_SCORECARD.md)。
+
 > 历史快照：本文记录 2026-07-16 的轻量 Agent 阶段，不再代表当前实现状态。R1–R9 的
 > 当前事实与完整门禁以 `SPECDRIVEN_COMPLETION_AUDIT.md` 和
 > `SPECDRIVEN_REFACTOR_PLAN.md` 为准。

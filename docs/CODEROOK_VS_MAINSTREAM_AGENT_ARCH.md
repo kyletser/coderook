@@ -1,5 +1,9 @@
 # CodeRook 与主流 Agent 架构对比及后续改造方向
 
+> 历史快照：本文保留早期结构性分析，正文中的“当前状态”和评分已经过期。当前架构见
+> [FUNCTIONAL_ARCHITECTURE.md](FUNCTIONAL_ARCHITECTURE.md)，开源补全工作见
+> [OPEN_SOURCE_COMPLETION_PLAN.md](OPEN_SOURCE_COMPLETION_PLAN.md)。
+
 > Generated Time: 2026-07-21 10:01
 >
 > 审计对象：当前工作区 `C:/Users/Administrator/Desktop/coderook` 的真实代码

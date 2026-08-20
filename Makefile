@@ -21,6 +21,7 @@ verify:
 	uv sync --frozen
 	uv run ruff check .
 	uv run python scripts/check_brand.py
+	uv run python scripts/check_public_repo.py
 	uv run mypy src
 	uv run mypy --platform linux src
 	uv run pytest -q

@@ -36,6 +36,12 @@ class _EditingExecutor:
             status="success",
             steps=1,
             diagnostic_durations_ms=[10, 20],
+            process_usage_records=2,
+            complete_process_records=1,
+            process_wall_ms=40,
+            process_cpu_ms=12,
+            peak_memory_bytes=8 * 1024 * 1024,
+            process_count=3,
         )
 
 
@@ -176,6 +182,11 @@ async def test_benchmark_report_summarizes_and_preserves_evidence(tmp_path: Path
     assert report.summary.verifier_pass_rate == 1.0
     assert report.summary.categories["single_file_fix"].passed == 1
     assert report.summary.diagnostics_p95_ms == 20
+    assert report.summary.process_wall_p95_ms == 40
+    assert report.summary.process_cpu_p95_ms == 12
+    assert report.summary.peak_memory_p95_bytes == 8 * 1024 * 1024
+    assert report.summary.process_count_p95 == 3
+    assert report.summary.process_usage_complete_rate == 0.5
     receipt = evidence / "stub-task" / "receipt.json"
     assert receipt.is_file()
     assert '"task_id": "stub-task"' in receipt.read_text(encoding="utf-8")

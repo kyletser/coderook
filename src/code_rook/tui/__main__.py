@@ -4,17 +4,14 @@ import argparse
 import logging
 import logging.handlers
 import os
-import sys
 from pathlib import Path
 
 from code_rook.cli.commands.configure import (
-    configure_llm,
     save_provider_config,
     switch_llm_model,
 )
 from code_rook.cli.commands.core import CoreLaunchError, ensure_core_running
 from code_rook.core.config import CodeRookConfig, get_config
-from code_rook.core.llm.credentials import llm_is_configured
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
 from code_rook.core.llm.route_registry import legacy_config_route
 from code_rook.core.llm.route_store import RouteStore
@@ -42,17 +39,6 @@ def _setup_logging(level: str) -> None:
     root.setLevel(getattr(logging, level.upper(), logging.DEBUG))
     root.handlers.clear()
     root.addHandler(handler)
-
-
-# 在交互终端中完成首次 LLM 配置，非交互环境给出明确命令提示
-def _ensure_llm_configured() -> None:
-    config = get_config()
-    if llm_is_configured(config.llm):
-        return
-    if not sys.stdin.isatty():
-        raise SystemExit("LLM is not configured; run `uv run coderook configure` first.")
-    print("首次启动需要配置 LLM API。密钥将隐藏输入并保存在 ~/.coderook/credentials.json。\n")
-    configure_llm(config)
 
 
 # 将旧 LLM 配置一次性迁移为显式活动 route，保留原凭据引用而不复制密钥正文
@@ -99,7 +85,7 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     return app.run()
 
 
-# coderook-tui 入口：首次引导配置并支持从 /config 返回后重新加载
+# coderook-tui 入口：未配置模型也可进入，并支持从 /config 返回后重新加载
 def main() -> None:
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook-tui", description="CodeRook TUI")
@@ -121,7 +107,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _ensure_llm_configured()
     _ensure_route_configured(get_config())
     while True:
         action = _run_tui(args)

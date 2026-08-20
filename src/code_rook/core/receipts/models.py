@@ -82,6 +82,7 @@ class TurnReceipt(BaseModel):
     artifacts: list[dict[str, JsonValue]]
     workers: list[dict[str, JsonValue]]
     verification: list[dict[str, JsonValue]]
+    context_selection: list[dict[str, JsonValue]]
     error_classification: str | None
     unavailable: list[
         Literal[
@@ -93,6 +94,7 @@ class TurnReceipt(BaseModel):
             "artifacts",
             "workers",
             "verification",
+            "context_selection",
             "error_classification",
         ]
     ]

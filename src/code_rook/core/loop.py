@@ -7,7 +7,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import (
@@ -22,6 +22,8 @@ from code_rook.core.bus.events import (
     StepStartedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
+    VerificationCompletedEvent,
+    VerificationFailedEvent,
 )
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
 from code_rook.core.context import ExecutionContext
@@ -739,6 +741,67 @@ class AgentLoop:
             )
         )
 
+    # 将 Run 工具的真实结果转换为可持久化的结构化验证事件
+    async def _publish_verification(
+        self,
+        tc: ToolCallBlock,
+        result: ToolResult,
+        context: ExecutionContext,
+    ) -> None:
+        if tc.name not in {"Run", "run_tests", "run_verifiers"}:
+            return
+        action = str(tc.input.get("action", ""))
+        if not action:
+            action = "tests" if tc.name == "run_tests" else "verifiers"
+        try:
+            raw_payload = json.loads(result.content)
+        except (json.JSONDecodeError, TypeError):
+            raw_payload = {}
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        raw_gates = payload.get("gates")
+        gates: list[dict[str, Any]] = []
+        if isinstance(raw_gates, list):
+            for raw_gate in raw_gates[:8]:
+                if not isinstance(raw_gate, dict):
+                    continue
+                gates.append(
+                    {
+                        "name": str(raw_gate.get("name", ""))[:80],
+                        "status": str(raw_gate.get("status", "unknown"))[:20],
+                        "duration_ms": max(0, int(raw_gate.get("duration_ms", 0))),
+                        "output_truncated": bool(raw_gate.get("output_truncated", False)),
+                    }
+                )
+        gate_count = max(1, int(payload.get("gate_count", len(gates) or 1)))
+        failed = max(0, int(payload.get("failed", int(result.is_error))))
+        passed = max(0, int(payload.get("passed", gate_count - failed)))
+        paths = [
+            entry.path
+            for entry in context.working_set.snapshot()
+            if "edit" in entry.sources
+        ]
+        common: dict[str, Any] = {
+            "run_id": context.run_id,
+            "step": context.step,
+            "tool": tc.name,
+            "action": action,
+            "gate_count": gate_count,
+            "passed": passed,
+            "failed": failed,
+            "paths": paths,
+            "gates": gates,
+            "ts": _now(),
+        }
+        if result.is_error or failed > 0:
+            await self._bus.publish(
+                VerificationFailedEvent(
+                    **{**common, "failed": max(1, failed)},
+                    failure_class=result.error_type or "verification_failed",
+                )
+            )
+            return
+        await self._bus.publish(VerificationCompletedEvent(**common))
+
     # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
     async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
         await self._cancellation_checkpoint()
@@ -822,6 +885,7 @@ class AgentLoop:
                 block_count=block_count,
             )
         await self._update_context_after_tool(tc, result, context)
+        await self._publish_verification(tc, result, context)
         if result.error_type == "permission_required":
             context.mark_failed("permission_required")
             return True

@@ -126,6 +126,20 @@ def test_receipt_builds_from_durable_records_only() -> None:
         RuntimeEventRecord(
             thread_id=turn.thread_id,
             turn_id=turn.id,
+            seq=7,
+            type="context.repository",
+            payload={
+                "repository_hash": "repo-1",
+                "paths": ["src/main.py"],
+                "selection_reasons": [
+                    {"path": "src/main.py", "reasons": ["query_path:main"]}
+                ],
+            },
+            ts=now,
+        ),
+        RuntimeEventRecord(
+            thread_id=turn.thread_id,
+            turn_id=turn.id,
             seq=6,
             type="tool.call_finished",
             payload={
@@ -158,6 +172,7 @@ def test_receipt_builds_from_durable_records_only() -> None:
     }
     assert receipt.workers[0]["run_id"] == "worker-1"
     assert receipt.verification[0]["status"] == "ok"
+    assert receipt.context_selection[0]["repository_hash"] == "repo-1"
     assert receipt.cost == "unknown"
     assert receipt.process_usage.model_dump() == {
         "record_count": 1,
@@ -250,4 +265,5 @@ def test_receipt_marks_unavailable_facts_explicitly() -> None:
         "artifacts",
         "workers",
         "verification",
+        "context_selection",
     }

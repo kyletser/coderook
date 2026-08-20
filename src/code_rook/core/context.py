@@ -42,6 +42,8 @@ class ExecutionContext:
     session_notes: str = ""
     global_context: str = ""
     project_context: str = ""
+    repository_context: str = ""
+    repository_context_metadata: dict[str, Any] = field(default_factory=dict)
     runtime_context: str = ""
     capability_context: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -110,6 +112,8 @@ class ExecutionContext:
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
         if self.project_context.strip():
             parts.append("\n\n## Project Context\n" + self.project_context.strip())
+        if self.repository_context.strip():
+            parts.append("\n\n" + self.repository_context.strip())
         if self.session_notes.strip():
             parts.append(
                 "\n\n## Session Notes\n"
@@ -130,6 +134,7 @@ class ExecutionContext:
             for part in (
                 self.global_context,
                 self.project_context,
+                self.repository_context,
                 self.session_notes,
             )
             if part.strip()

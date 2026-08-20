@@ -67,11 +67,21 @@ async def test_bash_stderr_merged() -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows OEM code page only")
 # 功能：验证 Windows 原生命令的 OEM 编码输出可直接作为工具结果返回
-# 设计：使用当前系统 OEM 编码构造非 ASCII 字节，绕过控制台状态并稳定复现旧版 UTF-8 乱码
+# 设计：从当前 OEM 页选择可解码的高位单字节，避免假定运行器代码页一定能编码中文
 def test_bash_decodes_windows_oem_output() -> None:
-    text = "中文目录"
-    encoded = text.encode("oem")
-    assert _decode_shell_output(encoded) == text
+    encoded: bytes | None = None
+    expected = ""
+    for value in range(0x80, 0x100):
+        candidate = bytes([value])
+        try:
+            expected = candidate.decode("oem")
+        except UnicodeDecodeError:
+            continue
+        encoded = candidate
+        break
+    if encoded is None:
+        pytest.skip("current OEM code page has no standalone high-byte character")
+    assert _decode_shell_output(encoded) == expected
 
 
 # ── write_file ────────────────────────────────────────────────────────────────

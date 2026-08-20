@@ -1,0 +1,7 @@
+node_modules/**
+src/**
+dist/**
+.gitignore
+.vscodeignore
+tsconfig.json
+package-lock.json

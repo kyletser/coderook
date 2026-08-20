@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -67,6 +69,12 @@ def _run_git(repository: Path, *args: str) -> str:
     return result.stdout
 
 
+# 按当前平台 shell 规则构造调用 Python 解释器的命令字符串
+def _python_command(code: str) -> str:
+    argv = [sys.executable, "-c", code]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
 # 功能：验证默认 Runner 只向模型暴露 File family，旧平铺文件工具仅保留内部实现
 # 设计：同时检查模型 schema 和 registry.get，证明隐藏 alias 没有被删除也没有继续污染 prompt
 def test_runner_exposes_file_family_and_keeps_hidden_aliases(tmp_path: Path) -> None:
@@ -106,7 +114,7 @@ def test_runner_tool_assembly_keeps_default_surface_bounded(tmp_path: Path) -> N
     names = {str(schema["name"]) for schema in schemas}
 
     assert len(schemas) <= registry.model_tool_limit
-    assert {"artifact_read", "tool_search"} <= names
+    assert {"Repository", "artifact_read", "tool_search"} <= names
 
 
 # 功能：验证默认 Runner 只暴露 Git family，并保留隐藏 git_diff replay alias
@@ -197,8 +205,8 @@ async def test_run_family_executes_tests_and_verifiers(tmp_path: Path) -> None:
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
     tool = registry.get("Run")
     assert tool is not None
-    passing = subprocess.list2cmdline([sys.executable, "-c", "print('gate-ok')"])
-    failing = subprocess.list2cmdline([sys.executable, "-c", "raise SystemExit(2)"])
+    passing = _python_command("print('gate-ok')")
+    failing = _python_command("raise SystemExit(2)")
 
     tests = await tool.invoke({"action": "tests", "command": passing})
     verifiers = await tool.invoke(
@@ -302,6 +310,7 @@ def test_plan_registry_hides_run_family(tmp_path: Path) -> None:
 
     assert "Run" not in names
     assert "run_tests" not in names
+    assert "Repository" in names
     assert registry.get("Run") is not None
     assert registry.get("run_tests") is not None
 
@@ -414,7 +423,7 @@ async def test_legacy_git_run_and_bash_aliases_replay(tmp_path: Path) -> None:
     _run_git(tmp_path, "init", "--initial-branch=main")
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
-    command = subprocess.list2cmdline([sys.executable, "-c", "print('replayed')"])
+    command = _python_command("print('replayed')")
 
     git_result = await invoke_tool(
         registry,

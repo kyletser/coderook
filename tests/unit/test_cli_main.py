@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from code_rook.cli import main as cli_main
+from code_rook.core.config import CodeRookConfig
 from code_rook.tui import __main__ as tui_main
 
 
@@ -41,3 +42,33 @@ def test_explicit_arguments_keep_cli_dispatch(
     assert launched == []
     assert migrated == [True]
     assert versioned == [True]
+
+
+# 功能：验证 coderook review 参数被分发到只读审查 preset
+# 设计：替换配置、日志和命令执行入口，仅验证 argparse 到业务参数的公开 CLI 契约
+def test_review_command_dispatches_structured_preset(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    config = CodeRookConfig()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "review", "--goal", "Review auth", "--output-format", "json"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_review",
+        lambda goal, passed_config, **kwargs: captured.update(
+            {"goal": goal, "config": passed_config, **kwargs}
+        ),
+    )
+
+    cli_main.main()
+
+    assert captured == {
+        "goal": "Review auth",
+        "config": config,
+        "output_format": "json",
+    }

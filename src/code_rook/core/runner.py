@@ -12,6 +12,7 @@ from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import (
+    ContextRepositoryEvent,
     LlmRouteSelectedEvent,
     LlmUsageEvent,
     RunFinishedEvent,
@@ -38,6 +39,7 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
+from code_rook.core.repository import RepositoryIndex
 from code_rook.core.runs import RUNS_DIR, new_run_id
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
@@ -103,6 +105,7 @@ class AgentRunner:
             else WorkspaceBoundary.current()
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".coderook" / "memory")
+        self._repository_index = RepositoryIndex(self._workspace_boundary)
         self._worktree_manager = WorktreeManager(
             self._workspace_boundary.root,
             process_supervisor=process_supervisor,
@@ -135,6 +138,7 @@ class AgentRunner:
             interaction_manager=self._interaction_manager,
             mcp_manager=self._mcp_manager,
             route_registry=self._route_registry,
+            repository_index=self._repository_index,
             hooks=self._hooks,
             process_supervisor=process_supervisor,
             persistent_shell_pool=persistent_shell_pool,
@@ -263,6 +267,20 @@ class AgentRunner:
                 result="",
                 reason=prompt_decision.reason or "prompt_blocked_by_hook",
             )
+        repository_selection = await asyncio.to_thread(
+            self._repository_index.select_context,
+            goal,
+        )
+        context.repository_context = repository_selection.content
+        context.repository_context_metadata = {
+            "repository_hash": repository_selection.repository_hash,
+            "budget_chars": repository_selection.budget_chars,
+            "used_chars": repository_selection.used_chars,
+            "paths": list(repository_selection.paths),
+            "selection_reasons": list(repository_selection.reasons),
+            "cache_hits": repository_selection.cache_hits,
+            "parsed_files": repository_selection.parsed_files,
+        }
         transcript = (
             SessionTranscriptSink(store, session.id, run_id)
             if session is not None and store is not None
@@ -272,6 +290,19 @@ class AgentRunner:
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
+            await bus.publish(
+                ContextRepositoryEvent(
+                    run_id=run_id,
+                    repository_hash=repository_selection.repository_hash,
+                    budget_chars=repository_selection.budget_chars,
+                    used_chars=repository_selection.used_chars,
+                    paths=list(repository_selection.paths),
+                    selection_reasons=list(repository_selection.reasons),
+                    cache_hits=repository_selection.cache_hits,
+                    parsed_files=repository_selection.parsed_files,
+                    ts=_now(),
+                )
+            )
 
             cancelled = False
             try:

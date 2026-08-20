@@ -29,6 +29,7 @@ uv run python scripts/gen_protocol_doc.py --check
 # Reproduce the complete CI gate before every push
 uv run ruff check .
 uv run python scripts/check_brand.py
+uv run python scripts/check_public_repo.py
 uv run mypy src
 uv run mypy --platform linux src
 uv run pytest -q
@@ -101,6 +102,7 @@ Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps
 - `llm/` — explicit wire-format routes, credential store (keyring → file), Anthropic/OpenAI-compatible/OpenAI Responses providers, thinking budgets, model pricing/cost accounting, static/rule-based/cost-budget routing, and doctor
 - `session/` + `runtime/` — dual source of truth: file ledger (`~/.coderook/sessions/`) is the operational truth; SQLite runtime is the queryable/auditable projection
 - `compact/` — context budget, distillation, structured compaction with quality gate
+- `repository/` — Git-aware incremental repository map, symbol/reference lookup, ranked context selection, and daemon-level cache reuse
 - `task/` / `goal/` / `subagent/` / `fleet/` / `workflow/` — multi-agent: run-level task board, goal control plane, in-process subagents with write claims and budgets, cross-process fleet workers, declarative event-sourced workflows
 - `skills/` / `hooks/` / `mcp/` / `agents/` — extension mechanisms
 - `lsp/` / `persistent_shell.py` — post-edit Python/TypeScript diagnostics and daemon-lifetime shell pools keyed by session

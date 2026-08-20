@@ -59,7 +59,7 @@ CodeRook 是一个**本地 AI 编程 Agent 运行时**（Python 3.12），不是
 | Agent Loop | 异步 Plan-Act-Observe 循环（默认 20 步，可自动/交互续段）、资源声明驱动的并行工具批、每步路由刷新、Todo 软状态机、限流退避、上下文溢出反应式压缩 |
 | 类型化协议 | Pydantic v2 判别联合命令/事件模型、JSON-RPC 2.0 over NDJSON、`WIRE_PROTOCOL.md` 自动生成与 CI 契约校验 |
 | 本地安全 | loopback 强制、首帧 IPC token 认证、工作区边界、六层权限决策、命令前缀放行、Linux bwrap/macOS Seatbelt 执行包装（Windows 明确降级） |
-| 代码工具 | File/Git/Bash/Run action-family、WebFetch/WebSearch、一次性图片输入、隔离/持久 shell、Python/TypeScript 编辑后诊断、Checkpoint/Rewind |
+| 代码工具 | Repository 仓库地图/符号/引用、File/Git/Bash/Run action-family、WebFetch/WebSearch、一次性图片输入、隔离/持久 shell、Python/TypeScript 编辑后诊断、Checkpoint/Rewind |
 | 会话系统 | block 级增量 transcript、崩溃尾部恢复、会话 resume/fork/export/delete、SQLite durable runtime 投影 |
 | 上下文治理 | 80% 自动压缩、25% 最近窗口保留、结构化 JSON 摘要 + 质量门禁、工具输出蒸馏/截断/artifact 溢出三级预算 |
 | 多 Agent | 子代理权限收窄、写声明（WriteClaim）静态冲突检测、token 预算共享、心跳租约、Git worktree 隔离 |
@@ -363,7 +363,7 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 ### 8.1 Run 启动（runner.py `run_and_capture`）
 
 1. 生成 `run_id`（`YYYYMMDD-HHMMSS-<6hex>`）；session run 从 SessionStore 读完整历史与 notes，run 目录落在 session runs 目录
-2. 注入三层上下文：`~/.coderook/context.md`（全局）+ 项目级指令文件（按 `AGENTS.md` → `CLAUDE.md` → `.coderook/context.md` 顺序拼接并标注来源，2026-08 起兼容行业标准）+ **memory 自动召回**（按 goal 词法检索 top5，拼入项目上下文）
+2. 注入全局/项目指令与 memory 自动召回，并由 daemon 级 RepositoryIndex 按 goal 生成有界仓库地图
 3. 创建 run 级 `TaskManager`（`.tasks`）与 `CheckpointStore`（`.checkpoints`）
 4. 组装 `ExecutionContext`（历史消息、notes、运行时上下文、能力上下文、RuntimeMode）
 5. `EventWriter` 订阅 bus，全量事件落 `events.jsonl`（replay 用）
@@ -377,8 +377,14 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 
 - **稳定层**（`stable_system_prompt`，供 prefix fingerprint 与 prompt cache）：基础提示 + 语言策略 +
   响应语言（按用户消息文字系统推断）+ PLAN 只读约束 + 运行时环境 + 扩展目录
-- **动态层**（`system_prompt`）：稳定层 + 全局/项目上下文 + session notes + working set + transient context（一次性诊断，看过即清）
+- **动态层**（`system_prompt`）：稳定层 + 全局/项目上下文 + session notes + repository map + working set + transient context（一次性诊断，看过即清）
 - **协议安全**：`add_tool_result` 只在末尾消息全为 tool_result 块时合并，否则新建 user 消息——保证 Anthropic 式协议合法
+
+**RepositoryIndex** 优先以 `git ls-files --cached --others --exclude-standard` 枚举源码，非 Git 工作区回退统一 ignore 规则；
+拒绝 `.env*`、`.coderook/`、token/credential/runtime 数据和二进制类型。Python 使用 AST 提取类、函数、方法、签名、导入和近似引用计数，
+TypeScript/JavaScript/Go/Rust 等使用确定性轻量声明解析。daemon 内以 `mtime+size` 复用未变文件，每个文件保存内容 hash，提交和全工作区 hash
+进入 `context.repository` 事件。默认 12,000 字符硬预算与系统现有 `chars/4` token 估算一致；每个入选路径保存 query/path/symbol、Git changed、manifest
+或入口文件等理由，TurnReceipt 可离线重建选择证据。`Repository.map/symbols/references` 全部是 `READ + NEVER approval`，引用查询在语法索引外回退有界文本匹配。
 
 ### 8.3 AgentLoop 主循环（loop.py）
 
@@ -460,6 +466,7 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 |---|---|---|
 | 文件 | `read_file`(≤512KB+sha256)、`write_file`(≤1MB,事务+checkpoint)、`edit_file`(精确串替换,双重哈希并发检测)、`apply_patch`(unified diff,≤1MB/100文件/1000hunks,逐行精确无fuzz,事务提交)、`list_dir`、`artifact_read`(分页读溢出输出) | 全部经 WorkspaceBoundary；写类自动 checkpoint |
 | 搜索 | `glob`(rg 后端+pathspec 回退)、`grep`(rg --json 或 Python re,三模式) | ≤2000 条结果；gitignore 语义 |
+| 仓库理解 | `Repository.map/symbols/references` | Git-aware；敏感状态不入索引；12K 字符上下文硬上限；文本引用回退 |
 | Shell | `bash`(≤120s,64KB 输出,进程树终止；`isolated|persistent`)、`background_start/result/interact/list/cancel`(daemon 级注册表,≤3600s) | 持久模式按 session 复用 cwd/env；默认 isolated；超时杀树 |
 | Web/图片 | `web_fetch`（逐跳 SSRF 校验）、`web_search`（DuckDuckGo HTML）、`read_image`（png/jpeg/webp/gif ≤2MiB） | Web 默认需 EXTERNAL 权限；图片限工作区且只交付下一次模型调用 |
 | Git | `git_diff`(结构化,status+numstat+patch)、`Git` 家族 `status/diff/log/show/blame` | Git 仓库根可包含 workspace（支持 monorepo 子目录）；15s/200KB 上限 |
@@ -472,6 +479,12 @@ MCP stop_all → 后台 job cancel_all → hooks close → socket server stop �
 | 子代理 | `agent`(start/status/peek/wait/cancel/followup 统一面)、`spawn_agent`/`agent_result`(INTERNAL/REPLAY 隐藏) | |
 | 元 | `tool_search`(激活延迟工具) | |
 | MCP | 远端工具以 `{server}__{tool}` 名注入，deferred，输出策略 8K/20K spill | |
+
+成功写入后，AgentLoop 自动对 Python/TypeScript 运行可用的 pyright/tsc 诊断并把结果作为一次性上下文反馈。
+显式 `Run.tests/verifiers` 会把真实 verdict 转成 `verification.completed` 或 `verification.failed` 类型化事件；事件只保留
+gate 名称、状态、耗时和截断标记，不复制可能敏感的大段命令输出。TurnReceipt 从这些 durable 事件重建验证证据。
+修复循环同时受 `max_steps` 与 StuckGuard 约束：相同工具、参数和结果的语义签名连续出现 3 次即以
+`stuck_repetition` 终止，防止失败验证被无限重复执行。
 
 ---
 
@@ -516,6 +529,8 @@ CLI 退出码 3）/ `deny`。客户端断连 → 该 session 全部待批 Future
 完全联网；任何非空域名白名单都会在生成计划时抛出 `SandboxPolicyError`，不会静默退化为全网访问。
 Windows 当前有 Job Object 负责进程树生命周期，但没有受限令牌/AppContainer 文件系统隔离后端；缺失包装器时会明确标记 degraded，原样执行并回到
 审批链、deny_patterns 与工作区边界。因而“真实沙箱”只在可用的 Linux/macOS 后端成立，不能泛化到所有平台。
+
+完整资产、信任边界、攻击面、非目标和事件响应以[威胁模型](THREAT_MODEL.md)为准；本文只描述实现结构。
 
 `ProcessSupervisor` 统一监管 isolated/persistent/background/hook/MCP/fleet 等子进程。Windows 从 Job
 Accounting 读取 CPU、峰值内存和进程数；Linux 按进程组采样 `/proc`；每条记录还包含 wall-time、
@@ -629,7 +644,7 @@ RuntimeService 是 daemon 内的**异步状态投影门面**，订阅 EventBus �
   终态前校验 tool_call/result 配对完整；终态拒写
 - **迁移**：`PRAGMA user_version`，当前 v3（v3 增加 workspace_trust/sandbox/allowed_actions 列）；拒绝降级运行
 - **TurnReceipt**：daemon 重启后仍可从持久记录离线重建（审批计数、files_changed、checkpoints、
-  workers、verification、unavailable 显式列表），经 `turn.inspect` / HTTP API 暴露
+  workers、verification、context_selection、unavailable 显式列表），经 `turn.inspect` / HTTP API 暴露
 
 ### 12.4 Checkpoints 与 Artifacts
 
@@ -895,19 +910,26 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
   占位 LLM 配置拉起**真实 daemon 子进程**（不依赖任何真实 API key）；覆盖 ping 往返、
   双进程协作（S2）、session IPC（S4）、权限流（S5）、runtime HTTP API、runtime 恢复、
   run e2e、provider doctor、local fleet
-- `tests/golden/` 与 `benchmarks/`：稳定输出契约、40 项 quick/nightly/release 固定任务和机器可读报告
+- `tests/golden/` 与 `benchmarks/`：稳定输出契约、50 项 quick/nightly/release 固定任务和机器可读报告；
+  报告同时记录效果、成本、耗时和 ProcessSupervisor 资源统计，基线/候选比较器输出任务迁移、类别差值与失败聚类
 - 精确通过数不写入架构正文；以当前 CI artifact 与 `RELEASE_SCORECARD.md` 为准
 
 ### 18.2 CI 门禁（GitHub Actions，Ubuntu + Windows + macOS 矩阵）
 
 ```
 ruff check → check_brand.py（品牌契约）→ mypy strict → pytest -q
-→ 40 任务 quick baseline 契约 → sandbox 真实/降级负向门禁
+→ 50 任务 quick baseline 契约 → sandbox 真实/降级负向门禁
 → gen_protocol_doc.py --check（协议契约）→ uv build → smoke_wheel.py（安装态冒烟）
 ```
 
 Linux job 额外对 `editors/vscode` 执行 TypeScript strict typecheck。真实模型 benchmark 由独立
 nightly/release workflow 执行，不允许普通 CI 隐式消费 API key。
+
+公开评测适配器位于 `benchmark/polyglot.py` 与 `benchmark/swebench.py`。Polyglot runner 绑定干净的上游
+commit，复刻官方 solution/test/prompt 选择并强制容器执行；SWE-bench exporter 校验实例 base commit，使用
+临时 Git index 生成包含新增文件的标准三字段 prediction。`benchmark/compare.py` 对两份统一报告执行任务集、
+安全负例、pass@1、verifier、P95 成本和耗时回归门禁。适配器通过只表示格式/执行契约成立，真实成绩仍必须由
+固定模型报告和官方 harness artifact 证明。
 
 本地完整复现（AGENTS.md 要求推送前全绿）：
 
@@ -937,7 +959,7 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 
 ## 20. 已知问题与技术债（诚实清单）
 
-**状态更新于 2026-08-18（生产就绪 R0-R5 代码改造后）**。完整证据矩阵见
+**状态更新于 2026-08-20（生产就绪 R0-R5 代码改造后）**。完整证据矩阵见
 `PRODUCTION_GAP_MATRIX.md`，发布结论见 `RELEASE_SCORECARD.md`。
 
 ### P0（阻塞公开 Beta 的外部证据）
@@ -947,31 +969,33 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 2. **三平台安全报告尚未产出** —— 前台、持久、后台 Bash 已共用 bwrap/Seatbelt 计划；本机只验证
    Windows `windows_none` 的诚实降级。Linux/macOS 必须由远端真实执行负向脚本
 3. **进程级强杀恢复率尚未测量** —— checksum chain、100 个文件截断点、SQLite 中断和幂等 reconcile
-   已测试，但公开 Beta 要求的 100 次 daemon 强杀/重启矩阵尚未运行
-4. **候选分发未在干净环境验收** —— wheel、Docker、Windows installer 与自带 Python portable
-   构建入口已存在，仍需容器/干净机/升级实际报告
+   已测试，重启竞态修复后本机 5/5 smoke 通过，但公开 Beta 要求的三平台 100 次矩阵尚未运行
+4. **候选分发未在干净环境验收** —— 本机 wheel smoke 和 VSIX 打包已通过，distribution workflow
+   已覆盖三平台 wheel、Docker、Windows portable 与 VSIX，仍需远端/干净机/升级实际报告
+5. **三平台 CI 尚未恢复为绿** —— CI #31 在 Ubuntu/macOS 各失败 3 项、Windows 失败 1 项；当前候选
+   已修复 shell 转义、沙箱探测耦合和 OEM 编码假设，但必须由新一次远端 run 复验
 
 ### P1（兼容性和体验限制）
 
-5. **Windows 无真实 OS sandbox** —— 当前产品结论是 degraded + ASK；ProcessSupervisor 的进程树
+6. **Windows 无真实 OS sandbox** —— 当前产品结论是 degraded + ASK；ProcessSupervisor 的进程树
    治理不是文件系统或网络边界
-6. **shell 尚无按域正向放行后端** —— 域白名单请求已经 fail closed，但 bwrap/Seatbelt 当前不能在
+7. **shell 尚无按域正向放行后端** —— 域白名单请求已经 fail closed，但 bwrap/Seatbelt 当前不能在
    不扩大权限的前提下按 DNS 域强制出站策略；实现该后端前只支持完全禁网或显式完全联网
-7. **TUI 原始位图粘贴受终端限制** —— 已支持粘贴本地图片路径并先落 ArtifactStore，但不是所有终端
+8. **TUI 原始位图粘贴受终端限制** —— 已支持粘贴本地图片路径并先落 ArtifactStore，但不是所有终端
    都会把剪贴板位图转换为可读取路径
-8. **诊断性能没有 P95 基线** —— Python/TypeScript 后端已并发、可取消、去重和按文件过滤；Go/Rust
+9. **诊断性能没有 P95 基线** —— Python/TypeScript 后端已并发、可取消、去重和按文件过滤；Go/Rust
    与常驻 LSP 不在当前 Beta 门禁
-9. **外部协议缺少认证报告** —— MCP Streamable HTTP 的 GET/reconnect/cancel/resources/prompts 已实现，
-   仍需官方兼容 server 报告；VS Code 原型已 strict typecheck，但尚未打包 VSIX 做真实 UI 冒烟
-10. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
+10. **外部协议缺少认证报告** —— MCP Streamable HTTP 的 GET/reconnect/cancel/resources/prompts 已实现，
+   仍需官方兼容 server 报告；VS Code 已生成 VSIX，但尚未做真实 Extension Host UI 冒烟
+11. **Web/价格存在供应商长尾** —— Web 多后端和价格来源证据已实现，实时端点稳定性与长尾模型价格
    仍需运营性维护
 
 ### P2（非门禁结构债）
 
-11. **TUI app.py 仍大** —— 模块边界已拆分，继续拆分只按所有权与测试收益推进，不以行数作为目标
-12. **手写 HTTP 服务定位有限** —— 适合本地 loopback runtime API，不提供公网 TLS 终止；远程部署应由
+12. **TUI app.py 仍大** —— 模块边界已拆分，继续拆分只按所有权与测试收益推进，不以行数作为目标
+13. **手写 HTTP 服务定位有限** —— 适合本地 loopback runtime API，不提供公网 TLS 终止；远程部署应由
     反向代理负责并强制 Bearer token
-13. **精确 tokenizer 未覆盖所有模型** —— provider 真实 usage 是 durable 计费事实，`len//4` 仅保留为
+14. **精确 tokenizer 未覆盖所有模型** —— provider 真实 usage 是 durable 计费事实，`len//4` 仅保留为
     请求前展示/预算的保守估算
 
 已从问题清单移除：family 管线绕过、逐 hunk 缺失、非 durable 成本、headless 无限提问、TUI 图片
@@ -1034,6 +1058,7 @@ tests/
 ├── unit/ integration/ golden/ fixtures/ conftest.py
 scripts/
 ├── gen_protocol_doc.py / check_brand.py / smoke_wheel.py / run_benchmark.py
+├── compare_benchmark_reports.py / run_crash_recovery_matrix.py
 ├── check_sandbox_boundary.py / install-windows.ps1 / build_windows_portable.ps1
 benchmarks/                      # quick/nightly/release 固定任务与机器可读基线
 editors/vscode/                 # 基于 durable HTTP/SSE 契约的 VS Code 原型

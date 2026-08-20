@@ -14,6 +14,7 @@ _SKIP_DIRS = {
     "__pycache__",
     "build",
     "dist",
+    "node_modules",
 }
 _ALLOWED = {
     Path("scripts/check_brand.py"),

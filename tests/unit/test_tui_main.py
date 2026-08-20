@@ -22,7 +22,6 @@ def test_tui_main_auto_starts_core_before_reading_token(
     config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
-    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
     monkeypatch.setattr(
@@ -53,7 +52,6 @@ def test_tui_main_can_disable_auto_core(
     config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
     monkeypatch.setattr(sys, "argv", ["coderook-tui", "--no-auto-core"])
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
-    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
     ensure = MagicMock()
@@ -66,27 +64,6 @@ def test_tui_main_can_disable_auto_core(
 
     ensure.assert_not_called()
     app.run.assert_called_once_with()
-
-
-# 功能：首次启动缺少 LLM 配置时在启动 Core 之前执行交互式向导
-# 设计：模拟 TTY 和未配置状态，记录 configure_llm 调用，确保不会先启动一个必然因缺 key 退出的 daemon
-def test_first_tui_start_runs_llm_setup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = CodeRookConfig()
-    calls: list[str] = []
-    monkeypatch.setattr(tui_main, "get_config", lambda: config)
-    monkeypatch.setattr(tui_main, "llm_is_configured", lambda _config: False)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(
-        tui_main,
-        "configure_llm",
-        lambda _config: calls.append("configure") or config,
-    )
-
-    tui_main._ensure_llm_configured()
-
-    assert calls == ["configure"]
 
 
 # 功能：验证首次 TUI 启动把旧 LLM 配置迁移为显式活动 route
@@ -116,7 +93,6 @@ def test_tui_main_switches_model_and_resumes_session(
     actions = iter([ModelSwitch("claude-opus-4-6", "session-1"), None])
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
-    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
@@ -163,7 +139,6 @@ def test_tui_main_saves_discovered_provider_config(
     actions = iter([action, None])
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(sys, "argv", ["coderook-tui"])
-    monkeypatch.setattr(tui_main, "_ensure_llm_configured", lambda: None)
     monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
     monkeypatch.setattr(tui_main, "_run_tui", lambda args: actions.__next__())
     monkeypatch.setattr(tui_main, "get_config", lambda: config)

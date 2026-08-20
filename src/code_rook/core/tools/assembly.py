@@ -15,6 +15,7 @@ from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import ProcessSupervisor
+from code_rook.core.repository import RepositoryIndex, RepositoryTool
 from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
@@ -93,6 +94,7 @@ class RuntimeToolAssembly:
         interaction_manager: InteractionManager | None,
         mcp_manager: McpServerManager | None,
         route_registry: RouteRegistry | None,
+        repository_index: RepositoryIndex,
         hooks: HookManager | None = None,
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
@@ -110,6 +112,7 @@ class RuntimeToolAssembly:
         self._interaction_manager = interaction_manager
         self._mcp_manager = mcp_manager
         self._route_registry = route_registry
+        self._repository_index = repository_index
         self._hooks = hooks
         # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
         self._process_supervisor = process_supervisor
@@ -171,6 +174,9 @@ class RuntimeToolAssembly:
             file_tools,
             allowed_names=allowed,
         )
+        repository_tool = RepositoryTool(self._repository_index)
+        if _ok(repository_tool):
+            registry.register(repository_tool)
         artifact_tool = ArtifactReadTool(self._artifact_store)
         if _ok(artifact_tool):
             registry.register(artifact_tool)

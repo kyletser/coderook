@@ -34,7 +34,7 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 | Agent Loop | 异步 Plan-Act-Observe 循环、只读工具批量并行、Todo 软状态机、步数续段、每步路由刷新、限流退避与上下文溢出恢复 |
 | 类型化协议 | Pydantic v2 命令/事件模型、JSON-RPC 2.0、NDJSON 流、自动生成协议文档 |
 | 本地安全 | loopback 与强制 token 认证、工作区边界、命令前缀策略、Linux bwrap/macOS Seatbelt 沙箱包装（Windows 明确降级）、交互审批与 headless 权限模式 |
-| 代码工具 | `File`、`Git`、`Run`、`Bash` action-family，WebFetch/WebSearch、图片读取、持久 shell、Python/TypeScript 诊断与 Checkpoint/Rewind |
+| 代码工具 | `Repository` 仓库地图/符号/引用检索，`File`、`Git`、`Run`、`Bash` action-family，WebFetch/WebSearch、图片读取、持久 shell、Python/TypeScript 诊断与 Checkpoint/Rewind |
 | 会话系统 | 多轮 thread、checksum chain transcript、损坏检测/恢复、会话恢复/分叉/导出/删除、SQLite 投影对账 |
 | 长期记忆 | 项目级 JSON 记录、Markdown 索引、来源追踪、敏感信息脱敏和中英文词法召回 |
 | 上下文治理 | 80% 自动压缩、最近窗口保留、结构化摘要、质量门禁、工具输出分级和增量压缩 |
@@ -62,14 +62,9 @@ Core daemon 负责持有 Agent、会话、后台任务和权限状态；CLI 与 
 git clone https://github.com/kyletser/coderook.git
 cd coderook
 uv sync
-Copy-Item .env.example .env
 ```
 
-macOS/Linux 可使用：
-
-```bash
-cp .env.example .env
-```
+无需先复制 `.env`；建议在下一步使用交互式配置。需要无人值守配置时再参考 `.env.example`。
 
 Windows 也可运行 `scripts\install-windows.ps1`。`scripts\build_windows_portable.ps1`
 会生成自带 Python 3.12 的 portable ZIP。容器部署使用 `Dockerfile` 或
@@ -119,9 +114,9 @@ uv run coderook
 ```
 
 无参数 `coderook` 会进入 TUI，并自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
-首次没有可用 LLM 配置时，会先进入 API 配置向导。TUI 内输入 `/config` 可以直接选择
-DeepSeek、OpenAI、Anthropic 或硅基流动，输入 API Key 后会探测该账号真实可用的模型；
-选择完成后自动重启 Core 并恢复当前会话。
+首次没有可用 LLM 配置时仍会直接进入 TUI，不强制弹出配置向导；空状态会提示使用 `/config`。
+TUI 内输入 `/config` 可以选择 DeepSeek、OpenAI、Anthropic 或硅基流动，输入 API Key 后会探测
+该账号真实可用的模型；选择完成后自动重启 Core 并恢复当前会话。
 
 `coderook-tui` 入口继续保留。排障或需要手动管理生命周期时，可使用：
 
@@ -169,6 +164,7 @@ uv run coderook ping
 uv run coderook chat
 uv run coderook run --goal "分析项目并运行测试"
 uv run coderook run --goal "分析项目" --output-format stream-json
+uv run coderook review --goal "审查当前改动" --output-format json
 uv run coderook sessions --all
 uv run coderook skills audit
 uv run coderook doctor runtime --json
@@ -201,6 +197,7 @@ uv run coderook run --goal "等待一次外部选择" `
 ```
 
 `--resume SESSION_ID` 可把新目标追加到已有会话。机器格式只在 stdout 输出协议，日志写 stderr。
+`coderook review` 是只读审查 preset：写操作不会进入 allow-list，输出固定包含分级 finding、位置、证据、风险和验证记录。
 
 ### 会话管理
 
@@ -300,15 +297,33 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-CI 在 Ubuntu、Windows 与 macOS 上执行静态检查、测试、40 任务离线 benchmark 契约、沙箱负向门禁、协议生成检查、wheel smoke；Linux 额外类型检查 VS Code 原型。真实模型 nightly/release 与普通 CI 分离，避免测试隐式消费密钥。
+CI 在 Ubuntu、Windows 与 macOS 上执行静态检查、测试、50 任务离线 benchmark 契约、沙箱负向门禁、协议生成检查、wheel smoke；Linux 额外类型检查 VS Code 原型。真实模型 nightly/release 与普通 CI 分离，避免测试隐式消费密钥。
+
+真实模型报告不仅包含 pass@1，还记录 verifier、首次编辑正确率、P50/P95 耗时与成本、CPU、峰值内存、
+进程数、采样完整性和失败分类。候选与基线可以用同一策略做回归门禁：
+
+```powershell
+uv run python scripts\compare_benchmark_reports.py `
+  .benchmark-results\baseline\report.json `
+  .benchmark-results\candidate\report.json `
+  --output .benchmark-results\comparison
+```
+
+默认策略拒绝任务集漂移、任何已通过任务回退、安全负例失败、pass@1/verifier 下降，以及超过 25% 的
+P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器只判断已有报告，不会调用模型或产生费用。
 
 ## 设计文档
 
+- [文档权威索引](docs/README.md)
 - [功能架构](docs/FUNCTIONAL_ARCHITECTURE.md)
 - [2026 H2 优化路线图与 Stage 0–4 复盘](docs/OPTIMIZATION_ROADMAP.md)
 - [生产就绪改造计划](docs/PRODUCTION_READINESS_PLAN.md)
+- [开源级补全计划](docs/OPEN_SOURCE_COMPLETION_PLAN.md)
 - [Wire Protocol](WIRE_PROTOCOL.md)
 - [运行手册](RUNBOOK.md)
+- [升级、备份与回滚](docs/UPGRADING.md)
+- [威胁模型](docs/THREAT_MODEL.md)
+- [公开 Benchmark 复现](docs/PUBLIC_BENCHMARKS.md)
 - [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
 - [与 Claude Code 的差距分析](docs/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
 - [learn-claude-code 机制移植说明](docs/LEARN_CLAUDE_CODE_PORT.md)
@@ -324,6 +339,16 @@ CodeRook 适合作为 AI Agent 工程方向的学习与求职项目，因为它�
 - 如何用事件、Trace 和测试证明 Agent 不是黑盒？
 
 项目仍处于候选 Beta 前的工程验证阶段，不宣称一比一复刻 Claude Code 或 Codex，也不在真实模型、三平台安全、强杀恢复和分发评分卡达标前宣称生产就绪。当前门禁见 [发布评分卡](docs/RELEASE_SCORECARD.md)。
+
+## 参与贡献与安全
+
+- 可运行示例：[examples/README.md](examples/README.md)
+- 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全报告与边界：[SECURITY.md](SECURITY.md)
+- 支持范围：[SUPPORT.md](SUPPORT.md)
+- 社区行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 项目治理：[GOVERNANCE.md](GOVERNANCE.md)
+- 版本变化：[CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

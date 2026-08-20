@@ -170,6 +170,7 @@ async def _run(
         provider=provider or _EndTurnProvider(),  # type: ignore[arg-type]
         extra_handlers=[_collect],
         runs_dir=tmp_path,
+        workspace_root=tmp_path,
     )
     await runner.run(goal)
     return collected
@@ -186,6 +187,29 @@ async def test_run_started_event_published(tmp_path: Path) -> None:
     assert "run.started" in types
     started = next(e for e in events if e.type == "run.started")  # type: ignore[attr-defined]
     assert started.goal == "my goal"  # type: ignore[attr-defined]
+
+
+# 功能：验证 run 在首次模型调用前注入可解释仓库地图并发布对应上下文事件
+# 设计：在隔离工作区创建命中任务词的符号，用捕获 provider 同时核对 system prompt 和事件收据字段
+async def test_runner_injects_repository_context_and_event(tmp_path: Path) -> None:
+    (tmp_path / "service.py").write_text(
+        "class PaymentService:\n    pass\n",
+        encoding="utf-8",
+    )
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    events = await _run(
+        goal="review PaymentService",
+        provider=provider,
+        tmp_path=tmp_path,
+    )
+
+    repository_event = next(
+        event for event in events if event.type == "context.repository"  # type: ignore[attr-defined]
+    )
+    assert "## Repository Map" in (provider.system or "")
+    assert "service.py" in (provider.system or "")
+    assert repository_event.paths[0] == "service.py"  # type: ignore[attr-defined]
+    assert repository_event.used_chars <= repository_event.budget_chars  # type: ignore[attr-defined]
 
 
 # 功能：验证成功完成时发布 status=success 的 run.finished 事件
@@ -639,7 +663,7 @@ async def test_plan_mode_enforces_read_only_registry_and_restores_authority(
     assert "edit_file" not in provider.first_tool_names
     assert "write_file" not in provider.first_tool_names
     assert "bash" not in provider.first_tool_names
-    assert {"File", "Git"} <= provider.first_tool_names
+    assert {"File", "Git", "Repository"} <= provider.first_tool_names
     assert "git_diff" not in provider.first_tool_names
     assert provider.first_file_actions == {
         "read",

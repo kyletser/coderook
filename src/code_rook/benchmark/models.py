@@ -90,14 +90,14 @@ class AgentExecution(BaseModel):
     model: str = ""
     wire_format: str = ""
     temperature: float | None = None
-    elapsed_s: float = 0.0
-    steps: int = 0
-    tool_calls: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    estimated_cost_usd: float | None = None
+    elapsed_s: float = Field(default=0.0, ge=0)
+    steps: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
     pricing_evidence: list[str] = Field(default_factory=list)
     approval_requests: int = 0
     rollback_count: int = 0
@@ -105,6 +105,12 @@ class AgentExecution(BaseModel):
     compaction_count: int = 0
     daemon_restart_count: int = 0
     diagnostic_durations_ms: list[int] = Field(default_factory=list)
+    process_usage_records: int = Field(default=0, ge=0)
+    complete_process_records: int = Field(default=0, ge=0)
+    process_wall_ms: int = Field(default=0, ge=0)
+    process_cpu_ms: int = Field(default=0, ge=0)
+    peak_memory_bytes: int = Field(default=0, ge=0)
+    process_count: int = Field(default=0, ge=0)
     first_edit_correct: bool | None = None
     timed_out: bool = False
 
@@ -173,9 +179,16 @@ class BenchmarkSummary(BaseModel):
     compactions: int = 0
     daemon_restarts: int = 0
     total_tokens: int = 0
+    elapsed_p50_s: float | None = None
+    elapsed_p95_s: float | None = None
     cost_p50_usd: float | None = None
     cost_p95_usd: float | None = None
     diagnostics_p95_ms: float | None = None
+    process_wall_p95_ms: float | None = None
+    process_cpu_p95_ms: float | None = None
+    peak_memory_p95_bytes: float | None = None
+    process_count_p95: float | None = None
+    process_usage_complete_rate: float | None = None
     categories: dict[str, BenchmarkCategorySummary] = Field(default_factory=dict)
 
 
@@ -189,6 +202,9 @@ class BenchmarkRunConfig(BaseModel):
     thinking: str = "off"
     temperature: float | None = None
     config_fingerprint: str = "unknown"
+    benchmark_name: str = "coderook-50"
+    dataset_name: str = "benchmarks/fixtures/coding-katas-v1"
+    dataset_commit: str = "unknown"
 
 
 class BenchmarkReport(BaseModel):

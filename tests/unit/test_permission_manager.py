@@ -861,7 +861,16 @@ def test_shell_sandbox_plan_none_without_autoreview_or_backend() -> None:
     current = mgr.get_authority_snapshot("s-auto")
     mgr.set_authority_snapshot(
         "s-auto",
-        current.model_copy(update={"profile": AuthorityProfile.AUTO_REVIEW}),
+        current.model_copy(
+            update={
+                "profile": AuthorityProfile.AUTO_REVIEW,
+                "sandbox": SandboxCapability(
+                    available=False,
+                    kind="none",
+                    reason="test fixes the unavailable-backend branch",
+                ),
+            }
+        ),
     )
     assert mgr.shell_sandbox_plan("s-auto", "/ws") is None
 

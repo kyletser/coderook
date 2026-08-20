@@ -9,6 +9,31 @@ build-backend = "hatchling.build" # 使用 Hatchling 作为构建后端
 [project]
 name = "CodeRook"
 version = "0.1.0"
+description = "Local-first, durable and auditable multi-agent coding runtime"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "CodeRook contributors" }]
+keywords = [
+    "ai-agent",
+    "coding-agent",
+    "developer-tools",
+    "mcp",
+    "multi-agent",
+    "terminal-ui",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12,<3.13" # 仅支持 3.12 小版本范围，与 CI/类型检查一致
 dependencies = [
     "pydantic>=2.0",       # 数据校验与序列化（含 JSON 模型等）
@@ -21,6 +46,13 @@ dependencies = [
     "unidiff>=0.7,<0.8",
 ]
 
+[project.urls]
+Homepage = "https://github.com/kyletser/coderook"
+Documentation = "https://github.com/kyletser/coderook/blob/main/docs/README.md"
+Repository = "https://github.com/kyletser/coderook.git"
+Issues = "https://github.com/kyletser/coderook/issues"
+Changelog = "https://github.com/kyletser/coderook/blob/main/CHANGELOG.md"
+
 # 安装后可在 PATH 中执行的入口：`coderook` / `coderook-core` / `coderook-tui`
 [project.scripts]
 coderook = "code_rook.cli.main:main"
@@ -28,6 +60,23 @@ coderook-core = "code_rook.core.app:run"
 coderook-tui = "code_rook.tui.__main__:main"
 
 # ---- Hatch：打 wheel 时从 src 布局收录包 ----
+[tool.hatch.build]
+exclude = [
+    "/.coderook",
+    "/.mypy_cache",
+    "/.pytest_cache",
+    "/.ruff_cache",
+    "/.venv",
+    "/.workbuddy",
+    "/build",
+    "/dist",
+    "/dist-*",
+    "/editors/vscode/dist",
+    "/editors/vscode/node_modules",
+    "/editors/vscode/out",
+    "/reports",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/code_rook"] # 源码在 src/code_rook
 

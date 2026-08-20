@@ -1,0 +1,72 @@
+name: Bug report
+description: 报告可复现的 CodeRook 缺陷
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。安全漏洞请停止填写并改用 SECURITY.md；不要粘贴 API key、token、完整 Prompt 或未脱敏业务数据。
+  - type: input
+    id: version
+    attributes:
+      label: CodeRook 版本或 commit
+      placeholder: "0.1.0 / git SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows
+        - Ubuntu / other Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: 安装方式
+      placeholder: "uv sync / wheel / Docker / portable / VSIX"
+    validations:
+      required: true
+  - type: input
+    id: sandbox
+    attributes:
+      label: Sandbox 与权限状态
+      description: 请粘贴 `/sandbox status` 或 doctor 中已脱敏的 backend/enforced/degraded 信息。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 从干净会话开始，按顺序列出命令、操作和输入。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与已脱敏诊断
+      description: 可附 doctor 摘要、错误分类和最小日志，不要附密钥或私人路径。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，未找到相同问题。
+          required: true
+        - label: 我已删除 API key、token、个人数据和未脱敏业务内容。
+          required: true
+        - label: 这不是需要私下报告的安全漏洞。
+          required: true

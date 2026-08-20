@@ -14,6 +14,8 @@ import time
 import zipfile
 from pathlib import Path
 
+_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+
 
 # 定位待验证目录中唯一的 wheel 文件
 def _find_wheel(path: Path) -> Path:
@@ -56,8 +58,37 @@ def _run_python(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
+
+
+# 构造不继承开发机凭据与 CodeRook 状态的首次运行环境
+def _first_run_environment(home: Path, site: Path) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("CODEROOK_")
+        and not key.upper().endswith(_CREDENTIAL_SUFFIXES)
+        and key not in {"PYTHONPATH"}
+    }
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "PYTHONPATH": str(site),
+            "PYTHONUTF8": "1",
+            "CODEROOK_HOST": "127.0.0.1",
+            "CODEROOK_PORT": str(_free_port()),
+            "CODEROOK_API_PORT": str(_free_port()),
+            "CODEROOK_IPC_TOKEN": secrets.token_urlsafe(32),
+            "CODEROOK_LOG_FILE": "",
+            "CODEROOK_LOG_LEVEL": "WARNING",
+            "CODEROOK_TRACE_ENABLED": "false",
+        }
+    )
+    return env
 
 
 # 等待 wheel 中启动的 Core 开始监听或提前失败
@@ -96,6 +127,7 @@ def _remove_tree_with_retry(path: Path) -> None:
 
 # 从解压后的 wheel 验证资源、入口、鉴权 Core 和真实 ping
 def smoke(wheel: Path) -> None:
+    started_at = time.monotonic()
     with tempfile.TemporaryDirectory(
         prefix="coderook-wheel-smoke-",
         ignore_cleanup_errors=True,
@@ -114,28 +146,9 @@ def smoke(wheel: Path) -> None:
         if missing:
             raise RuntimeError(f"wheel is missing package resources: {missing}")
 
-        env = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith("CODEROOK_") and key not in {"PYTHONPATH", "ANTHROPIC_API_KEY"}
-        }
         home = root / "home"
         home.mkdir()
-        env.update(
-            {
-                "HOME": str(home),
-                "USERPROFILE": str(home),
-                "PYTHONPATH": str(site),
-                "PYTHONUTF8": "1",
-                "ANTHROPIC_API_KEY": "wheel-smoke-placeholder",
-                "CODEROOK_HOST": "127.0.0.1",
-                "CODEROOK_PORT": str(_free_port()),
-                "CODEROOK_IPC_TOKEN": secrets.token_urlsafe(32),
-                "CODEROOK_LOG_FILE": "",
-                "CODEROOK_LOG_LEVEL": "WARNING",
-                "CODEROOK_TRACE_ENABLED": "false",
-            }
-        )
+        env = _first_run_environment(home, site)
 
         imported = _run_python(
             """
@@ -165,6 +178,14 @@ print(package)
             env=env,
             cwd=root,
         )
+        status = _run_python(
+            "import sys; sys.argv=['coderook', 'config-status']; "
+            "from code_rook.cli.main import main; main()",
+            env=env,
+            cwd=root,
+        )
+        if "status:   incomplete" not in status.stdout or "api key:  (missing)" not in status.stdout:
+            raise RuntimeError(f"unexpected first-run config status: {status.stdout!r}")
 
         process = subprocess.Popen(
             [
@@ -177,6 +198,8 @@ print(package)
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         try:
             asyncio.run(_wait_until_listening(int(env["CODEROOK_PORT"]), process))
@@ -198,7 +221,8 @@ print(package)
                     process.wait(timeout=5.0)
 
     _remove_tree_with_retry(Path(raw_temp))
-    print(f"wheel smoke passed: {wheel.name}")
+    elapsed = time.monotonic() - started_at
+    print(f"wheel first-run smoke passed: {wheel.name} elapsed={elapsed:.2f}s")
 
 
 # 解析命令行参数并执行 wheel 烟测

@@ -46,8 +46,15 @@ jobs:
       - name: Brand contract
         run: uv run python scripts/check_brand.py
 
+      - name: Public repository contract
+        run: uv run python scripts/check_public_repo.py
+
       - name: Mypy strict
         run: uv run mypy src
+
+      - name: Mypy Linux contract
+        if: runner.os == 'Windows'
+        run: uv run mypy --platform linux src
 
       - name: Tests
         run: uv run pytest -q
@@ -58,10 +65,17 @@ jobs:
       - name: Sandbox negative boundary
         run: uv run python scripts/check_sandbox_boundary.py
 
-      - name: VS Code extension typecheck
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Package VS Code extension
         if: runner.os == 'Linux'
         working-directory: editors/vscode
-        run: npm ci && npm run check
+        run: npm ci && npm run check && npm run package
 
       - name: Protocol contract
         run: uv run python scripts/gen_protocol_doc.py --check
@@ -76,4 +90,11 @@ jobs:
         with:
           name: coderook-${{ matrix.os }}
           path: dist/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: coderook-vscode
+          path: editors/vscode/dist/*.vsix
           if-no-files-found: error

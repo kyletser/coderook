@@ -101,6 +101,7 @@ def _benchmark_run_config(
         "thinking": route.thinking,
         "temperature": route.temperature,
         "router": config.llm.router,
+        "dataset_commit": "coding-katas-v1",
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     return BenchmarkRunConfig(
@@ -111,6 +112,7 @@ def _benchmark_run_config(
         thinking=route.thinking,
         temperature=route.temperature,
         config_fingerprint=hashlib.sha256(encoded).hexdigest(),
+        dataset_commit="coding-katas-v1",
     )
 
 

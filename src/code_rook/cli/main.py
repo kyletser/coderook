@@ -29,6 +29,7 @@ from code_rook.cli.commands.provider import (
     cmd_provider_remove,
     cmd_provider_use,
 )
+from code_rook.cli.commands.review import cmd_review
 from code_rook.cli.commands.run import cmd_run
 from code_rook.cli.commands.session import (
     cmd_session_delete,
@@ -261,6 +262,19 @@ def main() -> None:
         metavar="TEXT",
         help="Ordered preset answer; repeat for multiple questions",
     )
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Run a read-only structured code review",
+    )
+    review_parser.add_argument(
+        "--goal",
+        default="Review the current repository changes for actionable defects.",
+    )
+    review_parser.add_argument(
+        "--output-format",
+        choices=("text", "json", "stream-json"),
+        default="text",
+    )
 
     core_parser = subparsers.add_parser("core", help="Manage the core daemon")
     core_sub = core_parser.add_subparsers(dest="core_command")
@@ -434,6 +448,12 @@ def main() -> None:
             question_mode=args.question_mode.replace("-", "_"),
             question_timeout_s=args.question_timeout,
             preset_answers=args.answer,
+        )
+    elif args.command == "review":
+        cmd_review(
+            args.goal,
+            config,
+            output_format=args.output_format,
         )
     elif args.command == "artifacts":
         if args.artifacts_command == "list":

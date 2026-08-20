@@ -285,6 +285,19 @@ class ContextWorkingSetEvent(BaseModel):
     ts: str
 
 
+class ContextRepositoryEvent(BaseModel):
+    type: Literal["context.repository"] = "context.repository"
+    run_id: str
+    repository_hash: str
+    budget_chars: int = Field(ge=1)
+    used_chars: int = Field(ge=0)
+    paths: list[str]
+    selection_reasons: list[dict[str, Any]]
+    cache_hits: int = Field(ge=0)
+    parsed_files: int = Field(ge=0)
+    ts: str
+
+
 class ContextBudgetEvent(BaseModel):
     type: Literal["context.budget"] = "context.budget"
     run_id: str
@@ -307,6 +320,37 @@ class LspDiagnosticsEvent(BaseModel):
     duration_ms: int = Field(default=0, ge=0)
     truncated: bool
     error: str = ""
+    ts: str
+
+
+class VerificationCompletedEvent(BaseModel):
+    type: Literal["verification.completed"] = "verification.completed"
+    run_id: str
+    step: int
+    tool: str
+    action: str
+    verdict: Literal["pass"] = "pass"
+    gate_count: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    paths: list[str]
+    gates: list[dict[str, Any]]
+    ts: str
+
+
+class VerificationFailedEvent(BaseModel):
+    type: Literal["verification.failed"] = "verification.failed"
+    run_id: str
+    step: int
+    tool: str
+    action: str
+    verdict: Literal["fail"] = "fail"
+    gate_count: int = Field(ge=0)
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=1)
+    failure_class: str
+    paths: list[str]
+    gates: list[dict[str, Any]]
     ts: str
 
 
@@ -463,8 +507,11 @@ Event = Annotated[
     | ContextCompactedEvent
     | ContextPrefixFingerprintEvent
     | ContextWorkingSetEvent
+    | ContextRepositoryEvent
     | ContextBudgetEvent
     | LspDiagnosticsEvent
+    | VerificationCompletedEvent
+    | VerificationFailedEvent
     | PermissionRequestedEvent
     | PermissionGrantedEvent
     | PermissionDeniedEvent

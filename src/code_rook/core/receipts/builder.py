@@ -186,6 +186,11 @@ def build_turn_receipt(
         {"lsp.diagnostics", "verification.completed", "verification.failed"},
         key="tool",
     )
+    context_selection = _unique_payloads(
+        events,
+        {"context.repository"},
+        key="repository_hash",
+    )
     files_changed = _changed_files(items)
     unavailable: list[Any] = []
     if turn.route is None:
@@ -201,6 +206,7 @@ def build_turn_receipt(
         ("artifacts", artifacts),
         ("workers", workers),
         ("verification", verification),
+        ("context_selection", context_selection),
     ):
         if not value:
             unavailable.append(name)
@@ -251,6 +257,7 @@ def build_turn_receipt(
         artifacts=artifacts,
         workers=workers,
         verification=verification,
+        context_selection=context_selection,
         error_classification=error_classification,
         unavailable=unavailable,
     )

@@ -434,6 +434,7 @@ TUI 是主要使用界面。CLI 适合脚本、调试和一次性任务：
 uv run coderook ping
 uv run coderook run --goal "分析项目并运行相关测试"
 uv run coderook run --goal "分析项目" --output-format stream-json
+uv run coderook review --goal "审查当前改动" --output-format json
 uv run coderook run --goal "继续处理" --resume SESSION_ID
 uv run coderook doctor all --json
 uv run coderook doctor runtime --json
@@ -444,6 +445,10 @@ uv run coderook artifacts gc --days 30
 
 `--output-format json|stream-json` 的 stdout 只输出版本化协议，适合脚本消费；
 `artifacts gc` 默认只列出候选项，只有显式加 `--yes` 才会在二次引用扫描后删除。
+
+`coderook review` 是受权限层约束的只读 preset。它使用 Git-aware 仓库地图、符号和引用检索，最终按
+`Summary / Findings(P0-P3) / Risks and unknowns / Verification performed` 输出；每个 finding
+要求文件位置、证据、影响和建议。没有真实缺陷时必须明确写“无 finding”，不能把未知风险伪装成缺陷。
 
 Headless 任务默认使用 `fail-fast`：遇到需要人工审批的工具就退出。明确允许指定工具时：
 

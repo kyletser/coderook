@@ -84,7 +84,7 @@ def _daemon_environment(home: Path, ipc_port: int, api_port: int, model_port: in
     return env
 
 
-# 启动真实 daemon 并等待 HTTP 端口与 bearer token 同时可用
+# 启动真实 daemon 并以鉴权 capabilities 请求确认 HTTP API 已可服务
 def _start_daemon(env: dict[str, str], home: Path, api_port: int) -> subprocess.Popen[bytes]:
     process = subprocess.Popen(
         [sys.executable, "-m", "code_rook.core"],
@@ -99,9 +99,10 @@ def _start_daemon(env: dict[str, str], home: Path, api_port: int) -> subprocess.
             raise RuntimeError(f"daemon exited during startup: {process.returncode}")
         if token_path.is_file():
             try:
-                with socket.create_connection(("127.0.0.1", api_port), timeout=0.2):
-                    return process
-            except OSError:
+                token = token_path.read_text(encoding="utf-8").strip()
+                _request_json(api_port, token, "GET", "/v1/capabilities")
+                return process
+            except (OSError, RuntimeError, UnicodeError, urllib.error.URLError):
                 pass
         time.sleep(0.05)
     process.kill()
@@ -109,7 +110,7 @@ def _start_daemon(env: dict[str, str], home: Path, api_port: int) -> subprocess.
     raise RuntimeError("daemon did not become ready within 15 seconds")
 
 
-# 调用 runtime HTTP API 并返回 JSON 对象
+# 调用 runtime HTTP API 并返回 JSON 对象；重启后的只读查询允许短暂连接拒绝重试
 def _request_json(
     api_port: int,
     token: str,
@@ -127,8 +128,16 @@ def _request_json(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(request, timeout=5.0) as response:
-        payload = json.loads(response.read())
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=5.0) as response:
+                payload = json.loads(response.read())
+            break
+        except (ConnectionError, OSError, urllib.error.URLError):
+            if method != "GET" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
     if not isinstance(payload, dict):
         raise RuntimeError(f"API returned non-object payload for {path}")
     return payload
@@ -159,9 +168,13 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
     while api_port == ipc_port:
         api_port = _free_port()
     model_server, model_thread, model_port = _start_model_server()
+    with _BlockingModelHandler.request_started:
+        _BlockingModelHandler.request_count = 0
     results: list[dict[str, Any]] = []
     process: subprocess.Popen[bytes] | None = None
     temp_root: Path | None = None
+    infrastructure_error: str | None = None
+    report: dict[str, Any] = {}
     try:
         with tempfile.TemporaryDirectory(
             prefix="coderook-crash-matrix-",
@@ -228,6 +241,9 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
             process.terminate()
             process.wait(timeout=5.0)
             process = None
+    except Exception as exc:
+        infrastructure_error = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -240,29 +256,31 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
         model_thread.join(timeout=5.0)
         if temp_root is not None and temp_root.name.startswith("coderook-crash-matrix-"):
             shutil.rmtree(temp_root, ignore_errors=True)
-    passed = sum(bool(item["passed"]) for item in results)
-    report = {
-        "schema_version": 1,
-        "generated_at": datetime.now(UTC).isoformat(),
-        "iterations": iterations,
-        "passed": passed,
-        "recovery_rate": passed / iterations if iterations else 0.0,
-        "coverage": [
-            "user_message_durable",
-            "llm_request_in_flight",
-            "client_disconnect",
-            "daemon_hard_kill",
-            "restart_reconcile",
-            "receipt_rebuild",
-        ],
-        "results": results,
-    }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+        passed = sum(bool(item["passed"]) for item in results)
+        report = {
+            "schema_version": 2,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "iterations": iterations,
+            "completed_iterations": len(results),
+            "passed": passed,
+            "recovery_rate": passed / iterations if iterations else 0.0,
+            "infrastructure_error": infrastructure_error,
+            "coverage": [
+                "user_message_durable",
+                "llm_request_in_flight",
+                "client_disconnect",
+                "daemon_hard_kill",
+                "restart_reconcile",
+                "receipt_rebuild",
+            ],
+            "results": results,
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     return report
 
 

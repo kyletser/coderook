@@ -1,4 +1,4 @@
-# CodeRook VS Code prototype
+# CodeRook for VS Code
 
 This minimal extension validates that the public Runtime API is sufficient for an IDE
 client. It does not add an IDE-only daemon endpoint or duplicate runtime state.
@@ -11,6 +11,6 @@ Supported commands:
 - inspect the structured workspace diff;
 - steer or interrupt the active turn.
 
-Set `coderook.baseUrl` and `coderook.apiToken`, run `npm install && npm run compile`, then
-launch the extension host. The daemon must already be running. This directory is a prototype
-and is intentionally not included in the Python wheel.
+Set `coderook.baseUrl` and `coderook.apiToken`, run `npm ci && npm run compile`, then launch
+the extension host. Run `npm run package` to produce `dist/coderook-vscode.vsix`. The daemon
+must already be running. The extension is distributed independently from the Python wheel.

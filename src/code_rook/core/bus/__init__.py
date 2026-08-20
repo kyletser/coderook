@@ -15,6 +15,7 @@ from code_rook.core.bus.events import (
     AgentStuckEvent,
     ContextBudgetEvent,
     ContextPrefixFingerprintEvent,
+    ContextRepositoryEvent,
     ContextWorkingSetEvent,
     CoreStartedEvent,
     Event,
@@ -37,12 +38,15 @@ from code_rook.core.bus.events import (
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
+    VerificationCompletedEvent,
+    VerificationFailedEvent,
 )
 
 __all__ = [
     "Command",
     "AgentStuckEvent",
     "ContextPrefixFingerprintEvent",
+    "ContextRepositoryEvent",
     "ContextBudgetEvent",
     "ContextWorkingSetEvent",
     "CoreStartedEvent",
@@ -66,6 +70,8 @@ __all__ = [
     "ToolCallFailedEvent",
     "ToolCallFinishedEvent",
     "ToolCallStartedEvent",
+    "VerificationCompletedEvent",
+    "VerificationFailedEvent",
     "INTERNAL_ERROR",
     "INVALID_PARAMS",
     "INVALID_REQUEST",

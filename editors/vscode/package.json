@@ -4,6 +4,10 @@
   "description": "Minimal CodeRook runtime client for VS Code",
   "version": "0.1.0",
   "publisher": "coderook",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kyletser/coderook.git"
+  },
   "engines": {"vscode": "^1.95.0"},
   "categories": ["Other"],
   "main": "./out/extension.js",
@@ -35,11 +39,14 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "check": "tsc --noEmit -p ./"
+    "check": "tsc --noEmit -p ./",
+    "prepackage": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\"",
+    "package": "npm run compile && vsce package --no-dependencies --out dist/coderook-vscode.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.9.2",
     "typescript": "^5.7.2"
   }
 }

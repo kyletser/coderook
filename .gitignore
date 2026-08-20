@@ -12,12 +12,14 @@ build/
 .ruff_cache/
 .pytest_cache/
 .benchmark-results/
+reports/
 .vscode/
 .idea/
 .DS_Store
 *.log
 workspace/
 .coderook/memory/
+.coderook/context.md
 .coderook/worktrees/
 .workbuddy/
 .git-credentials

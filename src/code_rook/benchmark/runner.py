@@ -207,6 +207,17 @@ def _summarize_results(results: list[BenchmarkTaskResult]) -> BenchmarkSummary:
         for result in results
         for duration in result.execution.diagnostic_durations_ms
     ]
+    process_results = [
+        result.execution
+        for result in results
+        if result.execution.process_usage_records > 0
+    ]
+    process_records = sum(
+        execution.process_usage_records for execution in process_results
+    )
+    complete_process_records = sum(
+        execution.complete_process_records for execution in process_results
+    )
     return BenchmarkSummary(
         total=total,
         passed=passed,
@@ -233,9 +244,38 @@ def _summarize_results(results: list[BenchmarkTaskResult]) -> BenchmarkSummary:
             result.execution.input_tokens + result.execution.output_tokens
             for result in results
         ),
+        elapsed_p50_s=_percentile(
+            [result.execution.elapsed_s for result in results],
+            0.50,
+        ),
+        elapsed_p95_s=_percentile(
+            [result.execution.elapsed_s for result in results],
+            0.95,
+        ),
         cost_p50_usd=_percentile(costs, 0.50),
         cost_p95_usd=_percentile(costs, 0.95),
         diagnostics_p95_ms=_percentile(diagnostic_durations, 0.95),
+        process_wall_p95_ms=_percentile(
+            [float(execution.process_wall_ms) for execution in process_results],
+            0.95,
+        ),
+        process_cpu_p95_ms=_percentile(
+            [float(execution.process_cpu_ms) for execution in process_results],
+            0.95,
+        ),
+        peak_memory_p95_bytes=_percentile(
+            [float(execution.peak_memory_bytes) for execution in process_results],
+            0.95,
+        ),
+        process_count_p95=_percentile(
+            [float(execution.process_count) for execution in process_results],
+            0.95,
+        ),
+        process_usage_complete_rate=(
+            complete_process_records / process_records
+            if process_records
+            else None
+        ),
         categories=categories,
     )
 
