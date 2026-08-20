@@ -67,8 +67,14 @@ def write_markdown_report(report: BenchmarkReport, path: Path) -> None:
         f"- Router/thinking/temperature: `{report.run_config.router}` / "
         f"`{report.run_config.thinking}` / `{report.run_config.temperature}`",
         f"- Config fingerprint: `{report.run_config.config_fingerprint}`",
+        f"- Candidate fingerprint: `{report.run_config.candidate_fingerprint}`",
+        "- Task catalog / fixture / budget fingerprints: "
+        f"`{report.run_config.task_catalog_fingerprint}` / "
+        f"`{report.run_config.fixture_fingerprint}` / "
+        f"`{report.run_config.budget_fingerprint}`",
         f"- Benchmark/dataset: `{report.run_config.benchmark_name}` / "
         f"`{report.run_config.dataset_name}` @ `{report.run_config.dataset_commit}`",
+        f"- Contracted tasks: **{report.run_config.task_count}**",
         f"- Pass@1: **{report.passed}/{report.total} ({report.pass_rate:.1%})**",
         f"- Verifier pass rate: **{summary.verifier_pass_rate:.1%}**",
         f"- First-edit correctness: **{first_edit}**",
@@ -94,6 +100,21 @@ def write_markdown_report(report: BenchmarkReport, path: Path) -> None:
         lines.append(
             f"| {category} | {category_summary.passed} | {category_summary.total} | "
             f"{category_summary.pass_rate:.1%} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Task contract | Steps | Wall time | Tokens | Cost | Allowed tools |",
+            "|---|---:|---:|---:|---:|---|",
+        ]
+    )
+    for contract in report.task_contracts:
+        budgets = contract.budgets
+        lines.append(
+            f"| `{contract.task_id}` | {budgets.max_steps} | {budgets.wall_time_s:.0f}s | "
+            f"{budgets.max_total_tokens or 'unbounded'} | "
+            f"{budgets.max_cost_usd if budgets.max_cost_usd is not None else 'unbounded'} | "
+            f"{', '.join(contract.allowed_tools)} |"
         )
     lines.extend([
         "",

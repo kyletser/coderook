@@ -7,6 +7,7 @@
 ## 已有确定性证据
 
 - 50 个任务清单可加载；类别数量至少为解释 6、单文件 8、多文件 10、测试 6、重构 6、安全 4，quick 固定 10 个，nightly/release 全覆盖。
+- 真实候选报告落盘前强制完整 Git commit、显式 route/model/wire，以及 config/task/fixture/budget/candidate SHA-256；逐任务预算和允许工具可审计，比较器默认拒绝 fixture 或预算漂移。
 - 未修改 fixture 的 50 个 baseline 均按预期失败，证明 verifier 不是天然通过。
 - stream-json、resume、SDK、HTTP/SSE、MCP、PatchPlan、Artifact、ledger checksum、doctor 和配置事务均有针对性测试。
 - 本机 Windows 沙箱检查结果是 `DEGRADED (windows_none)`；AUTO_REVIEW 不会把该状态当作强制隔离。Windows Job Object 后代终止测试通过，但只计为进程治理。

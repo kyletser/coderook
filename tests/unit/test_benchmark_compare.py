@@ -191,3 +191,24 @@ def test_compare_reports_rejects_duplicate_task_ids() -> None:
 
     with pytest.raises(ValueError, match="duplicate benchmark task id: edit"):
         compare_benchmark_reports(invalid, baseline)
+
+
+# 功能：验证任务 ID 不变但 fixture 或预算指纹变化时默认禁止效果比较
+# 设计：只篡改候选 fixture hash 并保留相同结果，证明比较器不会把测试数据变化误当 Agent 提升
+def test_compare_reports_requires_same_candidate_contract() -> None:
+    baseline = _report("base", [("edit", "single_file_fix", True, None)])
+    candidate = _report("candidate", [("edit", "single_file_fix", True, None)])
+    changed_config = candidate.run_config.model_copy(
+        update={"fixture_fingerprint": "f" * 64}
+    )
+    candidate = candidate.model_copy(update={"run_config": changed_config})
+
+    strict = compare_benchmark_reports(baseline, candidate)
+    relaxed = compare_benchmark_reports(
+        baseline,
+        candidate,
+        ComparisonPolicy(require_same_contract=False),
+    )
+
+    assert strict.gate_reasons == ["fixture_changed"]
+    assert relaxed.gate_passed is True

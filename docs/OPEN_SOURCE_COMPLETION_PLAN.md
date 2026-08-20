@@ -217,7 +217,7 @@ Git-aware repo map、符号检索和可解释 working set；外部知识 RAG 以
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS4-01 | PARTIAL | 固化 50 任务真实模型候选协议 | route/model/config/commit/预算指纹完整 |
+| OS4-01 | DONE | 固化 50 任务真实模型候选协议 | 落盘前强制完整 commit、route/model/wire、配置/task/fixture/budget/candidate SHA-256；逐任务公开允许工具与四类预算，比较器拒绝合同漂移 |
 | OS4-02 | EXTERNAL | 跑两个 wire format × 两次候选集 | 4 份原始报告和聚合报告 |
 | OS4-03 | PARTIAL | 适配 Aider Polyglot benchmark，使用隔离容器执行 | 官方目录/prompt/test loader、固定 commit、容器入口和统一报告已实现；真实固定切片待跑 |
 | OS4-04 | PARTIAL | 增加 SWE-bench Lite/Verified 小规模适配 smoke | 标准三字段 JSONL、基线校验、含新增文件 patch 与官方 harness 命令已实现；官方 Docker 判分 artifact 待产出 |

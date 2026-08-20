@@ -4,13 +4,17 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.benchmark.contract import (
+    find_candidate_contract_issues,
+    require_candidate_contract,
+)
 from code_rook.benchmark.loader import (
     BenchmarkManifestError,
     LoadedBenchmarkTask,
     load_benchmark_tasks,
     validate_benchmark_catalog,
 )
-from code_rook.benchmark.models import AgentExecution, BenchmarkTask
+from code_rook.benchmark.models import AgentExecution, BenchmarkRunConfig, BenchmarkTask
 from code_rook.benchmark.runner import BenchmarkRunner, verify_benchmark_baseline
 
 
@@ -187,6 +191,12 @@ async def test_benchmark_report_summarizes_and_preserves_evidence(tmp_path: Path
     assert report.summary.peak_memory_p95_bytes == 8 * 1024 * 1024
     assert report.summary.process_count_p95 == 3
     assert report.summary.process_usage_complete_rate == 0.5
+    assert report.run_config.task_count == 1
+    assert len(report.run_config.task_catalog_fingerprint) == 64
+    assert len(report.run_config.fixture_fingerprint) == 64
+    assert len(report.run_config.budget_fingerprint) == 64
+    assert report.task_contracts[0].budgets.max_steps == 8
+    assert report.task_contracts[0].allowed_tools == ["File"]
     receipt = evidence / "stub-task" / "receipt.json"
     assert receipt.is_file()
     assert '"task_id": "stub-task"' in receipt.read_text(encoding="utf-8")
@@ -201,3 +211,39 @@ async def test_verify_benchmark_baseline_requires_failure(tmp_path: Path) -> Non
 
     assert len(results) == 1
     assert results[0].passed is False
+
+
+# 功能：验证真实候选合同绑定完整 commit、route、配置、任务、fixture 与预算指纹
+# 设计：用确定性执行器生成有效报告再篡改 candidate hash，覆盖成功合同与防人工改报告两个分支
+async def test_candidate_contract_rejects_unknown_or_tampered_identity(
+    tmp_path: Path,
+) -> None:
+    loaded = _loaded_task(tmp_path)
+    runner = BenchmarkRunner(_EditingExecutor("answer.txt", "right\n"))
+    valid_config = BenchmarkRunConfig(
+        route_id="fixed-route",
+        model="fixed-model",
+        wire_format="openai_responses",
+        config_fingerprint="a" * 64,
+    )
+    report = await runner.run(
+        [loaded],
+        repository_commit="b" * 40,
+        suite="release",
+        run_config=valid_config,
+    )
+
+    require_candidate_contract(report)
+    assert find_candidate_contract_issues(report) == []
+
+    tampered_config = report.run_config.model_copy(
+        update={"candidate_fingerprint": "c" * 64}
+    )
+    tampered = report.model_copy(update={"run_config": tampered_config})
+    assert "run_config.candidate_fingerprint does not match report material" in (
+        find_candidate_contract_issues(tampered)
+    )
+
+    unknown = await runner.run([loaded], repository_commit="abc123", suite="quick")
+    with pytest.raises(ValueError, match="repository_commit"):
+        require_candidate_contract(unknown)

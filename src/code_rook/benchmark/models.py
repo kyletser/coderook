@@ -205,6 +205,22 @@ class BenchmarkRunConfig(BaseModel):
     benchmark_name: str = "coderook-50"
     dataset_name: str = "benchmarks/fixtures/coding-katas-v1"
     dataset_commit: str = "unknown"
+    task_count: int = Field(default=0, ge=0)
+    task_catalog_fingerprint: str = "unknown"
+    fixture_fingerprint: str = "unknown"
+    budget_fingerprint: str = "unknown"
+    candidate_fingerprint: str = "unknown"
+
+
+class BenchmarkTaskContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str
+    baseline_commit: str
+    allowed_tools: list[str]
+    budgets: BenchmarkBudgets
+    task_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fixture_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class BenchmarkReport(BaseModel):
@@ -217,6 +233,7 @@ class BenchmarkReport(BaseModel):
     results: list[BenchmarkTaskResult]
     summary: BenchmarkSummary
     run_config: BenchmarkRunConfig = Field(default_factory=BenchmarkRunConfig)
+    task_contracts: list[BenchmarkTaskContract] = Field(default_factory=list)
 
     # 计算报告中的任务总数
     @property

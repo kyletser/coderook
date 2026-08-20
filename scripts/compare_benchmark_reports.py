@@ -26,6 +26,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cost-p95-increase-rate", type=float, default=0.25)
     parser.add_argument("--max-duration-p95-increase-rate", type=float, default=0.25)
     parser.add_argument("--allow-task-set-change", action="store_true")
+    parser.add_argument("--allow-contract-change", action="store_true")
     parser.add_argument("--allow-task-regression", action="store_true")
     parser.add_argument("--allow-security-negative-failure", action="store_true")
     parser.add_argument(
@@ -45,6 +46,7 @@ def main() -> int:
         max_cost_p95_increase_rate=args.max_cost_p95_increase_rate,
         max_duration_p95_increase_rate=args.max_duration_p95_increase_rate,
         require_same_tasks=not args.allow_task_set_change,
+        require_same_contract=not args.allow_contract_change,
         fail_on_task_regression=not args.allow_task_regression,
         require_security_negative_pass=not args.allow_security_negative_failure,
     )

@@ -17,6 +17,7 @@ class ComparisonPolicy(BaseModel):
     max_cost_p95_increase_rate: float = Field(default=0.25, ge=0)
     max_duration_p95_increase_rate: float = Field(default=0.25, ge=0)
     require_same_tasks: bool = True
+    require_same_contract: bool = True
     fail_on_task_regression: bool = True
     require_security_negative_pass: bool = True
 
@@ -58,6 +59,12 @@ class BenchmarkComparison(BaseModel):
     candidate_commit: str
     baseline_config_fingerprint: str
     candidate_config_fingerprint: str
+    baseline_task_catalog_fingerprint: str
+    candidate_task_catalog_fingerprint: str
+    baseline_fixture_fingerprint: str
+    candidate_fixture_fingerprint: str
+    baseline_budget_fingerprint: str
+    candidate_budget_fingerprint: str
     comparable_tasks: int = Field(ge=0)
     baseline_only_tasks: list[str] = Field(default_factory=list)
     candidate_only_tasks: list[str] = Field(default_factory=list)
@@ -212,6 +219,22 @@ def compare_benchmark_reports(
     reasons: list[str] = []
     if selected_policy.require_same_tasks and (baseline_only or candidate_only):
         reasons.append("task_set_changed")
+    if selected_policy.require_same_contract:
+        if (
+            baseline.run_config.task_catalog_fingerprint
+            != candidate.run_config.task_catalog_fingerprint
+        ):
+            reasons.append("task_contract_changed")
+        if (
+            baseline.run_config.fixture_fingerprint
+            != candidate.run_config.fixture_fingerprint
+        ):
+            reasons.append("fixture_changed")
+        if (
+            baseline.run_config.budget_fingerprint
+            != candidate.run_config.budget_fingerprint
+        ):
+            reasons.append("budget_changed")
     pass_delta = metrics["pass_rate"].absolute
     if pass_delta is not None and pass_delta < -selected_policy.max_pass_rate_drop:
         reasons.append("pass_rate_regressed")
@@ -246,6 +269,16 @@ def compare_benchmark_reports(
         candidate_commit=candidate.repository_commit,
         baseline_config_fingerprint=baseline.run_config.config_fingerprint,
         candidate_config_fingerprint=candidate.run_config.config_fingerprint,
+        baseline_task_catalog_fingerprint=(
+            baseline.run_config.task_catalog_fingerprint
+        ),
+        candidate_task_catalog_fingerprint=(
+            candidate.run_config.task_catalog_fingerprint
+        ),
+        baseline_fixture_fingerprint=baseline.run_config.fixture_fingerprint,
+        candidate_fixture_fingerprint=candidate.run_config.fixture_fingerprint,
+        baseline_budget_fingerprint=baseline.run_config.budget_fingerprint,
+        candidate_budget_fingerprint=candidate.run_config.budget_fingerprint,
         comparable_tasks=len(common_ids),
         baseline_only_tasks=baseline_only,
         candidate_only_tasks=candidate_only,
@@ -284,6 +317,18 @@ def write_comparison_markdown(comparison: BenchmarkComparison, path: Path) -> No
         f"- Gate: **{verdict}**",
         f"- Baseline commit: `{comparison.baseline_commit}`",
         f"- Candidate commit: `{comparison.candidate_commit}`",
+        "- Config fingerprints: "
+        f"`{comparison.baseline_config_fingerprint}` -> "
+        f"`{comparison.candidate_config_fingerprint}`",
+        "- Task catalog fingerprints: "
+        f"`{comparison.baseline_task_catalog_fingerprint}` -> "
+        f"`{comparison.candidate_task_catalog_fingerprint}`",
+        "- Fixture fingerprints: "
+        f"`{comparison.baseline_fixture_fingerprint}` -> "
+        f"`{comparison.candidate_fixture_fingerprint}`",
+        "- Budget fingerprints: "
+        f"`{comparison.baseline_budget_fingerprint}` -> "
+        f"`{comparison.candidate_budget_fingerprint}`",
         f"- Comparable tasks: **{comparison.comparable_tasks}**",
         "- Gate reasons: **"
         + (", ".join(comparison.gate_reasons) if comparison.gate_reasons else "none")

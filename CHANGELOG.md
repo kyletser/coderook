@@ -14,6 +14,7 @@
 - 项目案例、简历证据账本、3/10 分钟面试讲解，以及跨平台 CI 失败和 TUI 重构复盘。
 - MCP legacy SSE 同源安全客户端与固定官方 SDK 2.0 的 stdio/SSE/Streamable HTTP 互操作 runner。
 - 绑定 commit/platform/SDK 的官方 MCP 三 transport 互操作 JSON/Markdown 证据。
+- 强制 benchmark candidate contract：完整 commit、显式 route/model/wire、逐任务预算及五类 SHA-256 身份，并阻断 fixture/预算漂移比较。
 
 ### Changed
 

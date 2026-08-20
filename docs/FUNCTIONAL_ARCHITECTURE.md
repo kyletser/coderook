@@ -928,7 +928,9 @@ SocketClient 模板；**除 `core start/restart` 与 TUI 外不自动拉起 daem
   双进程协作（S2）、session IPC（S4）、权限流（S5）、runtime HTTP API、runtime 恢复、
   run e2e、provider doctor、local fleet
 - `tests/golden/` 与 `benchmarks/`：稳定输出契约、50 项 quick/nightly/release 固定任务和机器可读报告；
-  报告同时记录效果、成本、耗时和 ProcessSupervisor 资源统计，基线/候选比较器输出任务迁移、类别差值与失败聚类
+  报告同时记录效果、成本、耗时和 ProcessSupervisor 资源统计；真实候选落盘前绑定完整 commit、route、
+  model、wire 与 config/task/fixture/budget/candidate 指纹，逐任务公开预算/工具合同；基线/候选比较器
+  拒绝合同漂移并输出任务迁移、类别差值与失败聚类
 - 精确通过数不写入架构正文；以当前 CI artifact 与 `RELEASE_SCORECARD.md` 为准
 
 ### 18.2 CI 门禁（GitHub Actions，Ubuntu + Windows + macOS 矩阵）

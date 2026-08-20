@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from code_rook.benchmark.contract import require_candidate_contract
 from code_rook.benchmark.executor import CodeRookBenchmarkExecutor
 from code_rook.benchmark.loader import (
     LoadedBenchmarkTask,
@@ -101,6 +102,19 @@ def _benchmark_run_config(
         "thinking": route.thinking,
         "temperature": route.temperature,
         "router": config.llm.router,
+        "router_plan_route": config.llm.router_plan_route,
+        "router_act_route": config.llm.router_act_route,
+        "router_cost_budget": config.llm.router_cost_budget,
+        "router_cost_fallback": config.llm.router_cost_fallback,
+        "compaction_auto_threshold": config.compaction.auto_threshold,
+        "compaction_retain_ratio": config.compaction.retain_ratio,
+        "compaction_tool_result_limit": config.compaction.tool_result_limit,
+        "compaction_tool_result_keep": config.compaction.tool_result_keep,
+        "compaction_tool_result_summarize_threshold": (
+            config.compaction.tool_result_summarize_threshold
+        ),
+        "permission_mode": "allow_list",
+        "max_step_continues": 0,
         "dataset_commit": "coding-katas-v1",
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
@@ -159,6 +173,7 @@ async def _run(args: argparse.Namespace, root: Path) -> int:
         suite=args.suite,
         run_config=run_config,
     )
+    require_candidate_contract(report)
     write_json_report(report, output / "report.json")
     write_markdown_report(report, output / "report.md")
     print(f"Benchmark pass@1: {report.passed}/{report.total} ({report.pass_rate:.1%})")

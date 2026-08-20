@@ -36,6 +36,11 @@ uv run python scripts/compare_benchmark_reports.py \
 报告中的 ProcessSupervisor 指标包括 wall/CPU、峰值内存、进程数和采样完整性。`unknown` 表示平台或事件
 没有提供可信测量，不能按零计算。
 
+runner 在写出真实报告前调用 candidate contract：完整 Git SHA、route/model/wire/config 缺一即失败；
+JSON 的 `task_contracts` 保存每项预算、允许工具、task/fixture hash，`run_config` 保存聚合的
+task/fixture/budget/candidate 指纹。比较器默认要求这些合同与基线一致；只有明确使用
+`--allow-contract-change` 才能生成非同题比较，且不应据此宣传效果提升。
+
 ## 3. Aider Polyglot pass@1
 
 CodeRook 复刻官方 harness 的以下输入契约：从 `.meta/config.json` 读取 solution/test/example 文件；只允许

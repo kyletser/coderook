@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 
 import pathspec
 
+from code_rook.benchmark.contract import candidate_fingerprint, canonical_fingerprint
 from code_rook.benchmark.loader import LoadedBenchmarkTask
 from code_rook.benchmark.models import (
     AgentExecution,
@@ -22,6 +23,7 @@ from code_rook.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkSummary,
     BenchmarkTask,
+    BenchmarkTaskContract,
     BenchmarkTaskResult,
     FileChange,
     VerifierResult,
@@ -30,6 +32,82 @@ from code_rook.benchmark.models import (
 
 _IGNORED_WORKSPACE_PATHS = (".coderook/**", ".pytest_cache/**", "**/__pycache__/**")
 _MAX_CAPTURE_CHARS = 20_000
+
+
+# 为每个选中任务固化清单、允许工具、预算和 fixture 内容指纹
+def build_task_contracts(
+    tasks: list[LoadedBenchmarkTask],
+) -> list[BenchmarkTaskContract]:
+    contracts: list[BenchmarkTaskContract] = []
+    for loaded in sorted(tasks, key=lambda item: item.task.id):
+        task_material = loaded.task.model_dump(mode="json")
+        task_material.pop("budgets", None)
+        fixture_material = _snapshot_workspace(loaded.fixture_path)
+        contracts.append(
+            BenchmarkTaskContract(
+                task_id=loaded.task.id,
+                baseline_commit=loaded.task.baseline_commit,
+                allowed_tools=loaded.task.allowed_tools,
+                budgets=loaded.task.budgets,
+                task_fingerprint=canonical_fingerprint(task_material),
+                fixture_fingerprint=canonical_fingerprint(fixture_material),
+            )
+        )
+    return contracts
+
+
+# 用任务合同补全套件级 catalog、fixture、预算和候选身份指纹
+def complete_run_config(
+    run_config: BenchmarkRunConfig,
+    contracts: list[BenchmarkTaskContract],
+    *,
+    repository_commit: str,
+    suite: str | None,
+) -> BenchmarkRunConfig:
+    contract_rows = [contract.model_dump(mode="json") for contract in contracts]
+    task_catalog_fingerprint = canonical_fingerprint(
+        [
+            {
+                "task_id": row["task_id"],
+                "baseline_commit": row["baseline_commit"],
+                "allowed_tools": row["allowed_tools"],
+                "task_fingerprint": row["task_fingerprint"],
+            }
+            for row in contract_rows
+        ]
+    )
+    fixture_fingerprint = canonical_fingerprint(
+        [
+            {
+                "task_id": row["task_id"],
+                "fixture_fingerprint": row["fixture_fingerprint"],
+            }
+            for row in contract_rows
+        ]
+    )
+    budget_fingerprint = canonical_fingerprint(
+        [
+            {"task_id": row["task_id"], "budgets": row["budgets"]}
+            for row in contract_rows
+        ]
+    )
+    material = run_config.model_dump(mode="json")
+    material.update(
+        {
+            "task_count": len(contracts),
+            "task_catalog_fingerprint": task_catalog_fingerprint,
+            "fixture_fingerprint": fixture_fingerprint,
+            "budget_fingerprint": budget_fingerprint,
+        }
+    )
+    provisional = BenchmarkRunConfig.model_validate(material)
+    material["candidate_fingerprint"] = candidate_fingerprint(
+        provisional,
+        contracts,
+        repository_commit=repository_commit,
+        suite=suite,
+    )
+    return BenchmarkRunConfig.model_validate(material)
 
 
 class BenchmarkExecutor(Protocol):
@@ -64,6 +142,13 @@ class BenchmarkRunner:
         suite: str | None = None,
         run_config: BenchmarkRunConfig | None = None,
     ) -> BenchmarkReport:
+        contracts = build_task_contracts(tasks)
+        completed_config = complete_run_config(
+            run_config or BenchmarkRunConfig(),
+            contracts,
+            repository_commit=repository_commit,
+            suite=suite,
+        )
         results = [await self.run_task(task) for task in tasks]
         return BenchmarkReport(
             generated_at=datetime.now(UTC).isoformat(),
@@ -71,7 +156,8 @@ class BenchmarkRunner:
             suite=suite,
             results=results,
             summary=_summarize_results(results),
-            run_config=run_config or BenchmarkRunConfig(),
+            run_config=completed_config,
+            task_contracts=contracts,
         )
 
     # 复制 fixture、运行 Agent、审计改动并执行全部 verifier
