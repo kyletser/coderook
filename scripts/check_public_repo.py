@@ -23,6 +23,7 @@ _REQUIRED_FILES = (
     "docs/THREAT_MODEL.md",
     "docs/PUBLIC_BENCHMARKS.md",
     "docs/COMPATIBILITY.md",
+    "docs/RELEASING.md",
     "docs/images/coderook-tui.svg",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -38,6 +39,10 @@ _REQUIRED_FILES = (
     "examples/hooks/hooks.toml",
     "scripts/capture_tui_demo.py",
     "tests/unit/test_tui_demo.py",
+    "scripts/check_release_contract.py",
+    "scripts/generate_release_manifest.py",
+    "tests/unit/test_release_contract.py",
+    ".github/workflows/release.yml",
 )
 _REQUIRED_PROJECT_FIELDS = (
     "description",

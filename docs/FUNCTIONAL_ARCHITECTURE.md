@@ -957,6 +957,20 @@ uv run ruff check . && uv run python scripts/check_brand.py && uv run mypy src \
 
 注意 Windows 上必须额外跑 `mypy --platform linux`（Windows-only ctypes 属性能过本机但在 Ubuntu 失败）。
 
+### 18.3 发布供应链
+
+`.github/workflows/distribution.yml` 是可复用的三平台候选构建门禁；`.github/workflows/release.yml`
+只响应 SemVer tag，并在上传镜像或创建 GitHub Release 前依次要求：版本/CHANGELOG/协议一致、
+`RELEASE_SCORECARD.md` 明确为 GO、完整 `make verify` 通过。评分卡仍为 NO-GO 时，发布流程会在
+任何公开发布动作前失败。
+
+候选产物包括 wheel、sdist、Windows portable、VSIX 和带不可变 digest 的 GHCR 镜像。
+Syft 为可下载产物与镜像生成 SPDX JSON SBOM；`generate_release_manifest.py` 流式生成
+`SHA256SUMS` 和机器可读 manifest；`actions/attest` 使用 GitHub OIDC 生成构建来源与 SBOM
+attestation；Cosign 使用短期 OIDC 身份签名容器和校验和文件，不在仓库或 Secrets 中保存长期
+签名私钥。`docs/RELEASING.md` 给出消费者侧验证命令。以上代码只能证明链路定义完整；首次真实
+tag run、GitHub attestation、GHCR digest 和干净机安装报告仍属于发布评分卡中的外部证据。
+
 ---
 
 ## 19. 工程约定

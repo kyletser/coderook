@@ -332,6 +332,7 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [外部接口兼容与弃用策略](docs/COMPATIBILITY.md)
 - [运行手册](RUNBOOK.md)
 - [升级、备份与回滚](docs/UPGRADING.md)
+- [发行、SBOM、签名与验证](docs/RELEASING.md)
 - [威胁模型](docs/THREAT_MODEL.md)
 - [公开 Benchmark 复现](docs/PUBLIC_BENCHMARKS.md)
 - [轻量 Agent 完成度审计](docs/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)

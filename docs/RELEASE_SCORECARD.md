@@ -66,5 +66,6 @@ P95 成本/耗时显著上涨视为失败。资源字段和比较门禁已有离
 - shell sandbox 的禁网/允许联网档位可强制；域名白名单请求在当前后端一律 fail closed，不会静默扩大权限，但尚无按域正向放行的 OS 强制后端。
 - ProcessSupervisor 已把 wall-time、CPU、峰值内存、进程数与采样完整性投影到事件、runtime、统一 TurnReceipt 和 TUI；macOS 当前只保证 wall-time 与完整性标记。
 - README 的 TUI SVG 由真实 Textual 控件与正式事件结构确定性生成；它证明当前界面渲染契约，不代表在线模型效果或真实 benchmark 成绩。
+- Tag release workflow 已配置版本/Changelog/协议/评分卡一致性、三平台 distribution、SPDX SBOM、SHA256SUMS、GitHub OIDC provenance 与 Cosign keyless 签名；评分卡为 NO-GO 时会在推送镜像和创建 Release 前失败，远端产物尚未生成。
 - VS Code 已能生成 VSIX，但尚未完成真实 daemon Extension Host UI 冒烟，也未发布到 Marketplace。
 - 未达到本页全部量化门禁前，不发布 `0.2.0-beta`，也不宣称生产就绪。

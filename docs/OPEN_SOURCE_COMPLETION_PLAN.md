@@ -246,9 +246,9 @@ SWE-bench 完整集资源消耗很大，Beta 门禁只要求标准兼容与固�
 
 | ID | 状态 | 工作项 | 验收证据 |
 |---|---|---|---|
-| OS6-01 | TODO | 建立 tag 驱动 release workflow 与语义化版本规则 | tag、包版本、协议版本和 changelog 一致 |
-| OS6-02 | TODO | 生成 wheel/sdist/portable/VSIX/容器 SBOM 与 checksums | Release 页面可校验每个产物 |
-| OS6-03 | TODO | 使用 GitHub OIDC/provenance 和 Sigstore/Cosign 签名 | 无长期发布密钥，attestation 可验证 |
+| OS6-01 | DONE | 建立评分卡 GO 才可通过的 tag release workflow 与 SemVer/PEP 440 规则 | 脚本校验 tag、Python/VSIX 版本、协议清单、Changelog heading/link；workflow 先跑完整与三平台 distribution gate |
+| OS6-02 | PARTIAL | 为 wheel/sdist/portable/VSIX/容器生成 SPDX SBOM、manifest 与 checksums | 生成脚本和 workflow 合同已完成；首次真实 Release 页面资产待 OS6-04 |
+| OS6-03 | PARTIAL | 使用 GitHub OIDC、actions/attest 与 Cosign keyless 签名下载资产和容器 digest | 无长期发布密钥；本地合同已完成，远端 attestation/bundle 验证待首次 tag |
 | OS6-04 | EXTERNAL | 发布 PyPI 包、GHCR 镜像和 GitHub Release 候选 | 干净机从公开地址安装成功 |
 | OS6-05 | TODO | 配置 branch ruleset、必需检查和依赖更新策略 | main 禁止绕过必要门禁 |
 | OS6-06 | TODO | 建立 roadmap、good first issue、支持渠道和维护边界 | 陌生贡献者可选择并完成一个小任务 |

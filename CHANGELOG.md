@@ -9,6 +9,7 @@
 
 - 开源级补全计划、贡献指南、安全策略、行为准则、支持与治理说明。
 - GitHub Issue/PR 模板与公开仓库一致性门禁。
+- Tag 驱动的版本合同、跨平台发行门禁、SPDX SBOM、checksums、OIDC provenance 与 Cosign keyless 签名流程。
 
 ### Changed
 
