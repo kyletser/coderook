@@ -79,3 +79,9 @@ def test_request_json_retries_transient_read_error(
 
     assert attempts == 3
     assert payload == {"status": "interrupted"}
+
+
+# 功能：验证 Windows 慢 runner 的模型到达窗口保留足够抖动余量
+# 设计：锁定 30 秒下限，同时保持等待函数仍要求真实 request_count 达标而非按时间自动成功
+def test_model_request_timeout_allows_slow_runner_jitter() -> None:
+    assert crash_matrix._MODEL_REQUEST_TIMEOUT_S >= 30.0

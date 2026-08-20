@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 _READ_RETRY_TIMEOUT_S = 15.0
+_MODEL_REQUEST_TIMEOUT_S = 30.0
 _RETRYABLE_READ_STATUSES = frozenset({404, 409, 500, 502, 503, 504})
 
 
@@ -163,12 +164,15 @@ def _request_json(
 
 # 等待阻塞模型确认收到本轮请求，确保强杀发生在活动 turn 内
 def _wait_for_model_request(expected_count: int) -> None:
-    deadline = time.monotonic() + 10.0
+    deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
     with _BlockingModelHandler.request_started:
         while _BlockingModelHandler.request_count < expected_count:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError("model request did not arrive within 10 seconds")
+                raise RuntimeError(
+                    "model request did not arrive within "
+                    f"{_MODEL_REQUEST_TIMEOUT_S:g} seconds"
+                )
             _BlockingModelHandler.request_started.wait(timeout=remaining)
 
 
@@ -279,6 +283,7 @@ def run_matrix(iterations: int, output: Path) -> dict[str, Any]:
             "schema_version": 2,
             "generated_at": datetime.now(UTC).isoformat(),
             "iterations": iterations,
+            "model_request_timeout_s": _MODEL_REQUEST_TIMEOUT_S,
             "completed_iterations": len(results),
             "passed": passed,
             "recovery_rate": passed / iterations if iterations else 0.0,
