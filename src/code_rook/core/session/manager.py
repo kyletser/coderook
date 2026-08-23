@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from code_rook.core.artifacts import (
@@ -107,6 +108,7 @@ class SessionManager:
         self._active_runs: dict[str, _ActiveRun] = {}
         self._skill_loader = SkillLoader()
         workspace = WorkspaceBoundary.current().root
+        self._workspace = workspace.resolve()
         self._artifact_store = ArtifactStore(workspace / ".coderook" / "artifacts")
         self._rehydrate()
 
@@ -167,6 +169,11 @@ class SessionManager:
     # 从磁盘恢复会话索引；active 表示 daemon 在一次 run 中退出，恢复为 interrupted
     def _rehydrate(self) -> None:
         for session in self._store.list_sessions():
+            if not session.workspace:
+                session.workspace = str(self._workspace)
+                self._store.write_meta(session)
+            if Path(session.workspace).resolve() != self._workspace:
+                continue
             if session.status == "active":
                 self._store.recover_incomplete_tail(session.id)
                 session.status = "interrupted"
@@ -194,6 +201,7 @@ class SessionManager:
             created_at=ts,
             updated_at=ts,
             run_ids=[],
+            workspace=str(self._workspace),
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
@@ -470,6 +478,10 @@ class SessionManager:
             if active.session_id == sid and not active.task.done():
                 return run_id
         return None
+
+    # 返回当前 workspace 正在执行的 run 数，供启动器安全切换 daemon 工作目录
+    def active_run_count(self) -> int:
+        return sum(not active.task.done() for active in self._active_runs.values())
 
     async def cancel_run(self, run_id: str) -> str:
         active = self._active_runs.get(run_id)
@@ -777,6 +789,7 @@ class SessionManager:
                 updated_at=ts,
                 run_ids=[],
                 parent_session_id=source.id,
+                workspace=source.workspace,
             )
             self._store.create_fork(source.id, forked)
             self._sessions[fork_id] = forked
@@ -840,6 +853,14 @@ class SessionManager:
                 session = self._store.read_meta(sid)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
                 raise HandlerError(SESSION_NOT_FOUND, "session not found") from None
+            if not session.workspace:
+                session.workspace = str(self._workspace)
+                self._store.write_meta(session)
+            if Path(session.workspace).resolve() != self._workspace:
+                raise HandlerError(
+                    SESSION_NOT_FOUND,
+                    "session belongs to another workspace",
+                )
             if session.status == "active":
                 session.status = "interrupted"
                 self._store.write_meta(session)

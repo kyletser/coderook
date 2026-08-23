@@ -372,6 +372,10 @@ class CoreApp:
             server_version=code_rook.__version__,
             uptime_ms=int((time.monotonic() - self._start_time) * 1000),
             received_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            workspace=str(Path.cwd().resolve()),
+            active_runs=(
+                self._sessions.active_run_count() if self._sessions is not None else 0
+            ),
         )
 
     # 处理 core.shutdown 请求：触发有序关闭流程并立即返回确认
@@ -867,6 +871,7 @@ class CoreApp:
             run_count=len(session.run_ids),
             last_run_id=session.run_ids[-1] if session.run_ids else None,
             parent_session_id=session.parent_session_id,
+            workspace=session.workspace,
         )
 
     # 列出 daemon 已恢复的持久化 sessions

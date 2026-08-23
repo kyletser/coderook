@@ -293,6 +293,44 @@ async def test_resume_rejects_one_shot_session(tmp_path: Path) -> None:
     assert exc.value.code == SESSION_NOT_RESUMABLE
 
 
+# 功能：验证 daemon 只加载当前 workspace 的会话并拒绝恢复其他仓库的 session
+# 设计：在同一全局 SessionStore 写入两个 workspace 的 meta，再切换 cwd 构建 manager 并检查隔离边界
+async def test_session_manager_scopes_sessions_to_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_a = tmp_path / "repo-a"
+    workspace_b = tmp_path / "repo-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    for session_id, workspace in (
+        ("sess-aaaaaaaaaaaa", workspace_a),
+        ("sess-bbbbbbbbbbbb", workspace_b),
+    ):
+        store.write_meta(
+            Session(
+                id=session_id,
+                mode="chat",
+                status="waiting_for_input",
+                title=session_id,
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:00Z",
+                workspace=str(workspace),
+            )
+        )
+    monkeypatch.chdir(workspace_a)
+
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+
+    assert [session.id for session in await manager.list_sessions()] == [
+        "sess-aaaaaaaaaaaa"
+    ]
+    with pytest.raises(HandlerError) as exc:
+        await manager.resume("sess-bbbbbbbbbbbb")
+    assert exc.value.code == SESSION_NOT_FOUND
+
+
 # 功能：发送消息期间把 meta 持久化为 active，供崩溃恢复识别中断 run
 # 设计：阻塞 runner，在完成前读取磁盘状态，再放行并检查最终 waiting 状态
 async def test_send_message_persists_active_state_during_run(tmp_path: Path) -> None:

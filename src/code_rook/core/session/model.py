@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 SessionStatus = Literal["active", "waiting_for_input", "interrupted", "closed"]
 SessionMode = Literal["one_shot", "chat"]
-SESSION_SCHEMA_VERSION = 1
+SESSION_SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -18,6 +18,7 @@ class Session:
     updated_at: str
     run_ids: list[str] = field(default_factory=list)
     parent_session_id: str | None = None
+    workspace: str = ""
 
     # 将 Session 转为可写入 meta.json 的普通 dict
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +32,7 @@ class Session:
             "updated_at": self.updated_at,
             "run_ids": list(self.run_ids),
             "parent_session_id": self.parent_session_id,
+            "workspace": self.workspace,
         }
 
     # 从 meta.json 的 dict 还原 Session 对象
@@ -57,4 +59,5 @@ class Session:
                 if data.get("parent_session_id") is not None
                 else None
             ),
+            workspace=str(data.get("workspace", "")),
         )

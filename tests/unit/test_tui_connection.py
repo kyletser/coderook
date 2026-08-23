@@ -313,6 +313,111 @@ async def test_first_connect_creates_then_reconnect_resumes() -> None:
             pass
 
 
+# 功能：验证 continue 模式优先恢复最近 session，而不是制造新的空会话
+# 设计：fake socket 为 session.list 返回最近记录并保持连接，断言 resume 被调用且 create 未调用
+async def test_continue_recent_resumes_latest_session() -> None:
+    block = asyncio.Event()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _FakeSocket:
+        # 接收连接并保持事件循环存活到测试结束
+        async def connect(self) -> None:
+            return None
+
+        # 关闭 fake socket 不需要释放外部资源
+        async def close(self) -> None:
+            return None
+
+        # 阻塞模拟稳定连接
+        async def run_event_loop(self) -> None:
+            await block.wait()
+
+        # 返回最近会话并记录连接层选择的 IPC 路径
+        async def send_command(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            calls.append((method, params))
+            if method == "session.list":
+                return {"sessions": [{"session_id": "sess-latest"}]}
+            if method == "session.resume":
+                return {
+                    "session": {"session_id": "sess-latest", "title": "Latest"}
+                }
+            if method == "session.get_history":
+                return {"messages": []}
+            return {}
+
+        # 保存事件 handler 不需要主动推送事件
+        def on_event(self, _handler: Any) -> None:
+            return None
+
+    class _FakeApp:
+        # 初始化连接层依赖的最小 continue 状态
+        def __init__(self) -> None:
+            self._client = None
+            self._session_id: str | None = None
+            self._resume_session_id: str | None = None
+            self._continue_recent = True
+            self._replay_run_id: str | None = None
+            self._history_loaded = False
+            self._session_title = ""
+            self._titled = False
+            self._first_user_text = ""
+            self.connected = asyncio.Event()
+
+        # 接受连接状态更新
+        def _update_header(self, _state: str) -> None:
+            return None
+
+        # 模拟 authority 恢复
+        async def _refresh_authority(self) -> None:
+            return None
+
+        # 接收恢复的历史消息
+        def _append_history(self, _messages: list[dict[str, Any]]) -> None:
+            return None
+
+        # 标记连接已可用
+        def _mark_connected(self) -> None:
+            self.connected.set()
+
+        # 标记连接关闭
+        def _mark_disconnected(self) -> None:
+            return None
+
+        # 清理流式块
+        def _break_llm(self) -> None:
+            return None
+
+        # 提供最小 header 控件替身
+        def query_one(self, _selector: str, _cls: Any = None) -> Any:
+            class _Header:
+                # 接受 header 更新
+                def update(self, *_args: Any, **_kwargs: Any) -> None:
+                    return None
+
+            return _Header()
+
+    app = _FakeApp()
+    connection = TuiConnection(
+        app,
+        None,
+        host="127.0.0.1",
+        port=9999,
+        client_factory=lambda *_args, **_kwargs: _FakeSocket(),
+    )
+    task = asyncio.create_task(connection.run())
+    try:
+        await asyncio.wait_for(app.connected.wait(), timeout=1)
+        methods = [method for method, _params in calls]
+        assert "session.list" in methods
+        assert "session.resume" in methods
+        assert "session.create" not in methods
+        assert app._session_id == "sess-latest"
+    finally:
+        block.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # 功能：验证服务器推送事件经 on_event 回调回交给 App
 # 设计：fake client 在 run_event_loop 中触发已注册 handler，断言事件到达 App 回调
 async def test_connection_delivers_events_to_app_callback() -> None:

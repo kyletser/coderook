@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from pathlib import Path
 
 import code_rook
 from code_rook.core.bus.envelope import AUTH_REQUIRED
@@ -66,6 +67,8 @@ async def test_ping_returns_pong(
     assert resp["result"]["server_version"] == code_rook.__version__
     assert resp["result"]["uptime_ms"] >= 0
     assert "received_at" in resp["result"]
+    assert Path(resp["result"]["workspace"]) == Path.cwd().resolve()
+    assert resp["result"]["active_runs"] == 0
 
 
 # 功能：验证调用未注册方法时 daemon 返回 METHOD_NOT_FOUND 错误码（-32601）

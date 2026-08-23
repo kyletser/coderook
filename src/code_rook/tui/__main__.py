@@ -10,7 +10,11 @@ from code_rook.cli.commands.configure import (
     save_provider_config,
     switch_llm_model,
 )
-from code_rook.cli.commands.core import CoreLaunchError, ensure_core_running
+from code_rook.cli.commands.core import (
+    CoreLaunchError,
+    ensure_core_running,
+    validate_core_workspace,
+)
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
 from code_rook.core.llm.route_registry import legacy_config_route
@@ -58,11 +62,13 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     routes = RouteStore()
     active_route = routes.active()
     _setup_logging(config.logging.level)
-    if not args.no_auto_core:
-        try:
+    try:
+        if args.no_auto_core:
+            validate_core_workspace(config)
+        else:
             ensure_core_running(config)
-        except CoreLaunchError as exc:
-            raise SystemExit(f"Core startup error: {exc}") from exc
+    except CoreLaunchError as exc:
+        raise SystemExit(f"Core startup error: {exc}") from exc
     try:
         auth_token = read_ipc_token(Path(config.ipc_token_file))
     except IpcTokenError as exc:
@@ -72,6 +78,7 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         config.port,
         replay_run_id=args.replay,
         resume_session_id=args.resume,
+        continue_recent=args.continue_recent,
         auth_token=auth_token,
         provider=active_route.id if active_route is not None else config.llm.provider,
         model=active_route.model if active_route is not None else config.llm.default_model,
@@ -100,6 +107,12 @@ def main() -> None:
         metavar="SESSION_ID",
         help="Resume a saved chat session",
     )
+    source.add_argument(
+        "--continue",
+        dest="continue_recent",
+        action="store_true",
+        help="Resume the most recently used session in this workspace",
+    )
     parser.add_argument(
         "--no-auto-core",
         action="store_true",
@@ -115,6 +128,7 @@ def main() -> None:
             add_model(current.llm.provider, action.model)
             switch_llm_model(current, action.model)
             args.resume = action.session_id
+            args.continue_recent = False
         elif isinstance(action, ConfigSwitch):
             current = get_config()
             add_models(action.provider, action.models)
@@ -125,6 +139,7 @@ def main() -> None:
                 action.model,
             )
             args.resume = action.session_id
+            args.continue_recent = False
         else:
             break
         from code_rook.cli.commands.core import stop_core

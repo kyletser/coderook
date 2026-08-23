@@ -43,8 +43,8 @@ def test_tui_main_auto_starts_core_before_reading_token(
     app.run.assert_called_once_with()
 
 
-# 功能：--no-auto-core 保留手动管理模式且不会调用自动启动器
-# 设计：使用有效测试 token 和 fake app，断言启动器为零调用但 TUI 仍正常运行
+# 功能：--no-auto-core 保留手动管理模式并校验 Core 绑定当前 workspace
+# 设计：使用有效测试 token 和 fake app，断言不调用自动启动器但必须执行只读 workspace 校验
 def test_tui_main_can_disable_auto_core(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -56,6 +56,8 @@ def test_tui_main_can_disable_auto_core(
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
     ensure = MagicMock()
     monkeypatch.setattr(tui_main, "ensure_core_running", ensure)
+    validate = MagicMock()
+    monkeypatch.setattr(tui_main, "validate_core_workspace", validate)
     monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
     app = MagicMock()
     monkeypatch.setattr(tui_main, "CodeRookTuiApp", MagicMock(return_value=app))
@@ -63,6 +65,30 @@ def test_tui_main_can_disable_auto_core(
     tui_main.main()
 
     ensure.assert_not_called()
+    validate.assert_called_once_with(config)
+    app.run.assert_called_once_with()
+
+
+# 功能：验证 --continue 会传入 TUI，使连接层恢复当前 workspace 最近会话
+# 设计：隔离 daemon、token 和 Textual 边界，检查构造参数而不依赖真实持久 session
+def test_tui_main_passes_continue_recent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.setattr(sys, "argv", ["coderook-tui", "--continue"])
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "_ensure_route_configured", lambda _config: None)
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda _config: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    assert factory.call_args.kwargs["continue_recent"] is True
     app.run.assert_called_once_with()
 
 

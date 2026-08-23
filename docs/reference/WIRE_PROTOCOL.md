@@ -143,6 +143,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `server_version` | `string` | yes |
 | `uptime_ms` | `integer` | yes |
 | `received_at` | `string` | yes |
+| `workspace` | `string` | yes |
+| `active_runs` | `integer` | yes |
 
 ```json
 {
@@ -158,12 +160,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "received_at": {
       "title": "Received At",
       "type": "string"
+    },
+    "workspace": {
+      "title": "Workspace",
+      "type": "string"
+    },
+    "active_runs": {
+      "minimum": 0,
+      "title": "Active Runs",
+      "type": "integer"
     }
   },
   "required": [
     "server_version",
     "uptime_ms",
-    "received_at"
+    "received_at",
+    "workspace",
+    "active_runs"
   ],
   "title": "PongResult",
   "type": "object"
@@ -4880,6 +4893,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Parent Session Id"
+        },
+        "workspace": {
+          "default": "",
+          "title": "Workspace",
+          "type": "string"
         }
       },
       "required": [
@@ -5013,6 +5031,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Parent Session Id"
+        },
+        "workspace": {
+          "default": "",
+          "title": "Workspace",
+          "type": "string"
         }
       },
       "required": [
@@ -5150,6 +5173,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Parent Session Id"
+        },
+        "workspace": {
+          "default": "",
+          "title": "Workspace",
+          "type": "string"
         }
       },
       "required": [
@@ -5286,6 +5314,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Parent Session Id"
+        },
+        "workspace": {
+          "default": "",
+          "title": "Workspace",
+          "type": "string"
         }
       },
       "required": [

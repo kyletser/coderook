@@ -206,6 +206,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         port: int,
         replay_run_id: str | None = None,
         resume_session_id: str | None = None,
+        continue_recent: bool = False,
         auth_token: str | None = None,
         provider: str = "",
         model: str = "",
@@ -218,8 +219,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         super().__init__()
         self._host = host
         self._port = port
+        self._workspace = Path.cwd().resolve()
         self._replay_run_id = replay_run_id
         self._resume_session_id = resume_session_id
+        self._continue_recent = continue_recent
         self._auth_token = auth_token
         self._provider = provider
         self._route = route
@@ -2550,6 +2553,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
+            f"  [dim]repo:{escape(self._workspace.name)}[/dim]"
             f"{session}{model}{mode}{permission}{trust}{ctx}{cost}{goal}"
             f"  [{color}]{state}[/{color}]"
         )

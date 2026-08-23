@@ -78,8 +78,11 @@ async def test_session_create_history_close_over_ipc(
         {"include_closed": True},
         req_id="list",
     )
-    listed_ids = [item["session_id"] for item in listed["result"]["sessions"]]
+    listed_sessions = listed["result"]["sessions"]
+    listed_ids = [item["session_id"] for item in listed_sessions]
     assert session_id in listed_ids
+    listed_session = next(item for item in listed_sessions if item["session_id"] == session_id)
+    assert Path(listed_session["workspace"]) == Path.cwd().resolve()
 
     renamed = await _send_recv(
         reader,

@@ -126,6 +126,14 @@ uv run coderook
 TUI 内输入 `/config` 可以选择 DeepSeek、OpenAI、Anthropic 或硅基流动，输入 API Key 后会探测
 该账号真实可用的模型；选择完成后自动重启 Core 并恢复当前会话。
 
+```powershell
+uv run coderook --continue          # 恢复当前 workspace 最近会话
+uv run coderook --resume SESSION_ID # 恢复指定会话
+```
+
+Core 与 session 都绑定 workspace。若当前空闲 Core 来自另一个仓库，启动器会有序切换到当前目录；
+若另一个仓库仍有活动 run，则拒绝切换并提示先完成或取消，避免 Agent 在错误仓库执行。
+
 `coderook-tui` 入口继续保留。排障或需要手动管理生命周期时，可使用：
 
 ```powershell

@@ -54,7 +54,8 @@ from code_rook.core.state_migration import migrate_legacy_state
 
 # CLI 主入口：无参数启动 TUI，其余参数分发到现有子命令
 def main() -> int:
-    if len(sys.argv) == 1:
+    tui_flags = {"--continue", "--resume", "--replay", "--no-auto-core"}
+    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1] in tui_flags):
         from code_rook.tui.__main__ import main as tui_main
 
         tui_main()

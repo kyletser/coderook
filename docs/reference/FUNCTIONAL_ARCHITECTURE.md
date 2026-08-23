@@ -36,7 +36,9 @@ coderook-core
 5. HTTP API 与 IPC SocketServer。
 
 关闭时按反向依赖顺序停止入口、后台工作和持久资源。进程启动前会探测端口，已有 Core 占用时不会
-静默启动第二个 daemon。
+静默启动第二个 daemon。Core 固定服务其启动目录；TUI 启动器通过 `core.ping` 核对 workspace 和活动
+run 数：同目录复用，其他目录的空闲受管 Core 有序重启，存在活动 run 时拒绝切换。即使使用
+`--no-auto-core`，也必须通过 workspace 一致性校验。
 
 ## 3. 协议与传输
 
@@ -149,11 +151,12 @@ Router 支持 static、rule-based 和 cost-budget 策略；价格未知时成本
 
 CodeRook 使用两类持久状态：
 
-- `~/.coderook/sessions/` 的文件 ledger 是会话运行事实，包含 checksum chain；
+- `~/.coderook/sessions/` 的文件 ledger 是会话运行事实，包含 checksum chain 和规范化 workspace 绑定；
 - `~/.coderook/goals/` 保存 session 级持久 Goal、run 引用、预算、状态机、timeline 和完成证据；
 - `~/.coderook/runtime.db` 是 thread/turn/item/event 的可查询 SQLite 投影。
 
-`core/session/` 负责 transcript、恢复、分叉、导出和损坏检测；
+`core/session/` 负责 transcript、按 workspace 隔离的列表/恢复/分叉、导出和损坏检测；`coderook --continue`
+只选择当前 workspace 最近更新的 session，不存在历史会话时创建新 session。
 `core/runtime/` 负责 durable API 投影和启动对账。Turn Receipt 只从已持久化记录重建，不能证明的
 字段列为 unavailable。
 

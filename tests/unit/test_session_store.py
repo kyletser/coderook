@@ -29,6 +29,7 @@ def test_meta_roundtrip(tmp_path: Path) -> None:
         created_at="t1",
         updated_at="t2",
         run_ids=["run-1"],
+        workspace=str(tmp_path),
     )
     store.write_meta(session)
     loaded = store.read_meta("sess-1")

@@ -24,6 +24,18 @@ def test_no_arguments_launches_tui(
     assert migrated == []
 
 
+# 功能：验证 coderook --continue 直接委托 TUI 的最近会话恢复入口
+# 设计：保留原始 argv 并替换 TUI main，确认该顶层体验参数不会落入旧 CLI argparse
+def test_continue_flag_launches_tui(monkeypatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr(sys, "argv", ["coderook", "--continue"])
+    monkeypatch.setattr(tui_main, "main", lambda: launched.append(list(sys.argv)))
+
+    cli_main.main()
+
+    assert launched == [["coderook", "--continue"]]
+
+
 # 功能：验证带参数的 coderook 仍由原 CLI 分发器处理
 # 设计：使用无配置依赖的 --version 路径，断言旧迁移和版本命令各执行一次且不会启动 TUI
 def test_explicit_arguments_keep_cli_dispatch(

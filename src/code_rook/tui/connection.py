@@ -140,7 +140,20 @@ class TuiConnection:
                 if getattr(self._app, "_replay_run_id", None) is not None:
                     params["replay_from_run"] = self._app._replay_run_id
                 await client.send_command("event.subscribe", params)
-                if self._app._resume_session_id is None:
+                resume_session_id = self._app._resume_session_id
+                if resume_session_id is None and getattr(
+                    self._app,
+                    "_continue_recent",
+                    False,
+                ):
+                    recent = await client.send_command(
+                        "session.list",
+                        {"include_closed": False, "limit": 1},
+                    )
+                    sessions = recent.get("sessions", [])
+                    if sessions and isinstance(sessions[0], dict):
+                        resume_session_id = str(sessions[0].get("session_id", "")) or None
+                if resume_session_id is None:
                     created = await client.send_command("session.create", {"mode": "chat"})
                     self._app._session_id = str(created["session_id"])
                     self._app._resume_session_id = self._app._session_id
@@ -152,7 +165,7 @@ class TuiConnection:
                 else:
                     resumed = await client.send_command(
                         "session.resume",
-                        {"session_id": self._app._resume_session_id},
+                        {"session_id": resume_session_id},
                     )
                     resumed_info = resumed.get("session", {})
                     resumed_title = (
@@ -161,6 +174,7 @@ class TuiConnection:
                         else ""
                     )
                     self._app._session_id = str(resumed["session"]["session_id"])
+                    self._app._resume_session_id = self._app._session_id
                     self._app._session_title = resumed_title
                     self._app._titled = bool(
                         resumed_title and resumed_title != "Untitled"

@@ -30,6 +30,8 @@ class PongResult(BaseModel):
     server_version: str
     uptime_ms: int
     received_at: str  # ISO 8601
+    workspace: str
+    active_runs: int = Field(ge=0)
 
 
 class CoreAuthenticateCommand(BaseModel):
@@ -407,6 +409,7 @@ class SessionInfo(BaseModel):
     run_count: int
     last_run_id: str | None = None
     parent_session_id: str | None = None
+    workspace: str = ""
 
 
 class SessionListCommand(BaseModel):

@@ -50,6 +50,10 @@ uv run coderook
 无参数 `coderook` 启动 TUI，并自动复用或启动本地 Core。没有可用模型配置时也会进入 TUI，
 不会强制打开配置向导；输入 `/config` 后再配置即可。
 
+使用 `uv run coderook --continue` 可恢复当前 workspace 最近会话；使用
+`uv run coderook --resume SESSION_ID` 可恢复指定会话。Core 与 session 都绑定 workspace：切换仓库时，
+空闲的受管 Core 会自动重启到当前目录；如果旧仓库仍有活动 run，CodeRook 会拒绝切换，避免串到错误仓库。
+
 Core 默认监听：
 
 - `127.0.0.1:7437`：CLI/TUI 使用的 JSON-RPC/NDJSON IPC；
@@ -288,7 +292,7 @@ Prompt 和业务数据。
 
 升级或迁移前按[升级与回滚指南](UPGRADING.md)备份这些状态。
 
-退出 TUI 不等于停止 Core。Core 可继续持有会话、worker 和后台任务；完全停止请运行
+退出 TUI 不等于停止 Core。Core 可继续持有当前 workspace 的会话、worker 和后台任务；完全停止请运行
 `uv run coderook core stop`。
 
 ## 常见问题
