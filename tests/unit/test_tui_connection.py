@@ -11,12 +11,17 @@ from code_rook.tui.connection import TuiConnection
 # 设计：让 fake client 在 connect 阶段抛出 ConnectionRefusedError，等首次状态回调后取消重试循环
 async def test_initial_connection_refusal_marks_app_disconnected() -> None:
     attempted = asyncio.Event()
+    closed = asyncio.Event()
 
     class _RefusingSocket:
         # 模拟目标端口没有监听并通知测试首次尝试已经发生
         async def connect(self) -> None:
             attempted.set()
             raise ConnectionRefusedError
+
+        # 记录失败握手后的客户端资源清理
+        async def close(self) -> None:
+            closed.set()
 
     class _FakeApp:
         # 初始化断线状态与产品提示记录
@@ -62,7 +67,13 @@ async def test_initial_connection_refusal_marks_app_disconnected() -> None:
             await asyncio.sleep(0)
         assert app.states == ["disconnected"]
         assert app.disconnected == 1
-        assert app.problems == [("unreachable", "cannot connect to 127.0.0.1:9999")]
+        assert closed.is_set()
+        assert app.problems == [
+            (
+                "unreachable",
+                "cannot connect to 127.0.0.1:9999; automatic recovery is disabled",
+            )
+        ]
     finally:
         task.cancel()
         try:
@@ -318,6 +329,7 @@ async def test_first_connect_creates_then_reconnect_resumes() -> None:
 async def test_continue_recent_resumes_latest_session() -> None:
     block = asyncio.Event()
     calls: list[tuple[str, dict[str, Any]]] = []
+    session_notices: list[tuple[str, str, str, int | None]] = []
 
     class _FakeSocket:
         # 接收连接并保持事件循环存活到测试结束
@@ -379,6 +391,16 @@ async def test_continue_recent_resumes_latest_session() -> None:
         def _mark_connected(self) -> None:
             self.connected.set()
 
+        # 记录连接层对最近会话恢复结果的产品提示
+        def _show_session_ready(
+            self,
+            action: str,
+            session_id: str,
+            title: str,
+            history_count: int | None,
+        ) -> None:
+            session_notices.append((action, session_id, title, history_count))
+
         # 标记连接关闭
         def _mark_disconnected(self) -> None:
             return None
@@ -412,6 +434,123 @@ async def test_continue_recent_resumes_latest_session() -> None:
         assert "session.resume" in methods
         assert "session.create" not in methods
         assert app._session_id == "sess-latest"
+        assert session_notices == [("resumed", "sess-latest", "Latest", 0)]
+    finally:
+        block.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+# 功能：验证受管 TUI 在 Core 拒绝连接后会自动启动服务并恢复连接
+# 设计：首个 fake socket 拒绝连接、恢复回调置位，第二个保持在线，断言无需用户重启即可进入 ready
+async def test_connection_refusal_recovers_managed_core() -> None:
+    block = asyncio.Event()
+    recovered = asyncio.Event()
+    connected = asyncio.Event()
+    problems: list[tuple[str, str]] = []
+    attempts = 0
+
+    class _FakeSocket:
+        # 记录当前连接序号，第一次模拟崩溃后的端口拒绝
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        # 首次连接失败，自动恢复后的连接成功
+        async def connect(self) -> None:
+            if self.index == 0:
+                raise ConnectionRefusedError
+
+        # fake 关闭不持有外部资源
+        async def close(self) -> None:
+            return None
+
+        # 第二次连接保持存活直到测试结束
+        async def run_event_loop(self) -> None:
+            await block.wait()
+
+        # 返回创建会话与连接初始化所需的最小响应
+        async def send_command(self, method: str, _params: dict[str, Any]) -> dict[str, Any]:
+            if method == "session.create":
+                return {"session_id": "sess-recovered"}
+            return {}
+
+        # 测试不主动推送事件
+        def on_event(self, _handler: Any) -> None:
+            return None
+
+    class _FakeApp:
+        # 初始化自动恢复与新会话所需状态
+        def __init__(self) -> None:
+            self._client = None
+            self._session_id: str | None = None
+            self._resume_session_id: str | None = None
+            self._replay_run_id: str | None = None
+            self._history_loaded = False
+            self._session_title = ""
+            self._titled = False
+            self._first_user_text = ""
+            self._core_recovery = self.recover
+
+        # 模拟启动器成功派生新 Core
+        def recover(self) -> bool:
+            recovered.set()
+            return True
+
+        # 接收连接状态而不依赖 Textual
+        def _update_header(self, _state: str) -> None:
+            return None
+
+        # 记录自动恢复提示
+        def _show_connection_problem(self, kind: str, detail: str) -> None:
+            problems.append((kind, detail))
+
+        # 模拟会话权限恢复
+        async def _refresh_authority(self) -> None:
+            return None
+
+        # 标记连接已经恢复
+        def _mark_connected(self) -> None:
+            connected.set()
+
+        # 接收断线状态
+        def _mark_disconnected(self) -> None:
+            return None
+
+        # fake 流式块无需清理
+        def _break_llm(self) -> None:
+            return None
+
+        # 提供 header 替身
+        def query_one(self, _selector: str, _cls: Any = None) -> Any:
+            class _Header:
+                # 接收 markup 更新
+                def update(self, *_args: Any, **_kwargs: Any) -> None:
+                    return None
+
+            return _Header()
+
+    # 每次连接构造递增序号，精确模拟一次失败后成功
+    def factory(*_args: Any, **_kwargs: Any) -> _FakeSocket:
+        nonlocal attempts
+        socket = _FakeSocket(attempts)
+        attempts += 1
+        return socket
+
+    app = _FakeApp()
+    connection = TuiConnection(
+        app,
+        None,
+        host="127.0.0.1",
+        port=9999,
+        client_factory=factory,
+    )
+    task = asyncio.create_task(connection.run())
+    try:
+        await asyncio.wait_for(recovered.wait(), timeout=1)
+        await asyncio.wait_for(connected.wait(), timeout=1)
+        assert attempts == 2
+        assert app._session_id == "sess-recovered"
+        assert problems == [("recovering", "started a new Core")]
     finally:
         block.set()
         task.cancel()

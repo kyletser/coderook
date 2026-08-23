@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import shlex
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -215,6 +216,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         route_store: RouteStore | None = None,
         credential_store: CredentialStore | None = None,
         provider_doctor: ProviderDoctor | None = None,
+        core_recovery: Callable[[], object] | None = None,
     ) -> None:
         super().__init__()
         self._host = host
@@ -235,6 +237,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._credential_store,
         )
         self._provider_doctor = provider_doctor or ProviderDoctor()
+        self._core_recovery = core_recovery
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
         self._discovered_config_models: tuple[str, ...] = ()
@@ -347,13 +350,52 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 f"[dim]{safe_detail}[/dim]\n"
                 "[dim]确认 daemon 与 TUI 使用同一 ipc-token；修复后会自动重试。[/dim]"
             )
+        elif kind == "recovering":
+            message = (
+                "[bold green]Core restarted[/bold green]  "
+                f"[dim]{safe_detail}；正在恢复当前会话。[/dim]"
+            )
+        elif kind == "protocol":
+            message = (
+                "[bold red]Core request failed[/bold red]  "
+                f"[dim]{safe_detail}[/dim]\n"
+                "[dim]检查 session ID 与客户端版本；必要时运行 "
+                "coderook core restart。[/dim]"
+            )
         else:
             message = (
                 "[bold yellow]Core unavailable[/bold yellow]  "
                 f"[dim]{safe_detail}[/dim]\n"
-                "[dim]输入暂不可用；启动 coderook-core 后本界面会自动重连。[/dim]"
+                "[dim]输入暂不可用；运行 coderook core start 后本界面会自动重连。[/dim]"
             )
         self._show_product_notice(f"connection:{kind}", message)
+
+    # 显示会话新建、首次恢复或断线续接结果，让用户明确当前上下文来源
+    def _show_session_ready(
+        self,
+        action: str,
+        session_id: str,
+        title: str,
+        history_count: int | None,
+    ) -> None:
+        labels = {
+            "created": "New session",
+            "resumed": "Session resumed",
+            "reconnected": "Session reconnected",
+        }
+        label = labels.get(action, "Session ready")
+        short_id = escape(session_id)
+        title_text = f"  [bold]{escape(title)}[/bold]" if title else ""
+        history_text = (
+            f"  [dim]{history_count} history message(s)[/dim]"
+            if history_count is not None
+            else ""
+        )
+        message = f"[cyan]{label}[/cyan]  [dim]{short_id}[/dim]{title_text}{history_text}"
+        if action == "reconnected":
+            self._append(Static(message, classes="log-line"))
+        else:
+            self._show_product_notice(f"session:{action}:{session_id}", message)
 
     # 连接恢复后允许未来的新一轮故障再次显示一次说明
     def _clear_connection_problems(self) -> None:

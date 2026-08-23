@@ -122,6 +122,8 @@ uv run coderook
 ```
 
 无参数 `coderook` 会进入 TUI，并自动复用已有 Core；若 Core 未运行，则在后台启动并等待认证就绪。
+受管 Core 在 TUI 使用期间意外退出时，连接层会自动重新启动它并恢复原 session；顶栏与 transcript 会明确
+显示当前仓库、会话新建/恢复和断线续接状态。`--no-auto-core` 不执行自动恢复。
 首次没有可用 LLM 配置时仍会直接进入 TUI，不强制弹出配置向导；空状态会提示使用 `/config`。
 TUI 内输入 `/config` 可以选择 DeepSeek、OpenAI、Anthropic 或硅基流动，输入 API Key 后会探测
 该账号真实可用的模型；选择完成后自动重启 Core 并恢复当前会话。

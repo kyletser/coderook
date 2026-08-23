@@ -40,6 +40,9 @@ def test_tui_main_auto_starts_core_before_reading_token(
     tui_main.main()
 
     assert calls == ["core", "token"]
+    assert callable(
+        tui_main.CodeRookTuiApp.call_args.kwargs["core_recovery"]
+    )
     app.run.assert_called_once_with()
 
 
@@ -66,6 +69,7 @@ def test_tui_main_can_disable_auto_core(
 
     ensure.assert_not_called()
     validate.assert_called_once_with(config)
+    assert tui_main.CodeRookTuiApp.call_args.kwargs["core_recovery"] is None
     app.run.assert_called_once_with()
 
 

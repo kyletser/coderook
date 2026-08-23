@@ -1761,7 +1761,26 @@ def test_connection_problem_notice_deduplicates_until_recovery() -> None:
 
     output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
     assert output.count("Core unavailable") == 2
-    assert "coderook-core" in output
+    assert "coderook core start" in output
+
+
+# 功能：验证 TUI 明确区分新建、恢复与断线重连会话，并避免首次提示重复
+# 设计：直接收集产品提示控件，重复发送新建事件后再发送重连事件，覆盖去重和可见恢复反馈
+def test_session_ready_notice_describes_context_source() -> None:
+    appended: list[Widget] = []
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._show_session_ready("created", "sess-1", "", 0)
+    app._show_session_ready("created", "sess-1", "", 0)
+    app._show_session_ready("resumed", "sess-2", "修复登录", 4)
+    app._show_session_ready("reconnected", "sess-2", "修复登录", None)
+
+    output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
+    assert output.count("New session") == 1
+    assert "Session resumed" in output
+    assert "4 history message(s)" in output
+    assert "Session reconnected" in output
 
 
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式

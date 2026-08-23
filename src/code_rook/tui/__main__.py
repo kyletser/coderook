@@ -88,6 +88,9 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         ),
         route=active_route.id if active_route is not None else "",
         route_store=routes,
+        core_recovery=(
+            None if args.no_auto_core else lambda: ensure_core_running(config)
+        ),
     )
     return app.run()
 

@@ -50,6 +50,10 @@ uv run coderook
 无参数 `coderook` 启动 TUI，并自动复用或启动本地 Core。没有可用模型配置时也会进入 TUI，
 不会强制打开配置向导；输入 `/config` 后再配置即可。
 
+TUI 会显示会话是新建、从历史恢复，还是断线后重新连接。由 CodeRook 管理的 Core 若在使用中意外退出，
+TUI 会尝试在后台重新启动并恢复同一 session；`--no-auto-core` 表示生命周期完全由用户管理，因此只重试连接，
+不会启动进程。
+
 使用 `uv run coderook --continue` 可恢复当前 workspace 最近会话；使用
 `uv run coderook --resume SESSION_ID` 可恢复指定会话。Core 与 session 都绑定 workspace：切换仓库时，
 空闲的受管 Core 会自动重启到当前目录；如果旧仓库仍有活动 run，CodeRook 会拒绝切换，避免串到错误仓库。
@@ -304,6 +308,9 @@ uv run coderook core status
 uv run coderook core restart
 uv run coderook ping
 ```
+
+默认受管模式会尝试自动恢复 Core；如果 transcript 显示 `automatic restart failed`，按提示运行上述命令并查看
+`~/.coderook/logs/core.log`。手动 `--no-auto-core` 模式显示 `automatic recovery is disabled` 属于预期行为。
 
 ### 7437 或 7438 被占用
 

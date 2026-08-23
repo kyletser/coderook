@@ -11,6 +11,8 @@ uv run coderook-tui
 TUI 会自动启动或复用监听 `127.0.0.1:7437` 的 Core daemon。daemon 与 session 绑定启动时的
 workspace；从另一个仓库启动时，空闲的受管 daemon 会自动切换，存在活动 run 时则拒绝切换。
 退出 TUI 不会停止 daemon；使用 `uv run coderook --continue` 可恢复当前 workspace 最近会话。
+受管 daemon 在 TUI 在线期间意外退出时，连接层会在线程中再次调用安全启动器并恢复同一 session；
+`--no-auto-core` 不执行该自动恢复。
 
 ### 手动管理 Core
 
@@ -171,5 +173,6 @@ tail -f ~/.coderook/logs/core.log
 | `core already running at 127.0.0.1:7437` | 已有守护进程在运行 | `uv run coderook core stop` |
 | `Core is busy in another workspace` | 另一仓库仍有活动 run | 回到该仓库完成或取消 run，再从当前仓库启动 |
 | `core not running` | 手动模式下未启动守护进程 | 直接运行 `uv run coderook-tui`，或先执行 `uv run coderook core start` |
+| `automatic restart failed` | TUI 检测到 Core 退出，但安全启动器未能恢复 | 运行 `uv run coderook core status`，再查看 `~/.coderook/logs/core.log` |
 | `Address already in use` | 端口被其他进程占用 | `CODEROOK_PORT=8000 uv run coderook-core` |
 | `Config error: CODEROOK_PORT must be an integer` | `.env` 或环境变量中端口值非整数 | 检查 `CODEROOK_PORT` 的值 |

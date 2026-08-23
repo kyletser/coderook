@@ -89,6 +89,43 @@ class TuiConnection:
         if inspect.isawaitable(result):
             await result
 
+    # 尝试在线程中启动受管 Core，避免同步启动探针阻塞 Textual 事件循环
+    async def _recover_core(self) -> tuple[bool, str]:
+        callback = getattr(self._app, "_core_recovery", None)
+        if not callable(callback):
+            return False, "automatic recovery is disabled"
+        try:
+            started = await asyncio.to_thread(callback)
+        except Exception as exc:
+            log.exception("automatic Core recovery failed")
+            return False, f"automatic restart failed: {exc}"
+        action = "started a new Core" if started else "Core became available"
+        return True, action
+
+    # 通知真实 App 当前会话来自新建、首次恢复或断线重连，同时兼容测试替身
+    def _show_session_ready(
+        self,
+        action: str,
+        session_id: str,
+        title: str,
+        history_count: int | None,
+    ) -> None:
+        callback = getattr(self._app, "_show_session_ready", None)
+        if callable(callback):
+            callback(action, session_id, title, history_count)
+
+    # 关闭握手阶段创建的客户端；测试替身或旧实现没有 close 时安全跳过
+    async def _close_client(self, client: Any) -> None:
+        close = getattr(client, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except OSError:
+            log.debug("client close failed during connection cleanup", exc_info=True)
+
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连、会话恢复
     async def run(self) -> None:
         header = self._app.query_one("#header", Label)
@@ -102,16 +139,23 @@ class TuiConnection:
                 await client.connect()
             except (ConnectionRefusedError, OSError):
                 log.warning("connection refused %s:%s, retrying", self._host, self._port)
+                await self._close_client(client)
                 self._app._update_header("disconnected")
                 self._app._mark_disconnected()
-                self._show_connection_problem(
-                    "unreachable",
-                    f"cannot connect to {self._host}:{self._port}",
-                )
-                await asyncio.sleep(2)
+                recovered, detail = await self._recover_core()
+                if recovered:
+                    self._show_connection_problem("recovering", detail)
+                    await asyncio.sleep(0.1)
+                else:
+                    self._show_connection_problem(
+                        "unreachable",
+                        f"cannot connect to {self._host}:{self._port}; {detail}",
+                    )
+                    await asyncio.sleep(2)
                 continue
             except IpcError as exc:
                 log.error("IPC authentication failed: %s", exc)
+                await self._close_client(client)
                 header.update(
                     f"[bold]CodeRook[/bold]  [red]authentication failed: {exc}[/red]"
                 )
@@ -141,6 +185,9 @@ class TuiConnection:
                     params["replay_from_run"] = self._app._replay_run_id
                 await client.send_command("event.subscribe", params)
                 resume_session_id = self._app._resume_session_id
+                reconnecting = bool(
+                    resume_session_id is not None and self._app._history_loaded
+                )
                 if resume_session_id is None and getattr(
                     self._app,
                     "_continue_recent",
@@ -162,6 +209,12 @@ class TuiConnection:
                     self._app._titled = False
                     self._app._first_user_text = ""
                     log.info("session created session_id=%s", self._app._session_id)
+                    self._show_session_ready(
+                        "created",
+                        self._app._session_id,
+                        "",
+                        0,
+                    )
                 else:
                     resumed = await client.send_command(
                         "session.resume",
@@ -180,18 +233,27 @@ class TuiConnection:
                         resumed_title and resumed_title != "Untitled"
                     )
                     log.info("session resumed session_id=%s", self._app._session_id)
+                    history_count: int | None = None
                     if not self._app._history_loaded:
                         history = await client.send_command(
                             "session.get_history",
                             {"session_id": self._app._session_id},
                         )
-                        self._app._append_history(history.get("messages", []))
+                        history_messages = history.get("messages", [])
+                        self._app._append_history(history_messages)
                         self._app._history_loaded = True
+                        history_count = len(history_messages)
+                    self._show_session_ready(
+                        "reconnected" if reconnecting else "resumed",
+                        self._app._session_id,
+                        resumed_title,
+                        history_count,
+                    )
                 await self._app._refresh_authority()
                 await self._refresh_goal_state()
                 self._app._mark_connected()
                 await loop_task
-            except IpcError as e:
+            except (IpcError, KeyError, TypeError, ValueError, OSError) as e:
                 header.update(f"[bold]CodeRook[/bold]  [red]subscribe error: {e}[/red]")
                 self._show_connection_problem("protocol", str(e))
             finally:
