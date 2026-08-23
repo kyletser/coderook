@@ -793,12 +793,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             await cmd.handler(self, event.text_area, content)
             return
         if self._busy:
-            event.text_area.text = ""
             if self._client is None or self._active_run_id is None:
                 self._append(
-                    Static("[yellow]run 正在启动，请稍后再输入纠偏[/yellow]", classes="log-line")
+                    Static(
+                        "[yellow]run 正在启动；当前输入已保留，稍后再按 Enter 发送[/yellow]",
+                        classes="log-line",
+                    )
                 )
                 return
+            event.text_area.text = ""
             self._append(
                 Static(
                     f"[bold magenta]steer >[/bold magenta] {escape(content)}",
@@ -936,6 +939,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 发送 Goal IPC 命令、更新顶栏状态并渲染可审计摘要
     async def _do_goal_command(self, action: str, value: str = "") -> None:
         if self._client is None or self._session_id is None:
+            if action in {"create", "resume"}:
+                self._busy = False
+                draft = f"/goal {value}" if action == "create" else "/goal resume"
+                self._restore_unsent_draft(draft, "连接中 · Goal 输入已恢复")
+                self._update_header("disconnected")
             return
         method = f"goal.{action}"
         params: dict[str, object] = {"session_id": self._session_id}
@@ -978,11 +986,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     )
                     self._update_header("running" if self._busy else "ready")
         except (IpcError, RuntimeError, OSError) as exc:
-            self._append(Static(f"[red]goal error: {exc}[/red]", classes="log-line"))
+            self._append(
+                Static(
+                    f"[red]goal error: {escape(str(exc))}[/red]",
+                    classes="log-line",
+                )
+            )
             if action in {"create", "resume"}:
                 self._busy = False
                 self._update_header("ready")
-                self._restore_ready_prompt()
+                draft = f"/goal {value}" if action == "create" else "/goal resume"
+                self._restore_unsent_draft(draft, "Goal 发送失败 · 输入已恢复")
 
     # 把 Goal 字典同步为 TUI 顶栏所需的最小状态
     def _apply_goal_state(self, goal: dict[str, Any]) -> None:
@@ -1087,6 +1101,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             else:
                 prompt.border_title = _PROMPT_READY
             prompt.focus()
+
+    # 恢复未被 Core 确认接收的草稿；已有新输入时不覆盖，断线期间保持禁用
+    def _restore_unsent_draft(self, draft: str, border_title: str) -> bool:
+        prompt = self._prompt()
+        if prompt is None:
+            return False
+        restored = False
+        if draft and not prompt.text.strip():
+            prompt.text = draft
+            restored = True
+        prompt.disabled = self._client is None
+        prompt.read_only = False
+        prompt.border_title = border_title
+        if not prompt.disabled:
+            prompt.focus()
+        return restored
 
     # 将 Core 返回的四维 authority 快照映射到 TUI 状态
     def _apply_authority_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -2199,6 +2229,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         attachments: list[dict[str, object]] | None = None,
     ) -> None:
         if self._client is None:
+            for attachment in attachments or []:
+                if attachment not in self._pending_image_attachments:
+                    self._pending_image_attachments.append(attachment)
+            self._busy = False
+            self._active_run_id = None
+            self._restore_unsent_draft(content, "连接中 · 原输入已恢复")
+            self._update_header("disconnected")
+            self._append(
+                Static(
+                    "[red]send error: Core connection was lost before submission[/red]",
+                    classes="log-line",
+                )
+            )
             return
         try:
             params: dict[str, object] = {
@@ -2217,17 +2260,28 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if attachment not in self._pending_image_attachments:
                     self._pending_image_attachments.append(attachment)
             self._busy = False
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = False
-                prompt.read_only = False
-                prompt.border_title = _PROMPT_READY
-            self._update_header("ready")
-            self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
+            self._active_run_id = None
+            restored = self._restore_unsent_draft(content, "发送失败 · 原输入已恢复")
+            state = "ready" if self._client is not None else "disconnected"
+            self._update_header(state)
+            suffix = "" if restored else "；当前草稿未覆盖，原请求保留在 transcript"
+            self._append(
+                Static(
+                    f"[red]send error: {escape(str(e))}{suffix}[/red]",
+                    classes="log-line",
+                )
+            )
 
     # 将用户运行中纠偏发送给当前活动 run
     async def _do_steer(self, run_id: str, content: str) -> None:
         if self._client is None:
+            self._restore_unsent_draft(content, "连接中 · 纠偏输入已恢复")
+            self._append(
+                Static(
+                    "[red]steering error: Core connection was lost[/red]",
+                    classes="log-line",
+                )
+            )
             return
         try:
             await self._client.send_command(
@@ -2239,11 +2293,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.border_title = "补充要求已发送"
                 prompt.focus()
         except (IpcError, RuntimeError, OSError) as exc:
-            self._append(Static(f"[red]steering error: {exc}[/red]", classes="log-line"))
+            restored = self._restore_unsent_draft(
+                content,
+                "纠偏发送失败 · 输入已恢复",
+            )
+            suffix = "" if restored else "；当前草稿未覆盖"
+            self._append(
+                Static(
+                    f"[red]steering error: {escape(str(exc))}{suffix}[/red]",
+                    classes="log-line",
+                )
+            )
 
     # 将选项或自由文本答案发送给挂起的结构化问题
     async def _do_answer_question(self, question_id: str, answer: str) -> None:
         if self._client is None:
+            self._answering_question = True
+            self._restore_unsent_draft(answer, _PROMPT_QUESTION)
             return
         try:
             await self._client.send_command(
@@ -2259,12 +2325,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.focus()
         except (IpcError, RuntimeError, OSError) as exc:
             self._answering_question = True
-            self._append(Static(f"[red]question answer error: {exc}[/red]", classes="log-line"))
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = False
-                prompt.border_title = _PROMPT_QUESTION
-                prompt.focus()
+            self._append(
+                Static(
+                    f"[red]question answer error: {escape(str(exc))}[/red]",
+                    classes="log-line",
+                )
+            )
+            self._restore_unsent_draft(answer, _PROMPT_QUESTION)
 
     # 处理结构化问题选项；自由回答分支把焦点交给主输入框
     async def on_user_question_select_answered(

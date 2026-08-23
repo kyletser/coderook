@@ -28,6 +28,7 @@
 
 ### Fixed
 
+- TUI 在任务、运行中纠偏、Goal 或问题回答发送失败时恢复草稿与附件；run 启动窗口不再清空提前输入的纠偏。
 - Provider 诊断失败返回非零退出码。
 - Benchmark `--help` 的百分号格式化错误。
 - Windows 事件回放、wheel 冷启动和 Git racy-clean 相关竞态。

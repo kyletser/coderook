@@ -1998,6 +1998,151 @@ async def test_busy_input_steers_active_run() -> None:
         assert prompt.border_title == "补充要求已发送"
 
 
+# 功能：验证 run 尚未返回 ID 时提交的纠偏草稿不会被清空
+# 设计：保持 busy 但不设置 active_run_id，直接提交 fake 输入并断言文本原样保留且未调度 IPC
+async def test_starting_run_preserves_steer_draft() -> None:
+    appended: list[Widget] = []
+
+    class _FakeArea:
+        text = "不要修改数据库"
+
+        # fake 输入历史无需持久化
+        def record_history(self, _content: str) -> None:
+            return None
+
+    class _FakeEvent:
+        value = "不要修改数据库"
+        text_area = _FakeArea()
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._busy = True
+    app._client = object()  # type: ignore[assignment]
+    app._active_run_id = None
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    await app.on_chat_text_area_submitted(_FakeEvent())  # type: ignore[arg-type]
+
+    assert _FakeEvent.text_area.text == "不要修改数据库"
+    assert "当前输入已保留" in str(getattr(appended[0], "content", ""))
+
+
+# 功能：验证首条任务发送失败时恢复文字草稿、图片附件和可交互输入状态
+# 设计：让 fake IPC 抛出 RuntimeError，并用空输入框确认恢复逻辑不会依赖真实 Textual worker
+async def test_send_failure_restores_draft_and_attachments() -> None:
+    appended: list[Widget] = []
+    states: list[str] = []
+    attachment = {"sha256": "abc", "media_type": "image/png", "size": 3}
+
+    class _FailingClient:
+        # 模拟 Core 在确认消息前断开
+        async def send_command(
+            self,
+            _method: str,
+            _params: dict[str, object],
+        ) -> dict[str, object]:
+            raise RuntimeError("connection closed")
+
+    class _FakePrompt:
+        text = ""
+        disabled = False
+        read_only = False
+        border_title = "running"
+        focused = False
+
+        # 记录恢复后输入框重新获得焦点
+        def focus(self) -> None:
+            self.focused = True
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    prompt = _FakePrompt()
+    app._client = _FailingClient()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    app._busy = True
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._update_header = lambda state: states.append(state)  # type: ignore[method-assign]
+
+    await app._do_send_message("修复登录", attachments=[attachment])
+
+    assert not app._busy
+    assert prompt.text == "修复登录"
+    assert prompt.border_title == "发送失败 · 原输入已恢复"
+    assert prompt.focused
+    assert app._pending_image_attachments == [attachment]
+    assert states == ["ready"]
+    assert "connection closed" in str(getattr(appended[-1], "content", ""))
+
+
+# 功能：验证运行中纠偏发送失败时恢复纠偏草稿且不终止原 run
+# 设计：复用失败 IPC 边界并保持 busy，断言用户可直接再次按 Enter 而不会丢失纠偏内容
+async def test_steer_failure_restores_draft_without_ending_run() -> None:
+    class _FailingClient:
+        # 模拟 steer 命令未被 Core 接收
+        async def send_command(
+            self,
+            _method: str,
+            _params: dict[str, object],
+        ) -> dict[str, object]:
+            raise RuntimeError("queue unavailable")
+
+    class _FakePrompt:
+        text = ""
+        disabled = False
+        read_only = False
+        border_title = "running"
+        focused = False
+
+        # 记录纠偏草稿恢复后的焦点
+        def focus(self) -> None:
+            self.focused = True
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    prompt = _FakePrompt()
+    app._client = _FailingClient()  # type: ignore[assignment]
+    app._busy = True
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._append = lambda _widget: None  # type: ignore[method-assign]
+
+    await app._do_steer("run-1", "保留旧接口")
+
+    assert app._busy
+    assert prompt.text == "保留旧接口"
+    assert prompt.border_title == "纠偏发送失败 · 输入已恢复"
+    assert prompt.focused
+
+
+# 功能：验证 Goal 创建在断线竞态中恢复为可重试命令并解除 busy
+# 设计：在 worker 执行前移除 client，确认早退路径不会留下永久忙碌状态或吞掉目标文本
+async def test_goal_create_disconnect_restores_command_draft() -> None:
+    states: list[str] = []
+
+    class _FakePrompt:
+        text = ""
+        disabled = False
+        read_only = False
+        border_title = "running"
+
+        # 断线状态下不应触发焦点，但保留兼容接口
+        def focus(self) -> None:
+            raise AssertionError("disconnected prompt must stay disabled")
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    prompt = _FakePrompt()
+    app._client = None
+    app._session_id = "sess-1"
+    app._busy = True
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._update_header = lambda state: states.append(state)  # type: ignore[method-assign]
+
+    await app._do_goal_command("create", "完成发布检查")
+
+    assert not app._busy
+    assert prompt.text == "/goal 完成发布检查"
+    assert prompt.disabled
+    assert prompt.border_title == "连接中 · Goal 输入已恢复"
+    assert states == ["disconnected"]
+
+
 # 功能：验证 Agent 结构化问题在 TUI 内显示，选择答案后恢复同一活动 run
 # 设计：注入 user_question.asked 事件并按 Enter，核对 typed 回答命令和输入框恢复为纠偏状态
 async def test_user_question_event_answers_without_starting_new_turn() -> None:
