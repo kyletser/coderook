@@ -24,6 +24,7 @@ from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus, EventHandler
 from code_rook.core.events.writer import EventWriter
+from code_rook.core.goal import GoalService
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
@@ -88,6 +89,7 @@ class AgentRunner:
         runtime_service: RuntimeService | None = None,
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
+        goal_service: GoalService | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -139,6 +141,7 @@ class AgentRunner:
             mcp_manager=self._mcp_manager,
             route_registry=self._route_registry,
             repository_index=self._repository_index,
+            goal_service=goal_service,
             hooks=self._hooks,
             process_supervisor=process_supervisor,
             persistent_shell_pool=persistent_shell_pool,
@@ -197,6 +200,7 @@ class AgentRunner:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
         initial_images: list[dict[str, object]] | None = None,
+        persistent_goal_context: str = "",
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         if session is not None and store is not None:
@@ -248,6 +252,7 @@ class AgentRunner:
                 self._skill_loader.list_all_skills(),
                 self._agent_profile_loader.list_all(),
             ),
+            persistent_goal_context=persistent_goal_context,
             system_prompt_override=system_prompt_override,
             runtime_mode=runtime_mode,
         )

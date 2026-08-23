@@ -15,7 +15,8 @@ Set `coderook.baseUrl` and `coderook.apiToken`, run `npm ci && npm run compile`,
 the extension host. Run `npm run package` to produce `dist/coderook-vscode.vsix`. The daemon
 must already be running. The extension is distributed independently from the Python wheel.
 
-The distribution workflow runs `npm run test:host` under Xvfb against an isolated real
+The distribution workflow defines `npm run test:host` under Xvfb against an isolated real
 CodeRook daemon. It verifies extension activation, command registration, durable thread
-creation/resume, and opening the workspace diff, then uploads a commit-bound JSON report.
-Permission UI and Marketplace publication still require separate manual release evidence.
+creation/resume, workspace diff, and approval UI evidence. GitHub Actions is currently disabled,
+so this workflow is not evidence for the current commit. The extension is not published to the
+VS Code Marketplace.

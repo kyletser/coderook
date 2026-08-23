@@ -103,18 +103,18 @@ Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps
 - `session/` + `runtime/` — dual source of truth: file ledger (`~/.coderook/sessions/`) is the operational truth; SQLite runtime is the queryable/auditable projection
 - `compact/` — context budget, distillation, structured compaction with quality gate
 - `repository/` — Git-aware incremental repository map, symbol/reference lookup, ranked context selection, and daemon-level cache reuse
-- `task/` / `goal/` / `subagent/` / `fleet/` / `workflow/` — multi-agent: run-level task board, goal control plane, in-process subagents with write claims and budgets, cross-process fleet workers, declarative event-sourced workflows
+- `task/` / `goal/` / `subagent/` / `fleet/` / `workflow/` — multi-agent: run-level task board, session-bound durable goal control plane (`/goal` with pause/resume/edit/clear, budgets and evidence), in-process subagents with write claims and budgets, cross-process fleet workers, declarative event-sourced workflows
 - `skills/` / `hooks/` / `mcp/` / `agents/` — extension mechanisms
 - `lsp/` / `persistent_shell.py` — post-edit Python/TypeScript diagnostics and daemon-lifetime shell pools keyed by session
 - `trace/` / `receipts/` / `events/` — observability, redacted trace, offline turn receipts
 
 ### Client layer (`src/code_rook/tui/`)
 
-The TUI remains orchestrated by `app.py`, but connection/reconnect handling, slash-command registration, IPC actions, event rendering, management panels, and widgets are split into `connection.py`, `commands.py`, `ipc_actions.py`, `render.py`, `panels/`, and `widgets/`. Management commands `/mcp`, `/hooks`, `/memory`, and `/jobs` use the typed IPC contract rather than reading daemon state directly.
+The TUI remains orchestrated by `app.py`, but connection/reconnect handling, slash-command registration, IPC actions, event rendering, management panels, and widgets are split into `connection.py`, `commands.py`, `ipc_actions.py`, `render.py`, `panels/`, and `widgets/`. Management commands `/goal`, `/mcp`, `/hooks`, `/memory`, and `/jobs` use the typed IPC contract rather than reading daemon state directly.
 
 ### Persistence layout
 
-User-level state lives in `~/.coderook/` (sessions/, runtime.db, fleet.db, workflow.db, routes.json, credentials.json, policy.toml, ipc-token, traces/). Workspace-level state lives in `<workspace>/.coderook/` (context.md, memory/, artifacts/, worktrees/, skills/, agents/, hooks.toml).
+User-level state lives in `~/.coderook/` (sessions/, goals/, runtime.db, fleet.db, workflow.db, routes.json, credentials.json, policy.toml, ipc-token, traces/). Workspace-level state lives in `<workspace>/.coderook/` (context.md, memory/, artifacts/, worktrees/, skills/, agents/, hooks.toml).
 
 ### Testing
 
@@ -157,15 +157,12 @@ async def test_publish_reaches_subscriber() -> None:
 
 两行注释缺一不可。功能行让读者 5 秒内判断测试意图；设计行让读者理解测试背后的决策，而非只看到操作步骤。
 
-### Design docs (outside the repo)
+### Documentation sources
 
-The planning documents live in `../docs/` (sibling of this repo, not committed here):
-- `agent_development_plan.md` — staged development roadmap S0–S8
-- `s0_implementation_plan.md` — detailed S0 decisions and rationale
-- `agent_functional_outline.md` — full feature catalogue
+Public documentation lives in `docs/`. Do not add completed plans, temporary continuation notes,
+career material, or archived audits; Git history preserves those changes.
 
-In-repo documentation lives in `docs/`:
 - `docs/reference/FUNCTIONAL_ARCHITECTURE.md` — authoritative functional architecture (component deep-dives, data flows, known issues)
-- `docs/guides/USER_GUIDE.md` / `docs/guides/USAGE_GUIDE.md` — end-user guides
+- `docs/guides/USER_GUIDE.md` — end-user guide
 - `docs/reference/ADR_RUNTIME_CONTRACT.md` — durable runtime contract decisions
 - `docs/operations/RUNBOOK.md`, `docs/reference/WIRE_PROTOCOL.md` — operations and protocol references

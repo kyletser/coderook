@@ -50,6 +50,7 @@ from code_rook.core.task.model import Task
 from code_rook.core.workspace import WorkspaceBoundary
 
 if TYPE_CHECKING:
+    from code_rook.core.goal import GoalRecord, GoalService
     from code_rook.core.llm.base import LLMProvider
     from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
     from code_rook.core.runner import AgentRunner
@@ -87,6 +88,7 @@ class SessionManager:
         interaction_manager: InteractionManager | None = None,
         route_registry: RouteRegistry | None = None,
         hooks: HookManager | None = None,
+        goal_service: GoalService | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
@@ -97,6 +99,7 @@ class SessionManager:
         self._interaction_manager = interaction_manager
         self._route_registry = route_registry
         self._hooks = hooks
+        self._goal_service = goal_service
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
@@ -332,6 +335,13 @@ class SessionManager:
                 )
 
             runner = self._runner_factory()
+            active_goal: GoalRecord | None = None
+            persistent_goal_context = ""
+            if self._goal_service is not None:
+                candidate = self._goal_service.current(sid)
+                if candidate is not None and candidate.status == "active":
+                    active_goal = self._goal_service.start_run(candidate.id, run_id)
+                    persistent_goal_context = self._goal_service.render_context(active_goal)
             run_options: dict[str, Any] = {
                 "run_id": run_id,
                 "session": session,
@@ -340,6 +350,8 @@ class SessionManager:
                 "tool_whitelist": tool_whitelist,
                 "runtime_mode": runtime_mode,
             }
+            if persistent_goal_context:
+                run_options["persistent_goal_context"] = persistent_goal_context
             if resolved_route is not None:
                 run_options["resolved_route"] = resolved_route
             if image_blocks:
@@ -358,6 +370,13 @@ class SessionManager:
             try:
                 outcome = await runner_task
             except asyncio.CancelledError:
+                if active_goal is not None and self._goal_service is not None:
+                    self._goal_service.finish_run(
+                        active_goal.id,
+                        run_id,
+                        succeeded=False,
+                        reason="cancelled",
+                    )
                 session.status = "interrupted"
                 session.updated_at = _now()
                 self._store.write_meta(session)
@@ -385,6 +404,13 @@ class SessionManager:
                 active.finished.set()
 
             session.updated_at = _now()
+            if active_goal is not None and self._goal_service is not None:
+                self._goal_service.finish_run(
+                    active_goal.id,
+                    run_id,
+                    succeeded=outcome.status == "success",
+                    reason=outcome.reason or "",
+                )
             if (
                 runtime_mode == RuntimeMode.PLAN
                 and outcome.status == "success"
@@ -436,6 +462,14 @@ class SessionManager:
     def is_busy(self, sid: str) -> bool:
         self._get_session(sid)
         return self._locks[sid].locked()
+
+    # 返回指定 session 的 active run ID，不存在时返回 None
+    def active_run_id(self, sid: str) -> str | None:
+        self._get_session(sid)
+        for run_id, active in self._active_runs.items():
+            if active.session_id == sid and not active.task.done():
+                return run_id
+        return None
 
     async def cancel_run(self, run_id: str) -> str:
         active = self._active_runs.get(run_id)

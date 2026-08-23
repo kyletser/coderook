@@ -22,31 +22,21 @@ _REQUIRED_FILES = (
     "docs/README.md",
     "docs/operations/RUNBOOK.md",
     "docs/reference/WIRE_PROTOCOL.md",
-    "docs/status/OPEN_SOURCE_COMPLETION_PLAN.md",
     "docs/guides/UPGRADING.md",
     "docs/reference/THREAT_MODEL.md",
     "docs/reference/PUBLIC_BENCHMARKS.md",
     "docs/reference/COMPATIBILITY.md",
     "docs/operations/RELEASING.md",
     "docs/operations/BRANCH_PROTECTION.md",
-    "docs/operations/MAINTAINERS.md",
-    "docs/operations/CONTRIBUTOR_TASKS.md",
-    "docs/career/PROJECT_CASE_STUDY.md",
-    "docs/career/RESUME_EVIDENCE.md",
-    "docs/career/INTERVIEW_GUIDE.md",
     "docs/reference/MCP_COMPATIBILITY.md",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.md",
-    "docs/postmortems/README.md",
-    "docs/postmortems/2026-08-19-cross-platform-ci.md",
-    "docs/postmortems/2026-08-17-tui-refactor.md",
     "docs/images/coderook-tui.svg",
     "deploy/docker-compose.example.yml",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
-    ".github/ISSUE_TEMPLATE/contributor_task.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
@@ -107,14 +97,10 @@ _SKIP_PARTS = {
 }
 _DOCS_ROOT_FILES = {"README.md"}
 _DOCS_ROOT_DIRECTORIES = {
-    "archive",
-    "career",
     "evidence",
     "guides",
     "images",
     "operations",
-    "plans",
-    "postmortems",
     "reference",
     "status",
 }
@@ -169,9 +155,6 @@ _README_REQUIRED_LINKS = (
     "LICENSE",
     "docs/reference/COMPATIBILITY.md",
     "docs/status/ROADMAP.md",
-    "docs/operations/CONTRIBUTOR_TASKS.md",
-    "docs/operations/MAINTAINERS.md",
-    "docs/career/PROJECT_CASE_STUDY.md",
 )
 _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/ci.yml": (
@@ -222,34 +205,9 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
     "docs/operations/BRANCH_PROTECTION.md": (
         "`Required CI gate`",
         "`Required security gate`",
-        "OS6-05 只能标记 `PARTIAL`",
+        "不能因为本文件",
     ),
     ".github/CODEOWNERS": ("* @kyletser",),
-}
-_REQUIRED_RESUME_SNIPPETS = {
-    "docs/career/PROJECT_CASE_STUDY.md": (
-        "评分卡为 **NO-GO**",
-        "我独立设计并实现",
-        "第三方",
-    ),
-    "docs/career/RESUME_EVIDENCE.md": (
-        "## 当前禁止宣称",
-        "## 可引用的历史精确数字",
-        "日期/基线",
-        "production-ready",
-    ),
-    "docs/career/INTERVIEW_GUIDE.md": (
-        "3 分钟版本",
-        "10 分钟版本",
-        "当前评分卡仍 NO-GO",
-    ),
-    "docs/postmortems/2026-08-19-cross-platform-ci.md": (
-        "CI #34/#35 远端三平台连续两次通过",
-    ),
-    "docs/postmortems/2026-08-17-tui-refactor.md": (
-        "未达到的目标与停止理由",
-        "不能从行数和测试数推导",
-    ),
 }
 _TRACKED_POLLUTION_PATTERNS = (
     re.compile(r"(^|/)__pycache__/"),
@@ -380,23 +338,6 @@ def find_governance_contract_issues(root: Path = _ROOT) -> list[str]:
     return issues
 
 
-# 校验简历材料始终保留职责归因、NO-GO 和历史数字限定词
-def find_resume_evidence_contract_issues(root: Path = _ROOT) -> list[str]:
-    issues: list[str] = []
-    for relative, snippets in _REQUIRED_RESUME_SNIPPETS.items():
-        path = root / relative
-        if not path.is_file():
-            issues.append(f"resume evidence file is missing: {relative}")
-            continue
-        content = path.read_text(encoding="utf-8")
-        issues.extend(
-            f"{relative} does not contain required evidence boundary: {snippet}"
-            for snippet in snippets
-            if snippet not in content
-        )
-    return issues
-
-
 # 校验官方 MCP 报告绑定固定 SDK/commit 且三种 transport 的逐项结果全通过
 def find_mcp_evidence_contract_issues(root: Path = _ROOT) -> list[str]:
     relative = "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json"
@@ -460,7 +401,6 @@ def collect_public_repo_issues(root: Path = _ROOT) -> list[str]:
     issues.extend(find_project_metadata_issues(root))
     issues.extend(find_readme_contract_issues(root))
     issues.extend(find_governance_contract_issues(root))
-    issues.extend(find_resume_evidence_contract_issues(root))
     issues.extend(find_mcp_evidence_contract_issues(root))
     issues.extend(f"tracked local artifact: {path}" for path in find_tracked_pollution(root))
     return issues

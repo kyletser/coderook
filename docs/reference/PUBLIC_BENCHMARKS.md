@@ -12,8 +12,8 @@
 | SWE-bench Lite/Verified | 真实仓库 issue 的标准 patch 与官方 Docker 判分 | prediction 导出已实现；官方 harness smoke 待跑 |
 | 基线/候选比较 | 任务、类别、失败聚类、成本与耗时回归 | 已实现，可作为 CI/nightly 门禁 |
 
-“当前状态”必须同时出现在开源补全计划和发布评分卡中。公开数字至少绑定 CodeRook commit、数据集
-commit、route/model/wire format、温度、预算、有效样本数、超时/格式错误、成本和原始报告。
+“当前状态”必须与发布评分卡一致。公开数字至少绑定 CodeRook commit、数据集 commit、
+route/model/wire format、温度、预算、有效样本数、超时/格式错误、成本和原始报告。
 
 ## 2. 内建 50 任务与回归比较
 
@@ -69,7 +69,7 @@ uv run python scripts/benchmark_optimization.py record \
 ```
 
 实验 JSON 保存前后完整 commit、两份报告 SHA-256、假设、目标任务、回归比较和客观结论。没有真实报告时，
-OS4-06 保持外部阻塞，不能把分类器或单测写成模型效果提升。
+不能把分类器或单测写成模型效果提升。
 
 ## 3. Aider Polyglot pass@1
 

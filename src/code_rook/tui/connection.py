@@ -80,6 +80,15 @@ class TuiConnection:
         if callable(callback):
             callback(kind, detail)
 
+    # 在 App 支持 Goal 控制面时恢复当前 session 的持久目标状态
+    async def _refresh_goal_state(self) -> None:
+        callback = getattr(self._app, "_refresh_goal_state", None)
+        if not callable(callback):
+            return
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连、会话恢复
     async def run(self) -> None:
         header = self._app.query_one("#header", Label)
@@ -165,6 +174,7 @@ class TuiConnection:
                         self._app._append_history(history.get("messages", []))
                         self._app._history_loaded = True
                 await self._app._refresh_authority()
+                await self._refresh_goal_state()
                 self._app._mark_connected()
                 await loop_task
             except IpcError as e:

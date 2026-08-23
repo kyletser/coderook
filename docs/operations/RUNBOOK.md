@@ -29,20 +29,21 @@ uv run coderook-tui --no-auto-core
 
 ```bash
 uv run coderook ping
-# → pong server=0.1.0 uptime=12ms latency=2ms
 ```
 
 ### 停止守护进程
 
 ```bash
-kill $(pgrep -f coderook-core)
+uv run coderook core stop
 ```
 
 ---
 
 ## 配置
 
-优先级（低 → 高）：**内建默认值 → `~/.coderook/config.toml` → `.env` → 系统环境变量**。
+优先级（低 → 高）：**内建默认值 → `~/.coderook/config.toml` →
+`<workspace>/.coderook/config.toml` → `.env` → 系统环境变量**。`CODEROOK_CONFIG`
+指定单一 TOML；项目 TOML 不能设置 route 安全字段。
 
 ### 交互式 LLM 配置
 
@@ -53,9 +54,9 @@ uv run coderook configure
 uv run coderook config-status
 ```
 
-支持 Anthropic-compatible 与 OpenAI-compatible 格式。API key 使用隐藏输入，分别保存到
-`~/.coderook/credentials.json`；连接地址、模型和 active provider 保存到配置文件。TUI 首次
-启动会在缺少配置时自动进入该向导，也可在界面中输入 `/config` 重新配置。
+支持 Anthropic-compatible 与 OpenAI-compatible 格式。API key 使用隐藏输入，优先保存到系统
+keyring；没有可用 keyring 时降级到 `~/.coderook/credentials.json`。连接地址、模型和 active
+route 保存到配置文件。TUI 缺少配置时仍直接进入主界面，并提示输入 `/config`。
 
 CLI/TUI 候选 route 默认先执行 ProviderDoctor；只有凭据、TLS、endpoint、模型和 wire schema
 通过后才一次性提交 route/active/credential。配置变更后，由 CodeRook 管理的后台 Core 会自动重启。手动启动的 Core 可执行：
@@ -165,7 +166,7 @@ tail -f ~/.coderook/logs/core.log
 
 | 报错 | 原因 | 处理 |
 |------|------|------|
-| `core already running at 127.0.0.1:7437` | 已有守护进程在运行 | `kill $(pgrep -f coderook-core)` |
+| `core already running at 127.0.0.1:7437` | 已有守护进程在运行 | `uv run coderook core stop` |
 | `core not running` | 手动模式下未启动守护进程 | 直接运行 `uv run coderook-tui`，或先执行 `uv run coderook core start` |
 | `Address already in use` | 端口被其他进程占用 | `CODEROOK_PORT=8000 uv run coderook-core` |
 | `Config error: CODEROOK_PORT must be an integer` | `.env` 或环境变量中端口值非整数 | 检查 `CODEROOK_PORT` 的值 |

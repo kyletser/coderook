@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Discriminator, Field, model_validator
 
@@ -11,6 +11,7 @@ from code_rook.core.authority import (
     RuntimeMode,
     WorkspaceTrust,
 )
+from code_rook.core.goal.models import GoalRecord, GoalStatus
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
     ThreadRecord,
@@ -72,6 +73,98 @@ class AgentRunCommand(BaseModel):
 class AgentRunResult(BaseModel):
     run_id: str
     session_id: str
+
+
+class GoalCreateCommand(BaseModel):
+    type: Literal["goal.create"] = "goal.create"
+    session_id: str = Field(min_length=1)
+    objective: str = Field(min_length=1, max_length=100_000)
+    token_budget: int | None = Field(default=None, ge=1)
+    constraints: list[str] = Field(default_factory=list, max_length=100)
+    completion_criteria: list[str] = Field(default_factory=list, max_length=100)
+    start: bool = True
+
+
+class GoalCreateResult(BaseModel):
+    goal: GoalRecord
+    run_id: str | None = None
+
+
+class GoalGetCommand(BaseModel):
+    type: Literal["goal.get"] = "goal.get"
+    goal_id: str = ""
+    session_id: str = ""
+
+    @model_validator(mode="after")
+    # 要求 Goal 查询明确提供 ID 或 session 作用域
+    def _require_selector(self) -> GoalGetCommand:
+        if not self.goal_id.strip() and not self.session_id.strip():
+            raise ValueError("goal_id or session_id is required")
+        return self
+
+
+class GoalGetResult(BaseModel):
+    goal: GoalRecord | None = None
+
+
+class GoalListCommand(BaseModel):
+    type: Literal["goal.list"] = "goal.list"
+    session_id: str = ""
+    status: GoalStatus | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GoalListResult(BaseModel):
+    goals: list[GoalRecord] = Field(default_factory=list)
+
+
+class GoalEditCommand(BaseModel):
+    type: Literal["goal.edit"] = "goal.edit"
+    goal_id: str = ""
+    session_id: str = ""
+    objective: str = Field(min_length=1, max_length=100_000)
+    completion_criteria: list[str] | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    # 要求 Goal 修改明确提供 ID 或 session 作用域
+    def _require_selector(self) -> GoalEditCommand:
+        if not self.goal_id.strip() and not self.session_id.strip():
+            raise ValueError("goal_id or session_id is required")
+        return self
+
+
+class _GoalSelectorCommand(BaseModel):
+    goal_id: str = ""
+    session_id: str = ""
+
+    @model_validator(mode="after")
+    # 要求 Goal 动作明确提供 ID 或 session 作用域
+    def _require_selector(self) -> Self:
+        if not self.goal_id.strip() and not self.session_id.strip():
+            raise ValueError("goal_id or session_id is required")
+        return self
+
+
+class GoalPauseCommand(_GoalSelectorCommand):
+    type: Literal["goal.pause"] = "goal.pause"
+
+
+class GoalResumeCommand(_GoalSelectorCommand):
+    type: Literal["goal.resume"] = "goal.resume"
+
+
+class GoalClearCommand(_GoalSelectorCommand):
+    type: Literal["goal.clear"] = "goal.clear"
+
+
+class GoalCompleteCommand(_GoalSelectorCommand):
+    type: Literal["goal.complete"] = "goal.complete"
+    summary: str = Field(default="", max_length=4000)
+
+
+class GoalActionResult(BaseModel):
+    goal: GoalRecord
+    run_id: str | None = None
 
 
 class RunCancelCommand(BaseModel):
@@ -708,6 +801,14 @@ Command = Annotated[
     | CoreShutdownCommand
     | PingCommand
     | AgentRunCommand
+    | GoalCreateCommand
+    | GoalGetCommand
+    | GoalListCommand
+    | GoalEditCommand
+    | GoalPauseCommand
+    | GoalResumeCommand
+    | GoalClearCommand
+    | GoalCompleteCommand
     | RunCancelCommand
     | RunSteerCommand
     | EventSubscribeCommand

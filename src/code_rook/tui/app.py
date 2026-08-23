@@ -244,6 +244,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._active_run_id: str | None = None
+        self._active_goal_id: str | None = None
+        self._active_goal_status: str = ""
         self._cancel_requested = False
         self._cancel_armed = False
         self._busy = False
@@ -741,6 +743,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 exclusive=False,
             )
             return
+        cmd = match_slash_command(content)
+        if cmd is not None and cmd.name == "goal":
+            await cmd.handler(self, event.text_area, content)
+            return
         if self._busy:
             event.text_area.text = ""
             if self._client is None or self._active_run_id is None:
@@ -760,7 +766,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 exclusive=False,
             )
             return
-        cmd = match_slash_command(content)
         if cmd is not None:
             await cmd.handler(self, event.text_area, content)
             return
@@ -853,6 +858,145 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             name="send_message",
             exclusive=False,
         )
+
+    # 进入 Goal 创建或恢复运行态，并在 worker 中执行长生命周期 IPC
+    def _begin_goal_command(
+        self,
+        prompt: ChatTextArea,
+        action: str,
+        objective: str,
+    ) -> None:
+        self._busy = True
+        self._cancel_armed = False
+        prompt.text = ""
+        prompt.disabled = False
+        prompt.read_only = False
+        prompt.border_title = _PROMPT_RUNNING
+        visible = objective if action == "create" else "继续当前 Goal"
+        if objective and not self._first_user_text:
+            self._first_user_text = objective
+        self._append(
+            Static(
+                f"[bold cyan]Goal[/bold cyan]  {escape(visible)}",
+                classes="user-turn",
+            )
+        )
+        self._update_header("running")
+        self.run_worker(
+            self._do_goal_command(action, objective),
+            name=f"goal_{action}",
+            exclusive=False,
+        )
+
+    # 发送 Goal IPC 命令、更新顶栏状态并渲染可审计摘要
+    async def _do_goal_command(self, action: str, value: str = "") -> None:
+        if self._client is None or self._session_id is None:
+            return
+        method = f"goal.{action}"
+        params: dict[str, object] = {"session_id": self._session_id}
+        if action == "create":
+            params["objective"] = value
+        elif action == "edit":
+            params["objective"] = value
+        elif action == "complete":
+            params["summary"] = value
+        elif action == "status":
+            method = "goal.get"
+        try:
+            result = await self._client.send_command(method, params)
+            if action == "list":
+                goals = result.get("goals", [])
+                lines = [self._format_goal_summary(item) for item in goals]
+                self._append(
+                    Static(
+                        "[bold cyan]Goals[/bold cyan]\n"
+                        + ("\n".join(lines) if lines else "[dim]No goals.[/dim]"),
+                        classes="log-line",
+                    )
+                )
+            else:
+                raw_goal = result.get("goal")
+                if isinstance(raw_goal, dict):
+                    self._apply_goal_state(raw_goal)
+                    self._append(
+                        Static(
+                            "[bold cyan]Goal[/bold cyan]  "
+                            + self._format_goal_summary(raw_goal),
+                            classes="log-line",
+                        )
+                    )
+                else:
+                    self._active_goal_id = None
+                    self._active_goal_status = ""
+                    self._append(
+                        Static("[dim]当前 session 没有未完成 Goal。[/dim]", classes="log-line")
+                    )
+                    self._update_header("running" if self._busy else "ready")
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(Static(f"[red]goal error: {exc}[/red]", classes="log-line"))
+            if action in {"create", "resume"}:
+                self._busy = False
+                self._update_header("ready")
+                self._restore_ready_prompt()
+
+    # 把 Goal 字典同步为 TUI 顶栏所需的最小状态
+    def _apply_goal_state(self, goal: dict[str, Any]) -> None:
+        status = str(goal.get("status", ""))
+        self._active_goal_id = str(goal.get("id", "")) or None
+        self._active_goal_status = status
+        if status in {"completed", "cleared"}:
+            self._active_goal_id = None
+        self._update_header("running" if self._busy else "ready")
+
+    # 生成单行 Goal 状态摘要供 status/list 共用
+    def _format_goal_summary(self, goal: object) -> str:
+        if not isinstance(goal, dict):
+            return "[red]invalid goal payload[/red]"
+        goal_id = escape(str(goal.get("id", "?")))
+        status = escape(str(goal.get("status", "unknown")))
+        status_color = {
+            "active": "green",
+            "paused": "yellow",
+            "blocked": "red",
+            "completed": "green",
+            "cleared": "dim",
+        }.get(status, "dim")
+        objective = escape(str(goal.get("objective", "")))
+        tokens_used = int(goal.get("tokens_used", 0) or 0)
+        budget = goal.get("token_budget")
+        usage = f"  tokens={tokens_used}/{budget}" if budget is not None else ""
+        runs = len(goal.get("linked_run_ids", []) or [])
+        criteria = len(goal.get("completion_criteria", []) or [])
+        evidence = len(goal.get("completion_evidence", []) or [])
+        current_run = str(goal.get("current_run_id") or "")
+        progress = f"criteria={criteria} evidence={evidence}"
+        running = f"  run={escape(current_run[:12])}" if current_run else ""
+        reason = str(goal.get("status_reason") or "").strip()
+        reason_line = f"\n[yellow]{escape(reason)}[/yellow]" if reason else ""
+        return (
+            f"[bold]{goal_id}[/bold]  [{status_color}]{status}[/{status_color}]  {objective}"
+            f"\n[dim]runs={runs}  {progress}{usage}{running}[/dim]"
+            f"{reason_line}"
+        )
+
+    # 查询当前 session 的未终结 Goal，供会话恢复后还原顶栏
+    async def _refresh_goal_state(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "goal.get",
+                {"session_id": self._session_id},
+            )
+        except (IpcError, RuntimeError, OSError):
+            return
+        raw_goal = result.get("goal")
+        if isinstance(raw_goal, dict):
+            self._apply_goal_state(raw_goal)
+        else:
+            self._active_goal_id = None
+            self._active_goal_status = ""
+            self._update_header("running" if self._busy else "ready")
 
     # 在 worker 中执行手动压缩命令，完成后显示结果横幅
     async def _do_compact(self) -> None:
@@ -1992,6 +2136,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._first_user_text = ""
         self._reset_cost_state()
         await self._refresh_authority()
+        await self._refresh_goal_state()
         label = "resumed" if resume else "new session"
         self._append(
             Static(f"[bold cyan]{label}[/bold cyan]  [dim]{session_id}[/dim]", classes="log-line")
@@ -2389,6 +2534,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if self._cost_total >= 0.0001
             else ""
         )
+        goal = (
+            f"  [bold cyan]goal:{escape(self._active_goal_status)}[/bold cyan]"
+            if self._active_goal_id is not None
+            else ""
+        )
         color = {
             "ready": "green",
             "running": "yellow",
@@ -2400,7 +2550,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         header.update(
             f"[bold]CodeRook[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}{model}{mode}{permission}{trust}{ctx}{cost}"
+            f"{session}{model}{mode}{permission}{trust}{ctx}{cost}{goal}"
             f"  [{color}]{state}[/{color}]"
         )
 
@@ -2408,6 +2558,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     def _handle_event(self, event: dict[str, Any]) -> None:
         try:
             render_event(self, event)
+            if (
+                event.get("type") in {"session.waiting_for_input", "session.interrupted"}
+                and event.get("session_id") == self._session_id
+            ):
+                self.call_later(self._refresh_goal_state)
         except Exception:
             log.exception("_handle_event crashed  event_type=%s", event.get("type", "?"))
 

@@ -50,9 +50,9 @@ CodeRook 是在单个用户本机运行的 Coding Agent。核心安全目标是�
 | TM-07 | MCP server 伪造 schema、返回恶意内容、执行外部副作用或耗尽资源 | 远端 HTTP 要求 HTTPS（loopback 例外）、token 仅从 env 注入、30s/64MB transport 边界、deferred discovery、8K/20K output spill；MCP 工具默认 EXTERNAL/ASK | **部分支持**；CodeRook 不验证第三方 server 的业务语义，批准调用即信任其外部行为 |
 | TM-08 | Skill 安装后被篡改或用指令绕权 | preview/确认安装、来源/trust 元数据、排序内容 SHA-256、symlink 拒绝、调用前 digest mismatch fail closed | 受管 Skill **支持完整性**；unmanaged/legacy Skill 明示 untrusted，内容安全仍需人工审查 |
 | TM-09 | Hook 执行任意本地代码、阻塞 daemon 或泄露上下文 | workspace trust gate、固定 argv、超时、输出上限、有界队列、ProcessSupervisor、审计事件、fail-open/closed 显式配置 | **高风险扩展**；可信 project/user Hook 与手工脚本等价，不提供语言级 sandbox |
-| TM-10 | 崩溃导致 ledger 尾部损坏、孤儿 tool call 或 SQLite 投影漂移 | checksum chain、尾部恢复、SQLite 投影、runtime doctor/reconcile、强杀矩阵、turn 终态配对校验 | 仓库内控制 **支持**；三平台 100 次外部报告仍是发布门禁 |
+| TM-10 | 崩溃导致 ledger 尾部损坏、孤儿 tool call 或 SQLite 投影漂移 | checksum chain、尾部恢复、SQLite 投影、runtime doctor/reconcile、强杀矩阵、turn 终态配对校验 | 仓库内控制 **支持**；三平台 300/300 属于绑定旧 commit 的历史证据，当前提交状态见评分卡 |
 | TM-11 | 多 Agent 并发覆盖文件或未审查合并 | WriteClaim 静态冲突、resource claims、worktree 隔离、review gate、checkpoint hash 冲突 | **支持已声明范围**；错误或过宽的协调契约仍需 owner/reviewer 判断 |
-| TM-12 | 依赖、workflow 或发布产物被供应链污染 | CI 最小权限、Dependabot、可选 dependency review、CodeQL、Gitleaks、构建/smoke | **部分支持**；dependency review 待仓库启用 Dependency Graph，SBOM、provenance、签名与远端首次绿灯仍待完成 |
+| TM-12 | 依赖、workflow 或发布产物被供应链污染 | workflow 最小权限、Dependabot、可选 dependency review、CodeQL、Gitleaks、构建/smoke | **部分支持**；Actions 当前关闭且 main 未保护，首次 Release 的 SBOM、provenance 与签名尚未产生 |
 | TM-13 | 超大/恶意工具输出耗尽内存或污染长期上下文 | transport/tool/frame 上限、输出蒸馏/截断/artifact spill、context compaction、MCP/Web 大小限制 | **支持有界处理**；允许的 artifact 仍占本地磁盘，由 GC 和磁盘 doctor 管理 |
 
 ## 4. 权限与沙箱判定

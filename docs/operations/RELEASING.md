@@ -27,14 +27,14 @@ HTTP/SSE/stream-json 协议清单、`WIRE_PROTOCOL.md` 是否存在，以及发�
 4. 在干净工作区运行 `make verify` 和对应版本的 contract check；
 5. 合并后创建指向 `main` 已审查 commit 的签名 tag，再推送 tag。
 
-以当前历史版本做不要求 GO 的本地合同检查：
+准备候选版本后可先做不要求 GO 的结构检查：
 
 ```bash
-uv run python scripts/check_release_contract.py --tag v0.1.0
+uv run python scripts/check_release_contract.py --tag v0.2.0-beta.1
 ```
 
-真实 tag workflow 会额外传 `--require-go`。不要为了通过脚本只改“GO”文字；评分卡中的每项数字
-必须链接到真实报告。
+该命令只有在包版本、VSIX 版本和带日期 Changelog 已同步时才会通过。真实 tag workflow 会额外传
+`--require-go`。不要为了通过脚本只改“GO”文字；评分卡中的每项数字必须链接到真实报告。
 
 ## Tag workflow 产物
 

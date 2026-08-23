@@ -225,6 +225,51 @@ async def _cmd_plan(app: Any, ta: ChatTextArea, content: str) -> None:
     app._begin_message(ta, task, RuntimeMode.PLAN)
 
 
+# 解析持久 Goal 子命令，并把长运行操作交给 TUI worker
+async def _cmd_goal(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None or app._session_id is None:
+        app._append(Static("[yellow]Core 未连接[/yellow]", classes="log-line"))
+        return
+    argument = content.removeprefix("/goal").strip()
+    action = "status"
+    value = ""
+    if argument:
+        head, _, tail = argument.partition(" ")
+        if head in {
+            "status",
+            "list",
+            "pause",
+            "resume",
+            "edit",
+            "complete",
+            "clear",
+        }:
+            action = head
+            value = tail.strip()
+        else:
+            action = "create"
+            value = argument
+    if action == "edit" and not value:
+        app._append(
+            Static("[yellow]用法：/goal edit <新目标>[/yellow]", classes="log-line")
+        )
+        return
+    if action in {"create", "resume"} and app._busy:
+        app._append(
+            Static("[yellow]当前 Goal 或 turn 正在运行，请先暂停[/yellow]", classes="log-line")
+        )
+        return
+    if action in {"create", "resume"}:
+        app._begin_goal_command(ta, action, value)
+        return
+    app.run_worker(
+        app._do_goal_command(action, value),
+        name=f"goal_{action}",
+        exclusive=False,
+    )
+
+
 async def _cmd_mode(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
     if content == "/mode":
@@ -568,6 +613,22 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("compact", "手动压缩上下文", True, _cmd_compact),
     SlashCommand("copy", "复制上一条回复", False, _cmd_copy),
     SlashCommand("plan", "只读规划并审阅后再实施：/plan [任务]", False, _cmd_plan),
+    SlashCommand(
+        "goal",
+        "持续执行并管理持久目标",
+        True,
+        _cmd_goal,
+        usage="<目标>|status|list|pause|resume|edit|complete|clear",
+        arg_candidates=(
+            "status",
+            "list",
+            "pause",
+            "resume",
+            "edit",
+            "complete",
+            "clear",
+        ),
+    ),
     SlashCommand(
         "mode",
         "查看或切换工作模式：plan|act|operate",

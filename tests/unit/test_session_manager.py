@@ -13,6 +13,7 @@ from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
 from code_rook.core.editing import FileMutation, apply_file_transaction
 from code_rook.core.events.bus import EventBus
+from code_rook.core.goal import GoalService, GoalStore
 from code_rook.core.hooks import HookManager
 from code_rook.core.runner import RunOutcome
 from code_rook.core.session.manager import (
@@ -67,6 +68,23 @@ class _ImageRunner(_Runner):
         **kwargs: object,
     ) -> RunOutcome:
         self.initial_images = initial_images or []
+        return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+
+class _GoalRunner(_Runner):
+    # 初始化持久 Goal 上下文捕获槽
+    def __init__(self) -> None:
+        self.goal_context = ""
+
+    # 捕获 Goal 系统上下文后复用成功 runner 行为
+    async def run_and_capture(
+        self,
+        goal: str,
+        *,
+        persistent_goal_context: str = "",
+        **kwargs: object,
+    ) -> RunOutcome:
+        self.goal_context = persistent_goal_context
         return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
 
 
@@ -297,6 +315,36 @@ async def test_send_message_persists_active_state_during_run(tmp_path: Path) -> 
     release.set()
     await task
     assert store.read_meta(session.id).status == "waiting_for_input"
+
+
+# 功能：验证 SessionManager 将 active Goal 注入 runner，且单轮成功后仍保留长期目标
+# 设计：使用捕获系统上下文的轻量 runner 执行真实 manager 生命周期，同时重读 Goal 文件排除伪完成证据
+async def test_session_manager_executes_and_preserves_active_goal(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    runner = _GoalRunner()
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        EventBus(),
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "ship durable goal",
+        session_id=session.id,
+        completion_criteria=["tests pass"],
+    )
+
+    run_id = await manager.send_message(session.id, goal.objective)
+    progressed = goals.get(goal.id)
+
+    assert "Objective: ship durable goal" in runner.goal_context
+    assert "Completion criteria:\n- tests pass" in runner.goal_context
+    assert "call update_goal with status=completed" in runner.goal_context
+    assert progressed.status == "active"
+    assert progressed.linked_run_ids == [run_id]
+    assert progressed.completion_evidence == []
 
 
 async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: Path) -> None:

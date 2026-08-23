@@ -333,6 +333,1293 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### GoalCreateCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `objective` | `string` | yes |
+| `token_budget` | `integer | null` | no |
+| `constraints` | `array` | no |
+| `completion_criteria` | `array` | no |
+| `start` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "goal.create",
+      "default": "goal.create",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "objective": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Objective",
+      "type": "string"
+    },
+    "token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Token Budget"
+    },
+    "constraints": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Constraints",
+      "type": "array"
+    },
+    "completion_criteria": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Completion Criteria",
+      "type": "array"
+    },
+    "start": {
+      "default": true,
+      "title": "Start",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "session_id",
+    "objective"
+  ],
+  "title": "GoalCreateCommand",
+  "type": "object"
+}
+```
+
+### GoalCreateResult
+
+| Field | Type | Required |
+|---|---|---|
+| `goal` | `object` | yes |
+| `run_id` | `string | null` | no |
+
+```json
+{
+  "$defs": {
+    "CompletionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "recorded_at"
+      ],
+      "title": "CompletionEvidence",
+      "type": "object"
+    },
+    "GoalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^goal-[a-f0-9]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "legacy",
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "status_reason": {
+          "default": "",
+          "title": "Status Reason",
+          "type": "string"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "linked_task_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Linked Task Ids",
+          "type": "array"
+        },
+        "linked_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Linked Run Ids",
+          "type": "array"
+        },
+        "current_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Run Id"
+        },
+        "completion_evidence": {
+          "items": {
+            "$ref": "#/$defs/CompletionEvidence"
+          },
+          "title": "Completion Evidence",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/GoalTimelineEntry"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "GoalRecord",
+      "type": "object"
+    },
+    "GoalTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "event": {
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "event",
+        "actor",
+        "at"
+      ],
+      "title": "GoalTimelineEntry",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "properties": {
+    "goal": {
+      "$ref": "#/$defs/GoalRecord"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    }
+  },
+  "required": [
+    "goal"
+  ],
+  "title": "GoalCreateResult",
+  "type": "object"
+}
+```
+
+### GoalGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "goal.get",
+      "default": "goal.get",
+      "title": "Type",
+      "type": "string"
+    },
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "title": "GoalGetCommand",
+  "type": "object"
+}
+```
+
+### GoalGetResult
+
+| Field | Type | Required |
+|---|---|---|
+| `goal` | `? | null` | no |
+
+```json
+{
+  "$defs": {
+    "CompletionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "recorded_at"
+      ],
+      "title": "CompletionEvidence",
+      "type": "object"
+    },
+    "GoalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^goal-[a-f0-9]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "legacy",
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "status_reason": {
+          "default": "",
+          "title": "Status Reason",
+          "type": "string"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "linked_task_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Linked Task Ids",
+          "type": "array"
+        },
+        "linked_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Linked Run Ids",
+          "type": "array"
+        },
+        "current_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Run Id"
+        },
+        "completion_evidence": {
+          "items": {
+            "$ref": "#/$defs/CompletionEvidence"
+          },
+          "title": "Completion Evidence",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/GoalTimelineEntry"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "GoalRecord",
+      "type": "object"
+    },
+    "GoalTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "event": {
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "event",
+        "actor",
+        "at"
+      ],
+      "title": "GoalTimelineEntry",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "properties": {
+    "goal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoalRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "GoalGetResult",
+  "type": "object"
+}
+```
+
+### GoalListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | no |
+| `status` | `string | null` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "goal.list",
+      "default": "goal.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "title": "GoalListCommand",
+  "type": "object"
+}
+```
+
+### GoalListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `goals` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "CompletionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "recorded_at"
+      ],
+      "title": "CompletionEvidence",
+      "type": "object"
+    },
+    "GoalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^goal-[a-f0-9]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "legacy",
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "status_reason": {
+          "default": "",
+          "title": "Status Reason",
+          "type": "string"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "linked_task_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Linked Task Ids",
+          "type": "array"
+        },
+        "linked_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Linked Run Ids",
+          "type": "array"
+        },
+        "current_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Run Id"
+        },
+        "completion_evidence": {
+          "items": {
+            "$ref": "#/$defs/CompletionEvidence"
+          },
+          "title": "Completion Evidence",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/GoalTimelineEntry"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "GoalRecord",
+      "type": "object"
+    },
+    "GoalTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "event": {
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "event",
+        "actor",
+        "at"
+      ],
+      "title": "GoalTimelineEntry",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "properties": {
+    "goals": {
+      "items": {
+        "$ref": "#/$defs/GoalRecord"
+      },
+      "title": "Goals",
+      "type": "array"
+    }
+  },
+  "title": "GoalListResult",
+  "type": "object"
+}
+```
+
+### GoalEditCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `objective` | `string` | yes |
+| `completion_criteria` | `array | null` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "goal.edit",
+      "default": "goal.edit",
+      "title": "Type",
+      "type": "string"
+    },
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "objective": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Objective",
+      "type": "string"
+    },
+    "completion_criteria": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Criteria"
+    }
+  },
+  "required": [
+    "objective"
+  ],
+  "title": "GoalEditCommand",
+  "type": "object"
+}
+```
+
+### GoalPauseCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "goal.pause",
+      "default": "goal.pause",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "GoalPauseCommand",
+  "type": "object"
+}
+```
+
+### GoalResumeCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "goal.resume",
+      "default": "goal.resume",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "GoalResumeCommand",
+  "type": "object"
+}
+```
+
+### GoalClearCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "goal.clear",
+      "default": "goal.clear",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "GoalClearCommand",
+  "type": "object"
+}
+```
+
+### GoalActionResult
+
+| Field | Type | Required |
+|---|---|---|
+| `goal` | `object` | yes |
+| `run_id` | `string | null` | no |
+
+```json
+{
+  "$defs": {
+    "CompletionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "recorded_at"
+      ],
+      "title": "CompletionEvidence",
+      "type": "object"
+    },
+    "GoalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^goal-[a-f0-9]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "legacy",
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "status_reason": {
+          "default": "",
+          "title": "Status Reason",
+          "type": "string"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "linked_task_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Linked Task Ids",
+          "type": "array"
+        },
+        "linked_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Linked Run Ids",
+          "type": "array"
+        },
+        "current_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Run Id"
+        },
+        "completion_evidence": {
+          "items": {
+            "$ref": "#/$defs/CompletionEvidence"
+          },
+          "title": "Completion Evidence",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/GoalTimelineEntry"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "GoalRecord",
+      "type": "object"
+    },
+    "GoalTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "event": {
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "event",
+        "actor",
+        "at"
+      ],
+      "title": "GoalTimelineEntry",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "properties": {
+    "goal": {
+      "$ref": "#/$defs/GoalRecord"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    }
+  },
+  "required": [
+    "goal"
+  ],
+  "title": "GoalActionResult",
+  "type": "object"
+}
+```
+
 ### RunCancelCommand
 
 | Field | Type | Required |

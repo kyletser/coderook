@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from threading import RLock
@@ -7,6 +8,8 @@ from threading import RLock
 from pydantic import ValidationError
 
 from code_rook.core.goal.models import GoalRecord
+
+_GOAL_ID_PATTERN = re.compile(r"^goal-[a-f0-9]{12}$")
 
 
 class GoalStoreError(ValueError):
@@ -22,6 +25,8 @@ class GoalStore:
 
     # 返回指定 goal 的稳定 JSON 路径
     def goal_path(self, goal_id: str) -> Path:
+        if _GOAL_ID_PATTERN.fullmatch(goal_id) is None:
+            raise GoalStoreError(f"invalid goal id: {goal_id}")
         return self.path / f"{goal_id}.json"
 
     # 原子保存完整 goal 记录
@@ -46,9 +51,13 @@ class GoalStore:
             raise GoalStoreError(f"invalid goal {goal_id}: {exc}") from exc
 
     # 按创建时间和 ID 稳定列出所有 goal
-    def list(self) -> list[GoalRecord]:
+    def list_all(self) -> list[GoalRecord]:
         records = [self.get(path.stem) for path in self.path.glob("goal-*.json")]
         return sorted(records, key=lambda item: (item.created_at, item.id))
+
+    # 返回指定 session 的全部 Goal，并保持创建顺序稳定
+    def list_for_session(self, session_id: str) -> list[GoalRecord]:
+        return [goal for goal in self.list_all() if goal.session_id == session_id]
 
     # 在同一写锁内执行 goal 读改写事务
     def mutate(

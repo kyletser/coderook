@@ -45,6 +45,76 @@ async def test_agent_run_returns_run_id_and_emits_started(
         await client.close()
 
 
+# 功能：验证 Goal IPC 可在不调用真实模型时完成创建、查询、编辑、显式完成和清除
+# 设计：用 start=false 隔离模型执行，只通过真实 daemon/socket 检查持久控制面的端到端协议
+async def test_goal_control_plane_roundtrip_without_model(
+    running_daemon: subprocess.Popen[bytes],
+    free_port: int,
+    ipc_token: str,
+) -> None:
+    client = SocketClient("127.0.0.1", free_port, auth_token=ipc_token)
+    await client.connect()
+    loop_task = asyncio.create_task(client.run_event_loop())
+
+    # 给每个 IPC 步骤设置独立超时，失败时能定位具体控制命令
+    async def send(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.wait_for(
+            client.send_command(method, params),
+            timeout=5.0,
+        )
+
+    try:
+        session = await send(
+            "session.create",
+            {"mode": "chat", "title": "goal test"},
+        )
+        session_id = str(session["session_id"])
+        created = await send(
+            "goal.create",
+            {
+                "session_id": session_id,
+                "objective": "ship verified goal",
+                "completion_criteria": ["tests pass"],
+                "start": False,
+            },
+        )
+        goal_id = str(created["goal"]["id"])
+
+        current = await send("goal.get", {"session_id": session_id})
+        assert current["goal"]["id"] == goal_id
+        edited = await send(
+            "goal.edit",
+            {"session_id": session_id, "objective": "ship edited goal"},
+        )
+        assert edited["goal"]["objective"] == "ship edited goal"
+        listed = await send("goal.list", {"session_id": session_id})
+        assert [item["id"] for item in listed["goals"]] == [goal_id]
+        completed = await send(
+            "goal.complete",
+            {"goal_id": goal_id, "summary": "verified through IPC"},
+        )
+        assert completed["goal"]["status"] == "completed"
+        assert completed["goal"]["completion_evidence"][0]["reference"] == (
+            "user://confirmation"
+        )
+        replacement = await send(
+            "goal.create",
+            {
+                "session_id": session_id,
+                "objective": "temporary goal",
+                "start": False,
+            },
+        )
+        cleared = await send("goal.clear", {"goal_id": replacement["goal"]["id"]})
+        assert cleared["goal"]["status"] == "cleared"
+        empty = await send("goal.get", {"session_id": session_id})
+        assert empty["goal"] is None
+    finally:
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+        await client.close()
+
+
 # 功能：验证两个独立客户端同时订阅后，其中一个触发 agent.run，两个都能收到 run.started 广播
 # 设计：两个 SocketClient 并行等待事件（asyncio.gather），确认 IpcEventBroadcaster 的扇出语义；
 #       不需要两个客户端都发命令，只验证广播覆盖所有订阅者

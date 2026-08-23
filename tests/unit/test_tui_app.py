@@ -1516,18 +1516,18 @@ async def test_plan_command_requires_review_before_act() -> None:
 
         assert prompt.disabled
         assert app.query_one(PlanReview).has_focus
-        assert len(calls) == 1
+        assert calls[1] == ("goal.get", {"session_id": "sess-plan"})
 
         await pilot.press("enter")
         await pilot.pause()
         await asyncio.gather(*scheduled)
 
-        assert calls[1][0] == "session.set_authority"
-        assert calls[2][0] == "session.send_message"
-        assert calls[2][1]["runtime_mode"] == "act"
-        assert str(calls[2][1]["content"]).startswith("Implement the approved plan")
+        assert calls[2][0] == "session.set_authority"
+        assert calls[3][0] == "session.send_message"
+        assert calls[3][1]["runtime_mode"] == "act"
+        assert str(calls[3][1]["content"]).startswith("Implement the approved plan")
         assert "Original user request:\ninspect authentication" in str(
-            calls[2][1]["content"]
+            calls[3][1]["content"]
         )
 
 

@@ -95,9 +95,9 @@ uv run coderook configure
 - 修改配置后自动重启由 CodeRook 管理的 Core
 - 候选 route 先执行脱敏 ProviderDoctor，成功后才一次性提交 route、active id 与凭据
 
-普通配置保存在 `~/.coderook/config.toml`，密钥单独保存在
-`~/.coderook/credentials.json`，不会写入仓库或日志。若项目已有 `.env`，向导会同步其中的
-非敏感 LLM 参数，并把旧明文 key 迁移到凭据文件。
+普通配置保存在 `~/.coderook/config.toml`。密钥优先写入系统 keyring；系统没有可用 keyring
+后端时才降级到权限受限的 `~/.coderook/credentials.json`。密钥不会写入项目配置或日志。
+若项目已有 `.env`，向导只同步非敏感 LLM 参数，并迁移旧明文 key。
 
 查看当前配置（不会显示密钥正文）：
 
@@ -105,14 +105,14 @@ uv run coderook configure
 uv run coderook config-status
 ```
 
-也可以继续使用 `.env` 或系统环境变量；环境变量优先级最高。OpenCode Zen 示例：
+也可以继续使用 `.env` 或系统环境变量；环境变量优先级最高。OpenAI-compatible 示例：
 
 ```dotenv
 CODEROOK_LLM_PROVIDER=openai_compatible
-CODEROOK_LLM_BASE_URL=https://opencode.ai/zen/go/v1/chat/completions
+CODEROOK_LLM_BASE_URL=http://127.0.0.1:11434/v1/chat/completions
 CODEROOK_LLM_API_KEY_ENV=CODEROOK_LLM_API_KEY
 CODEROOK_LLM_API_KEY=replace-with-your-key
-CODEROOK_LLM_DEFAULT_MODEL=deepseek-v4-pro
+CODEROOK_LLM_DEFAULT_MODEL=local-model
 ```
 
 ### 3. 一条命令启动
@@ -153,6 +153,7 @@ TUI 是项目的主要交互界面，支持流式响应、工具调用折叠块�
 | `/config` | 在当前页面选择 API 平台、填写 API Key 并探测可用模型 |
 | 粘贴本地图片路径 | 校验图片内容/尺寸后先落 ArtifactStore，再随下一条消息发送；永久 transcript 不存 base64 |
 | `/compact` | 手动执行结构化上下文压缩 |
+| `/goal <目标>` | 创建持久目标并持续到显式验收、暂停或阻塞；支持 `status/list/pause/resume/edit/complete/clear` |
 | `/mode plan\|act\|operate` | 独立查看或切换工作模式，`Tab` 循环 |
 | `/permissions ask\|auto-review\|full-access` | 独立查看或切换权限姿态，`Shift+Tab` 循环 |
 | `/trust status\|grant\|revoke` | 查看或修改工作区信任状态 |
@@ -305,7 +306,10 @@ uv run python scripts\gen_protocol_doc.py --check
 make verify
 ```
 
-CI 在 Ubuntu、Windows 与 macOS 上执行静态检查、测试、50 任务离线 benchmark 契约、沙箱负向门禁、协议生成检查、wheel smoke；Linux 额外类型检查 VS Code 原型。真实模型 nightly/release 与普通 CI 分离，避免测试隐式消费密钥。
+仓库保留 Ubuntu、Windows 与 macOS workflow 定义，但 GitHub Actions 当前按维护者要求关闭。
+因此当前提交只具备本地门禁结果，不能把历史 workflow 成绩写成当前提交的 CI 成绩。真实模型
+nightly/release 与普通质量门禁保持分离，避免测试隐式消费密钥。内建 50 任务离线 benchmark
+用于验证 fixture、verifier、预算和报告合同；没有真实模型报告前不把它写成效果成绩。
 
 真实模型报告不仅包含 pass@1，还记录 verifier、首次编辑正确率、P50/P95 耗时与成本、CPU、峰值内存、
 进程数、采样完整性和失败分类。候选与基线可以用同一策略做回归门禁：
@@ -323,10 +327,8 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 ## 设计文档
 
 - [文档权威索引](docs/README.md)
+- [用户指南](docs/guides/USER_GUIDE.md)
 - [功能架构](docs/reference/FUNCTIONAL_ARCHITECTURE.md)
-- [2026 H2 优化路线图与 Stage 0–4 复盘](docs/plans/OPTIMIZATION_ROADMAP.md)
-- [生产就绪改造计划](docs/plans/PRODUCTION_READINESS_PLAN.md)
-- [开源级补全计划](docs/status/OPEN_SOURCE_COMPLETION_PLAN.md)
 - [Wire Protocol](docs/reference/WIRE_PROTOCOL.md)
 - [Runtime API](docs/reference/RUNTIME_API.md)
 - [外部接口兼容与弃用策略](docs/reference/COMPATIBILITY.md)
@@ -335,15 +337,10 @@ P95 成本或耗时上涨；阈值均可在命令行显式调整。该比较器�
 - [升级、备份与回滚](docs/guides/UPGRADING.md)
 - [发行、SBOM、签名与验证](docs/operations/RELEASING.md)
 - [Roadmap](docs/status/ROADMAP.md)
-- [项目案例与简历证据](docs/career/PROJECT_CASE_STUDY.md)
-- [新贡献者小任务](docs/operations/CONTRIBUTOR_TASKS.md)
-- [维护者与维护边界](docs/operations/MAINTAINERS.md)
 - [Main 分支保护合同](docs/operations/BRANCH_PROTECTION.md)
 - [威胁模型](docs/reference/THREAT_MODEL.md)
 - [公开 Benchmark 复现](docs/reference/PUBLIC_BENCHMARKS.md)
-- [轻量 Agent 完成度审计](docs/archive/LIGHTWEIGHT_AGENT_COMPLETION_AUDIT.md)
-- [与 Claude Code 的差距分析](docs/archive/CODEROOK_VS_CLAUDE_CODE_GAP_ANALYSIS.md)
-- [learn-claude-code 机制移植说明](docs/archive/LEARN_CLAUDE_CODE_PORT.md)
+- [发布评分卡](docs/status/RELEASE_SCORECARD.md)
 
 ## 项目定位
 

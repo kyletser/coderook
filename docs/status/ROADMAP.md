@@ -1,36 +1,30 @@
 # CodeRook Roadmap
 
-Roadmap 按可验证用户结果排序，不承诺日期。单个工作项的精确状态与证据以
-[开源补全计划](OPEN_SOURCE_COMPLETION_PLAN.md)和
-[发布评分卡](RELEASE_SCORECARD.md)为准；Issue 或外部贡献不会自动改变发布结论。
+Roadmap 只记录尚未完成的结果，不保存已结束阶段的实施流水账。项目当前仍处于 Alpha；精确发布结论见
+[发布评分卡](RELEASE_SCORECARD.md)。
 
-## Now：公开 Beta 证据
+## Now：形成真实效果证据
 
-- 固定模型/route 运行 50 任务与公开 benchmark 适配器，公布 pass@1、成本、耗时和失败聚类；
-- 在已有三平台安全、强杀恢复和候选升级/回滚证据上，补真实模型与跨已发布 tag 的升级报告；
-- 启用 main ruleset，完成首次可验证的 GitHub Release、GHCR 镜像、SBOM 与 attestation；
-- 只有评分卡全部达到阈值后才发布 `0.2.0-beta`。
+- 使用有效凭据运行固定 50 任务候选集，公开总体、多文件、只读 pass@1、成本、耗时和失败分类。
+- 对两种 wire format 各重复两次，保留四份原始报告和聚合结果，不挑选最好一次。
+- 用官方 harness 产出 Aider Polyglot 固定切片和 SWE-bench 小规模判分 artifact。
 
-## Next：Beta 可用性
+## Next：完成首次公开发行
 
-- 基于真实失败报告收敛 repo map、working set、诊断闭环与长会话压缩质量；
-- 为扩展作者稳定 MCP/Skill/Hook/SDK 示例和兼容迁移路径；
-- 改进 TUI 可访问性、恢复引导和大任务证据浏览，不把 CLI 扩张成第二套产品面；
-- 为公开 benchmark 建立候选与基线的持续回归报告。
+- 重新启用 GitHub Actions 后验证当前提交，而不是继续引用旧 workflow 运行结果。
+- 为 `main` 启用与仓库合同一致的 ruleset/branch protection。
+- 发布首个 Git tag、GitHub Release、PyPI 包和 GHCR 镜像，并验证 SBOM、checksum、provenance 与签名。
+- 在两个真实发布版本之间运行升级、备份恢复和回滚测试。
+- 决定是否单独发布 VS Code Marketplace 扩展。
 
-## Later：明确依赖研究的能力
+## Later：需要平台研究的能力
 
-- Windows 文件系统/网络的真实 OS sandbox 后端；
-- 不扩大权限的按 DNS 域出站白名单强制后端；
-- Go/Rust 诊断、更多 IDE 客户端和更完整的多仓库任务；
-- 在社区规模足够时，把单维护者治理迁移为分组件维护者团队。
+- Windows 文件系统与网络的强制沙箱后端。
+- 不扩大权限的按域名出站白名单。
+- 跨真实 Python/TypeScript 项目的诊断 P95 基线，以及更多语言诊断。
 
-## 当前非目标
+## 非目标
 
-- 托管式多租户 Agent SaaS、云端密钥托管和远程执行平台；
-- 未经人工审查自动合并或自动发布模型生成代码；
-- 宣称所有 MCP server、模型代理或第三方 Skill/Hook 都安全兼容；
-- 为追逐框架名词重写已工作的双进程核心。
-
-想贡献一个边界明确的小改动，请从
-[Contributor Tasks](../operations/CONTRIBUTOR_TASKS.md)选择 `READY` 项并按模板认领；大型方向先开 Feature Request。
+- 托管式多租户 Agent SaaS 或云端密钥托管。
+- 未经人工审查自动合并、自动发布模型生成的代码。
+- 宣称所有模型代理、MCP server、Skill 或 Hook 都安全兼容。

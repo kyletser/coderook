@@ -18,7 +18,6 @@ _SKIP_DIRS = {
 }
 _ALLOWED = {
     Path("scripts/check_brand.py"),
-    Path("docs/archive/SPECDRIVEN_SPEC.md"),
     Path("src/code_rook/core/state_migration.py"),
     Path("tests/unit/test_state_migration.py"),
 }

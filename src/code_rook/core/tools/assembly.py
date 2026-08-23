@@ -35,6 +35,7 @@ from code_rook.core.tools.builtin import (
     EditFileTool,
     GitDiffTool,
     GlobTool,
+    GoalUpdateTool,
     GrepTool,
     ListDirTool,
     MemoryForgetTool,
@@ -72,6 +73,7 @@ from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
 
 if TYPE_CHECKING:
+    from code_rook.core.goal import GoalService
     from code_rook.core.hooks import HookManager
     from code_rook.core.llm.route_registry import RouteRegistry
 
@@ -95,6 +97,7 @@ class RuntimeToolAssembly:
         mcp_manager: McpServerManager | None,
         route_registry: RouteRegistry | None,
         repository_index: RepositoryIndex,
+        goal_service: GoalService | None = None,
         hooks: HookManager | None = None,
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
@@ -113,6 +116,7 @@ class RuntimeToolAssembly:
         self._mcp_manager = mcp_manager
         self._route_registry = route_registry
         self._repository_index = repository_index
+        self._goal_service = goal_service
         self._hooks = hooks
         # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
         self._process_supervisor = process_supervisor
@@ -235,6 +239,14 @@ class RuntimeToolAssembly:
         register_memory_family(registry, memory_tools, allowed_names=allowed)
         if bus is not None and run_id is not None and _name_allowed("update_plan"):
             registry.register(UpdatePlanTool(bus, run_id))
+        if self._goal_service is not None and session_id and run_id:
+            active_goal = self._goal_service.current(session_id)
+            if (
+                active_goal is not None
+                and active_goal.current_run_id == run_id
+                and _name_allowed("update_goal")
+            ):
+                registry.register(GoalUpdateTool(self._goal_service, active_goal.id))
         if session is not None and store is not None and run_id is not None:
             note_tool = NoteSaveTool(store, session.id, run_id)
             if _ok(note_tool):

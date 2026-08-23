@@ -10,9 +10,9 @@
 - 安全问题不要公开披露，按 [SECURITY.md](SECURITY.md) 报告。
 - 行为规范见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 
-第一次贡献可从 [Contributor Tasks](../docs/operations/CONTRIBUTOR_TASKS.md) 选择一个 `READY` 小任务，使用
-Contributor task Issue 模板认领。任务已写明允许修改的文件、验收证据和不在范围内的内容；不要在
-未确认认领前并行实现同一个 ID。项目方向和 Beta 阻塞项见 [ROADMAP.md](../docs/status/ROADMAP.md)。
+第一次贡献请从现有 Issue 选择边界明确、未被认领的任务，或先提交 Bug Report/Feature Request。
+不要在未确认认领前并行实现同一个 Issue。项目方向和 Beta 阻塞项见
+[ROADMAP.md](../docs/status/ROADMAP.md)。
 
 ## 开发环境
 
@@ -67,5 +67,4 @@ PR 请保持单一目的，并提供：
 5. UI 变更的截图或录屏；benchmark 变更的配置指纹和前后报告。
 
 维护者会按正确性、安全边界、兼容性、测试证据和维护成本评审。提交 PR 即表示你有权按本项目
-[MIT License](../LICENSE) 提供相应贡献。维护权限、发布权限和单维护者边界见
-[维护者说明](../docs/operations/MAINTAINERS.md)。
+[MIT License](../LICENSE) 提供相应贡献。治理和发布权限见 [GOVERNANCE.md](GOVERNANCE.md)。

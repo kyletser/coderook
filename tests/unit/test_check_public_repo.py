@@ -8,7 +8,6 @@ from scripts.check_public_repo import (
     find_docs_layout_issues,
     find_governance_contract_issues,
     find_project_metadata_issues,
-    find_resume_evidence_contract_issues,
     find_root_layout_issues,
     find_tracked_pollution,
 )
@@ -62,14 +61,10 @@ def test_find_docs_layout_issues_rejects_flat_markdown(tmp_path: Path) -> None:
     docs.mkdir()
     (docs / "README.md").write_text("# index\n", encoding="utf-8")
     for name in (
-        "archive",
-        "career",
         "evidence",
         "guides",
         "images",
         "operations",
-        "plans",
-        "postmortems",
         "reference",
         "status",
     ):
@@ -78,9 +73,7 @@ def test_find_docs_layout_issues_rejects_flat_markdown(tmp_path: Path) -> None:
     assert find_docs_layout_issues(tmp_path) == []
 
     (docs / "LOOSE_NOTES.md").write_text("# loose\n", encoding="utf-8")
-    assert find_docs_layout_issues(tmp_path) == [
-        "unexpected docs root file: LOOSE_NOTES.md"
-    ]
+    assert find_docs_layout_issues(tmp_path) == ["unexpected docs root file: LOOSE_NOTES.md"]
 
 
 # 功能：验证 Markdown 本地链接检查能区分存在目标与断链目标
@@ -157,22 +150,3 @@ def test_repository_governance_contract_is_consistent() -> None:
     root = Path(__file__).resolve().parents[2]
 
     assert find_governance_contract_issues(root) == []
-
-
-# 功能：验证简历证据合同会发现职责归因、NO-GO 或历史数字限定词被删
-# 设计：用空临时目录触发缺失资产分支，避免复制一套可能与真实材料共同漂移的假内容
-def test_find_resume_evidence_contract_issues_requires_evidence_files(
-    tmp_path: Path,
-) -> None:
-    issues = find_resume_evidence_contract_issues(tmp_path)
-
-    assert any("PROJECT_CASE_STUDY.md" in issue and "missing" in issue for issue in issues)
-    assert any("RESUME_EVIDENCE.md" in issue and "missing" in issue for issue in issues)
-
-
-# 功能：验证真实项目案例、讲解、指标账本与两份复盘保留诚实边界
-# 设计：检查版本控制中的正式材料，让夸大表述或删除失败复盘在普通单测阶段直接失败
-def test_repository_resume_evidence_contract_is_consistent() -> None:
-    root = Path(__file__).resolve().parents[2]
-
-    assert find_resume_evidence_contract_issues(root) == []

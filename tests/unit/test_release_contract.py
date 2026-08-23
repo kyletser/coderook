@@ -25,19 +25,15 @@ def test_release_tag_maps_to_python_version() -> None:
         python_version_for_tag("v1.2.3-beta")
 
 
-# 功能：验证当前 0.1.0 tag 与三个包版本、Changelog 和协议清单一致
-# 设计：直接读取真实仓库而不构建产物，确保版本门禁能在发 tag 之前本地复现
-def test_current_release_contract_is_internally_consistent() -> None:
-    manifest = validate_release_contract("v0.1.0", _ROOT)
-
-    assert manifest["python_version"] == "0.1.0"
-    assert manifest["protocols"]["http_api"] == "v1"
-    assert manifest["protocols"]["stream_json_schemas"] == [1]
-    assert manifest["release_readiness"] == "NO-GO"
+# 功能：验证当前未发布的 0.1.0 不能被版本字符串伪装成已存在的 tag
+# 设计：直接读取真实 Changelog，要求缺少带日期版本标题时 fail closed，保持与远端无 tag 的事实一致
+def test_unpublished_current_version_is_not_a_valid_release_contract() -> None:
+    with pytest.raises(ValueError, match=r"no dated \[0\.1\.0\] release heading"):
+        validate_release_contract("v0.1.0", _ROOT)
 
 
-# 功能：验证 tag 发布在评分卡 NO-GO 时会硬失败
-# 设计：对同一有效版本只开启 require_go，隔离版本一致性与真实发布资格两个独立门禁
+# 功能：验证未发布候选在评分卡 NO-GO 时同时报告发布资格失败
+# 设计：开启 require_go 并匹配 readiness 错误，确保版本合同其他失败也不能掩盖 NO-GO 门禁
 def test_release_contract_requires_scorecard_go_for_tag_publish() -> None:
     with pytest.raises(ValueError, match="requires GO"):
         validate_release_contract("v0.1.0", _ROOT, require_go=True)

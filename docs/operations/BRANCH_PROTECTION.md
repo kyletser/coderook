@@ -42,9 +42,10 @@ uv run python scripts/audit_github_release_evidence.py \
   --output reports/github-release-evidence.json
 ```
 
-每日 `remote-evidence.yml` 会用只读 `GITHUB_TOKEN` 执行同一命令并上传 JSON；任一 API 不可见、workflow
-缺失或结论失败都 fail closed。证据文件不直接提交；在 `docs/status/RELEASE_SCORECARD.md` 记录 artifact/run URL。
-如果 ruleset 尚未启用，OS6-05 只能标记 `PARTIAL`，不能因为本文件存在就声明 main 已受保护。
+`remote-evidence.yml` 定义了使用只读 `GITHUB_TOKEN` 执行同一审计并上传 JSON 的计划任务；任一 API
+不可见、workflow 缺失或结论失败都 fail closed。GitHub Actions 当前关闭，因此该计划任务不会运行。
+证据文件不直接提交；在 `docs/status/RELEASE_SCORECARD.md` 记录 artifact/run URL。不能因为本文件
+或 workflow 存在就声明 `main` 已受保护。
 
 ## 变更规则
 

@@ -1,6 +1,7 @@
 # CodeRook 升级、备份与回滚
 
-本文档适用于从 PyPI wheel、源码检出或发行包安装的 CodeRook。公开版本发布前，升级兼容性仍以
+CodeRook 当前尚未发布到 PyPI 或 GitHub Releases，本指南首先适用于源码检出和本地构建 wheel。
+出现公开版本后，安装来源与升级兼容性仍以
 [发布评分卡](../status/RELEASE_SCORECARD.md)为准；没有完成跨版本 fixture 的版本不得宣称无损升级已经验证。
 
 ## 升级前先备份
@@ -34,18 +35,19 @@ cp -a "$HOME/.coderook" "$HOME/coderook-backup-$stamp"
 
 ## 执行升级
 
-先记录当前版本，然后使用原来的安装方式升级：
+先记录当前版本，然后使用原来的安装方式升级。源码检出使用：
 
 ```bash
-coderook --version
-python -m pip install --upgrade coderook
-coderook --version
-coderook config-status
-coderook ping
+uv run coderook --version
+git pull --ff-only
+uv sync
+uv run coderook config-status
+uv run coderook ping
 ```
 
-源码安装使用 `git pull` 和 `uv sync`。升级过程中不要同时运行两个版本的 daemon；客户端与 daemon 的 wire protocol
-必须来自同一安装版本。
+本地 wheel 安装应重新构建并显式安装该 wheel。升级过程中不要同时运行两个版本的 daemon；客户端与
+daemon 的 wire protocol 必须来自同一安装版本。公开包发布后才可使用
+`python -m pip install --upgrade coderook`。
 
 ## 升级后检查
 

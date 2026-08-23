@@ -41,6 +41,18 @@ from code_rook.core.bus.commands import (
     EventReplayResult,
     EventSubscribeCommand,
     EventSubscribeResult,
+    GoalActionResult,
+    GoalClearCommand,
+    GoalCompleteCommand,
+    GoalCreateCommand,
+    GoalCreateResult,
+    GoalEditCommand,
+    GoalGetCommand,
+    GoalGetResult,
+    GoalListCommand,
+    GoalListResult,
+    GoalPauseCommand,
+    GoalResumeCommand,
     HookAuditInfo,
     HookConfigInfo,
     HookRerunCommand,
@@ -138,6 +150,7 @@ from code_rook.core.bus.commands import (
     WorkspaceDiffResult,
 )
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
+from code_rook.core.bus.events import LlmUsageEvent
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.daemon_lock import DaemonLock, DaemonLockError
 from code_rook.core.events.bus import EventBus
@@ -148,6 +161,7 @@ from code_rook.core.fleet import (
     LocalProcessHost,
     SQLiteWorkerStore,
 )
+from code_rook.core.goal import GoalService, GoalStore, GoalStoreError
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import HeadlessQuestionPolicy, InteractionManager
 from code_rook.core.llm.route_registry import RouteRegistry
@@ -198,6 +212,7 @@ class CoreApp:
         self._config: CodeRookConfig | None = None
         self._running_runs: set[asyncio.Task[Any]] = set()
         self._sessions: SessionManager | None = None
+        self._goal_service: GoalService | None = None
         self._runtime: RuntimeService | None = None
         self._route_registry: RouteRegistry | None = None
         self._permission_manager: PermissionManager | None = None
@@ -419,6 +434,218 @@ class CoreApp:
 
         run_task.add_done_callback(_cleanup)
         return AgentRunResult(run_id=run_id, session_id=session.id)
+
+    # 将模型 token 用量计入关联 Goal，并在预算耗尽后异步取消当前 run
+    async def _goal_usage_event_handler(self, event: BaseModel) -> None:
+        if not isinstance(event, LlmUsageEvent) or self._goal_service is None:
+            return
+        goal = next(
+            (
+                item
+                for item in self._goal_service.list_all()
+                if item.current_run_id == event.run_id
+            ),
+            None,
+        )
+        if goal is None:
+            return
+        tokens = (
+            event.input_tokens
+            + event.output_tokens
+            + event.cache_read_input_tokens
+            + event.cache_creation_input_tokens
+        )
+        updated = self._goal_service.record_usage(goal.id, tokens=tokens)
+        if (
+            goal.status == "active"
+            and updated.status == "paused"
+            and self._sessions is not None
+        ):
+            task = asyncio.create_task(self._sessions.cancel_run(event.run_id))
+            self._running_runs.add(task)
+            task.add_done_callback(self._running_runs.discard)
+            task.add_done_callback(
+                lambda completed: completed.exception()
+                if not completed.cancelled()
+                else None
+            )
+
+    # 创建持久 Goal，并按请求在所属 session 中立即开始首轮执行
+    async def _goal_create_handler(self, params: dict[str, Any]) -> GoalCreateResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalCreateCommand.model_validate(params)
+        self._sessions.get_session(cmd.session_id)
+        if self._sessions.is_busy(cmd.session_id):
+            raise HandlerError(INVALID_PARAMS, "cannot create goal during an active turn")
+        try:
+            goal = self._goal_service.create(
+                cmd.objective,
+                session_id=cmd.session_id,
+                token_budget=cmd.token_budget,
+                constraints=cmd.constraints,
+                completion_criteria=cmd.completion_criteria,
+            )
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        run_id: str | None = None
+        if cmd.start:
+            try:
+                run_id = await self._sessions.send_message(cmd.session_id, goal.objective)
+            except HandlerError:
+                self._goal_service.set_status(goal.id, "blocked", actor="system")
+                raise
+            goal = self._goal_service.get(goal.id)
+        return GoalCreateResult(goal=goal, run_id=run_id)
+
+    # 查询 Goal ID 或 session 当前 Goal，不存在的 session Goal 返回空结果
+    async def _goal_get_handler(self, params: dict[str, Any]) -> GoalGetResult:
+        assert self._goal_service is not None
+        cmd = GoalGetCommand.model_validate(params)
+        try:
+            if cmd.goal_id.strip():
+                return GoalGetResult(goal=self._goal_service.get(cmd.goal_id.strip()))
+            return GoalGetResult(goal=self._goal_service.current(cmd.session_id.strip()))
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 按 session、状态和数量稳定列出持久 Goal
+    async def _goal_list_handler(self, params: dict[str, Any]) -> GoalListResult:
+        assert self._goal_service is not None
+        cmd = GoalListCommand.model_validate(params)
+        goals = self._goal_service.list_all()
+        if cmd.session_id.strip():
+            goals = [goal for goal in goals if goal.session_id == cmd.session_id.strip()]
+        if cmd.status is not None:
+            goals = [goal for goal in goals if goal.status == cmd.status]
+        return GoalListResult(goals=goals[-cmd.limit :])
+
+    # 修改当前 Goal，并把新目标实时纠偏到正在执行的 run
+    async def _goal_edit_handler(self, params: dict[str, Any]) -> GoalActionResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalEditCommand.model_validate(params)
+        try:
+            selected = self._goal_service.resolve(
+                goal_id=cmd.goal_id,
+                session_id=cmd.session_id,
+            )
+            goal = self._goal_service.edit(
+                selected.id,
+                cmd.objective,
+                completion_criteria=cmd.completion_criteria,
+            )
+            run_id = self._sessions.active_run_id(goal.session_id)
+            if run_id is not None:
+                await self._sessions.steer_run(
+                    run_id,
+                    f"The active goal was edited. New objective: {goal.objective}",
+                )
+            return GoalActionResult(goal=goal, run_id=run_id)
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 暂停 Goal，并取消当前 run 以确保暂停立即生效
+    async def _goal_pause_handler(self, params: dict[str, Any]) -> GoalActionResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalPauseCommand.model_validate(params)
+        try:
+            selected = self._goal_service.resolve(
+                goal_id=cmd.goal_id,
+                session_id=cmd.session_id,
+            )
+            goal = self._goal_service.pause(selected.id)
+            run_id = self._sessions.active_run_id(goal.session_id)
+            if run_id is not None:
+                await self._sessions.cancel_run(run_id)
+            return GoalActionResult(
+                goal=self._goal_service.get(goal.id),
+                run_id=run_id,
+            )
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 恢复暂停或阻塞 Goal，并在所属 session 中开始新的继续轮次
+    async def _goal_resume_handler(self, params: dict[str, Any]) -> GoalActionResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalResumeCommand.model_validate(params)
+        try:
+            selected = self._goal_service.resolve(
+                goal_id=cmd.goal_id,
+                session_id=cmd.session_id,
+            )
+            if self._sessions.is_busy(selected.session_id):
+                raise ValueError("cannot resume goal during an active turn")
+            goal = self._goal_service.resume(selected.id)
+            try:
+                run_id = await self._sessions.send_message(
+                    goal.session_id,
+                    "Continue working toward the active goal and verify every "
+                    "completion criterion.",
+                )
+            except HandlerError:
+                self._goal_service.set_status(goal.id, "blocked", actor="system")
+                raise
+            return GoalActionResult(
+                goal=self._goal_service.get(goal.id),
+                run_id=run_id,
+            )
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 清除 Goal，并取消仍在运行的关联 turn，同时保留审计文件
+    async def _goal_clear_handler(self, params: dict[str, Any]) -> GoalActionResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalClearCommand.model_validate(params)
+        try:
+            selected = self._goal_service.resolve(
+                goal_id=cmd.goal_id,
+                session_id=cmd.session_id,
+            )
+            goal = self._goal_service.clear(selected.id)
+            run_id = self._sessions.active_run_id(goal.session_id)
+            if run_id is not None:
+                await self._sessions.cancel_run(run_id)
+            return GoalActionResult(
+                goal=self._goal_service.get(goal.id),
+                run_id=run_id,
+            )
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 由用户显式确认完成 Goal，并使用最近一次 run 或用户确认作为审计证据
+    async def _goal_complete_handler(self, params: dict[str, Any]) -> GoalActionResult:
+        assert self._sessions is not None
+        assert self._goal_service is not None
+        cmd = GoalCompleteCommand.model_validate(params)
+        try:
+            selected = self._goal_service.resolve(
+                goal_id=cmd.goal_id,
+                session_id=cmd.session_id,
+            )
+            reference = (
+                f"run://{selected.linked_run_ids[-1]}"
+                if selected.linked_run_ids
+                else "user://confirmation"
+            )
+            goal = self._goal_service.complete(
+                selected.id,
+                evidence=[("user-confirmation", reference)],
+                summary=cmd.summary or "User confirmed the goal is complete.",
+                actor="user",
+            )
+            run_id = self._sessions.active_run_id(goal.session_id)
+            if run_id is not None:
+                await self._sessions.cancel_run(run_id)
+            return GoalActionResult(
+                goal=self._goal_service.get(goal.id),
+                run_id=run_id,
+            )
+        except (GoalStoreError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
 
     # 取消指定 active run，并等待 Session 状态稳定落盘
     async def _run_cancel_handler(self, params: dict[str, Any]) -> RunCancelResult:
@@ -1189,6 +1416,11 @@ class CoreApp:
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = Path("~/.coderook/sessions").expanduser()
         store = SessionStore(sessions_root)
+        self._goal_service = GoalService(GoalStore(sessions_root.parent / "goals"))
+        recovered_goals = self._goal_service.recover_interrupted()
+        if recovered_goals:
+            logger.info("recovered %d interrupted goals", len(recovered_goals))
+        self._bus.subscribe(self._goal_usage_event_handler)
         self._runtime = RuntimeService(
             RuntimeStore(sessions_root.parent / "runtime.db"),
             workspace=Path.cwd(),
@@ -1252,6 +1484,7 @@ class CoreApp:
                 hooks=self._hooks,
                 process_supervisor=self._process_supervisor,
                 persistent_shell_pool=self._persistent_shell_pool,
+                goal_service=self._goal_service,
             ),
             bus=self._bus,
             subagent_registry=self._subagent_registry,
@@ -1259,6 +1492,7 @@ class CoreApp:
             interaction_manager=self._interaction_manager,
             route_registry=self._route_registry,
             hooks=self._hooks,
+            goal_service=self._goal_service,
         )
         self._runtime_api = RuntimeApiService(
             self._runtime,
@@ -1288,6 +1522,14 @@ class CoreApp:
         server.register("core.ping", self._ping_handler)
         server.register("core.shutdown", self._shutdown_handler)
         server.register("agent.run", self._agent_run_handler)
+        server.register("goal.create", self._goal_create_handler)
+        server.register("goal.get", self._goal_get_handler)
+        server.register("goal.list", self._goal_list_handler)
+        server.register("goal.edit", self._goal_edit_handler)
+        server.register("goal.pause", self._goal_pause_handler)
+        server.register("goal.resume", self._goal_resume_handler)
+        server.register("goal.clear", self._goal_clear_handler)
+        server.register("goal.complete", self._goal_complete_handler)
         server.register("run.cancel", self._run_cancel_handler)
         server.register("run.steer", self._run_steer_handler)
         server.register("artifact.list", self._artifact_list_handler)

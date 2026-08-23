@@ -46,6 +46,7 @@ class ExecutionContext:
     repository_context_metadata: dict[str, Any] = field(default_factory=dict)
     runtime_context: str = ""
     capability_context: str = ""
+    persistent_goal_context: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     step: int = 0
     status: str = "running"  # "running" | "success" | "failed"
@@ -103,6 +104,8 @@ class ExecutionContext:
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():
             parts.append("\n\n## Available Extensions\n" + self.capability_context.strip())
+        if self.persistent_goal_context.strip():
+            parts.append("\n\n## Active Goal\n" + self.persistent_goal_context.strip())
         return "".join(parts)
 
     # 返回当前 run 的完整 system prompt，并追加记忆与动态上下文

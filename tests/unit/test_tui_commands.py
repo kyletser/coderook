@@ -37,6 +37,7 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("compact", "手动压缩上下文"),
         ("copy", "复制上一条回复"),
         ("plan", "只读规划并审阅后再实施：/plan [任务]"),
+        ("goal", "持续执行并管理持久目标"),
         ("mode", "查看或切换工作模式：plan|act|operate"),
         ("permissions", "查看或切换权限模式"),
         ("trust", "查看或授予/撤销工作区信任"),

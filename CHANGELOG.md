@@ -1,46 +1,32 @@
 # Changelog
 
-本项目遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 的结构，并计划从公开 Beta 起遵循
-[Semantic Versioning](https://semver.org/)。Beta 前的接口仍可能变化。
+本项目采用 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 结构。当前包版本为
+`0.1.0` Alpha，但仓库尚未创建 Git tag 或公开 Release；Beta 前公共接口仍可能变化。
 
 ## [Unreleased]
 
 ### Added
 
-- 开源级补全计划、贡献指南、安全策略、行为准则、支持与治理说明。
-- GitHub Issue/PR 模板与公开仓库一致性门禁。
-- Tag 驱动的版本合同、跨平台发行门禁、SPDX SBOM、checksums、OIDC provenance 与 Cosign keyless 签名流程。
-- 稳定 CI/Security 汇总门禁、CODEOWNERS、分支保护合同、Roadmap、维护者边界与可认领 Contributor Tasks。
-- 项目案例、简历证据账本、3/10 分钟面试讲解，以及跨平台 CI 失败和 TUI 重构复盘。
-- MCP legacy SSE 同源安全客户端与固定官方 SDK 2.0 的 stdio/SSE/Streamable HTTP 互操作 runner。
-- 绑定 commit/platform/SDK 的官方 MCP 三 transport 互操作 JSON/Markdown 证据。
-- 强制 benchmark candidate contract：完整 commit、显式 route/model/wire、逐任务预算及五类 SHA-256 身份，并阻断 fixture/预算漂移比较。
-- 两个 wire format × 两次 release benchmark 聚合器，统一门禁分类成功率、合同漂移、重复波动和不稳定任务。
-- Docker 与 Windows portable 共用的零凭据 installed-runtime smoke，验证 TUI 首用入口、真实 Core 启动与 ping。
-- 基于 `@vscode/test-electron`、Xvfb 与隔离真实 daemon 的 VS Code Extension Host smoke，并生成 commit-bound JSON 证据。
-- 六域 benchmark 失败优化队列和前后实验记录器，拒绝相同 commit、评测合同漂移及无证据的“效果提升”。
-- GitHub 远端证据审计器，fail-closed 检查连续 CI、六类 workflow 与 active ruleset，并升级通用 Actions 到 Node 24 代际。
+- 本地双进程 Coding Agent runtime：Core daemon、TUI、CLI、HTTP/SSE 和 Python SDK。
+- 类型化 IPC、durable thread/turn/event、会话恢复、上下文压缩和可审计 Turn Receipt。
+- File/Git/Run/Bash 工具族、权限审批、checkpoint/rewind、仓库索引、诊断和持久 Shell。
+- Task、Goal、Subagent、Fleet、Worktree 和声明式 Workflow。
+- TUI `/goal` 持久目标模式，支持状态、历史、暂停、恢复、编辑、清除、预算和完成证据。
+- Provider route、凭据存储、成本路由、MCP、Skills、Hooks、Memory 和 Artifact 管理。
+- 50 任务 benchmark、Aider/SWE-bench 适配器、三平台发行与恢复验证脚本。
+- VS Code Runtime API 客户端原型及 Extension Host smoke。
+- 贡献、安全、治理、发布、兼容性和威胁模型文档。
 
 ### Changed
 
-- TUI 在没有 LLM 配置时直接进入界面并给出配置指引，不再强制弹出向导。
-- 生产就绪候选流水线扩展到三平台、VSIX、容器和 Windows portable 产物。
-- CI 的分支 push 仅保留 `main`，Dependabot 改为按生态每月聚合一个 PR；机器人 PR 跳过会在
-  `main` 合并后重复执行的安全扫描，减少重复 Actions 与已知失败通知。
-- VS Code 审批改为关闭时默认拒绝的 QuickPick，并为 Distribution 增加单 job 聚焦入口；真实
-  Extension Host 证据现包含 commit-bound JSON 与哈希绑定审批截图。
-- 增加可按需运行的安装态升级/备份回滚 preflight，报告绑定 baseline/candidate commit、wheel
-  哈希、thread 往返计数和备份摘要；无精确 tag 时不冒充跨已发布版本验证。
-- 修复 benchmark `--help` 因百分号格式化崩溃，以及 provider 凭据诊断失败仍返回退出码 0 的问题。
+- 无可用模型配置时直接进入 TUI，由空状态提示用户运行 `/config`，不强制首屏配置。
+- 文档按用户指南、技术参考、运维发布和当前状态四类精简；删除历史计划、求职材料和重复报告。
+- 远端 GitHub Actions 按维护者要求关闭；workflow 文件仍保留为可恢复的自动化定义。
 
-## [0.1.0] - 2026-08-19
+### Fixed
 
-### Added
+- Provider 诊断失败返回非零退出码。
+- Benchmark `--help` 的百分号格式化错误。
+- Windows 事件回放、wheel 冷启动和 Git racy-clean 相关竞态。
 
-- daemon/client 双进程 Coding Agent runtime、TUI/CLI、HTTP/SSE 与 Python SDK。
-- 类型化协议、工具权限、安全编辑、checkpoint/rewind、durable session/turn 与 context compaction。
-- subagent/fleet/worktree/workflow、多 provider route、MCP/Skills/Hooks 和可审计 receipt。
-- 50 任务 benchmark harness 与完整本地质量门禁。
-
-[Unreleased]: https://github.com/kyletser/coderook/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/kyletser/coderook/releases/tag/v0.1.0
+[Unreleased]: https://github.com/kyletser/coderook/commits/main

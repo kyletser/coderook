@@ -15,6 +15,7 @@ from code_rook.core.tools.builtin.checkpoint import (
 from code_rook.core.tools.builtin.edit_file import EditFileTool
 from code_rook.core.tools.builtin.git_diff import GitDiffTool
 from code_rook.core.tools.builtin.glob import GlobTool
+from code_rook.core.tools.builtin.goal_update import GoalUpdateTool
 from code_rook.core.tools.builtin.grep import GrepTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.memory import (
@@ -53,6 +54,7 @@ __all__ = [
     "EditFileTool",
     "GitDiffTool",
     "GlobTool",
+    "GoalUpdateTool",
     "GrepTool",
     "ListDirTool",
     "MemoryForgetTool",

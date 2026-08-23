@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-08-04
-- 适用范围：`SPECDRIVEN_SPEC.md` P0、R1–R9
+- 适用范围：durable Thread/Turn/Item/Event、session ledger 和 Runtime API
 
 ## 背景
 
@@ -26,8 +26,9 @@ Thread/Turn/Item/Event 事实。本文冻结已经落地的关键决策，避免
 
 ### 3. SQLite、JSONL 与 Artifact 的事实边界
 
-- SQLite 保存 Thread、Turn、Item 元数据、结构化 payload、Event、seq、route、authority 与 usage。
-- 历史 session transcript 和 run JSONL 作为兼容输入与诊断记录，不再是运行状态事实源。
+- session transcript/file ledger 保存运行链路的操作事实；SQLite 是 Thread、Turn、Item、Event、seq、
+  route、authority 与 usage 的可查询、可审计投影。
+- 历史 run JSONL 作为兼容输入与诊断记录，不建立第三套可写状态源。
 - 工具输出达到 hard limit 时写入内容寻址的 `.coderook/artifacts/<sha256>`；SQLite 仅保存
   handle、hash、字节数和有界 preview。
 - Receipt 只从 durable Turn/Item/Event 构建，不读取当前 Core 私有字典。
