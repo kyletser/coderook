@@ -7,7 +7,7 @@
 本文的“存在”不等于“v1 稳定承诺”。`runtime.capabilities` / `GET /v1/capabilities` 返回当前
 feature level：durable threads/turns、cursor replay、receipts、interrupt/steer、permission response、
 Provider Catalog/readiness、Checkpoint、Change Center、有界 Goal、基础子 Agent、Skills、MCP Tools
-和 Memory 位于 `stable`；fleet、declarative workflow、Hooks v2、MCP Resources/Prompts 和 VS Code
+和 Memory 位于 `stable`；Tool Program、ACP Worker backend、fleet、declarative workflow、Hooks v2、MCP Resources/Prompts 和 VS Code
 原型位于 `labs`；Runtime 投影、trace degraded state 和协议生成是 `internal`。
 `labs_enabled` 单独报告实验面是否被维护者激活：默认 `false`，只有进程启动前显式设置
 `CODEROOK_LABS=1` 才为 true。feature flag 出现在 `labs` 表示代码能力存在，不表示默认可调用。
@@ -109,6 +109,13 @@ no-follow、普通文件和对象身份检查加载或排他创建用户级 `api
 被截断的工具参数不会以部分 JSON 执行。图片通过 ArtifactStore 以一次性 multimodal 输入交付；永久
 transcript 不保存原始 base64。
 
+每次 Provider 调用前，Loop 会把实际消息、分层 System Prompt、完整 Tool Schema、route/model/wire
+format、冻结执行契约摘要、图片引用和能力预算写成不可变 `RequestSnapshot`。`llm.request_prepared`
+先进入带 checksum 的 Session Ledger，再发布只含摘要和 `ledger_seq` 的公开事件；记录后快照与实际
+请求不等价时不会调用 Provider。run/step/tool 公开事件同样在广播前由 Session Ledger Bridge 回填
+`ledger_seq`。关键 ledger subscriber 的异常向发布方传播，并触发 `audit_degraded`，不会出现 TUI 已
+显示而重连后完全消失的权威事件。
+
 Plan 模式的结果在 `run.finished` 后发布持久 `plan.ready`。`plan.respond` 只解决同一 session 当前 run 的
 未决计划，SessionManager 在 Runtime 可回放确认 `plan.resolved` 已落盘后才清除 pending；过期、重复或
 持久化失败的决定都失败关闭，新 Turn 在 pending 解决前被阻断。TUI 只在 RPC 成功或收到 durable
@@ -151,11 +158,11 @@ readiness/Doctor/Provider 命令与 WebSearch 都使用同一 CredentialStore �
 `src/code_rook/core/tools/` 的调用管线是：
 
 1. 根据 mode、authority、trust 和 profile 生成可见工具；
-2. 校验参数 schema 和工具能力；
-3. 运行调用前 Hook；
-4. 计算权限决定，必要时等待用户；
-5. 执行并应用输出长度/Artifact 策略；
-6. 运行调用后 Hook，写入事件和 receipt。
+2. 校验参数 schema 和工具能力，生成 Manifest 驱动的 pending presentation；
+3. 先持久化 Tool Call，再运行调用前 Hook；
+4. 计算 authority、权限和 sandbox 决定，必要时等待用户；
+5. 通过统一 middleware 执行并应用输出长度/Artifact 策略；
+6. 运行调用后 Hook，规范化并冻结 Tool Result 与 presentation，再持久化和广播。
 
 主要能力包括：
 
@@ -172,7 +179,9 @@ readiness/Doctor/Provider 命令与 WebSearch 都使用同一 CredentialStore �
 发现，不要硬编码未协商的完整列表。
 
 `ToolActionSpec` 是 action manifest 的唯一声明源：action 参数 schema、capability、authority action、
-审批要求、并行策略和权限策略键都从同一个 `ResolvedToolCall` 投影。PermissionManager 不维护另一份
+审批要求、并行策略、权限策略键、是否允许 Tool Program 编排和 `ToolPresentationSpec` 都从同一个
+`ResolvedToolCall` 投影。TUI 按 `generic/terminal/diff/read/search/web` 展示类型使用通用卡片；未知
+扩展安全降级为 generic，回放不执行仓库 UI 回调，也不重新读取文件。PermissionManager 不维护另一份
 family/action alias 表；旧平铺策略名只能由对应 action 的 `permission_policy_aliases` 显式声明，并按
 新精确键优先、旧别名回退读取。Catalog 在审批和执行前拒绝未知 action，权限层也会拒绝工具名或
 action 与 resolved manifest 不一致的调用，避免策略 alias 扩大到同一 family 的其他 action。
@@ -216,6 +225,12 @@ CodeRook 使用两类持久状态：
 只选择当前 workspace 最近更新的 session，不存在历史会话时创建新 session。
 `core/runtime/` 负责 durable API 投影和启动对账。Turn Receipt 只从已持久化记录重建，不能证明的
 字段列为 unavailable。
+
+新写入的 transcript 只使用 `SessionEventEnvelope v2`：输入、模型消息、请求快照以及
+run/step/tool/permission/steer/compaction/worker 事实各占一条带统一序号与 checksum 的事件，不再为
+同一消息额外写入 `message/block` source row。`derive_messages()` 直接从事件投影模型历史；旧会话中的
+legacy `message/block` 前缀保持只读兼容，后续追加立即使用单一 v2 格式，Compaction 也会生成纯事件
+账本。SQLite 仍是可重建的查询投影，不是独立事实来源。
 
 Runtime SQLite 当前 `PRAGMA user_version` 为 4；v4 为 `runtime_session_facades` 增加逐行
 `schema_version`。数据库版本和公开记录版本彼此独立：Thread、Turn、Item、Event、Facade 当前逐行
@@ -276,6 +291,13 @@ verification 已通过、文件 claim 可穷举、Diff 未截断、人工已批�
 HEAD 仍是 Worker 基线且工作区干净，先用临时 index 预检，冲突、越界、过期 digest 或部分写入都
 fail closed。该路径不执行 commit、push 或自动 merge。
 
+Labs ACP backend 通过统一 `WorkerBackend/WorkerHandle` 契约接入同一控制中心。Backend 必须在启动前
+声明 one-shot、continuation、structured output、persona、tool restriction、read-only guarantee、resume
+和 live events 能力；调用方要求了不支持的能力会明确失败。ACP 只从用户显式 `CODEROOK_ACP_COMMAND`
+装配，进程环境以脱敏基础加显式 extension overlay 构造，永远在独立受管 worktree 运行；只读声明发生
+改动会失败，写入结果仍必须经过既有 Diff、review、verification 和 apply。Windows 标记为 partial
+enforcement，不宣传为 OS 沙箱。首发不承诺 continuation 或跨 daemon resume。
+
 `SessionManager` 在 Goal run 结束后持久化并发布 typed continue decision；显式
 `auto_continue=true` 且决策允许时，会在 session 锁释放后重新读取 Goal 真值并自动创建下一 Turn。
 `max_auto_turns` 包含首轮而不是额外续轮数；每一 Turn 都受自动窗口剩余墙钟的 `asyncio.timeout`
@@ -289,6 +311,17 @@ Turn/1800 秒和可选 token budget 限制；声明的 criteria 全被 daemon �
 或用户显式验收，模型自然语言自报不能完成 Goal。
 
 ## 11. 扩展
+
+`core/capabilities.py` 提供轻量、内部的 Capability Kernel，而不重写 daemon：Provider Catalog、MCP
+Manager、Hook Manager 和外部 Worker Backend 在 workspace scope 注册，单次 Turn 的 Tool Registry 在
+session scope 注册并在结束时撤销。贡献按 `global → workspace → session → worker` 作用域解析，最近
+作用域优先，同层重复 ID 失败，注册返回幂等 disposer，daemon shutdown 会清空 workspace 及后代贡献。
+安全相关调用方应读取完整 contribution chain 并取权限、sandbox 和环境交集，不能用近层覆盖扩大权限。
+
+Session Header 冻结 `AgentPreset` ID 与摘要。`standard` 和 `minimal` 是稳定组合；`tool-program` 是
+Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来源关系的 fork。Tool Program 只支持
+`call/sequence/parallel/if` 和受限 `$ref`，限制 16 节点、6 层、并发 4、120 秒；不支持 eval、import、
+循环、递归、嵌套 Program 或控制类动作，每个子调用仍进入完整工具管线。
 
 - Skills（stable）：用户级或项目级指令包，带严格 schema、来源、digest 和信任检查；
 - Hooks v2（Labs）：生命周期子进程扩展，支持 blocking/fail-closed，rerun 继续执行 workspace trust gate；

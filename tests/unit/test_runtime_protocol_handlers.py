@@ -27,9 +27,22 @@ class _Sessions:
         self.calls: list[tuple[str, str]] = []
 
     # 创建固定 session
-    async def create(self, mode: str, title: str = "") -> Session:
+    async def create(
+        self,
+        mode: str,
+        title: str = "",
+        preset_id: str = "standard",
+    ) -> Session:
         self.calls.append(("create", title))
-        return Session("thread-1", mode, "waiting_for_input", title, "t", "t")  # type: ignore[arg-type]
+        return Session(
+            "thread-1",
+            mode,
+            "waiting_for_input",
+            title,
+            "t",
+            "t",
+            preset_id=preset_id,
+        )  # type: ignore[arg-type]
 
     # 更新 session 标题
     async def rename(self, session_id: str, title: str) -> Session:

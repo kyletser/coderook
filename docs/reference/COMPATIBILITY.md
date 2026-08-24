@@ -19,7 +19,8 @@ HTTP/SSE 与 headless 格式是公共机器接口。内部 IPC 当前只保证�
 Capabilities 还返回三级 feature flags：`stable` 是当前兼容合同，`labs` 表示功能存在但 UX/恢复语义
 仍可在 v1 前变化，`internal` 不承诺给第三方调用。当前 durable session/turn、Provider Catalog、
 Checkpoint、Change Center、有界 Goal、基础子 Agent、Skills、MCP Tools 和 Memory 位于 stable；
-Fleet、declarative Workflow、Hooks v2、MCP Resources/Prompts 与 VS Code 原型位于 Labs。
+Tool Program、ACP Worker backend、Fleet、declarative Workflow、Hooks v2、MCP Resources/Prompts 与
+VS Code 原型位于 Labs。
 调用方不得仅因包中存在命令或模块就把 Labs 当作稳定接口。Capabilities 的 `labs_enabled` 另行表示
 当前进程是否由 `CODEROOK_LABS=1` 显式激活实验控制面；默认 false。即使为 true，Labs 仍不获得 v1
 兼容承诺。

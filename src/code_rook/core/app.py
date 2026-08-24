@@ -7,13 +7,14 @@ import fnmatch
 import hmac
 import json
 import logging
+import os
 import signal
 import sqlite3
 import sys
 import time
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -193,6 +194,13 @@ from code_rook.core.bus.events import (
     AuditDegradedEvent,
     VerificationCompletedEvent,
 )
+from code_rook.core.capabilities import (
+    CapabilityContribution,
+    CapabilityKernel,
+    CapabilityKind,
+    CapabilityScope,
+    CapabilityStability,
+)
 from code_rook.core.change_center import ChangeCenterError, ChangeCenterService
 from code_rook.core.compatibility import build_runtime_capabilities
 from code_rook.core.config import CodeRookConfig, get_config
@@ -231,6 +239,7 @@ from code_rook.core.state_paths import (
     StatePathSecurityError,
     prepare_user_state_layout,
 )
+from code_rook.core.subagent.backends import AcpWorkerBackend, WorkerBackendRegistry
 from code_rook.core.subagent.controller import WorkerController, WorkerControllerError
 from code_rook.core.subagent.models import WorkerRecord
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
@@ -327,6 +336,10 @@ class CoreApp:
         self._config: CodeRookConfig | None = None
         self._env_file = env_file
         self._labs_enabled = labs_enabled()
+        self._capability_kernel = CapabilityKernel()
+        self._capability_scope = CapabilityScope(
+            workspace=str(Path.cwd().resolve())
+        )
         self._running_runs: set[asyncio.Task[Any]] = set()
         self._sessions: SessionManager | None = None
         self._goal_service: GoalService | None = None
@@ -350,6 +363,10 @@ class CoreApp:
         # daemon 级后台 subagent 任务注册表，跨 turn 持有
         self._subagent_registry: BackgroundTaskRegistry | None = None
         self._worker_controller: WorkerController | None = None
+        self._worker_backends = WorkerBackendRegistry(
+            self._capability_kernel,
+            scope=self._capability_scope,
+        )
         self._fleet_registry: BackgroundTaskRegistry | None = None
         self._fleet: LocalFleet | None = None
         self._http_api: HttpApiServer | None = None
@@ -365,6 +382,35 @@ class CoreApp:
                 ts=incident.ts,
             )
         )
+
+    # 注册并重新解析 workspace capability，确保实际消费者经过同一 Kernel seam
+    def _register_workspace_capability(
+        self,
+        kind: CapabilityKind,
+        contribution_id: str,
+        provider: object,
+        *,
+        stability: CapabilityStability,
+    ) -> object:
+        self._capability_kernel.register(
+            CapabilityContribution(
+                id=contribution_id,
+                kind=kind.value,
+                provider=provider,
+                stability=stability,
+                scope=self._capability_scope,
+            )
+        )
+        resolved = self._capability_kernel.resolve(
+            kind,
+            contribution_id,
+            self._capability_scope,
+        )
+        if resolved is None:
+            raise RuntimeError(
+                f"capability registration was not resolvable: {kind.value}/{contribution_id}"
+            )
+        return resolved
 
     # 收集 session 与工作区元数据文件，供 artifact GC 建立引用保留集合
     def _artifact_reference_paths(self) -> list[Path]:
@@ -852,7 +898,13 @@ class CoreApp:
         assert self._sessions is not None
         assert self._runtime is not None
         cmd = ThreadCreateCommand.model_validate(params)
-        session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
+        if cmd.preset_id == "tool-program" and not self._labs_enabled:
+            raise HandlerError(INVALID_PARAMS, "tool-program preset requires CODEROOK_LABS=1")
+        session = await self._sessions.create(
+            mode=cmd.mode,
+            title=cmd.title,
+            preset_id=cmd.preset_id,
+        )
         return ThreadCreateResult(thread=await self._runtime.get_thread(session.id))
 
     # 列出 durable threads 并按归档状态和数量裁剪
@@ -1034,7 +1086,13 @@ class CoreApp:
     async def _session_create_handler(self, params: dict[str, Any]) -> SessionCreateResult:
         assert self._sessions is not None
         cmd = SessionCreateCommand.model_validate(params)
-        session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
+        if cmd.preset_id == "tool-program" and not self._labs_enabled:
+            raise HandlerError(INVALID_PARAMS, "tool-program preset requires CODEROOK_LABS=1")
+        session = await self._sessions.create(
+            mode=cmd.mode,
+            title=cmd.title,
+            preset_id=cmd.preset_id,
+        )
         return SessionCreateResult(session_id=session.id, status=session.status)
 
     # 向 session 发送一条用户消息并同步等待对应 run 完成
@@ -1105,6 +1163,8 @@ class CoreApp:
             last_run_id=session.run_ids[-1] if session.run_ids else None,
             parent_session_id=session.parent_session_id,
             workspace=session.workspace,
+            preset_id=session.preset_id,
+            preset_digest=session.preset_digest,
         )
 
     # 列出 daemon 已恢复的持久化 sessions
@@ -1133,7 +1193,13 @@ class CoreApp:
     async def _session_fork_handler(self, params: dict[str, Any]) -> SessionForkResult:
         assert self._sessions is not None
         cmd = SessionForkCommand.model_validate(params)
-        session = await self._sessions.fork(cmd.session_id, cmd.title)
+        if cmd.preset_id == "tool-program" and not self._labs_enabled:
+            raise HandlerError(INVALID_PARAMS, "tool-program preset requires CODEROOK_LABS=1")
+        session = await self._sessions.fork(
+            cmd.session_id,
+            cmd.title,
+            preset_id=cmd.preset_id,
+        )
         return SessionForkResult(session=self._session_info(session))
 
     async def _session_export_handler(self, params: dict[str, Any]) -> SessionExportResult:
@@ -1254,6 +1320,9 @@ class CoreApp:
             attempt=worker.attempt,
             worktree=worker.worktree,
             read_only=worker.write_claim.read_only,
+            backend=worker.backend,
+            backend_capabilities=dict(worker.backend_capabilities),
+            sandbox_enforcement=worker.sandbox_enforcement,
         )
 
     # 返回严格绑定当前 session 的单个 Worker 状态
@@ -1283,6 +1352,9 @@ class CoreApp:
             attempt=worker.attempt,
             worktree=worker.worktree,
             read_only=worker.write_claim.read_only,
+            backend=worker.backend,
+            backend_capabilities=dict(worker.backend_capabilities),
+            sandbox_enforcement=worker.sandbox_enforcement,
         )
 
     # 返回指定 Worker 游标后的有界持久事件，供控制中心增量 peek
@@ -1306,9 +1378,22 @@ class CoreApp:
     ) -> WorkerFollowupResult:
         assert self._subagent_registry is not None
         cmd = WorkerFollowupCommand.model_validate(params)
-        self._worker_for_session(cmd.session_id, cmd.worker_id)
+        current = self._worker_for_session(cmd.session_id, cmd.worker_id)
         try:
-            if self._interaction_manager.steer(cmd.worker_id, cmd.message):
+            if current.backend != "builtin":
+                if not bool(current.backend_capabilities.get("continuation", False)):
+                    raise ValueError(
+                        f"worker backend does not support continuation: {current.backend}"
+                    )
+                handle = self._worker_backends.handle(cmd.worker_id)
+                if handle is None:
+                    raise ValueError("external worker handle is no longer active")
+                await handle.followup(cmd.message)
+                worker = self._subagent_registry.record_followup(
+                    cmd.worker_id,
+                    cmd.message,
+                )
+            elif self._interaction_manager.steer(cmd.worker_id, cmd.message):
                 worker = self._subagent_registry.record_followup(
                     cmd.worker_id,
                     cmd.message,
@@ -2166,7 +2251,15 @@ class CoreApp:
             self._config.permission.timeout_s,
             len(load_policy_file(policy_file)),
         )
-        self._hooks = self._build_hook_manager(Path.cwd())
+        self._hooks = cast(
+            HookManager,
+            self._register_workspace_capability(
+                CapabilityKind.HOOK_MANAGER,
+                "default",
+                self._build_hook_manager(Path.cwd()),
+                stability=CapabilityStability.LABS,
+            ),
+        )
 
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
         self._bus.subscribe(self._broadcaster.handle)
@@ -2195,10 +2288,27 @@ class CoreApp:
             )
         await self._initialize_provider_catalog(state_layout.root)
         assert self._route_registry is not None
+        self._route_registry = cast(
+            RouteRegistry,
+            self._register_workspace_capability(
+                CapabilityKind.PROVIDER_CATALOG,
+                "default",
+                self._route_registry,
+                stability=CapabilityStability.STABLE,
+            ),
+        )
 
-        self._mcp_manager = McpServerManager(
-            self._process_supervisor,
-            enable_labs=self._labs_enabled,
+        self._mcp_manager = cast(
+            McpServerManager,
+            self._register_workspace_capability(
+                CapabilityKind.MCP_MANAGER,
+                "default",
+                McpServerManager(
+                    self._process_supervisor,
+                    enable_labs=self._labs_enabled,
+                ),
+                stability=CapabilityStability.STABLE,
+            ),
         )
         if self._config.mcp.servers:
             logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
@@ -2208,6 +2318,9 @@ class CoreApp:
         self._subagent_registry = BackgroundTaskRegistry(
             store_path=sessions_root.parent / "workers"
         )
+        acp_command = os.environ.get("CODEROOK_ACP_COMMAND", "").strip()
+        if self._labs_enabled and acp_command:
+            self._worker_backends.register(AcpWorkerBackend(acp_command))
         self._fleet_registry = BackgroundTaskRegistry(
             store=SQLiteWorkerStore(sessions_root.parent / "fleet.db")
         )
@@ -2251,6 +2364,7 @@ class CoreApp:
                 persistent_shell_pool=self._persistent_shell_pool,
                 goal_service=self._goal_service,
                 audit_health=self._audit_health,
+                capability_kernel=self._capability_kernel,
             ),
             bus=self._bus,
             subagent_registry=self._subagent_registry,
@@ -2273,6 +2387,7 @@ class CoreApp:
             hooks=self._hooks,
             interaction_manager=self._interaction_manager,
             goal_service=self._goal_service,
+            backend_registry=self._worker_backends,
         )
         self._runtime_api = RuntimeApiService(
             self._runtime,
@@ -2422,6 +2537,7 @@ class CoreApp:
         await self._background_registry.cancel_all()
         if self._subagent_registry is not None:
             await self._subagent_registry.cancel_all()
+        await self._worker_backends.close()
         if self._hooks is not None:
             await self._hooks.close()
         await self._persistent_shell_pool.aclose_all()
@@ -2429,6 +2545,7 @@ class CoreApp:
         await server.stop()
         if self._trace is not None:
             await self._trace.stop()
+        self._capability_kernel.dispose_scope(self._capability_scope)
         if self._daemon_lock is not None:
             self._daemon_lock.release()
 

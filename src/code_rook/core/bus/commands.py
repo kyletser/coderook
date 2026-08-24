@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Discriminator, Field, model_validator
+from pydantic import BaseModel, Discriminator, Field, JsonValue, model_validator
 
 from code_rook.core.artifacts import ArtifactInventoryItem, ImageArtifactInput
 from code_rook.core.authority import (
@@ -277,6 +277,7 @@ class ThreadCreateCommand(BaseModel):
     type: Literal["thread.create"] = "thread.create"
     title: str = Field(default="", max_length=200)
     mode: SessionMode = "chat"
+    preset_id: str = Field(default="standard", pattern=r"^[a-z][a-z0-9-]{0,63}$")
 
 
 class ThreadCreateResult(BaseModel):
@@ -390,6 +391,7 @@ class SessionCreateCommand(BaseModel):
     type: Literal["session.create"] = "session.create"
     mode: SessionMode = "chat"
     title: str = ""
+    preset_id: str = Field(default="standard", pattern=r"^[a-z][a-z0-9-]{0,63}$")
 
 
 class SessionCreateResult(BaseModel):
@@ -453,6 +455,8 @@ class SessionInfo(BaseModel):
     last_run_id: str | None = None
     parent_session_id: str | None = None
     workspace: str = ""
+    preset_id: str = "standard"
+    preset_digest: str = ""
 
 
 class SessionListCommand(BaseModel):
@@ -488,6 +492,10 @@ class SessionForkCommand(BaseModel):
     type: Literal["session.fork"] = "session.fork"
     session_id: str
     title: str = Field(default="", max_length=200)
+    preset_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9-]{0,63}$",
+    )
 
 
 class SessionForkResult(BaseModel):
@@ -604,6 +612,7 @@ class WorkerStartCommand(BaseModel):
     wall_time_s: int = Field(default=900, ge=1, le=86_400)
     max_attempts: int = Field(default=3, ge=1, le=10)
     retry_backoff_s: float = Field(default=1.0, ge=0, le=300)
+    backend: str = Field(default="builtin", pattern=r"^[a-z][a-z0-9-]{0,63}$")
 
 
 class WorkerStartResult(BaseModel):
@@ -615,6 +624,9 @@ class WorkerStartResult(BaseModel):
     attempt: int = Field(ge=1)
     worktree: str = ""
     read_only: bool
+    backend: str = "builtin"
+    backend_capabilities: dict[str, JsonValue] = Field(default_factory=dict)
+    sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
 
 
 class WorkerStatusCommand(BaseModel):

@@ -35,6 +35,26 @@ class ToolCaller(StrEnum):
     REPLAY = "replay"
 
 
+class ToolPresentationKind(StrEnum):
+    GENERIC = "generic"
+    TERMINAL = "terminal"
+    DIFF = "diff"
+    READ = "read"
+    SEARCH = "search"
+    WEB = "web"
+
+
+class ToolPresentationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: ToolPresentationKind = ToolPresentationKind.GENERIC
+    title_key: str = "tool.generic"
+    subject_fields: tuple[str, ...] = ()
+    location_fields: tuple[str, ...] = ()
+    supports_live_output: bool = False
+    result_schema_version: int = Field(default=1, ge=1)
+
+
 _PERMISSION_KEY = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
@@ -87,6 +107,8 @@ class ToolActionSpec(BaseModel):
     parallel_policy: ParallelPolicy | None = None
     permission_policy_key: str | None = None
     permission_policy_aliases: tuple[str, ...] = ()
+    presentation: ToolPresentationSpec = Field(default_factory=ToolPresentationSpec)
+    programmable: bool = True
 
     @field_validator("permission_policy_key")
     @classmethod

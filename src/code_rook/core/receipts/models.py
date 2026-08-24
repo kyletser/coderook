@@ -38,6 +38,7 @@ class SandboxPlanReceipt(BaseModel):
     domain_policy_enforced: bool
     writable_roots: list[str]
     enforced: bool
+    enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
     degraded_reason: str
     policy_version: int = Field(ge=1)
 

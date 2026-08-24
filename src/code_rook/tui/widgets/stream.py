@@ -147,6 +147,7 @@ class ToolCallBlock(Widget):
         params: dict[str, Any],
         *,
         locale: str | None = None,
+        presentation: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self._tool_name = tool_name
@@ -158,6 +159,35 @@ class ToolCallBlock(Widget):
         self._finished = False
         self._locale = locale or "zh-CN"
         self._legacy_detail = locale is None
+        self._presentation = dict(presentation or {})
+
+    # 根据服务端可信 Presentation Manifest 生成与工具名解耦的动作描述
+    def _presentation_action(self) -> str | None:
+        if not self._presentation:
+            return None
+        kind = str(self._presentation.get("kind") or "generic")
+        subject = str(self._presentation.get("subject") or "").strip()
+        labels = {
+            "zh-CN": {
+                "terminal": "运行命令",
+                "diff": "修改代码",
+                "read": "读取内容",
+                "search": "搜索",
+                "web": "访问网络",
+                "generic": "使用工具",
+            },
+            "en-US": {
+                "terminal": "Run command",
+                "diff": "Change code",
+                "read": "Read content",
+                "search": "Search",
+                "web": "Access web",
+                "generic": "Use tool",
+            },
+        }
+        locale = "en-US" if self._locale == "en-US" else "zh-CN"
+        label = labels[locale].get(kind, labels[locale]["generic"])
+        return f"{label} {subject}".strip()
 
     def compose(self) -> ComposeResult:
         yield Static(self._summary(), classes="summary")
@@ -166,9 +196,10 @@ class ToolCallBlock(Widget):
 
     # 生成自然动作、轻量状态图标和展开提示组成的单行摘要
     def _summary(self) -> str:
+        presented_action = self._presentation_action()
         if self._is_error:
             icon = "[bold red]×[/bold red]"
-            attempted = _tool_action_text(
+            attempted = presented_action or _tool_action_text(
                 self._tool_name,
                 self._params,
                 finished=False,
@@ -177,7 +208,7 @@ class ToolCallBlock(Widget):
             action = tr("stream.failed_action", self._locale, action=attempted)
         elif self._finished:
             icon = "[green]✓[/green]"
-            action = _tool_action_text(
+            action = presented_action or _tool_action_text(
                 self._tool_name,
                 self._params,
                 finished=True,
@@ -185,7 +216,7 @@ class ToolCallBlock(Widget):
             )
         else:
             icon = "[bold cyan]◌[/bold cyan]"
-            action = _tool_action_text(
+            action = presented_action or _tool_action_text(
                 self._tool_name,
                 self._params,
                 finished=False,
@@ -202,7 +233,12 @@ class ToolCallBlock(Widget):
 
     # 生成完整工具输入、结果与终态，供滚动详情面板按需展示
     def _detail_text(self) -> str:
-        if self._tool_name in {"bash", "Bash"} and self._params.get(
+        if str(self._presentation.get("kind")) == "terminal":
+            input_text = str(
+                self._presentation.get("command")
+                or self._params.get("command", "")
+            )
+        elif self._tool_name in {"bash", "Bash"} and self._params.get(
             "action", "run"
         ) == "run":
             input_text = str(self._params.get("command", ""))
@@ -238,11 +274,20 @@ class ToolCallBlock(Widget):
             self.query_one(".detail-content", Static).update(self._detail_text())
 
     # 工具调用完成时先更新持久状态，再在已挂载时刷新可见控件
-    def set_result(self, output: str, elapsed_ms: int, *, is_error: bool = False) -> None:
+    def set_result(
+        self,
+        output: str,
+        elapsed_ms: int,
+        *,
+        is_error: bool = False,
+        presentation: dict[str, Any] | None = None,
+    ) -> None:
         self._output = output
         self._elapsed_ms = elapsed_ms
         self._is_error = is_error
         self._finished = True
+        if presentation is not None:
+            self._presentation = dict(presentation)
         self.add_class("finished")
         self.set_class(is_error, "failed")
         if self.children:
@@ -289,8 +334,19 @@ class ToolStepGroup(Widget):
 
     # 按工具种类聚合同一步的自然动作摘要
     def _action_summary(self) -> str:
+        manifest_kinds = [
+            str(block._presentation.get("kind") or "") for block in self._blocks
+        ]
+        if any(manifest_kinds):
+            labels: list[str] = []
+            for block in self._blocks:
+                label = block._presentation_action()
+                if label and label not in labels:
+                    labels.append(label)
+            if labels:
+                return " · ".join(labels)
         names = [block._tool_name for block in self._blocks]
-        labels: list[str] = []
+        fallback_labels: list[str] = []
         categories = (
             ({"bash", "background_run"}, "run_command"),
             ({"read_file", "list_dir"}, "read"),
@@ -303,14 +359,14 @@ class ToolStepGroup(Widget):
             count = sum(name in tool_names for name in names)
             if count:
                 key = f"stream.{category}.{'one' if count == 1 else 'many'}"
-                labels.append(tr(key, self._locale, count=count))
+                fallback_labels.append(tr(key, self._locale, count=count))
                 categorized.update(name for name in names if name in tool_names)
         for name in names:
             if name not in categorized:
                 label = tr("stream.used_tool", self._locale, name=name)
-                if label not in labels:
-                    labels.append(label)
-        return " · ".join(labels) or tr("stream.tools", self._locale)
+                if label not in fallback_labels:
+                    fallback_labels.append(label)
+        return " · ".join(fallback_labels) or tr("stream.tools", self._locale)
 
     # 根据聚合动作和折叠状态生成步骤标题
     def _header(self) -> str:

@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from pydantic import JsonValue
 
@@ -117,6 +118,9 @@ class BackgroundTaskRegistry:
         route_digest: str = "",
         model: str = "",
         reasoning: str = "",
+        backend: str = "builtin",
+        backend_capabilities: dict[str, JsonValue] | None = None,
+        sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable",
         worktree: str = "",
         branch: str = "",
         base_commit: str = "",
@@ -149,6 +153,9 @@ class BackgroundTaskRegistry:
             route_digest=route_digest,
             model=model,
             reasoning=reasoning,
+            backend=backend,
+            backend_capabilities=dict(backend_capabilities or {}),
+            sandbox_enforcement=sandbox_enforcement,
             depth=depth,
             max_steps=max_steps,
             wall_time_s=wall_time_s,

@@ -224,7 +224,21 @@ class BashTool(BaseTool):
                     await asyncio.shield(terminate_process_tree(proc))
                 raise
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
+            runner_failed = bool(
+                self._sandbox_plan is not None and self._sandbox_plan.enforced
+            )
+            return ToolResult(
+                content=str(exc),
+                is_error=True,
+                error_type=(
+                    "sandbox_runner_failed" if runner_failed else "runtime_error"
+                ),
+                sandbox_enforcement=(
+                    self._sandbox_plan.enforcement
+                    if self._sandbox_plan is not None
+                    else "unavailable"
+                ),
+            )
 
         output = _decode_shell_output(stdout_bytes)
 
@@ -233,12 +247,22 @@ class BashTool(BaseTool):
             return ToolResult(
                 content=f"[exit {returncode}]\n{output}",
                 is_error=True,
-                error_type="runtime_error",
+                error_type="nonzero_exit",
                 process_usage=process_usage,
+                sandbox_enforcement=(
+                    self._sandbox_plan.enforcement
+                    if self._sandbox_plan is not None
+                    else "unavailable"
+                ),
             )
         return ToolResult(
             content=output or "[no output]",
             process_usage=process_usage,
+            sandbox_enforcement=(
+                self._sandbox_plan.enforcement
+                if self._sandbox_plan is not None
+                else "unavailable"
+            ),
         )
 
     # 走常驻 shell 会话，保留 cwd/env/venv 激活状态
@@ -281,7 +305,20 @@ class BashTool(BaseTool):
             return ToolResult(
                 content=f"[exit {outcome.exit_code}]\n{text}",
                 is_error=True,
-                error_type="runtime_error",
+                error_type="nonzero_exit",
                 process_usage=outcome.process_usage,
+                sandbox_enforcement=(
+                    self._sandbox_plan.enforcement
+                    if self._sandbox_plan is not None
+                    else "unavailable"
+                ),
             )
-        return ToolResult(content=text, process_usage=outcome.process_usage)
+        return ToolResult(
+            content=text,
+            process_usage=outcome.process_usage,
+            sandbox_enforcement=(
+                self._sandbox_plan.enforcement
+                if self._sandbox_plan is not None
+                else "unavailable"
+            ),
+        )

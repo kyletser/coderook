@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic import BaseModel
 
 from code_rook.core.events.bus import EventBus
@@ -120,3 +121,18 @@ async def test_failing_subscriber_does_not_block_others() -> None:
     event = _FakeEvent(value="isolated")
     await bus.publish(event)
     assert received == [event]
+
+
+# 功能：验证关键持久化订阅者失败时发布必须立即失败关闭
+# 设计：把抛错处理器标为 critical 并断言异常向上传播，区别于普通观察者的隔离语义
+async def test_critical_subscriber_failure_propagates() -> None:
+    bus = EventBus()
+
+    # 模拟事实账本无法持久化
+    async def broken(event: BaseModel) -> None:
+        raise RuntimeError("ledger unavailable")
+
+    bus.subscribe(broken, critical=True)
+
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
+        await bus.publish(_FakeEvent(value="must persist"))

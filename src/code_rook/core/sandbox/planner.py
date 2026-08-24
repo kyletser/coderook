@@ -5,7 +5,7 @@ import shlex
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from code_rook.core.authority.models import SandboxCapability
 
@@ -55,6 +55,11 @@ class SandboxPlan:
     def backend(self) -> str:
         return self.capability.kind if self.enforced else "degraded"
 
+    @property
+    # 返回跨平台统一的强制级别，内建 OS 后端为 full，降级路径为 unavailable
+    def enforcement(self) -> Literal["full", "partial", "unavailable"]:
+        return "full" if self.enforced else "unavailable"
+
     # 返回可写入 receipt 的完整隔离决策，不包含命令或环境变量
     def describe(self) -> dict[str, object]:
         return {
@@ -66,6 +71,7 @@ class SandboxPlan:
             "domain_policy_enforced": self.domain_policy_enforced,
             "writable_roots": list(self.writable_roots),
             "enforced": self.enforced,
+            "enforcement": self.enforcement,
             "degraded_reason": self.reason if self.degraded else "",
             "policy_version": self.policy_version,
         }

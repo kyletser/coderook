@@ -270,6 +270,8 @@ async def test_cancelled_error_marks_failed_and_reraises() -> None:
     assert ctx.reason == "cancelled"
 
 
+# 功能：验证 Tool Use 在底层工具尚未完成时已经写入统一 v2 事实日志
+# 设计：阻塞真实工具执行并读取 llm.message payload，证明执行前不再依赖 legacy block 行
 async def test_tool_use_is_persisted_before_tool_finishes(tmp_path: Path) -> None:
     started = asyncio.Event()
     tool_call = _tc("blocking", {})
@@ -294,7 +296,17 @@ async def test_tool_use_is_persisted_before_tool_finishes(tmp_path: Path) -> Non
             encoding="utf-8"
         ).splitlines()
     ]
-    assert [row["block"]["type"] for row in rows] == ["tool_use"]
+    assert [
+        row["payload"]["block"]["type"]
+        for row in rows
+        if row.get("kind") == "event"
+        and row.get("type") == "llm.message"
+        and "block" in row.get("payload", {})
+    ] == ["tool_use"]
+    assert any(
+        row.get("kind") == "event" and row.get("type") == "llm.message"
+        for row in rows
+    )
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

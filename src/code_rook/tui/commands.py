@@ -56,6 +56,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "new": "session",
     "rename": "session",
     "fork": "session",
+    "preset": "session",
     "export": "session",
     "delete": "session",
     "history": "session",
@@ -167,11 +168,17 @@ async def _cmd_sessions(app: Any, ta: ChatTextArea, content: str) -> None:
 
 async def _cmd_new(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
+    preset_id = content.removeprefix("/new").strip() or "standard"
+    if preset_id not in {"standard", "minimal", "tool-program"}:
+        _warn(app, "cmd.usage", usage="/new [standard|minimal|tool-program]")
+        return
     if app._client is not None and not app._busy:
         ta.disabled = True
         _progress(app, ta, "cmd.session.creating")
         app.run_worker(
-            app._create_and_switch_session(), name="new_session", exclusive=False
+            app._create_and_switch_session(preset_id),
+            name="new_session",
+            exclusive=False,
         )
 
 
@@ -197,6 +204,25 @@ async def _cmd_fork(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.disabled = True
     _progress(app, ta, "cmd.session.forking")
     app.run_worker(app._do_fork_session(title), name="fork_session", exclusive=False)
+
+
+# 通过创建关联 fork 切换冻结 Preset，避免非空会话的工具集合发生漂移
+async def _cmd_preset(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    preset_id = content.removeprefix("/preset").strip()
+    if preset_id not in {"standard", "minimal", "tool-program"}:
+        _warn(app, "cmd.usage", usage="/preset standard|minimal|tool-program")
+        return
+    if app._client is None or app._session_id is None or app._busy:
+        _warn(app, "cmd.core_busy")
+        return
+    ta.disabled = True
+    _progress(app, ta, "cmd.session.forking")
+    app.run_worker(
+        app._do_switch_preset(preset_id),
+        name="switch_preset",
+        exclusive=False,
+    )
 
 
 async def _cmd_export(app: Any, ta: ChatTextArea, content: str) -> None:
@@ -638,6 +664,7 @@ def _parse_worker_start(argument: str, *, locale: str = "zh-CN") -> dict[str, ob
     profile = ""
     route_id = ""
     model = ""
+    backend = "builtin"
     token_budget: int | None = None
     exact_files: list[str] = []
     write_roots: list[str] = []
@@ -649,6 +676,7 @@ def _parse_worker_start(argument: str, *, locale: str = "zh-CN") -> dict[str, ob
             "--profile",
             "--route",
             "--model",
+            "--backend",
             "--budget",
             "--file",
             "--write-root",
@@ -662,6 +690,10 @@ def _parse_worker_start(argument: str, *, locale: str = "zh-CN") -> dict[str, ob
                 route_id = value
             elif token == "--model":
                 model = value
+            elif token == "--backend":
+                if value not in {"builtin", "acp"}:
+                    raise ValueError("--backend must be builtin or acp")
+                backend = value
             elif token == "--budget":
                 if not value.isdigit() or int(value) < 1:
                     raise ValueError(tr("cmd.worker.budget_positive", locale))
@@ -685,6 +717,7 @@ def _parse_worker_start(argument: str, *, locale: str = "zh-CN") -> dict[str, ob
         "profile": profile,
         "route_id": route_id,
         "model": model,
+        "backend": backend,
         "read_only": not (exact_files or write_roots),
         "exact_files": exact_files,
         "write_roots": write_roots,
@@ -1157,9 +1190,24 @@ async def _cmd_commit(app: Any, ta: ChatTextArea, content: str) -> None:
 BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("help", "显示键位与全部命令", False, _cmd_help),
     SlashCommand("sessions", "打开会话选择器（输入即过滤）", True, _cmd_sessions),
-    SlashCommand("new", "新建会话", True, _cmd_new),
+    SlashCommand(
+        "new",
+        "新建会话",
+        True,
+        _cmd_new,
+        usage="standard|minimal|tool-program",
+        arg_candidates=("standard", "minimal", "tool-program"),
+    ),
     SlashCommand("rename", "重命名当前会话：/rename <标题>", True, _cmd_rename),
     SlashCommand("fork", "复制当前会话为分支：/fork [标题]", True, _cmd_fork),
+    SlashCommand(
+        "preset",
+        "通过 fork 切换冻结 Agent Preset",
+        True,
+        _cmd_preset,
+        usage="standard|minimal|tool-program",
+        arg_candidates=("standard", "minimal", "tool-program"),
+    ),
     SlashCommand(
         "export",
         "导出当前会话：/export [md|json]",
@@ -1262,7 +1310,7 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         "查看、审查或应用持久 Worker",
         True,
         _cmd_workers,
-        usage="start|status|retry|peek|followup|cancel|review|apply",
+        usage="start [--backend builtin|acp]|status|retry|peek|followup|cancel|review|apply",
         arg_candidates=(
             "start",
             "status",

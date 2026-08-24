@@ -136,6 +136,37 @@ def test_thread_message_roundtrip_with_tool_blocks(tmp_path: Path) -> None:
     ]
 
 
+# 功能：验证旧 message/block transcript 保持只读兼容且后续写入只追加一个 v2 事件
+# 设计：手写无 hash 的 legacy 前缀后调用新 append_message，比较消息投影和新增行数量
+def test_legacy_transcript_reads_without_continuing_dual_write(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    thread = store.session_dir("sess-legacy") / "thread.jsonl"
+    thread.parent.mkdir(parents=True)
+    thread.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "message",
+                "role": "user",
+                "content": "legacy",
+                "ts": "2026-01-01T00:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store.append_message("sess-legacy", "assistant", "native", run_id="run-1")
+
+    rows = [json.loads(line) for line in thread.read_text(encoding="utf-8").splitlines()]
+    assert [row["kind"] for row in rows] == ["message", "event"]
+    assert rows[-1]["source_event_seqs"] == []
+    assert store.read_messages("sess-legacy") == [
+        {"role": "user", "content": "legacy"},
+        {"role": "assistant", "content": "native"},
+    ]
+
+
 # 功能：验证 thread 尾部孤儿 tool_use 会被裁掉
 # 设计：构造一条未配对 tool_result 的 assistant tool_use，读取时只返回最后一次配平之前的消息，避免 API 报 messages.invalid
 def test_read_messages_trims_orphan_tool_use_tail(tmp_path: Path) -> None:
@@ -183,6 +214,8 @@ def test_session_dir_rejects_invalid_id(tmp_path: Path) -> None:
         store.session_dir("../outside")
 
 
+# 功能：验证消息块只产生 v2 权威事件、按消息分组且重复块不会再次入账
+# 设计：检查纯事件账本和最终消息投影，同时保留 legacy 读取兼容而不继续双写
 def test_transcript_blocks_are_durable_grouped_and_deduplicated(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     store.append_message(
@@ -215,9 +248,11 @@ def test_transcript_blocks_are_durable_grouped_and_deduplicated(tmp_path: Path) 
             encoding="utf-8"
         ).splitlines()
     ]
-    assert [row["kind"] for row in raw_rows] == ["message", "block", "block", "block"]
-    assert [row["block_index"] for row in raw_rows[1:3]] == [0, 1]
-    assert all(row["block_count"] == 2 for row in raw_rows[1:3])
+    assert [row["kind"] for row in raw_rows] == ["event"] * 4
+    block_rows = [row for row in raw_rows if "block" in row["payload"]]
+    assert [row["payload"]["block_index"] for row in block_rows[:2]] == [0, 1]
+    assert all(row["payload"]["block_count"] == 2 for row in block_rows[:2])
+    assert all(not row["source_event_seqs"] for row in raw_rows)
     assert store.read_messages("sess-1") == [
         {"role": "user", "content": "inspect"},
         {"role": "assistant", "content": assistant_blocks},
@@ -230,6 +265,8 @@ def test_transcript_blocks_are_durable_grouped_and_deduplicated(tmp_path: Path) 
     ]
 
 
+# 功能：验证未完成工具尾部会从纯 v2 事件账本裁掉并保留最后完整事实前缀
+# 设计：制造两个调用只完成一个的尾部，按单行事实布局校验归档和可重复恢复
 def test_recover_incomplete_tool_tail_archives_and_trims_message(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     store.append_message("sess-1", "user", "work", run_id="run-1")
@@ -368,7 +405,8 @@ def test_transcript_checksum_chain_detects_and_recovers_tampering(tmp_path: Path
     store.append_message(sid, "user", "third", run_id="run-2")
     path = store.session_dir(sid) / "thread.jsonl"
     lines = path.read_text(encoding="utf-8").splitlines()
-    lines[1] = lines[1].replace("second", "tampered")
+    tampered_index = next(index for index, line in enumerate(lines) if "second" in line)
+    lines[tampered_index] = lines[tampered_index].replace("second", "tampered")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert any("checksum mismatch" in issue for issue in store.verify_ledger(sid))

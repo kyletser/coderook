@@ -12,18 +12,29 @@ type EventHandler = Callable[[BaseModel], Awaitable[None]]
 
 
 class EventBus:
+    # 初始化有序订阅列表及需要向发布方传播失败的关键处理器集合
     def __init__(self) -> None:
         self._subscribers: list[EventHandler] = []
+        self._critical: set[EventHandler] = set()
 
     # 注册事件处理函数，并允许持久化等边界处理器优先执行
-    def subscribe(self, handler: EventHandler, *, first: bool = False) -> None:
+    def subscribe(
+        self,
+        handler: EventHandler,
+        *,
+        first: bool = False,
+        critical: bool = False,
+    ) -> None:
         if first:
             self._subscribers.insert(0, handler)
         else:
             self._subscribers.append(handler)
+        if critical:
+            self._critical.add(handler)
 
     # 注销事件处理函数，避免短生命周期订阅者在总线上持续累积
     def unsubscribe(self, handler: EventHandler) -> None:
+        self._critical.discard(handler)
         try:
             self._subscribers.remove(handler)
         except ValueError:
@@ -38,6 +49,8 @@ class EventBus:
                 # 保留取消语义，向上传播以正确终止 run
                 raise
             except Exception:
+                if handler in self._critical:
+                    raise
                 logger.exception(
                     "event subscriber failed on %s", type(event).__name__
                 )

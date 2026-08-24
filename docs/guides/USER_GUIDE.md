@@ -235,7 +235,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
 | 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/cost` |
 | 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
-| Labs/高级 | `/workflow`、`/hooks` |
+| Labs/高级 | `/preset tool-program`、`/workflow`、`/hooks` |
 
 输入历史按工作区保存，可关闭或清空。密钥样式的输入不会写入历史；这是模式脱敏，不是完备的 DLP。
 `/export [md|json]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
@@ -357,7 +357,7 @@ completed；文件路径、commit 文本或模型自报“测试通过”都不�
 
 ## 7. 扩展与多 Agent 边界
 
-Runtime capability 继续把 fleet workers、declarative workflows、Hooks v2、MCP Resources/Prompts 和
+Runtime capability 继续把 Tool Program、ACP Worker backend、fleet workers、declarative workflows、Hooks v2、MCP Resources/Prompts 和
 VS Code 原型标为 Labs。bounded Goal loop、基础子 Agent、Skills、MCP Tools、Memory、durable
 threads/turns、cursor replay、receipts、interrupt/steer、permission response 与 workspace diff 是稳定机器
 合同；稳定标签不替代发布评分卡的外部门禁。
@@ -372,10 +372,34 @@ PowerShell 使用 `$env:CODEROOK_LABS = "1"` 后再启动。修改开关后必�
 用户/项目 Hook 配置，不暴露或恢复 Workflow/Fleet 控制面。该开关不把 Labs 变成稳定合同，也不降低
 权限、工作区信任或审计要求。
 
+Agent Preset 在 Session 创建时冻结：
+
+```text
+/new standard
+/new minimal
+/preset minimal
+/preset tool-program     # 仅 Labs；自动 fork，不改写原会话工具历史
+```
+
+`standard` 暴露完整稳定工具，`minimal` 用于精简评测，`tool-program` 增加声明式
+`RunToolProgram`。Tool Program 不是任意代码执行器，只允许有界 `call/sequence/parallel/if`；每个
+子调用仍经过原工具的 Hook、权限、沙箱、Artifact 和审计管线。
+
+ACP 外部 Agent 也是 Labs。启动 Core 前显式设置命令；Windows 推荐 JSON argv，避免路径转义歧义：
+
+```powershell
+$env:CODEROOK_LABS = "1"
+$env:CODEROOK_ACP_COMMAND = '["C:\\Tools\\agent.exe","--acp"]'
+uv run coderook
+```
+
+随后在 Worker start 请求中选择 `backend=acp`。ACP 首发是 one-shot，不保证 followup 或重启恢复；它
+始终在受管 worktree 内运行，TUI 显示 partial enforcement，改动仍需 review、verification 和 apply。
+
 稳定基础 Worker 不需要 Labs。控制命令为：
 
 ```text
-/workers start [--profile ROLE] [--route ID] [--model ID] [--budget TOKENS] \
+/workers start [--backend builtin|acp] [--profile ROLE] [--route ID] [--model ID] [--budget TOKENS] \
   [--file PATH ...] [--write-root PATH ...] <任务>
 /workers status <id>
 /workers peek <id> [after_cursor]

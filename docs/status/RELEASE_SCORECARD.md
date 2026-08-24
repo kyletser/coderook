@@ -2,7 +2,7 @@
 
 **更新时间**：2026-08-24
 
-**代码锚点**：`main@824e7f1` + 当前未提交的 v1 改造工作树
+**代码锚点**：`main@2a8da99` + 当前未提交的 Harness 架构改造工作树
 
 候选状态：**NO-GO（不是 v1.0.0 Release Candidate）**
 
@@ -30,6 +30,10 @@
   EOF、content filter、失败和取消不会误报成功，被截断的工具参数不会执行。
 - 持久 Shell、前台/后台输出使用有界缓冲；大输出进入 Artifact。Event/Runtime 持久化失败触发
   `audit_degraded` 并暂停非 READ 工具，Trace 降级单独可见。
+- Session Ledger 现以 v2 事实事件投影输入、模型消息、请求快照和执行事件；Provider 调用前验证持久
+  `RequestSnapshot` 与实际消息/System/Tool Schema/Route/执行契约完全一致。run/step/tool 事件在广播前
+  关联 `ledger_seq`，关键持久化失败会阻止事件继续传播。新写入已收口为纯 v2 SessionEvent；旧
+  message/block 前缀只读兼容且不会继续双写。
 - TUI 使用 session-scoped durable cursor 和统一 reducer，重连按 `after_seq` 回放；daemon 全局事件不
   混入 thread 时间线。活动 Turn resume busy 时只读附着权威 thread，恢复 transcript、订阅和未决交互；
   切换 session 会撤销旧 thread 订阅。无模型时 onboarding 非阻塞，readiness 失败保留草稿且不创建失败 run。
@@ -53,10 +57,17 @@
   session-scoped；route/readiness、模型、预算、profile 与权限边界冻结。可写 Worker 强制进入受管
   worktree，只有 verification、完整 Diff、人工 review digest 和干净基线都重验通过后才能显式 apply；
   冲突、越权和摘要漂移 fail closed，apply 不 stage/commit/push。
+- Agent Preset 冻结进 Session Header；standard/minimal 稳定，切换通过 fork。Tool Presentation 由 Action
+  Manifest 纯转换并持久化，TUI 按类型通用渲染。声明式 Tool Program 与 ACP 外部 Worker 已接入，但均
+  保持 Labs：前者禁止任意代码并把子调用重新送入工具管线，后者强制 worktree、能力不支持时明确失败，
+  当前仍缺独立人工互操作与安全报告。
+- Capability Kernel 已实际承载 workspace 级 Provider/MCP/Hooks/Worker Backend 和 session 级 Tool
+  Registry；文本、工具成功与权限拒绝三个 keyless Golden Replay 固定验证重开后的 Ledger 顺序和模型
+  消息投影。
 - Runtime SQLite 当前数据库 schema 为 v4，公开 Thread/Turn/Item/Event/Facade 逐行 schema 仍为 1；
   未来数据库/逐行版本和外键损坏失败关闭。Runtime Doctor 严格区分只读 inspect 与显式 repair，并分别
   报告备份、迁移收据、fallback credential 和 Route Catalog 状态；repair 不猜测损坏内容。
-- `feature_flags` 把 Goal、基础子 Agent、Skills、MCP Tools、Memory 和 Change Center 标为 stable；Fleet、
+- `feature_flags` 把 Goal、基础子 Agent、Skills、MCP Tools、Memory 和 Change Center 标为 stable；Tool Program、ACP Worker backend、Fleet、
   声明式 Workflow、Hooks v2、MCP Resources/Prompts 和 VS Code 原型标为 Labs。Labs 默认关闭且隐藏，
   仅 `CODEROOK_LABS=1` 激活；关闭时不加载 Hook，也不暴露或恢复 Workflow/Fleet 控制面。
 - 日常自动化收敛为一个 10 分钟目标的 Ubuntu required job。安全、恢复、MCP、分发与真实模型矩阵只由

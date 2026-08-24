@@ -347,6 +347,21 @@ class RuntimeReconciler:
                             detail=detail,
                         )
                     )
+                try:
+                    execution_issues = self._sessions.verify_execution_ledger(
+                        session.id
+                    )
+                except (OSError, UnicodeError, ValueError):
+                    execution_issues = ["session execution facts could not be read"]
+                for detail in execution_issues:
+                    issues.append(
+                        RuntimeConsistencyIssue(
+                            code="execution_invariant_violation",
+                            severity="error",
+                            thread_id=session.id,
+                            detail=detail,
+                        )
+                    )
             if not runtime_semantics_available:
                 continue
             thread = thread_by_id.get(session.id)

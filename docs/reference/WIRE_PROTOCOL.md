@@ -3505,6 +3505,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `title` | `string` | no |
 | `mode` | `string` | no |
+| `preset_id` | `string` | no |
 
 ```json
 {
@@ -3528,6 +3529,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "chat"
       ],
       "title": "Mode",
+      "type": "string"
+    },
+    "preset_id": {
+      "default": "standard",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "title": "Preset Id",
       "type": "string"
     }
   },
@@ -5805,6 +5812,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `mode` | `string` | no |
 | `title` | `string` | no |
+| `preset_id` | `string` | no |
 
 ```json
 {
@@ -5827,6 +5835,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "title": {
       "default": "",
       "title": "Title",
+      "type": "string"
+    },
+    "preset_id": {
+      "default": "standard",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "title": "Preset Id",
       "type": "string"
     }
   },
@@ -6455,6 +6469,16 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Workspace",
           "type": "string"
+        },
+        "preset_id": {
+          "default": "standard",
+          "title": "Preset Id",
+          "type": "string"
+        },
+        "preset_digest": {
+          "default": "",
+          "title": "Preset Digest",
+          "type": "string"
         }
       },
       "required": [
@@ -6592,6 +6616,16 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "workspace": {
           "default": "",
           "title": "Workspace",
+          "type": "string"
+        },
+        "preset_id": {
+          "default": "standard",
+          "title": "Preset Id",
+          "type": "string"
+        },
+        "preset_digest": {
+          "default": "",
+          "title": "Preset Digest",
           "type": "string"
         }
       },
@@ -6735,6 +6769,16 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Workspace",
           "type": "string"
+        },
+        "preset_id": {
+          "default": "standard",
+          "title": "Preset Id",
+          "type": "string"
+        },
+        "preset_digest": {
+          "default": "",
+          "title": "Preset Digest",
+          "type": "string"
         }
       },
       "required": [
@@ -6770,6 +6814,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
 | `title` | `string` | no |
+| `preset_id` | `string | null` | no |
 
 ```json
 {
@@ -6789,6 +6834,19 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "maxLength": 200,
       "title": "Title",
       "type": "string"
+    },
+    "preset_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Preset Id"
     }
   },
   "required": [
@@ -6875,6 +6933,16 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "workspace": {
           "default": "",
           "title": "Workspace",
+          "type": "string"
+        },
+        "preset_id": {
+          "default": "standard",
+          "title": "Preset Id",
+          "type": "string"
+        },
+        "preset_digest": {
+          "default": "",
+          "title": "Preset Digest",
           "type": "string"
         }
       },
@@ -7493,6 +7561,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `wall_time_s` | `integer` | no |
 | `max_attempts` | `integer` | no |
 | `retry_backoff_s` | `number` | no |
+| `backend` | `string` | no |
 
 ```json
 {
@@ -7606,6 +7675,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "minimum": 0,
       "title": "Retry Backoff S",
       "type": "number"
+    },
+    "backend": {
+      "default": "builtin",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "title": "Backend",
+      "type": "string"
     }
   },
   "required": [
@@ -7630,9 +7705,15 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `attempt` | `integer` | yes |
 | `worktree` | `string` | no |
 | `read_only` | `boolean` | yes |
+| `backend` | `string` | no |
+| `backend_capabilities` | `object` | no |
+| `sandbox_enforcement` | `string` | no |
 
 ```json
 {
+  "$defs": {
+    "JsonValue": {}
+  },
   "properties": {
     "worker_id": {
       "title": "Worker Id",
@@ -7667,6 +7748,28 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "read_only": {
       "title": "Read Only",
       "type": "boolean"
+    },
+    "backend": {
+      "default": "builtin",
+      "title": "Backend",
+      "type": "string"
+    },
+    "backend_capabilities": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Backend Capabilities",
+      "type": "object"
+    },
+    "sandbox_enforcement": {
+      "default": "unavailable",
+      "enum": [
+        "full",
+        "partial",
+        "unavailable"
+      ],
+      "title": "Sandbox Enforcement",
+      "type": "string"
     }
   },
   "required": [
@@ -7792,9 +7895,15 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `attempt` | `integer` | yes |
 | `worktree` | `string` | no |
 | `read_only` | `boolean` | yes |
+| `backend` | `string` | no |
+| `backend_capabilities` | `object` | no |
+| `sandbox_enforcement` | `string` | no |
 
 ```json
 {
+  "$defs": {
+    "JsonValue": {}
+  },
   "properties": {
     "worker_id": {
       "title": "Worker Id",
@@ -7829,6 +7938,28 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "read_only": {
       "title": "Read Only",
       "type": "boolean"
+    },
+    "backend": {
+      "default": "builtin",
+      "title": "Backend",
+      "type": "string"
+    },
+    "backend_capabilities": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Backend Capabilities",
+      "type": "object"
+    },
+    "sandbox_enforcement": {
+      "default": "unavailable",
+      "enum": [
+        "full",
+        "partial",
+        "unavailable"
+      ],
+      "title": "Sandbox Enforcement",
+      "type": "string"
     }
   },
   "required": [
@@ -10493,6 +10624,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `goal` | `string` | yes |
+| `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -10511,6 +10643,19 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "goal": {
       "title": "Goal",
       "type": "string"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
     },
     "ts": {
       "title": "Ts",
@@ -10552,6 +10697,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `changes` | `array | null` | no |
 | `verification` | `array | null` | no |
 | `result_summary` | `string | null` | no |
+| `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -10679,6 +10825,19 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": null,
       "title": "Result Summary"
     },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
     "ts": {
       "title": "Ts",
       "type": "string"
@@ -10762,6 +10921,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `step` | `integer` | yes |
+| `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -10780,6 +10940,19 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "step": {
       "title": "Step",
       "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
     },
     "ts": {
       "title": "Ts",
@@ -10814,6 +10987,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `step` | `integer` | yes |
+| `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -10832,6 +11006,19 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "step": {
       "title": "Step",
       "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
     },
     "ts": {
       "title": "Ts",
@@ -11020,6 +11207,13 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool_use_id` | `string` | yes |
 | `tool_name` | `string` | yes |
 | `params` | `object` | yes |
+| `step` | `integer` | no |
+| `ledger_seq` | `integer | null` | no |
+| `presentation` | `object | null` | no |
+| `program_id` | `string` | no |
+| `parent_tool_call_id` | `string` | no |
+| `node_id` | `string` | no |
+| `commit_order` | `integer` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -11047,6 +11241,57 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "additionalProperties": true,
       "title": "Params",
       "type": "object"
+    },
+    "step": {
+      "default": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Presentation"
+    },
+    "program_id": {
+      "default": "",
+      "title": "Program Id",
+      "type": "string"
+    },
+    "parent_tool_call_id": {
+      "default": "",
+      "title": "Parent Tool Call Id",
+      "type": "string"
+    },
+    "node_id": {
+      "default": "",
+      "title": "Node Id",
+      "type": "string"
+    },
+    "commit_order": {
+      "default": 0,
+      "title": "Commit Order",
+      "type": "integer"
     },
     "ts": {
       "title": "Ts",
@@ -11091,6 +11336,15 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `elapsed_ms` | `integer` | yes |
 | `output` | `string` | no |
 | `process_usage` | `object` | no |
+| `step` | `integer` | no |
+| `ledger_seq` | `integer | null` | no |
+| `presentation` | `object | null` | no |
+| `sandbox_enforcement` | `string` | no |
+| `failure_category` | `string | null` | no |
+| `program_id` | `string` | no |
+| `parent_tool_call_id` | `string` | no |
+| `node_id` | `string` | no |
+| `commit_order` | `integer` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -11127,6 +11381,79 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "additionalProperties": true,
       "title": "Process Usage",
       "type": "object"
+    },
+    "step": {
+      "default": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Presentation"
+    },
+    "sandbox_enforcement": {
+      "default": "unavailable",
+      "enum": [
+        "full",
+        "partial",
+        "unavailable"
+      ],
+      "title": "Sandbox Enforcement",
+      "type": "string"
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Category"
+    },
+    "program_id": {
+      "default": "",
+      "title": "Program Id",
+      "type": "string"
+    },
+    "parent_tool_call_id": {
+      "default": "",
+      "title": "Parent Tool Call Id",
+      "type": "string"
+    },
+    "node_id": {
+      "default": "",
+      "title": "Node Id",
+      "type": "string"
+    },
+    "commit_order": {
+      "default": 0,
+      "title": "Commit Order",
+      "type": "integer"
     },
     "ts": {
       "title": "Ts",
@@ -11172,6 +11499,15 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `attempt` | `integer` | no |
 | `terminal` | `boolean` | no |
 | `process_usage` | `object` | no |
+| `step` | `integer` | no |
+| `ledger_seq` | `integer | null` | no |
+| `presentation` | `object | null` | no |
+| `sandbox_enforcement` | `string` | no |
+| `failure_category` | `string | null` | no |
+| `program_id` | `string` | no |
+| `parent_tool_call_id` | `string` | no |
+| `node_id` | `string` | no |
+| `commit_order` | `integer` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -11221,6 +11557,79 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "additionalProperties": true,
       "title": "Process Usage",
       "type": "object"
+    },
+    "step": {
+      "default": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Presentation"
+    },
+    "sandbox_enforcement": {
+      "default": "unavailable",
+      "enum": [
+        "full",
+        "partial",
+        "unavailable"
+      ],
+      "title": "Sandbox Enforcement",
+      "type": "string"
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Category"
+    },
+    "program_id": {
+      "default": "",
+      "title": "Program Id",
+      "type": "string"
+    },
+    "parent_tool_call_id": {
+      "default": "",
+      "title": "Parent Tool Call Id",
+      "type": "string"
+    },
+    "node_id": {
+      "default": "",
+      "title": "Node Id",
+      "type": "string"
+    },
+    "commit_order": {
+      "default": 0,
+      "title": "Commit Order",
+      "type": "integer"
     },
     "ts": {
       "title": "Ts",
@@ -11638,6 +12047,105 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "cache_read_input_tokens": 490,
   "cache_creation_input_tokens": 0,
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### LlmRequestPreparedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `ledger_seq` | `integer | null` | no |
+| `request_snapshot_digest` | `string` | yes |
+| `preset_id` | `string` | no |
+| `preset_digest` | `string` | no |
+| `route_id` | `string` | no |
+| `model` | `string` | no |
+| `wire_format` | `string` | no |
+| `execution_contract_digest` | `string` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "llm.request_prepared",
+      "default": "llm.request_prepared",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "request_snapshot_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Snapshot Digest",
+      "type": "string"
+    },
+    "preset_id": {
+      "default": "standard",
+      "title": "Preset Id",
+      "type": "string"
+    },
+    "preset_digest": {
+      "default": "",
+      "pattern": "^(?:|[0-9a-f]{64})$",
+      "title": "Preset Digest",
+      "type": "string"
+    },
+    "route_id": {
+      "default": "",
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+    },
+    "wire_format": {
+      "default": "",
+      "title": "Wire Format",
+      "type": "string"
+    },
+    "execution_contract_digest": {
+      "default": "",
+      "title": "Execution Contract Digest",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "request_snapshot_digest",
+    "ts"
+  ],
+  "title": "LlmRequestPreparedEvent",
+  "type": "object"
 }
 ```
 

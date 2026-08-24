@@ -123,9 +123,9 @@ async def test_event_writer_handle_when_not_open_is_noop(tmp_path: Path) -> None
     await writer.handle(event)  # _file is None, should not raise
 
 
-# 功能：验证磁盘写入失败时只记录 ERROR 日志、不向上传播异常
-# 设计：手动关闭已打开的文件句柄触发 OSError，用 caplog 断言 ERROR 级别日志；EventWriter 的契约是"不因写文件失败终止 agent"
-async def test_event_writer_oserror_is_logged(
+# 功能：验证磁盘写入失败时记录 ERROR 并向关键事实链发布方传播异常
+# 设计：关闭真实文件句柄触发确定性 ValueError，同时断言日志与 fail-closed 异常契约
+async def test_event_writer_oserror_is_logged_and_raised(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     path = tmp_path / "events.jsonl"
@@ -136,7 +136,8 @@ async def test_event_writer_oserror_is_logged(
             assert writer._file is not None
             writer._file.close()
             # _file 仍非 None 但已关闭，write 会抛 OSError
-            await writer.handle(event)
+            with pytest.raises(ValueError):
+                await writer.handle(event)
 
     assert any("failed to write" in r.message for r in caplog.records)
 
@@ -151,7 +152,8 @@ async def test_event_writer_failure_degrades_audit_health(tmp_path: Path) -> Non
     async with EventWriter(path, audit_health=health) as writer:
         assert writer._file is not None
         writer._file.close()
-        await writer.handle(event)
+        with pytest.raises(ValueError):
+            await writer.handle(event)
 
     assert health.degraded is True
     assert health.incident is not None

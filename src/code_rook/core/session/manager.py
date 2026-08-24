@@ -43,6 +43,7 @@ from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.memory import MemoryStore
+from code_rook.core.presets import get_agent_preset
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import TurnStatus
 from code_rook.core.runtime.service import RuntimeService
@@ -443,8 +444,15 @@ class SessionManager:
             self._locks[session.id] = asyncio.Lock()
 
     # 创建新 session 并写入 meta.json
-    async def create(self, mode: SessionMode, title: str = "") -> Session:
+    async def create(
+        self,
+        mode: SessionMode,
+        title: str = "",
+        *,
+        preset_id: str = "standard",
+    ) -> Session:
         await self._ensure_runtime_sessions()
+        preset = get_agent_preset(preset_id)
         sid = f"sess-{uuid.uuid4().hex[:12]}"
         ts = _now()
         if self._hooks is not None:
@@ -463,6 +471,8 @@ class SessionManager:
             updated_at=ts,
             run_ids=[],
             workspace=str(self._workspace),
+            preset_id=preset.id,
+            preset_digest=preset.digest,
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
@@ -1369,7 +1379,14 @@ class SessionManager:
             )
         return session
 
-    async def fork(self, sid: str, title: str = "") -> Session:
+    # 从现有会话创建历史副本，并允许仅在新 fork 上冻结不同 Preset
+    async def fork(
+        self,
+        sid: str,
+        title: str = "",
+        *,
+        preset_id: str | None = None,
+    ) -> Session:
         await self._ensure_runtime_sessions()
         source = self._get_session(sid)
         source_lock = self._locks[sid]
@@ -1380,6 +1397,7 @@ class SessionManager:
             fork_id = f"sess-{uuid.uuid4().hex[:12]}"
             ts = _now()
             fork_title = title.strip() or f"{source.title or source.id} (fork)"
+            preset = get_agent_preset(preset_id or source.preset_id)
             forked = Session(
                 id=fork_id,
                 mode="chat",
@@ -1390,6 +1408,8 @@ class SessionManager:
                 run_ids=[],
                 parent_session_id=source.id,
                 workspace=source.workspace,
+                preset_id=preset.id,
+                preset_digest=preset.digest,
             )
             self._store.create_fork(source.id, forked)
             self._sessions[fork_id] = forked

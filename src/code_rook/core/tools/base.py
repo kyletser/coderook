@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel
 
@@ -14,6 +14,8 @@ from code_rook.core.tools.spec import (
     ToolActionSpec,
     ToolCaller,
     ToolCapability,
+    ToolPresentationKind,
+    ToolPresentationSpec,
     ToolSpec,
 )
 
@@ -28,6 +30,13 @@ class ToolResult:
     images: list[dict[str, object]] | None = None
     # 受管子进程的 CPU、内存、进程数和 wall-time 证据；非进程工具为空
     process_usage: dict[str, object] | None = None
+    presentation: dict[str, object] | None = None
+    sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
+    failure_category: str | None = None
+    program_id: str = ""
+    parent_tool_call_id: str = ""
+    node_id: str = ""
+    commit_order: int = 0
 
 
 class ToolRetryPolicy(StrEnum):
@@ -103,6 +112,7 @@ class BaseTool(ABC):
                     name="invoke",
                     description=self.description,
                     capabilities=capabilities,
+                    presentation=_legacy_presentation(self.name, capabilities),
                 ),
             ),
             capabilities=capabilities,
@@ -137,3 +147,44 @@ class BaseTool(ABC):
     # 执行工具调用，返回结果或错误
     @abstractmethod
     async def invoke(self, params: dict[str, object]) -> ToolResult: ...
+
+
+# 为尚未显式迁移的内建工具生成稳定且保守的展示声明
+def _legacy_presentation(
+    name: str,
+    capabilities: frozenset[ToolCapability],
+) -> ToolPresentationSpec:
+    lowered = name.casefold()
+    if ToolCapability.PROCESS in capabilities or lowered in {"bash", "run"}:
+        return ToolPresentationSpec(
+            kind=ToolPresentationKind.TERMINAL,
+            title_key="tool.terminal",
+            subject_fields=("command",),
+            supports_live_output=True,
+        )
+    if "diff" in lowered or "edit" in lowered or "write" in lowered:
+        return ToolPresentationSpec(
+            kind=ToolPresentationKind.DIFF,
+            title_key="tool.diff",
+            location_fields=("path",),
+        )
+    if "search" in lowered or "grep" in lowered:
+        return ToolPresentationSpec(
+            kind=ToolPresentationKind.SEARCH,
+            title_key="tool.search",
+            subject_fields=("query", "pattern"),
+            location_fields=("path",),
+        )
+    if "web" in lowered:
+        return ToolPresentationSpec(
+            kind=ToolPresentationKind.WEB,
+            title_key="tool.web",
+            subject_fields=("url", "query"),
+        )
+    if ToolCapability.READ in capabilities:
+        return ToolPresentationSpec(
+            kind=ToolPresentationKind.READ,
+            title_key="tool.read",
+            location_fields=("path",),
+        )
+    return ToolPresentationSpec()

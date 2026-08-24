@@ -514,7 +514,11 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
             encoding="utf-8"
         ).splitlines()
     ]
-    block_ids = [row["block_id"] for row in raw_rows if row.get("kind") == "block"]
+    block_ids = [
+        row["payload"]["block_id"]
+        for row in raw_rows
+        if row.get("kind") == "event" and "block_id" in row.get("payload", {})
+    ]
     assert len(block_ids) == len(set(block_ids)) == 3
 
 

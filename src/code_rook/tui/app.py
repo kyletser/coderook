@@ -1892,6 +1892,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         profile: str,
         route_id: str,
         model: str,
+        backend: str = "builtin",
         read_only: bool,
         exact_files: list[str],
         write_roots: list[str],
@@ -1908,6 +1909,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 profile=profile,
                 route_id=route_id,
                 model=model,
+                backend=backend,
                 read_only=read_only,
                 exact_files=exact_files,
                 write_roots=write_roots,
@@ -1917,6 +1919,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             route = escape(str(result.get("route_id", "")))
             model = escape(str(result.get("model", "")))
             worktree = escape(str(result.get("worktree", "")))
+            backend_name = escape(str(result.get("backend", backend)))
+            enforcement = escape(
+                str(result.get("sandbox_enforcement", "unavailable"))
+            )
             scope = "read-only" if bool(result.get("read_only", True)) else worktree
             started = tr(
                 "app.worker.started",
@@ -1926,7 +1932,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._append(
                 Static(
                     f"[green]{started}[/green]  "
-                    f"[dim]{route}/{model} · {scope}[/dim]",
+                    f"[dim]{backend_name} · {route}/{model} · {scope} · {enforcement}[/dim]",
                     classes="log-line",
                 )
             )
@@ -3408,11 +3414,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             before="#prompt",
         )
 
-    async def _create_and_switch_session(self) -> None:
+    # 创建指定冻结 Preset 的新会话并切换到该会话
+    async def _create_and_switch_session(self, preset_id: str = "standard") -> None:
         if self._client is None:
             return
         try:
-            created = await self._client.send_command("session.create", {"mode": "chat"})
+            created = await self._client.send_command(
+                "session.create",
+                {"mode": "chat", "preset_id": preset_id},
+            )
             await self._load_session(str(created["session_id"]), resume=False)
         except (IpcError, RuntimeError, OSError) as exc:
             self._show_safe_error("session-create", exc, action="session")
@@ -3464,6 +3474,28 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             await self._switch_session(forked_id)
         except (IpcError, RuntimeError, OSError, ValueError) as exc:
             self._show_safe_error("session-fork", exc, action="session")
+            self._restore_ready_prompt()
+
+    # 创建继承完整历史但冻结为目标 Preset 的关联会话并立即切换
+    async def _do_switch_preset(self, preset_id: str) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.fork",
+                {
+                    "session_id": self._session_id,
+                    "title": "",
+                    "preset_id": preset_id,
+                },
+            )
+            session = result.get("session", {})
+            forked_id = str(session.get("session_id", ""))
+            if not forked_id:
+                raise ValueError("preset fork 结果缺少 session_id")
+            await self._switch_session(forked_id)
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._show_safe_error("session-preset", exc, action="session")
             self._restore_ready_prompt()
 
     # 导出当前会话到工作区文件

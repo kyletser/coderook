@@ -1,0 +1,57 @@
+{
+  "text_response": {
+    "trace": [
+      {"seq": 1, "type": "input.admitted", "turn_id": "run-text", "role": "user", "content": "hello", "message_id": "run-text:user"},
+      {"seq": 2, "type": "turn.started", "turn_id": "run-text", "goal": "hello"},
+      {"seq": 3, "type": "step.started", "turn_id": "run-text", "step_id": "run-text:1"},
+      {"seq": 4, "type": "llm.message", "turn_id": "run-text", "step_id": "run-text:1", "role": "assistant", "message_id": "run-text:assistant:1", "block": {"type": "text", "text": "done"}},
+      {"seq": 5, "type": "step.finished", "turn_id": "run-text", "step_id": "run-text:1"},
+      {"seq": 6, "type": "run.outcome", "turn_id": "run-text", "status": "success", "outcome": "completed", "result_summary": "done"},
+      {"seq": 7, "type": "turn.finished", "turn_id": "run-text", "status": "success", "outcome": "completed", "result_summary": "done"}
+    ],
+    "messages": [
+      {"role": "user", "content": "hello"},
+      {"role": "assistant", "content": [{"type": "text", "text": "done"}]}
+    ]
+  },
+  "tool_success": {
+    "trace": [
+      {"seq": 1, "type": "input.admitted", "turn_id": "run-tool", "role": "user", "content": "read", "message_id": "run-tool:user"},
+      {"seq": 2, "type": "turn.started", "turn_id": "run-tool", "goal": "read"},
+      {"seq": 3, "type": "step.started", "turn_id": "run-tool", "step_id": "run-tool:1"},
+      {"seq": 4, "type": "llm.message", "turn_id": "run-tool", "step_id": "run-tool:1", "role": "assistant", "message_id": "run-tool:assistant:1", "block": {"type": "tool_use", "id": "tool-1", "name": "read_file"}},
+      {"seq": 5, "type": "tool.call_started", "turn_id": "run-tool", "step_id": "run-tool:1", "tool_use_id": "tool-1", "tool_name": "read_file"},
+      {"seq": 6, "type": "tool.call_finished", "turn_id": "run-tool", "step_id": "run-tool:1", "tool_use_id": "tool-1", "tool_name": "read_file"},
+      {"seq": 7, "type": "llm.message", "turn_id": "run-tool", "step_id": "run-tool:1", "role": "user", "message_id": "run-tool:tool-results:1", "block": {"type": "tool_result", "tool_use_id": "tool-1", "content": "contents"}},
+      {"seq": 8, "type": "step.finished", "turn_id": "run-tool", "step_id": "run-tool:1"},
+      {"seq": 9, "type": "run.outcome", "turn_id": "run-tool", "status": "success", "outcome": "completed", "result_summary": "read complete"},
+      {"seq": 10, "type": "turn.finished", "turn_id": "run-tool", "status": "success", "outcome": "completed", "result_summary": "read complete"}
+    ],
+    "messages": [
+      {"role": "user", "content": "read"},
+      {"role": "assistant", "content": [{"type": "tool_use", "id": "tool-1", "name": "read_file", "input": {"path": "a.py"}}]},
+      {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "contents"}]}
+    ]
+  },
+  "permission_denied": {
+    "trace": [
+      {"seq": 1, "type": "input.admitted", "turn_id": "run-denied", "role": "user", "content": "delete", "message_id": "run-denied:user"},
+      {"seq": 2, "type": "turn.started", "turn_id": "run-denied", "goal": "delete"},
+      {"seq": 3, "type": "step.started", "turn_id": "run-denied", "step_id": "run-denied:1"},
+      {"seq": 4, "type": "llm.message", "turn_id": "run-denied", "step_id": "run-denied:1", "role": "assistant", "message_id": "run-denied:assistant:1", "block": {"type": "tool_use", "id": "tool-denied", "name": "bash"}},
+      {"seq": 5, "type": "tool.call_started", "turn_id": "run-denied", "step_id": "run-denied:1", "tool_use_id": "tool-denied", "tool_name": "bash"},
+      {"seq": 6, "type": "permission.requested", "turn_id": "run-denied", "tool_use_id": "tool-denied", "tool_name": "bash"},
+      {"seq": 7, "type": "permission.resolved", "turn_id": "run-denied", "tool_use_id": "tool-denied", "decision": "deny_once"},
+      {"seq": 8, "type": "tool.call_failed", "turn_id": "run-denied", "step_id": "run-denied:1", "tool_use_id": "tool-denied", "tool_name": "bash", "error_class": "permission_denied"},
+      {"seq": 9, "type": "llm.message", "turn_id": "run-denied", "step_id": "run-denied:1", "role": "user", "message_id": "run-denied:tool-results:1", "block": {"type": "tool_result", "tool_use_id": "tool-denied", "content": "denied", "is_error": true}},
+      {"seq": 10, "type": "step.finished", "turn_id": "run-denied", "step_id": "run-denied:1"},
+      {"seq": 11, "type": "run.outcome", "turn_id": "run-denied", "status": "failed", "outcome": "failed"},
+      {"seq": 12, "type": "turn.finished", "turn_id": "run-denied", "status": "failed", "outcome": "failed"}
+    ],
+    "messages": [
+      {"role": "user", "content": "delete"},
+      {"role": "assistant", "content": [{"type": "tool_use", "id": "tool-denied", "name": "bash", "input": {"command": "rm file"}}]},
+      {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-denied", "content": "denied", "is_error": true}]}
+    ]
+  }
+}

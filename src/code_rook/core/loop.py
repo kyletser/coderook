@@ -16,6 +16,7 @@ from code_rook.core.bus.events import (
     ContextBudgetEvent,
     ContextPrefixFingerprintEvent,
     ContextWorkingSetEvent,
+    LlmRequestPreparedEvent,
     LlmRetryEvent,
     LspDiagnosticsEvent,
     StepFinishedEvent,
@@ -28,6 +29,11 @@ from code_rook.core.bus.events import (
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.execution.invariants import (
+    InvariantViolation,
+    validate_request_snapshot,
+)
+from code_rook.core.execution.models import RequestSnapshot
 from code_rook.core.goal import GoalBudgetError
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
@@ -248,6 +254,10 @@ class TranscriptSink(Protocol):
         block_count: int,
     ) -> None: ...
 
+    def append_request_snapshot(self, step: int, snapshot: RequestSnapshot) -> int | None: ...
+
+    def latest_request_snapshot(self) -> RequestSnapshot | None: ...
+
 
 class AgentLoop:
     # 初始化循环依赖，以及可选的权限管理器、压缩器和 session ID
@@ -281,6 +291,7 @@ class AgentLoop:
         supports_images: bool = True,
         auto_step_continues: int = 0,
         authority_snapshot: AuthoritySnapshot | None = None,
+        request_metadata: dict[str, object] | None = None,
         # 可选的每步路由刷新回调：返回新 provider 表示需切换（loop 接管重建后的实例），
         # 返回 None 表示沿用当前 provider；用于 per-turn 模型切换（W2.4）
         route_refresher: Callable[[int], Awaitable[LLMProvider | None]] | None = None,
@@ -314,6 +325,7 @@ class AgentLoop:
         self._supports_images = supports_images
         self._auto_step_continues = max(0, auto_step_continues)
         self._authority_snapshot = authority_snapshot
+        self._request_metadata = dict(request_metadata or {})
         self._route_refresher = route_refresher
         self._step_continues_used = 0
         self._initial_max_steps: int | None = None
@@ -401,6 +413,42 @@ class AgentLoop:
         )
 
         flushed_images = self._flush_pending_images(context)
+        thinking_override = self._thinking_override_for(context)
+        request_snapshot = RequestSnapshot.create(
+            messages=context.messages,
+            system=system_prompt,
+            tool_schemas=tool_schemas,
+            metadata={
+                **self._request_metadata,
+                "thinking": thinking_override or "",
+                "supports_parallel_tools": self._supports_parallel_tools,
+                "supports_images": self._supports_images,
+            },
+        )
+        if self._transcript is not None:
+            ledger_seq = self._transcript.append_request_snapshot(
+                context.step,
+                request_snapshot,
+            )
+            recorded_snapshot = self._transcript.latest_request_snapshot()
+            if recorded_snapshot is None:
+                raise InvariantViolation("request snapshot was not persisted")
+            validate_request_snapshot(recorded_snapshot, request_snapshot)
+            await self._bus.publish(
+                LlmRequestPreparedEvent(
+                    run_id=context.run_id,
+                    step=context.step,
+                    ledger_seq=ledger_seq,
+                    request_snapshot_digest=request_snapshot.digest,
+                    preset_id=str(self._request_metadata.get("preset_id", "standard")),
+                    preset_digest=str(self._request_metadata.get("preset_digest", "")),
+                    route_id=request_snapshot.route_id,
+                    model=request_snapshot.model,
+                    wire_format=request_snapshot.wire_format,
+                    execution_contract_digest=request_snapshot.execution_contract_digest,
+                    ts=_now(),
+                )
+            )
         try:
             while True:
                 # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
@@ -412,7 +460,7 @@ class AgentLoop:
                         run_id=context.run_id,
                         step=context.step,
                         system=system_prompt,
-                        thinking=self._thinking_override_for(context),
+                        thinking=thinking_override,
                     )
 
                 try:
@@ -889,6 +937,7 @@ class AgentLoop:
             hooks=self._hooks,
             artifact_store=self._artifact_store,
             authority_snapshot=self._authority_snapshot,
+            step=context.step,
         )
         await self._cancellation_checkpoint()
         if read_key is not None:
@@ -1132,6 +1181,15 @@ class AgentLoop:
                     exc.capability,
                 )
                 context.mark_failed("route_capability_error")
+                break
+            except InvariantViolation as exc:
+                log.error(
+                    "Execution invariant blocked provider request run_id=%s step=%d: %s",
+                    context.run_id,
+                    context.step,
+                    exc,
+                )
+                context.mark_failed("invariant_violation")
                 break
             except Exception as exc:
                 if (

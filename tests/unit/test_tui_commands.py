@@ -20,7 +20,7 @@ from code_rook.tui.commands import (
 # 设计：混合引号 prompt 与重复 scope 参数，断言默认只读只会被真实写 claim 关闭
 def test_parse_worker_start_contract() -> None:
     read_only = _parse_worker_start(
-        '--profile reviewer --route fast --model coder "inspect repo"'
+        '--profile reviewer --route fast --model coder --backend acp "inspect repo"'
     )
     writing = _parse_worker_start(
         '--budget 500 --file src/a.py --write-root tests "fix bug"'
@@ -31,6 +31,7 @@ def test_parse_worker_start_contract() -> None:
     assert read_only["profile"] == "reviewer"
     assert read_only["route_id"] == "fast"
     assert read_only["model"] == "coder"
+    assert read_only["backend"] == "acp"
     assert writing["read_only"] is False
     assert writing["exact_files"] == ["src/a.py"]
     assert writing["write_roots"] == ["tests"]
@@ -98,8 +99,9 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("jobs", "后台任务中心：查看/取消"),
         ("artifacts", "查看产物或执行引用感知 GC"),
     ]
-    actual = [(cmd.name, cmd.description) for cmd in BUILTIN_SLASH_COMMANDS]
-    assert actual == previous
+    actual = {cmd.name: cmd.description for cmd in BUILTIN_SLASH_COMMANDS}
+    assert all(actual.get(name) == description for name, description in previous)
+    assert actual["preset"] == "通过 fork 切换冻结 Agent Preset"
 
 
 # 功能：验证每个命令是否提供可调用的 handler 且 need_connection 取值合法

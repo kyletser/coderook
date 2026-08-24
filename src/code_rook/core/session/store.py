@@ -6,12 +6,18 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from code_rook.core.execution.invariants import (
+    InvariantViolation,
+    validate_session_events,
+)
+from code_rook.core.execution.models import RequestSnapshot, SessionEventEnvelope
 from code_rook.core.quarantine import quarantine_invalid_file
 from code_rook.core.session.model import (
     SESSION_ID_PATTERN,
@@ -56,6 +62,8 @@ class SessionStore:
             raise ValueError("session state root must be a real directory")
         self._known_block_ids: dict[str, set[str]] = {}
         self._ledger_heads: dict[str, tuple[int, str]] = {}
+        self._ledger_locks: dict[str, threading.RLock] = {}
+        self._ledger_locks_guard = threading.Lock()
         if initialize:
             self._root.mkdir(parents=True, exist_ok=True)
             self._cleanup_deleted_sessions()
@@ -179,7 +187,7 @@ class SessionStore:
                 )
         return sorted(sessions, key=lambda session: session.updated_at, reverse=True)
 
-    # 追加一条 Anthropic API 消息到 thread.jsonl
+    # 将一条模型可见消息直接追加为唯一的 v2 SessionEvent
     def append_message(
         self,
         sid: str,
@@ -188,18 +196,16 @@ class SessionStore:
         run_id: str | None = None,
         message_id: str | None = None,
     ) -> None:
-        row: dict[str, Any] = {
-            "schema_version": 2,
-            "kind": "message",
-            "ts": _now(),
-            "role": role,
-            "content": content,
-        }
-        if run_id is not None:
-            row["run_id"] = run_id
-        if message_id is not None:
-            row["message_id"] = message_id
-        self._append_ledger_row(sid, row)
+        self.append_session_event(
+            sid,
+            event_type="input.admitted" if role == "user" else "llm.message",
+            turn_id=run_id or "",
+            payload={
+                "role": role,
+                "content": content,
+                "message_id": message_id or "",
+            },
+        )
 
     # 批量追加一次 run 新产生的消息到 thread.jsonl
     def append_messages(
@@ -232,71 +238,182 @@ class SessionStore:
         known_ids = self._block_ids(sid)
         if block_id in known_ids:
             return False
-        row: dict[str, Any] = {
-            "schema_version": 2,
-            "kind": "block",
-            "ts": _now(),
-            "role": role,
-            "block": block,
-            "run_id": run_id,
-            "step": step,
-            "message_id": message_id,
-            "block_id": block_id,
-            "block_index": block_index,
-            "block_count": block_count,
-        }
-        self._append_ledger_row(sid, row)
+        self.append_session_event(
+            sid,
+            event_type="llm.message",
+            turn_id=run_id,
+            step_id=f"{run_id}:{step}",
+            payload={
+                "role": role,
+                "block": block,
+                "message_id": message_id,
+                "block_id": block_id,
+                "block_index": block_index,
+                "block_count": block_count,
+            },
+        )
         known_ids.add(block_id)
         return True
 
-    # 读取完整 thread 并返回可直接传给 Anthropic 的 messages
-    def read_messages(self, sid: str) -> list[dict[str, Any]]:
-        path = self.session_dir(sid) / "thread.jsonl"
-        if not path.exists():
-            return []
+    # 追加一条 schema v2 SessionEvent 并复用 transcript 的序号和 checksum 链
+    def append_session_event(
+        self,
+        sid: str,
+        *,
+        event_type: str,
+        turn_id: str = "",
+        step_id: str = "",
+        source_event_seqs: tuple[int, ...] = (),
+        payload: dict[str, Any] | None = None,
+        timestamp: str | None = None,
+        provenance: str = "native",
+        replay_fidelity: str = "full",
+    ) -> SessionEventEnvelope:
+        lock = self._ledger_lock(sid)
+        with lock:
+            head = self._ledger_heads.get(sid)
+            if head is None:
+                sequence, previous, issues = self._scan_ledger(sid)
+                if issues:
+                    raise ValueError(
+                        f"refusing to append to damaged transcript {sid}: {issues[0]}"
+                    )
+                self._ledger_heads[sid] = (sequence, previous)
+            else:
+                sequence, _previous = head
+            event = SessionEventEnvelope(
+                session_id=sid,
+                seq=sequence + 1,
+                timestamp=timestamp or _now(),
+                type=event_type,
+                turn_id=turn_id,
+                step_id=step_id,
+                source_event_seqs=source_event_seqs,
+                payload=dict(payload or {}),
+                provenance=provenance,
+                replay_fidelity=replay_fidelity,
+            )
+            written_seq = self._append_ledger_row(sid, event.model_dump(mode="json"))
+            if written_seq != event.seq:
+                raise RuntimeError("session event seq changed during append")
+            return event
 
+    # 读取并严格解析当前会话的全部 schema v2 SessionEvent
+    def read_session_events(self, sid: str) -> list[SessionEventEnvelope]:
+        events: list[SessionEventEnvelope] = []
+        for line_no, row in self._read_rows(sid):
+            if row.get("kind") != "event":
+                continue
+            raw = {
+                key: value
+                for key, value in row.items()
+                if key
+                not in {"ledger_seq", "ledger_prev_checksum", "ledger_checksum"}
+            }
+            try:
+                event = SessionEventEnvelope.model_validate(raw)
+            except ValueError:
+                logger.warning(
+                    "skip invalid session event sid=%s line=%s",
+                    sid,
+                    line_no,
+                    exc_info=True,
+                )
+                continue
+            if event.seq != row.get("ledger_seq"):
+                logger.warning(
+                    "skip event with mismatched seq sid=%s line=%s", sid, line_no
+                )
+                continue
+            events.append(event)
+        return events
+
+    # 从原生 v2 事件和只读 legacy 前缀投影唯一的模型消息历史
+    def derive_messages(self, sid: str) -> list[dict[str, Any]]:
+        rows = self._read_rows(sid)
+        referenced = {
+            int(value)
+            for _line_no, row in rows
+            if row.get("kind") == "event"
+            for value in row.get("source_event_seqs", [])
+            if isinstance(value, int)
+        }
         messages: list[dict[str, Any]] = []
         last_message_id: str | None = None
         seen_block_ids: set[str] = set()
-        for line_no, row in self._read_rows(sid):
-            role = row.get("role")
-            if role not in ("user", "assistant"):
-                logger.warning(
-                    "skip unknown thread role sid=%s line=%s role=%s",
-                    sid,
-                    line_no,
-                    role,
-                )
-                continue
-            if row.get("kind") == "block":
-                block = row.get("block")
-                block_id = str(row.get("block_id", ""))
-                message_id = str(row.get("message_id", ""))
-                if not isinstance(block, dict) or not block_id or not message_id:
-                    logger.warning("skip invalid thread block sid=%s line=%s", sid, line_no)
-                    continue
-                if block_id in seen_block_ids:
-                    logger.warning("skip duplicate thread block sid=%s block=%s", sid, block_id)
-                    continue
-                seen_block_ids.add(block_id)
+
+        # 把普通消息或消息块按 message_id 稳定合并进模型历史
+        def append_content(
+            *,
+            role: object,
+            content: object | None = None,
+            block: object | None = None,
+            message_id: object = "",
+            block_id: object = "",
+        ) -> None:
+            nonlocal last_message_id
+            if role not in {"user", "assistant"}:
+                return
+            resolved_message_id = str(message_id or "")
+            if isinstance(block, dict):
+                resolved_block_id = str(block_id or "")
+                if resolved_block_id and resolved_block_id in seen_block_ids:
+                    return
+                if resolved_block_id:
+                    seen_block_ids.add(resolved_block_id)
                 if (
                     messages
-                    and last_message_id == message_id
+                    and last_message_id == resolved_message_id
                     and messages[-1]["role"] == role
                     and isinstance(messages[-1]["content"], list)
                 ):
                     messages[-1]["content"].append(block)
                 else:
                     messages.append({"role": role, "content": [block]})
-                last_message_id = message_id
+                last_message_id = resolved_message_id or None
+                return
+            messages.append({"role": role, "content": content if content is not None else ""})
+            last_message_id = resolved_message_id or None
+
+        for _line_no, row in rows:
+            ledger_seq = row.get("ledger_seq")
+            if row.get("kind") == "event":
+                if row.get("type") not in {"input.admitted", "llm.message"}:
+                    continue
+                payload = row.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                append_content(
+                    role=payload.get("role"),
+                    content=payload.get("content"),
+                    block=payload.get("block"),
+                    message_id=payload.get("message_id", ""),
+                    block_id=payload.get("block_id", f"event:{ledger_seq}"),
+                )
                 continue
-
-            messages.append({"role": role, "content": row.get("content", "")})
-            last_message_id = str(row.get("message_id", "")) or None
-
+            if isinstance(ledger_seq, int) and ledger_seq in referenced:
+                continue
+            if row.get("kind") == "block":
+                append_content(
+                    role=row.get("role"),
+                    block=row.get("block"),
+                    message_id=row.get("message_id", ""),
+                    block_id=row.get("block_id", ""),
+                )
+            else:
+                append_content(
+                    role=row.get("role"),
+                    content=row.get("content"),
+                    message_id=row.get("message_id", ""),
+                )
         messages = self._trim_orphan_tool_use(messages)
         from code_rook.core.compact.budget import truncate_tool_results
+
         return truncate_tool_results(messages)
+
+    # 读取完整 thread 并返回可直接传给 Anthropic 的 messages
+    def read_messages(self, sid: str) -> list[dict[str, Any]]:
+        return self.derive_messages(sid)
 
     def find_incomplete_tool_calls(self, sid: str) -> list[IncompleteToolCall]:
         _, pending, _, _ = self._scan_recovery_state(sid)
@@ -403,8 +520,16 @@ class SessionStore:
     def run_time_ranges(self, sid: str) -> dict[str, tuple[str, str]]:
         ranges: dict[str, tuple[str, str]] = {}
         for _, row in self._read_rows(sid):
-            run_id = row.get("run_id")
-            ts = row.get("ts")
+            run_id = (
+                row.get("turn_id")
+                if row.get("kind") == "event"
+                else row.get("run_id")
+            )
+            ts = (
+                row.get("timestamp")
+                if row.get("kind") == "event"
+                else row.get("ts")
+            )
             if not isinstance(run_id, str) or not isinstance(ts, str) or not ts:
                 continue
             first, last = ranges.get(run_id, (ts, ts))
@@ -415,11 +540,19 @@ class SessionStore:
         cached = self._known_block_ids.get(sid)
         if cached is not None:
             return cached
-        block_ids = {
-            str(row["block_id"])
-            for _, row in self._read_rows(sid)
-            if row.get("kind") == "block" and row.get("block_id")
-        }
+        block_ids: set[str] = set()
+        for _, row in self._read_rows(sid):
+            if row.get("kind") == "block" and row.get("block_id"):
+                block_ids.add(str(row["block_id"]))
+                continue
+            payload = row.get("payload")
+            if (
+                row.get("kind") == "event"
+                and row.get("type") == "llm.message"
+                and isinstance(payload, dict)
+                and payload.get("block_id")
+            ):
+                block_ids.add(str(payload["block_id"]))
         self._known_block_ids[sid] = block_ids
         return block_ids
 
@@ -476,13 +609,29 @@ class SessionStore:
                 else expected_checksum
             )
 
+            message_row = row
+            if row.get("kind") == "event":
+                payload = row.get("payload")
+                if (
+                    row.get("source_event_seqs")
+                    or row.get("type") not in {"input.admitted", "llm.message"}
+                    or not isinstance(payload, dict)
+                ):
+                    message_row = {}
+                else:
+                    message_row = dict(payload)
+                    message_row["run_id"] = str(row.get("turn_id", ""))
+                    raw_step_id = str(row.get("step_id", ""))
+                    raw_step = raw_step_id.rsplit(":", 1)[-1]
+                    message_row["step"] = int(raw_step) if raw_step.isdigit() else 0
+
             blocks: list[dict[str, Any]] = []
-            if row.get("kind") == "block":
-                block_id = str(row.get("block_id", ""))
-                message_id = str(row.get("message_id", ""))
-                block = row.get("block")
-                block_index = row.get("block_index")
-                block_count = row.get("block_count")
+            if "block" in message_row:
+                block_id = str(message_row.get("block_id", ""))
+                message_id = str(message_row.get("message_id", ""))
+                block = message_row.get("block")
+                block_index = message_row.get("block_index")
+                block_count = message_row.get("block_count")
                 if (
                     not block_id
                     or not message_id
@@ -499,7 +648,10 @@ class SessionStore:
                     continue
                 seen_block_ids.add(block_id)
                 message_start = message_starts.setdefault(message_id, index)
-                message_run_ids.setdefault(message_id, str(row.get("run_id", "")))
+                message_run_ids.setdefault(
+                    message_id,
+                    str(message_row.get("run_id", "")),
+                )
                 group_start, expected_count, indexes = message_groups.setdefault(
                     message_id,
                     (message_start, block_count, set()),
@@ -511,26 +663,26 @@ class SessionStore:
                 message_groups[message_id] = (group_start, expected_count, indexes)
                 blocks.append(block)
             else:
-                content = row.get("content")
+                content = message_row.get("content")
                 if isinstance(content, list):
                     blocks.extend(block for block in content if isinstance(block, dict))
 
-            role = row.get("role")
+            role = message_row.get("role")
             for block in blocks:
                 if role == "assistant" and block.get("type") == "tool_use":
                     tool_use_id = str(block.get("id", ""))
                     if not tool_use_id:
                         damaged = True
                         continue
-                    raw_step = row.get("step", 0)
+                    raw_step = message_row.get("step", 0)
                     step = raw_step if isinstance(raw_step, int) else 0
                     pending[tool_use_id] = IncompleteToolCall(
-                        run_id=str(row.get("run_id", "")),
+                        run_id=str(message_row.get("run_id", "")),
                         tool_use_id=tool_use_id,
                         tool_name=str(block.get("name", "")),
                         step=step,
                     )
-                    message_id = str(row.get("message_id", ""))
+                    message_id = str(message_row.get("message_id", ""))
                     pending_starts[tool_use_id] = message_starts.get(message_id, index) - 1
                 elif role == "user" and block.get("type") == "tool_result":
                     tool_use_id = str(block.get("tool_use_id", ""))
@@ -633,23 +785,51 @@ class SessionStore:
         _sequence, _checksum, issues = self._scan_ledger(sid)
         return issues
 
+    # 检查执行事件关系和每个请求快照摘要，供 Runtime Doctor 报告不可伪造的语义损坏
+    def verify_execution_ledger(self, sid: str) -> list[str]:
+        events = self.read_session_events(sid)
+        issues: list[str] = []
+        try:
+            validate_session_events(events, allow_incomplete=True)
+        except InvariantViolation as exc:
+            issues.append(str(exc))
+        for event in events:
+            if event.type != "llm.request_prepared":
+                continue
+            try:
+                snapshot = RequestSnapshot.model_validate(event.payload)
+            except ValueError as exc:
+                issues.append(f"request snapshot schema invalid at seq {event.seq}: {exc}")
+                continue
+            if snapshot.calculated_digest() != snapshot.digest:
+                issues.append(f"request snapshot digest mismatch at seq {event.seq}")
+        return issues
+
     # 给 transcript 行补齐序号与 hash 链后耐久追加
-    def _append_ledger_row(self, sid: str, row: dict[str, Any]) -> None:
-        head = self._ledger_heads.get(sid)
-        if head is None:
-            sequence, previous, issues = self._scan_ledger(sid)
-            if issues:
-                raise ValueError(
-                    f"refusing to append to damaged transcript {sid}: {issues[0]}"
-                )
-        else:
-            sequence, previous = head
-        encoded = dict(row)
-        encoded["ledger_seq"] = sequence + 1
-        encoded["ledger_prev_checksum"] = previous
-        encoded["ledger_checksum"] = self._ledger_checksum(previous, encoded)
-        self._append_jsonl(self.session_dir(sid) / "thread.jsonl", encoded)
-        self._ledger_heads[sid] = (sequence + 1, str(encoded["ledger_checksum"]))
+    def _append_ledger_row(self, sid: str, row: dict[str, Any]) -> int:
+        lock = self._ledger_lock(sid)
+        with lock:
+            head = self._ledger_heads.get(sid)
+            if head is None:
+                sequence, previous, issues = self._scan_ledger(sid)
+                if issues:
+                    raise ValueError(
+                        f"refusing to append to damaged transcript {sid}: {issues[0]}"
+                    )
+            else:
+                sequence, previous = head
+            encoded = dict(row)
+            encoded["ledger_seq"] = sequence + 1
+            encoded["ledger_prev_checksum"] = previous
+            encoded["ledger_checksum"] = self._ledger_checksum(previous, encoded)
+            self._append_jsonl(self.session_dir(sid) / "thread.jsonl", encoded)
+            self._ledger_heads[sid] = (sequence + 1, str(encoded["ledger_checksum"]))
+            return sequence + 1
+
+    # 返回指定 Session 的可重入写锁并安全初始化锁表
+    def _ledger_lock(self, sid: str) -> threading.RLock:
+        with self._ledger_locks_guard:
+            return self._ledger_locks.setdefault(sid, threading.RLock())
 
     def _write_new_file(self, path: Path, content: bytes) -> None:
         with path.open("xb") as file:
@@ -685,7 +865,7 @@ class SessionStore:
         finally:
             os.close(descriptor)
 
-    # 将压缩后的消息对覆盖写入 thread.jsonl，原文件备份为 thread_<ts>.jsonl.bak
+    # 将压缩后的模型历史改写为纯 v2 事件账本并保留原文件备份
     def write_compacted(self, sid: str, messages: list[dict[str, Any]]) -> None:
         path = self.session_dir(sid) / "thread.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -693,15 +873,22 @@ class SessionStore:
         bak = self.session_dir(sid) / f"thread_{ts_str}.jsonl.bak"
         if path.exists():
             self._write_new_file(bak, path.read_bytes())
+        timestamp = _now()
         raw_rows = [
-            {
-                "schema_version": 2,
-                "kind": "message",
-                "ts": _now(),
-                "role": msg["role"],
-                "content": msg["content"],
-            }
-            for msg in messages
+            SessionEventEnvelope(
+                session_id=sid,
+                seq=sequence,
+                timestamp=timestamp,
+                type="llm.message",
+                payload={
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "message_id": f"compacted:{sequence}",
+                },
+                provenance="compaction",
+                replay_fidelity="compacted",
+            ).model_dump(mode="json")
+            for sequence, msg in enumerate(messages, 1)
         ]
         rows: list[dict[str, Any]] = []
         previous = ""
@@ -736,6 +923,7 @@ class SessionStore:
 
 
 class SessionTranscriptSink:
+    # 绑定会话账本与当前 run，供循环记录模型可见内容和请求快照
     def __init__(self, store: SessionStore, session_id: str, run_id: str) -> None:
         self._store = store
         self._session_id = session_id
@@ -795,3 +983,21 @@ class SessionTranscriptSink:
             block_index=block_index,
             block_count=block_count,
         )
+
+    # 将即将发送给 Provider 的不可变请求快照写入事实日志
+    def append_request_snapshot(self, step: int, snapshot: RequestSnapshot) -> int:
+        event = self._store.append_session_event(
+            self._session_id,
+            event_type="llm.request_prepared",
+            turn_id=self._run_id,
+            step_id=f"{self._run_id}:{step}",
+            payload=snapshot.model_dump(mode="json"),
+        )
+        return event.seq
+
+    # 读取并验证本 run 最近一次已持久化的请求快照
+    def latest_request_snapshot(self) -> RequestSnapshot | None:
+        for event in reversed(self._store.read_session_events(self._session_id)):
+            if event.type == "llm.request_prepared" and event.turn_id == self._run_id:
+                return RequestSnapshot.model_validate(event.payload)
+        return None

@@ -50,6 +50,7 @@ class RunStartedEvent(BaseModel):
     type: Literal["run.started"] = "run.started"
     run_id: str
     goal: str
+    ledger_seq: int | None = Field(default=None, ge=1)
     ts: str  # ISO 8601
 
 
@@ -64,6 +65,7 @@ class RunFinishedEvent(BaseModel):
     changes: list[JsonValue] | None = None
     verification: list[JsonValue] | None = None
     result_summary: str | None = None
+    ledger_seq: int | None = Field(default=None, ge=1)
     ts: str
 
 
@@ -71,6 +73,7 @@ class StepStartedEvent(BaseModel):
     type: Literal["step.started"] = "step.started"
     run_id: str
     step: int
+    ledger_seq: int | None = Field(default=None, ge=1)
     ts: str
 
 
@@ -78,6 +81,7 @@ class StepFinishedEvent(BaseModel):
     type: Literal["step.finished"] = "step.finished"
     run_id: str
     step: int
+    ledger_seq: int | None = Field(default=None, ge=1)
     ts: str
 
 
@@ -108,6 +112,13 @@ class ToolCallStartedEvent(BaseModel):
     tool_use_id: str
     tool_name: str
     params: dict[str, Any]
+    step: int = 0
+    ledger_seq: int | None = Field(default=None, ge=1)
+    presentation: dict[str, Any] | None = None
+    program_id: str = ""
+    parent_tool_call_id: str = ""
+    node_id: str = ""
+    commit_order: int = 0
     ts: str
 
 
@@ -119,6 +130,15 @@ class ToolCallFinishedEvent(BaseModel):
     elapsed_ms: int
     output: str = ""
     process_usage: dict[str, Any] = Field(default_factory=dict)
+    step: int = 0
+    ledger_seq: int | None = Field(default=None, ge=1)
+    presentation: dict[str, Any] | None = None
+    sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
+    failure_category: str | None = None
+    program_id: str = ""
+    parent_tool_call_id: str = ""
+    node_id: str = ""
+    commit_order: int = 0
     ts: str
 
 
@@ -134,6 +154,30 @@ class ToolCallFailedEvent(BaseModel):
     attempt: int = 1  # 1=first attempt, 2=first retry, 3=second retry
     terminal: bool = True
     process_usage: dict[str, Any] = Field(default_factory=dict)
+    step: int = 0
+    ledger_seq: int | None = Field(default=None, ge=1)
+    presentation: dict[str, Any] | None = None
+    sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
+    failure_category: str | None = None
+    program_id: str = ""
+    parent_tool_call_id: str = ""
+    node_id: str = ""
+    commit_order: int = 0
+    ts: str
+
+
+class LlmRequestPreparedEvent(BaseModel):
+    type: Literal["llm.request_prepared"] = "llm.request_prepared"
+    run_id: str
+    step: int
+    ledger_seq: int | None = Field(default=None, ge=1)
+    request_snapshot_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preset_id: str = "standard"
+    preset_digest: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
+    route_id: str = ""
+    model: str = ""
+    wire_format: str = ""
+    execution_contract_digest: str = ""
     ts: str
 
 
@@ -554,6 +598,7 @@ Event = Annotated[
     | ToolCallStartedEvent
     | ToolCallFinishedEvent
     | ToolCallFailedEvent
+    | LlmRequestPreparedEvent
     | LlmTokenEvent
     | LlmReasoningEvent
     | LlmUsageEvent

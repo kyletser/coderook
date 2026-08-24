@@ -42,6 +42,8 @@ LABS_FEATURE_FLAGS = {
     "hooks_v2": True,
     "mcp_resources_prompts": True,
     "vscode_experimental": True,
+    "tool_program": True,
+    "acp_worker_backend": True,
 }
 INTERNAL_FEATURE_FLAGS = {
     "runtime_projection": True,

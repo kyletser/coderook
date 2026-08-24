@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -46,7 +47,7 @@ class WriteClaim(BaseModel):
 class WorkerRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: int = 5
+    schema_version: int = 6
     id: str = Field(min_length=1)
     parent_turn_id: str = Field(min_length=1)
     parent_worker_id: str = ""
@@ -61,6 +62,9 @@ class WorkerRecord(BaseModel):
     route_digest: str = Field(default="", pattern=r"^(?:|[a-f0-9]{64})$")
     model: str = ""
     reasoning: str = ""
+    backend: str = "builtin"
+    backend_capabilities: dict[str, JsonValue] = Field(default_factory=dict)
+    sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable"
     status: WorkerStatus = WorkerStatus.QUEUED
     status_reason: str = ""
     depth: int = Field(default=1, ge=1, le=8)

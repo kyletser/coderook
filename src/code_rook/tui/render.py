@@ -457,8 +457,15 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
         tool_name = str(event.get("tool_name", ""))
         raw_params = event.get("params") or {}
         params = raw_params if isinstance(raw_params, dict) else {}
+        raw_presentation = event.get("presentation") or {}
+        presentation = raw_presentation if isinstance(raw_presentation, dict) else {}
         run_id = str(event.get("run_id", ""))
-        tc_block = ToolCallBlock(tool_name, params, locale=_locale(app))
+        tc_block = ToolCallBlock(
+            tool_name,
+            params,
+            locale=_locale(app),
+            presentation=presentation,
+        )
         if run_id in app._subagent_run_ids:
             tc_block.styles.padding = (0, 2, 0, 6)
             app._append(tc_block)
@@ -479,19 +486,28 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
         tool_use_id = str(event.get("tool_use_id", ""))
         elapsed_ms = int(event.get("elapsed_ms") or 0)
         output = str(event.get("output") or "")
+        raw_presentation = event.get("presentation") or {}
+        presentation = raw_presentation if isinstance(raw_presentation, dict) else {}
         if tool_use_id in app._pending_tool_blocks:
             tc_done = app._pending_tool_blocks.pop(tool_use_id)
-            tc_done.set_result(output, elapsed_ms)
+            tc_done.set_result(output, elapsed_ms, presentation=presentation)
 
     elif t == "tool.call_failed":
         tool_use_id = str(event.get("tool_use_id", ""))
         elapsed_ms = int(event.get("elapsed_ms") or 0)
         error_msg = str(event.get("error_message") or "")
+        raw_presentation = event.get("presentation") or {}
+        presentation = raw_presentation if isinstance(raw_presentation, dict) else {}
         if event.get("terminal") is False:
             return
         if tool_use_id in app._pending_tool_blocks:
             tc_done = app._pending_tool_blocks.pop(tool_use_id)
-            tc_done.set_result(error_msg, elapsed_ms, is_error=True)
+            tc_done.set_result(
+                error_msg,
+                elapsed_ms,
+                is_error=True,
+                presentation=presentation,
+            )
 
 
 # 处理上下文压缩、权限审批、LSP 诊断与日志等杂项事件

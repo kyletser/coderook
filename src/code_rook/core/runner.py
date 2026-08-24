@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,12 +21,22 @@ from code_rook.core.bus.events import (
     RunOutcomeStatus,
     RunStartedEvent,
 )
+from code_rook.core.capabilities import (
+    CapabilityContribution,
+    CapabilityKernel,
+    CapabilityKind,
+    CapabilityScope,
+    CapabilityStability,
+    ContributionHandle,
+)
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus, EventHandler
 from code_rook.core.events.writer import EventWriter
+from code_rook.core.execution import SessionLedgerBridge
+from code_rook.core.features import labs_enabled
 from code_rook.core.goal import GoalBudgetProvider, GoalService
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
@@ -38,6 +50,7 @@ from code_rook.core.mcp.server import McpServerManager
 from code_rook.core.memory import MemoryStore, load_context_file, load_project_instructions
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
+from code_rook.core.presets import get_agent_preset
 from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.prompt_context import build_capability_context, build_runtime_context
 from code_rook.core.repository import RepositoryIndex
@@ -49,6 +62,7 @@ from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
+from code_rook.core.tools.program import RunToolProgram
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.trace.provider import TracingProvider
 from code_rook.core.trace.writer import TraceWriter
@@ -65,6 +79,48 @@ class RunOutcome:
     status: str
     result: str
     reason: str | None
+
+
+class _NullAsyncContext:
+    # 返回空上下文自身，统一无 Session 运行和 Session 运行的资源装配
+    async def __aenter__(self) -> _NullAsyncContext:
+        return self
+
+    # 空上下文退出时不执行任何清理
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+# 从冻结路由和权限快照生成模型请求可引用的执行契约元数据
+def _request_metadata(
+    route: ResolvedRoute | None,
+    authority: AuthoritySnapshot,
+    *,
+    runtime_mode: RuntimeMode,
+    preset_id: str = "standard",
+    preset_digest: str = "",
+) -> dict[str, object]:
+    contract = {
+        "runtime_mode": runtime_mode.value,
+        "authority": authority.model_dump(mode="json"),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            contract,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt = route.receipt if route is not None else None
+    return {
+        "route_id": receipt.route_id if receipt is not None else "",
+        "model": receipt.model if receipt is not None else "",
+        "wire_format": receipt.wire_format if receipt is not None else "",
+        "execution_contract_digest": digest,
+        "preset_id": preset_id,
+        "preset_digest": preset_digest,
+    }
 
 
 # 将内部运行状态归一为公开结果状态和安全失败类别
@@ -118,6 +174,7 @@ class AgentRunner:
         persistent_shell_pool: PersistentShellPool | None = None,
         goal_service: GoalService | None = None,
         audit_health: AuditHealth | None = None,
+        capability_kernel: CapabilityKernel | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -126,13 +183,38 @@ class AgentRunner:
         self._runs_dir = runs_dir or RUNS_DIR
         self._trace = trace
         self._permission_manager = permission_manager
-        self._mcp_manager = mcp_manager
-        self._hooks = hooks or HookManager()
         self._background_registry = background_registry
         self._workspace_boundary = (
             WorkspaceBoundary(workspace_root)
             if workspace_root is not None
             else WorkspaceBoundary.current()
+        )
+        self._capability_kernel = capability_kernel or CapabilityKernel()
+        self._workspace_capability_scope = CapabilityScope(
+            workspace=str(self._workspace_boundary.root.resolve())
+        )
+        resolved_hooks = self._capability_kernel.resolve(
+            CapabilityKind.HOOK_MANAGER,
+            "default",
+            self._workspace_capability_scope,
+        )
+        resolved_mcp = self._capability_kernel.resolve(
+            CapabilityKind.MCP_MANAGER,
+            "default",
+            self._workspace_capability_scope,
+        )
+        resolved_routes = self._capability_kernel.resolve(
+            CapabilityKind.PROVIDER_CATALOG,
+            "default",
+            self._workspace_capability_scope,
+        )
+        self._mcp_manager = (
+            resolved_mcp if isinstance(resolved_mcp, McpServerManager) else mcp_manager
+        )
+        self._hooks = (
+            resolved_hooks
+            if isinstance(resolved_hooks, HookManager)
+            else hooks or HookManager()
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".coderook" / "memory")
         self._repository_index = RepositoryIndex(self._workspace_boundary)
@@ -145,7 +227,11 @@ class AgentRunner:
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
         self._interaction_manager = interaction_manager
-        self._route_registry = route_registry
+        self._route_registry = (
+            resolved_routes
+            if isinstance(resolved_routes, RouteRegistry)
+            else route_registry
+        )
         self._runtime = runtime_service
         self._goal_service = goal_service
         self._audit_health = audit_health
@@ -238,6 +324,18 @@ class AgentRunner:
         persistent_goal_context: str = "",
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
+        agent_preset = None
+        if session is not None:
+            agent_preset = get_agent_preset(session.preset_id)
+            if session.preset_digest != agent_preset.digest:
+                raise ValueError("session preset digest changed; fork or repair the session")
+            if agent_preset.tool_program and not labs_enabled():
+                raise ValueError("tool-program preset requires CODEROOK_LABS=1")
+            if agent_preset.tool_allowlist is not None:
+                requested_tools = set(tool_whitelist or agent_preset.tool_allowlist)
+                tool_whitelist = sorted(
+                    requested_tools & set(agent_preset.tool_allowlist)
+                )
         if session is not None and store is not None:
             run_path = store.runs_dir(session.id) / run_id
             history = store.read_messages(session.id)
@@ -341,11 +439,26 @@ class AgentRunner:
             else None
         )
 
-        async with EventWriter(
-            run_path / "events.jsonl",
-            audit_health=self._audit_health,
-        ) as writer:
+        ledger_bridge = (
+            SessionLedgerBridge(
+                store,
+                session.id,
+                run_id=run_id,
+                audit_health=self._audit_health,
+            )
+            if session is not None and store is not None
+            else None
+        )
+        async with (
+            EventWriter(
+                run_path / "events.jsonl",
+                audit_health=self._audit_health,
+            ) as writer,
+            ledger_bridge if ledger_bridge is not None else _NullAsyncContext() as active_ledger,
+        ):
             writer.subscribe(bus)
+            if isinstance(active_ledger, SessionLedgerBridge):
+                active_ledger.subscribe(bus)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
             await bus.publish(
                 ContextRepositoryEvent(
@@ -424,6 +537,7 @@ class AgentRunner:
                         turn_authority,
                     )
                     turn_authority_active = True
+                tool_contribution: ContributionHandle | None = None
                 child_runs_dir = (
                     store.runs_dir(session.id)
                     if session is not None and store is not None
@@ -445,6 +559,41 @@ class AgentRunner:
                         resolved_route=route_binding,
                         authority_snapshot=turn_authority,
                     )
+                    tool_scope = CapabilityScope(
+                        workspace=self._workspace_capability_scope.workspace,
+                        session=session_id_str or run_id,
+                    )
+                    tool_contribution = self._capability_kernel.register(
+                        CapabilityContribution(
+                            id="default",
+                            kind=CapabilityKind.TOOL_REGISTRY.value,
+                            provider=registry,
+                            stability=CapabilityStability.STABLE,
+                            scope=tool_scope,
+                        )
+                    )
+                    resolved_registry = self._capability_kernel.resolve(
+                        CapabilityKind.TOOL_REGISTRY,
+                        "default",
+                        tool_scope,
+                    )
+                    if not isinstance(resolved_registry, ToolRegistry):
+                        raise RuntimeError("session tool registry capability is unavailable")
+                    registry = resolved_registry
+                    if agent_preset is not None and agent_preset.tool_program:
+                        registry.register(
+                            RunToolProgram(
+                                registry,
+                                bus,
+                                run_id,
+                                session_id=session_id_str,
+                                permission_manager=self._permission_manager,
+                                hooks=self._hooks,
+                                artifact_store=self._artifact_store,
+                                authority_snapshot=turn_authority,
+                                step_provider=lambda: context.step,
+                            )
+                        )
                     session_dir = (
                         store.session_dir(session.id)
                         if session is not None and store is not None
@@ -495,11 +644,20 @@ class AgentRunner:
                         ),
                         auto_step_continues=self._config.agent.max_step_continues,
                         authority_snapshot=turn_authority,
+                        request_metadata=_request_metadata(
+                            route_binding,
+                            turn_authority,
+                            runtime_mode=runtime_mode,
+                            preset_id=agent_preset.id if agent_preset is not None else "standard",
+                            preset_digest=agent_preset.digest if agent_preset is not None else "",
+                        ),
                     )
                     if self._interaction_manager is not None:
                         self._interaction_manager.register_run(run_id)
                     await loop.run(context)
                 finally:
+                    if tool_contribution is not None:
+                        tool_contribution.dispose()
                     if self._interaction_manager is not None:
                         self._interaction_manager.unregister_run(run_id)
                     if turn_authority_active:

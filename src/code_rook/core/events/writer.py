@@ -40,7 +40,7 @@ class EventWriter:
             self._file.close()
             self._file = None
 
-    # 将事件序列化为 JSON 行并写入文件，写入失败时记录日志但不抛出异常
+    # 将事件序列化为 JSON 行并写入文件，写入失败时降级审计并阻止权威事件继续传播
     async def handle(self, event: BaseModel) -> None:
         if self._file is None:
             return
@@ -51,10 +51,11 @@ class EventWriter:
             logger.error("EventWriter: failed to write event: %s", e)
             if self._audit_health is not None:
                 await self._audit_health.degrade("event_ledger", e)
+            raise
 
     # 将写入器置于总线首位，保证事件持久化先于对外广播
     def subscribe(self, bus: EventBus) -> None:
         if self._bus is not None:
             self._bus.unsubscribe(self.handle)
         self._bus = bus
-        bus.subscribe(self.handle, first=True)
+        bus.subscribe(self.handle, first=True, critical=True)
