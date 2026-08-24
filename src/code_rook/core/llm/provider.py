@@ -11,7 +11,13 @@ import httpx
 
 from code_rook.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
 from code_rook.core.events.bus import EventBus
-from code_rook.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
+from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.types import (
+    LlmResponse,
+    ToolCallBlock,
+    UsageStats,
+    completion_status_from_reason,
+)
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-4-6": 200_000,
@@ -140,6 +146,15 @@ class AnthropicProvider:
 
         effective_thinking = thinking if thinking is not None else self._thinking
         max_tokens, thinking_param = anthropic_thinking_params(effective_thinking)
+        max_tokens = clamp_output_token_limit(max_tokens)
+        thinking_budget = (
+            thinking_param.get("budget_tokens") if thinking_param is not None else None
+        )
+        if (
+            isinstance(thinking_budget, int)
+            and thinking_budget >= max_tokens
+        ):
+            thinking_param = None
         request_messages = (
             with_incremental_cache_breakpoint(messages)
             if self._supports_prompt_cache
@@ -229,10 +244,16 @@ class AnthropicProvider:
             )
         )
 
+        completion_status = completion_status_from_reason(
+            final_message.stop_reason,
+            has_tool_calls=any(
+                block.type == "tool_use" for block in final_message.content
+            ),
+        )
         tool_calls: list[ToolCallBlock] = []
         thinking_blocks: list[dict[str, object]] = []
         for block in final_message.content:
-            if block.type == "tool_use":
+            if block.type == "tool_use" and completion_status == "tool_use":
                 tool_calls.append(
                     ToolCallBlock(id=block.id, name=block.name, input=dict(block.input))
                 )
@@ -245,9 +266,19 @@ class AnthropicProvider:
                 })
 
         return LlmResponse(
-            stop_reason=final_message.stop_reason or "end_turn",
+            stop_reason=(
+                "tool_use"
+                if completion_status == "tool_use"
+                else "end_turn"
+                if completion_status == "completed"
+                else "max_tokens"
+                if completion_status == "length"
+                else completion_status
+            ),
             tool_calls=tool_calls,
             text="".join(text_parts),
+            completion_status=completion_status,
+            completion_reason=final_message.stop_reason or "",
             thinking_blocks=thinking_blocks,
             usage=UsageStats(
                 input_tokens=usage.input_tokens,

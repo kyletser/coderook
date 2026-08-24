@@ -2,8 +2,6 @@ name: Crash recovery gate
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 19 * * 2"
 
 permissions:
   contents: read

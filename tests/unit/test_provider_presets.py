@@ -9,21 +9,70 @@ from code_rook.core.llm.provider_presets import (
     PROVIDER_PRESETS,
     discover_models,
     get_provider_preset,
+    probe_local_provider,
 )
 
 
-# 功能：验证系统内置且仅内置四种指定 API 接入方式
-# 设计：直接检查稳定标识和固定 endpoint，防止 UI 文案调整意外改变运行配置
+# 功能：验证统一 catalog 覆盖云端与本地九种正式 Provider
+# 设计：直接检查稳定标识、关键 endpoint 和免密标记，防止 CLI 与配置层各自漂移
 def test_builtin_provider_presets_have_expected_endpoints() -> None:
     presets = {preset.id: preset for preset in PROVIDER_PRESETS}
 
-    assert tuple(presets) == ("deepseek", "openai", "anthropic", "siliconflow")
+    assert tuple(presets) == (
+        "deepseek",
+        "openai",
+        "anthropic",
+        "siliconflow",
+        "gemini",
+        "moonshot",
+        "openrouter",
+        "ollama",
+        "lm-studio",
+    )
     assert presets["deepseek"].chat_url == "https://api.deepseek.com/chat/completions"
     assert presets["openai"].chat_url == "https://api.openai.com/v1/chat/completions"
     assert presets["anthropic"].models_url == "https://api.anthropic.com/v1/models"
-    assert presets["siliconflow"].chat_url == (
-        "https://api.siliconflow.cn/v1/chat/completions"
-    )
+    assert presets["siliconflow"].chat_url == ("https://api.siliconflow.cn/v1/chat/completions")
+    assert presets["gemini"].api_key_env == "GEMINI_API_KEY"
+    assert presets["moonshot"].chat_url == ("https://api.moonshot.ai/v1/chat/completions")
+    assert presets["openrouter"].models_url == "https://openrouter.ai/api/v1/models"
+    assert presets["ollama"].credential_required is False
+    assert presets["lm-studio"].credential_required is False
+    assert get_provider_preset("kimi").id == "moonshot"
+    assert get_provider_preset("lm_studio").id == "lm-studio"
+
+
+# 功能：验证本地 Provider 模型发现不要求 API key 且不发送 Authorization
+# 设计：用 MockTransport 返回 OpenAI 模型列表并检查请求头，测试全程不访问真实本地端口
+async def test_discover_local_models_without_api_key() -> None:
+    captured: list[httpx.Request] = []
+
+    # 记录本地模型发现请求并返回最小兼容响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"data": [{"id": "qwen3-coder"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        models = await discover_models(get_provider_preset("ollama"), client=client)
+
+    assert models == ["qwen3-coder"]
+    assert "Authorization" not in captured[0].headers
+
+
+# 功能：验证轻量本地探测把 catalog endpoint 的主机端口传给可注入连接器
+# 设计：注入纯内存异步连接器并断言 11434 参数，避免测试启动服务或访问真实网络
+async def test_probe_local_provider_uses_injected_connector() -> None:
+    calls: list[tuple[str, int, float]] = []
+
+    # 模拟端口可达并记录探测参数
+    async def connector(host: str, port: int, timeout_s: float) -> bool:
+        calls.append((host, port, timeout_s))
+        return True
+
+    result = await probe_local_provider("ollama", connector=connector, timeout_s=0.2)
+
+    assert result.reachable is True
+    assert calls == [("127.0.0.1", 11434, 0.2)]
 
 
 # 功能：验证 Bearer Provider 使用刚输入的 Key 探测模型并过滤 OpenAI 非聊天模型

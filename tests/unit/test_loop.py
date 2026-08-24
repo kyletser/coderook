@@ -515,6 +515,98 @@ async def test_unknown_stop_reason_with_tools_runs_act_phase() -> None:
     assert any(type(e).__name__ == "ToolCallFinishedEvent" for e in events)
 
 
+# 功能：验证 length 截断只自动续写一次并由下一次完整响应成功收尾
+# 设计：首响应带统一 length 状态，次响应检查续写提示已注入后返回 completed
+async def test_length_completion_auto_continues_once() -> None:
+    class _LengthProvider:
+        # 初始化调用次数并记录第二轮输入
+        def __init__(self) -> None:
+            self.calls = 0
+            self.second_messages: list[dict[str, object]] = []
+
+        # 首轮返回截断，第二轮返回完整终态
+        async def chat(
+            self,
+            messages: list[dict[str, object]],
+            tool_schemas: list[dict[str, object]],
+            bus: EventBus,
+            run_id: str,
+            **_kwargs: object,
+        ) -> LlmResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return LlmResponse(
+                    stop_reason="max_tokens",
+                    text="partial",
+                    completion_status="length",
+                )
+            self.second_messages = list(messages)
+            return LlmResponse(
+                stop_reason="end_turn",
+                text="complete",
+                completion_status="completed",
+            )
+
+    provider = _LengthProvider()
+    loop = AgentLoop(provider, ToolRegistry(), EventBus())  # type: ignore[arg-type]
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "success" and ctx.result == "complete"
+    assert provider.calls == 2
+    assert "reached its output limit" in str(provider.second_messages[-1]["content"])
+
+
+# 功能：验证连续第二次 length 截断会明确失败而不是无限循环或误报成功
+# 设计：连续返回两次统一 length 状态，断言最多调用两次且 reason=incomplete
+async def test_second_length_completion_fails_incomplete() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(
+                stop_reason="max_tokens",
+                text="part-one",
+                completion_status="length",
+            ),
+            LlmResponse(
+                stop_reason="max_tokens",
+                text="part-two",
+                completion_status="length",
+            ),
+        ]
+    )
+    loop, _ = _make_loop(provider)
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "failed"
+    assert ctx.reason == "incomplete"
+    assert ctx.result == "part-two"
+
+
+# 功能：验证内容过滤终态直接失败并保留安全可见摘要
+# 设计：构造 content_filtered 响应，断言 loop 不进行 no-content 重试且不标记成功
+async def test_content_filtered_completion_is_not_success() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(
+                stop_reason="content_filtered",
+                text="response filtered",
+                completion_status="content_filtered",
+            )
+        ]
+    )
+    loop, _ = _make_loop(provider)
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "failed"
+    assert ctx.reason == "content_filtered"
+    assert ctx.result == "response filtered"
+
+
 class _PermissionRequiredTool(BaseTool):
     name = "deny_fast"
     description = "Returns permission_required error"

@@ -1,6 +1,52 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+type CompletionStatus = Literal[
+    "completed",
+    "tool_use",
+    "length",
+    "incomplete",
+    "content_filtered",
+    "failed",
+    "cancelled",
+    "transport_error",
+]
+
+
+# 将三种模型协议的终止原因映射到统一完成状态
+def completion_status_from_reason(
+    reason: str | None,
+    *,
+    has_tool_calls: bool = False,
+    incomplete_reason: str | None = None,
+) -> CompletionStatus:
+    normalized = (reason or "").strip().lower()
+    detail = (incomplete_reason or "").strip().lower()
+    if normalized in {"cancelled", "canceled"}:
+        return "cancelled"
+    if normalized in {"failed", "error"}:
+        return "failed"
+    if normalized == "transport_error":
+        return "transport_error"
+    if normalized in {"content_filter", "content_filtered", "refusal"} or detail in {
+        "content_filter",
+        "content_filtered",
+    }:
+        return "content_filtered"
+    if normalized in {"max_tokens", "length", "max_output_tokens"} or detail in {
+        "max_tokens",
+        "max_output_tokens",
+    }:
+        return "length"
+    if normalized in {"incomplete", "in_progress", "queued"}:
+        return "incomplete"
+    if has_tool_calls or normalized in {"tool_use", "tool_calls", "function_call"}:
+        return "tool_use"
+    if normalized in {"end_turn", "stop", "stop_sequence", "completed"}:
+        return "completed"
+    return "incomplete"
 
 
 @dataclass
@@ -21,9 +67,11 @@ class ToolCallBlock:
 
 @dataclass
 class LlmResponse:
-    stop_reason: str  # "end_turn" | "tool_use"
+    stop_reason: str  # 兼容字段；统一语义以 completion_status 为准
     tool_calls: list[ToolCallBlock] = field(default_factory=list)
     text: str = ""
     usage: UsageStats | None = None
+    completion_status: CompletionStatus | None = None
+    completion_reason: str = ""
     # thinking blocks from extended thinking — must be preserved verbatim in conversation history
     thinking_blocks: list[dict[str, object]] = field(default_factory=list)

@@ -16,6 +16,11 @@ from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.repository import (
+    command_candidate_id,
+    discover_test_commands,
+    render_test_command,
+)
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.base import BaseTool, ToolResult
@@ -220,11 +225,88 @@ async def test_run_family_executes_tests_and_verifiers(tmp_path: Path) -> None:
     )
 
     assert not tests.is_error and "gate-ok" in tests.content
+    tests_payload = json.loads(tests.content)
+    assert tests_payload["verification_eligible"] is False
+    assert tests_payload["verification_reason"] == "missing_candidate_id"
     assert verifiers.is_error
     payload = json.loads(verifiers.content)
     assert payload["verdict"] == "fail"
     assert payload["passed"] == 1
     assert payload["failed"] == 1
+    assert payload["verification_eligible"] is False
+
+
+# 功能：验证只有 daemon 发现且 ID、命令完全匹配的项目候选可生成可信验证资格
+# 设计：先运行任意 echo 风格命令确认失败关闭，再执行真实 manifest 候选并核对来源绑定
+async def test_run_tests_verification_requires_exact_discovered_candidate(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\naddopts = '-q'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
+    registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
+    tool = registry.get("Run")
+    assert tool is not None
+    candidate = discover_test_commands(WorkspaceBoundary(tmp_path)).candidates[0]
+    command = render_test_command(candidate)
+
+    arbitrary = await tool.invoke(
+        {"action": "tests", "command": _python_command("print('ok')")}
+    )
+    verified = await tool.invoke(
+        {
+            "action": "tests",
+            "command": command,
+            "candidate_id": command_candidate_id(candidate),
+        }
+    )
+
+    assert json.loads(arbitrary.content)["verification_eligible"] is False
+    verified_payload = json.loads(verified.content)
+    assert verified.is_error is False
+    assert verified_payload["verification_eligible"] is True
+    assert verified_payload["gates"][0]["source"] == "pyproject.toml"
+
+
+# 功能：验证测试进程执行期间修改 manifest 会使原候选资格立即失效
+# 设计：让真实 pytest 用例改写候选来源，再依靠执行后重新发现断言不能沿用旧摘要认证
+async def test_run_tests_rechecks_manifest_after_execution(tmp_path: Path) -> None:
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(
+        "[tool.pytest.ini_options]\naddopts = '-q'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_mutate.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_mutate_manifest():\n"
+        "    path = Path('pyproject.toml')\n"
+        "    path.write_text(path.read_text(encoding='utf-8') + '# changed\\n', "
+        "encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    candidate = discover_test_commands(WorkspaceBoundary(tmp_path)).candidates[0]
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
+    tool = runner._build_registry(TaskManager(tmp_path / ".tasks")).get("Run")
+    assert tool is not None
+
+    result = await tool.invoke(
+        {
+            "action": "tests",
+            "command": render_test_command(candidate),
+            "candidate_id": command_candidate_id(candidate),
+        }
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is False
+    assert payload["verification_eligible"] is False
+    assert payload["verification_reason"] == "candidate_changed_during_execution"
 
 
 # 功能：验证带后台 registry 的 Runner 只暴露 Bash lifecycle family

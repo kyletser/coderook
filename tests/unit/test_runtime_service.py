@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
@@ -16,6 +17,7 @@ from code_rook.core.bus.events import (
     LlmUsageEvent,
     PermissionGrantedEvent,
     PermissionRequestedEvent,
+    RunFinishedEvent,
     RuntimeEventAppendedEvent,
     SubagentFinishedEvent,
     ToolCallFailedEvent,
@@ -63,6 +65,45 @@ class _Runner:
 def _service(tmp_path: Path) -> tuple[RuntimeService, RuntimeStore]:
     store = RuntimeStore(tmp_path / "runtime.db")
     return RuntimeService(store, workspace=tmp_path), store
+
+
+# 功能：验证扩展 run.finished 字段会原样进入 Schema 1 runtime event 投影
+# 设计：先建立真实 running turn，再投递 enriched typed event 并从 SQLite ledger 重读 payload
+async def test_runtime_projection_accepts_enriched_run_finished(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-run-finished",
+        mode="chat",
+        status="active",
+        title="test",
+        created_at="2026-08-24T00:00:00Z",
+        updated_at="2026-08-24T00:00:00Z",
+    )
+    await service.start_turn(session, "run-enriched", "work")
+
+    await service.record_bus_event(
+        RunFinishedEvent(
+            run_id="run-enriched",
+            status="failed",
+            reason="verification_failed",
+            steps=3,
+            outcome="failed",
+            failure_category="verification",
+            changes=[{"path": "src/app.py", "kind": "modified"}],
+            verification=[{"name": "pytest", "status": "failed"}],
+            result_summary="implementation changed; verification failed",
+            ts="2026-08-24T00:00:01Z",
+        )
+    )
+
+    projected = store.list_events(session.id)[-1]
+    assert projected.schema_version == 1
+    assert projected.type == "run.finished"
+    assert projected.payload["outcome"] == "failed"
+    assert projected.payload["failure_category"] == "verification"
+    assert projected.payload["changes"] == [
+        {"path": "src/app.py", "kind": "modified"}
+    ]
 
 
 # 功能：验证历史 session 与 run 索引可幂等导入 runtime
@@ -524,3 +565,38 @@ async def test_bootstrap_restores_transcript_timestamps(tmp_path: Path) -> None:
     turn = await service.get_turn("run-real")
     assert turn.created_at.isoformat().startswith("2026-08-02T10:00:00")
     assert turn.updated_at.isoformat().startswith("2026-08-02T10:30:00")
+
+
+# 功能：验证 Runtime 投影写入失败会切换共享审计状态并继续向调用方传播错误
+# 设计：替换单个同步写边界为确定性 OSError，避免依赖磁盘权限且覆盖统一写包装器
+async def test_runtime_write_failure_degrades_audit_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health = AuditHealth()
+    service = RuntimeService(
+        RuntimeStore(tmp_path / "runtime.db"),
+        workspace=tmp_path,
+        audit_health=health,
+    )
+    session = Session(
+        id="sess-audit",
+        mode="chat",
+        status="active",
+        title="Audit",
+        created_at="2026-08-24T00:00:00Z",
+        updated_at="2026-08-24T00:00:00Z",
+    )
+
+    # 在真实线程写边界内模拟底层 SQLite 或文件系统故障
+    def fail_sync(_session: Session) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_sync_session_sync", fail_sync)
+
+    with pytest.raises(OSError, match="disk full"):
+        await service.sync_session(session)
+
+    assert health.degraded is True
+    assert health.incident is not None
+    assert health.incident.source == "runtime_projection"

@@ -8,6 +8,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -122,6 +123,62 @@ class ArtifactStore:
         data = content.encode("utf-8") if isinstance(content, str) else content
         return await asyncio.to_thread(self._put_sync, data, media_type)
 
+    # 从文件流式复制内容并生成内容寻址引用，避免大输出整体进入内存
+    def _put_file_sync(self, source: Path, media_type: str) -> ArtifactRef:
+        if not source.is_file():
+            raise ArtifactError(f"artifact source is unavailable: {source}")
+        self._root.mkdir(parents=True, exist_ok=True)
+        handle, temporary_name = tempfile.mkstemp(
+            dir=self._root,
+            prefix=".artifact-import.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with os.fdopen(handle, "wb") as output_stream:
+                with source.open("rb") as input_stream:
+                    while chunk := input_stream.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > _MAX_ARTIFACT_BYTES:
+                            raise ArtifactError(
+                                f"artifact exceeds {_MAX_ARTIFACT_BYTES} byte storage limit"
+                            )
+                        digest.update(chunk)
+                        output_stream.write(chunk)
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
+            sha256 = digest.hexdigest()
+            target = self._path(sha256)
+            if target.exists():
+                existing_digest = hashlib.sha256()
+                with target.open("rb") as existing_stream:
+                    while chunk := existing_stream.read(1024 * 1024):
+                        existing_digest.update(chunk)
+                if existing_digest.hexdigest() != sha256:
+                    raise ArtifactCorruptError(f"artifact hash mismatch: {sha256}")
+            else:
+                temporary.replace(target)
+            return ArtifactRef(
+                handle=f"artifact:{sha256}",
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+                path=f"{self._display_prefix}/{sha256}",
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    # 异步流式导入磁盘文件并返回可分页读取的 artifact 引用
+    async def put_file(
+        self,
+        source: Path,
+        *,
+        media_type: str = "text/plain; charset=utf-8",
+    ) -> ArtifactRef:
+        return await asyncio.to_thread(self._put_file_sync, source, media_type)
+
     # 同步校验完整 hash 后读取有界字节范围
     def _read_sync(self, sha256: str, offset: int, limit: int) -> ArtifactSlice:
         if limit < 1 or limit > _MAX_READ_BYTES:
@@ -129,19 +186,26 @@ class ArtifactStore:
         path = self._path(sha256)
         if not path.is_file():
             raise ArtifactNotFoundError(f"artifact is unavailable: {sha256}")
-        data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != sha256:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            while block := stream.read(1024 * 1024):
+                size += len(block)
+                digest.update(block)
+        if digest.hexdigest() != sha256:
             raise ArtifactCorruptError(f"artifact hash mismatch: {sha256}")
-        if offset > len(data):
+        if offset > size:
             raise ArtifactError("artifact offset exceeds its size")
-        chunk = data[offset : offset + limit]
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            chunk = stream.read(limit)
         next_offset = offset + len(chunk)
         return ArtifactSlice(
             sha256=sha256,
-            size=len(data),
+            size=size,
             offset=offset,
             content=chunk.decode("utf-8", errors="replace"),
-            next_offset=next_offset if next_offset < len(data) else None,
+            next_offset=next_offset if next_offset < size else None,
         )
 
     # 异步读取经过 hash 校验的有界 artifact 切片
@@ -273,3 +337,58 @@ def scan_referenced_artifact_shas(paths: list[Path]) -> set[str]:
         except OSError:
             continue
     return referenced
+
+
+class ArtifactSpool:
+    # 为可能超限的工具输出创建磁盘 spool，未截断时可直接丢弃
+    def __init__(self, store: ArtifactStore | None) -> None:
+        self._store = store
+        self._path: Path | None = None
+        self._stream: BinaryIO | None = None
+        self.size = 0
+        if store is not None:
+            handle, temporary_name = tempfile.mkstemp(
+                prefix="coderook-output-",
+                suffix=".spool",
+            )
+            self._path = Path(temporary_name)
+            self._stream = os.fdopen(handle, "wb")
+
+    # 顺序追加原始输出字节，内存仅保留调用方自己的有界预览
+    def write(self, data: bytes) -> None:
+        self.size += len(data)
+        if self._stream is not None:
+            self._stream.write(data)
+
+    # 关闭并删除临时 spool，供取消或异常路径防止临时文件泄漏
+    def discard(self) -> None:
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            stream.close()
+        path = self._path
+        self._path = None
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+    # 按需把完整 spool 固化为 artifact，未截断输出不占用持久空间
+    async def finish(self, *, persist: bool) -> ArtifactRef | None:
+        stream = self._stream
+        self._stream = None
+        path = self._path
+        self._path = None
+        try:
+            if stream is not None:
+                stream.flush()
+                os.fsync(stream.fileno())
+                stream.close()
+            if path is None:
+                return None
+            if not persist or self._store is None:
+                return None
+            return await self._store.put_file(path)
+        finally:
+            if stream is not None and not stream.closed:
+                stream.close()
+            if path is not None:
+                path.unlink(missing_ok=True)

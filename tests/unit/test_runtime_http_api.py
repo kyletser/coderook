@@ -154,7 +154,7 @@ class _FakeRuntimeApi:
 # 启动随机端口 HTTP API 并返回 server 与 base URL
 async def _start_server(
     tmp_path: Path,
-    token: str = "",
+    token: str = "test-token",
 ) -> tuple[HttpApiServer, _FakeRuntimeApi, str]:
     service = _FakeRuntimeApi(tmp_path)
     server = HttpApiServer("127.0.0.1", 0, token, service)  # type: ignore[arg-type]
@@ -165,7 +165,10 @@ async def _start_server(
 # 从 SSE 流读取指定数量的事件 id
 async def _read_sse_ids(url: str, count: int) -> list[int]:
     ids: list[int] = []
-    async with httpx.AsyncClient(timeout=2.0) as client:
+    async with httpx.AsyncClient(
+        timeout=2.0,
+        headers={"Authorization": "Bearer test-token"},
+    ) as client:
         async with client.stream("GET", url) as response:
             assert response.status_code == 200
             assert response.headers["X-CodeRook-API-Version"] == "v1"
@@ -189,6 +192,9 @@ def test_http_auth_requires_token_for_non_loopback() -> None:
     assert bearer_authorized("Bearer secret", "secret")
     assert not bearer_authorized("Bearer wrong", "secret")
     assert not bearer_authorized(None, "secret")
+    assert not bearer_authorized(None, "")
+    assert not bearer_authorized("Bearer anything", "")
+    assert not bearer_authorized("Bearer anything", "   ")
 
 
 # 功能：验证 v1 JSON API 的 thread、turn、控制、item、receipt、capability 与 usage 路由
@@ -196,7 +202,11 @@ def test_http_auth_requires_token_for_non_loopback() -> None:
 async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
     server, service, base_url = await _start_server(tmp_path)
     try:
-        async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            timeout=2.0,
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
             response = await client.get("/v1/threads")
             assert response.status_code == 200
             assert response.json()[0]["id"] == "thread-1"
@@ -282,6 +292,23 @@ async def test_http_server_start_fails_closed_without_remote_token(tmp_path: Pat
 
     with pytest.raises(ValueError, match="requires CODEROOK_API_TOKEN"):
         await server.start()
+
+
+# 功能：验证回环 HTTP server 即使意外收到空 expected token 也不会关闭鉴权
+# 设计：直接以空 token 启动真实 loopback server，分别发送无 header 和任意 Bearer 并断言均为 401
+async def test_http_loopback_empty_token_fails_closed(tmp_path: Path) -> None:
+    server, _service, base_url = await _start_server(tmp_path, token="")
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
+            assert (await client.get("/v1/capabilities")).status_code == 401
+            assert (
+                await client.get(
+                    "/v1/capabilities",
+                    headers={"Authorization": "Bearer anything"},
+                )
+            ).status_code == 401
+    finally:
+        await server.stop()
 
 
 # 功能：验证 SSE 使用 durable seq 重连时不会重复或跳过游标后的事件

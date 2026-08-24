@@ -9,6 +9,7 @@ from rich.markup import render
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
+from code_rook.core.transport.socket_client import IpcError
 from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
     ChatTextArea,
@@ -18,6 +19,7 @@ from code_rook.tui.app import (
     _load_input_history,
     _save_input_history_entry,
 )
+from code_rook.tui.connection import TuiConnection
 from code_rook.tui.widgets import input as widgets_input
 
 
@@ -61,7 +63,11 @@ def test_input_history_roundtrip_tolerates_corrupt_lines(
 # 功能：验证 ↑/↓ 回溯历史：从最新向上、到底后恢复草稿
 # 设计：直接驱动 ChatTextArea 的历史方法并替换持久化函数，覆盖首入保存草稿与退出回溯两个分支
 def test_chat_text_area_history_navigation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(widgets_input, "_save_input_history_entry", lambda _text: None)
+    monkeypatch.setattr(
+        widgets_input,
+        "_save_input_history_entry",
+        lambda _text, **_kwargs: None,
+    )
     area = ChatTextArea()
     area.set_history(["旧输入", "新输入"])
 
@@ -86,7 +92,11 @@ def test_chat_text_area_history_navigation(monkeypatch: pytest.MonkeyPatch) -> N
 def test_chat_text_area_record_history_dedupes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(widgets_input, "_save_input_history_entry", lambda _text: None)
+    monkeypatch.setattr(
+        widgets_input,
+        "_save_input_history_entry",
+        lambda _text, **_kwargs: None,
+    )
     area = ChatTextArea()
 
     area.record_history("alpha")
@@ -100,6 +110,45 @@ def test_chat_text_area_record_history_dedupes(
 
     assert len(area._history) == 500
     assert area._history[-1] == "new-entry"
+
+
+# 功能：验证输入框关闭历史或识别出密钥时既不写磁盘也不进入上下键回溯
+# 设计：替换持久化边界并依次提交普通值、API key 和关闭后的值，检查内存与写入调用一致
+def test_chat_text_area_history_opt_out_and_secret_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted: list[str] = []
+    monkeypatch.setattr(
+        widgets_input,
+        "_save_input_history_entry",
+        lambda text, **_kwargs: persisted.append(text),
+    )
+    area = ChatTextArea()
+
+    area.record_history("普通任务")
+    area.record_history("api_key=sk-secret-secret-123456")
+    area.set_history_enabled(False)
+    area.record_history("关闭后的任务")
+
+    assert area._history == ["普通任务"]
+    assert persisted == ["普通任务"]
+
+
+# 功能：验证 ChatTextArea 将历史写入实例绑定的工作区路径
+# 设计：为两个输入框指定不同临时文件后分别提交，断言物理记录不串扰
+def test_chat_text_area_record_history_uses_instance_workspace_path(tmp_path: Path) -> None:
+    first_path = tmp_path / "first" / "history.jsonl"
+    second_path = tmp_path / "second" / "history.jsonl"
+    first = ChatTextArea()
+    second = ChatTextArea()
+    first.set_history([], path=first_path)
+    second.set_history([], path=second_path)
+
+    first.record_history("first task")
+    second.record_history("second task")
+
+    assert _load_input_history(path=first_path) == ["first task"]
+    assert _load_input_history(path=second_path) == ["second task"]
 
 
 # 功能：验证自动会话标题从首条用户消息派生且跳过斜杠命令
@@ -257,7 +306,7 @@ async def test_header_shows_context_bar() -> None:
         def on_mount(self) -> None:
             self.query_one("#prompt", ChatTextArea).focus()
 
-    app = HeaderHarness("127.0.0.1", 9999)
+    app = HeaderHarness("127.0.0.1", 9999, locale="en-US")
     async with app.run_test(size=(120, 24)) as pilot:
         await pilot.pause()
 
@@ -333,6 +382,98 @@ async def test_auto_title_after_first_successful_run() -> None:
         assert appended == []
 
 
+# 功能：验证 TUI 切换会话时为新 session 建立带游标的 thread 订阅
+# 设计：在真实 Textual 骨架中调用 _load_session，截取 IPC 参数验证渲染前已切换订阅边界
+async def test_load_session_subscribes_selected_thread() -> None:
+    class SessionHarness(CodeRookTuiApp):
+        # 只挂载界面骨架
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = SessionHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await pilot.pause()
+        client = _FakeClient(
+            {
+                "session.get_history": {"messages": []},
+                "event.subscribe": {"subscription_id": "sub-sess", "last_seq": 4},
+            }
+        )
+        app._client = client
+
+        # 跳过本用例不关心的 authority 与 Goal IPC 刷新
+        async def no_refresh() -> None:
+            return None
+
+        app._refresh_authority = no_refresh  # type: ignore[method-assign]
+        app._refresh_goal_state = no_refresh  # type: ignore[method-assign]
+
+        await app._load_session("sess-selected", resume=True, title="Selected")
+        await pilot.pause()
+
+        thread_calls = [
+            params
+            for method, params in client.calls
+            if method == "event.subscribe" and "thread_id" in params
+        ]
+        assert len(thread_calls) == 1
+        assert thread_calls[0]["thread_id"] == "sess-selected"
+        assert thread_calls[0]["after_seq"] == 0
+        assert "llm.reasoning" in thread_calls[0]["topics"]
+        assert app._session_id == "sess-selected"
+        assert app._connection._session_cursors["sess-selected"] == 4
+
+
+# 功能：验证手动切换到活动会话时使用只读 thread 附着而不会被 SESSION_BUSY 阻断
+# 设计：让 session.resume 返回稳定 busy 错误并由 thread.get 提供权威记录，截取 load 调用证明切换继续进入订阅与恢复路径
+async def test_manual_switch_attaches_active_session_after_resume_busy() -> None:
+    class _BusyClient:
+        # 初始化 IPC 调用记录
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        # 对 resume 返回 busy，并为只读附着返回同一 thread
+        async def send_command(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append((method, dict(params)))
+            if method == "session.resume":
+                raise IpcError(-32012, "session busy")
+            if method == "thread.get":
+                return {
+                    "thread": {
+                        "id": "sess-active",
+                        "title": "Active task",
+                        "status": "running",
+                    }
+                }
+            raise AssertionError(method)
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    client = _BusyClient()
+    app._client = client  # type: ignore[assignment]
+    app._connection = TuiConnection(app, None, host="127.0.0.1", port=9999)
+    app._session_id = "sess-current"
+    loaded: list[tuple[str, bool, str | None]] = []
+
+    # 截取实际视图加载参数，隔离本测试不关心的 Textual 挂载细节
+    async def capture_load(
+        session_id: str,
+        *,
+        resume: bool,
+        title: str | None = None,
+    ) -> None:
+        loaded.append((session_id, resume, title))
+
+    app._load_session = capture_load  # type: ignore[method-assign]
+
+    await app._switch_session("sess-active")
+
+    assert client.calls == [
+        ("session.resume", {"session_id": "sess-active"}),
+        ("thread.get", {"thread_id": "sess-active"}),
+    ]
+    assert loaded == [("sess-active", True, "Active task")]
+
+
 # 功能：验证 /delete 未带 --yes 时只显示确认提示，不发送删除命令
 # 设计：挂载 TUI 捕获日志，直接调用提交事件断言没有 IPC 调用且有二次确认引导
 async def test_delete_requires_explicit_confirmation() -> None:
@@ -391,6 +532,34 @@ async def test_export_session_writes_file(
         ]
         assert (tmp_path / "export-test.md").read_text(encoding="utf-8") == "# 会话内容"
         assert any("会话已导出" in line for line in appended)
+
+
+# 功能：验证会话导出默认拒绝覆盖，仅显式二次确认才替换旧文件
+# 设计：预先写入同名文件，先断言普通导出保持原内容，再以 overwrite 边界确认改写
+async def test_export_session_refuses_overwrite_without_explicit_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    target = tmp_path / "export-test.md"
+    target.write_text("old content", encoding="utf-8")
+    client = _FakeClient(
+        {"session.export": {"filename": target.name, "content": "new content"}}
+    )
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = client
+    app._session_id = "s-exp"
+    appended: list[str] = []
+    app._append = lambda widget: appended.append(str(widget.render()))  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app._do_export_session("md")
+
+    assert target.read_text(encoding="utf-8") == "old content"
+    assert any(str(target) in line and "--force --yes" in line for line in appended)
+
+    await app._do_export_session("md", overwrite=True)
+    assert target.read_text(encoding="utf-8") == "new content"
 
 
 # 功能：验证用户上滚离开底部后新内容不再强制拉回底部

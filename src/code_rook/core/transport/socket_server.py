@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -116,6 +117,8 @@ class SocketServer:
         peer = writer.get_extra_info("peername", "<unknown>")
         logger.debug("client connected: %s", peer)
         self._active_writers.add(writer)
+        command_tasks: set[asyncio.Task[None]] = set()
+        connection_closed = asyncio.Event()
         try:
             if not self._peer_is_loopback(writer):
                 logger.warning("rejected non-loopback IPC peer")
@@ -124,8 +127,14 @@ class SocketServer:
                 authenticated = await self._authenticate_connection(reader, writer)
                 if not authenticated:
                     return
-            await self._read_loop(reader, writer)
+            await self._read_loop(
+                reader,
+                writer,
+                command_tasks,
+                connection_closed,
+            )
         finally:
+            connection_closed.set()
             self._active_writers.discard(writer)
             if self._broadcaster is not None:
                 self._broadcaster.unsubscribe(writer)
@@ -216,6 +225,8 @@ class SocketServer:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        command_tasks: set[asyncio.Task[None]],
+        connection_closed: asyncio.Event,
     ) -> None:
         while True:
             try:
@@ -229,7 +240,35 @@ class SocketServer:
 
             # 每条命令独立作为 task 执行，避免长时间运行的 handler（如 session.send_message）
             # 阻塞读循环，使 permission.respond 等并发命令能被及时处理
-            asyncio.create_task(self._handle_line(line, writer))
+            task = asyncio.create_task(self._handle_line(line, writer))
+            command_tasks.add(task)
+            task.add_done_callback(
+                partial(
+                    self._command_task_done,
+                    writer=writer,
+                    connection_closed=connection_closed,
+                    command_tasks=command_tasks,
+                )
+            )
+
+    # 回收独立命令任务，并在连接已关闭时再次清理任务结束前新建的订阅
+    def _command_task_done(
+        self,
+        task: asyncio.Task[None],
+        *,
+        writer: asyncio.StreamWriter,
+        connection_closed: asyncio.Event,
+        command_tasks: set[asyncio.Task[None]],
+    ) -> None:
+        command_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("command task failed after connection cleanup", exc_info=True)
+        if connection_closed.is_set() and self._broadcaster is not None:
+            self._broadcaster.unsubscribe(writer)
 
     # 解析单行 JSON-RPC 请求并调用对应 handler，将结果或错误写回客户端
     async def _handle_line(self, line: bytes, writer: asyncio.StreamWriter) -> None:

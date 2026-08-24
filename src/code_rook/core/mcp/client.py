@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from code_rook.core.processes import ProcessSupervisor
+from code_rook.core.processes import ProcessSupervisor, explicit_extension_environment
 
 log = logging.getLogger(__name__)
 
@@ -80,8 +80,7 @@ class McpClient:
         args: list[str],
         env: dict[str, str] | None = None,
     ) -> None:
-        import os
-        merged_env = {**os.environ, **(env or {})}
+        merged_env = explicit_extension_environment(env)
         supervisor = self._process_supervisor or ProcessSupervisor()
         self._process_supervisor = supervisor
         self._proc = await supervisor.start_exec(

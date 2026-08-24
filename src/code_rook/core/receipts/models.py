@@ -15,9 +15,20 @@ from code_rook.core.authority import (
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.models import TurnStatus
 
+RunOutcome = Literal[
+    "completed",
+    "tool_use",
+    "length",
+    "incomplete",
+    "content_filtered",
+    "failed",
+    "cancelled",
+    "transport_error",
+]
+
 
 class SandboxPlanReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     backend: str
     tier: Literal["read_only", "workspace_write", "none"]
@@ -32,7 +43,7 @@ class SandboxPlanReceipt(BaseModel):
 
 
 class TurnAuthorityReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     mode: RuntimeMode
     profile: AuthorityProfile
@@ -43,7 +54,7 @@ class TurnAuthorityReceipt(BaseModel):
 
 
 class TurnApprovalCounts(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     requested: int = Field(ge=0)
     granted: int = Field(ge=0)
@@ -51,7 +62,7 @@ class TurnApprovalCounts(BaseModel):
 
 
 class TurnProcessUsageReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     record_count: int = Field(ge=0)
     complete_records: int = Field(ge=0)
@@ -62,8 +73,16 @@ class TurnProcessUsageReceipt(BaseModel):
     process_count: int = Field(ge=0)
 
 
+class TurnFileChangeReceipt(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    path: str
+    additions: int | None = Field(default=None, ge=0)
+    deletions: int | None = Field(default=None, ge=0)
+
+
 class TurnReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     turn_id: str
     thread_id: str
@@ -78,23 +97,14 @@ class TurnReceipt(BaseModel):
     approvals: TurnApprovalCounts
     process_usage: TurnProcessUsageReceipt
     files_changed: list[str]
+    changes: list[TurnFileChangeReceipt] = Field(default_factory=list)
     checkpoints: list[dict[str, JsonValue]]
     artifacts: list[dict[str, JsonValue]]
     workers: list[dict[str, JsonValue]]
     verification: list[dict[str, JsonValue]]
     context_selection: list[dict[str, JsonValue]]
     error_classification: str | None
-    unavailable: list[
-        Literal[
-            "route",
-            "usage",
-            "cost",
-            "files_changed",
-            "checkpoints",
-            "artifacts",
-            "workers",
-            "verification",
-            "context_selection",
-            "error_classification",
-        ]
-    ]
+    unavailable: list[str]
+    outcome: RunOutcome | None = None
+    failure_category: str | None = None
+    result_summary: str | None = None

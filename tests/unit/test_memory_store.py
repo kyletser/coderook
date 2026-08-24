@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from code_rook.core.memory import MemoryStore
 from code_rook.core.tools.builtin.memory import (
+    MemoryEditTool,
+    MemoryExpireTool,
     MemoryForgetTool,
+    MemoryPinTool,
     MemorySaveTool,
     MemorySearchTool,
 )
@@ -77,17 +81,77 @@ async def test_memory_tools_roundtrip(tmp_path: Path) -> None:
     assert store.list_all() == []
 
 
-# 功能：验证明确长期规则会自动记忆，同时 API Key 在落盘前被脱敏
-# 设计：提示同时包含中文记忆触发词和 sk- 密钥，检查记录正文而非仅检查返回值
-def test_explicit_memory_redacts_secrets(tmp_path: Path) -> None:
+# 功能：验证长期规则必须确认后才会保存，并在落盘前脱敏 API Key
+# 设计：同一提示先以默认未确认调用再显式确认，证明宽泛关键词不会触发静默写入
+def test_explicit_memory_requires_confirmation_and_redacts_secrets(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "memory")
+    prompt = "记住以后使用 uv，密钥是 sk-secretvalue123456"
+
+    skipped = store.remember_explicit_prompt(prompt, source_run_id="run-secret")
 
     record = store.remember_explicit_prompt(
-        "记住以后使用 uv，密钥是 sk-secretvalue123456",
+        prompt,
         source_run_id="run-secret",
+        confirmed=True,
     )
 
+    assert skipped is None
     assert record is not None
     assert "sk-secretvalue123456" not in record.body
     assert "[REDACTED]" in record.body
     assert record.source_run_id == "run-secret"
+
+
+# 功能：验证自动记忆可关闭且非法设置按关闭处理
+# 设计：先检查默认 prompt，再持久化 off 并注入损坏文件，覆盖正常设置与 fail-closed 读取
+def test_memory_auto_save_settings_are_persistent_and_fail_closed(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "memory")
+
+    assert store.load_settings().auto_save == "prompt"
+    assert store.set_auto_save("off").auto_save == "off"
+    assert MemoryStore(tmp_path / "memory").load_settings().auto_save == "off"
+
+    store.settings_path.write_text('{"auto_save":"invalid"}', encoding="utf-8")
+
+    assert store.load_settings().auto_save == "off"
+
+
+# 功能：验证记忆支持 edit、pin、expire 且过期项不会进入默认召回
+# 设计：通过公开工具修改真实记录，先设未来时间再设过去时间，兼顾排序和审计保留语义
+async def test_memory_governance_edit_pin_and_expire(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "memory")
+    record = store.save(
+        name="runtime",
+        description="old",
+        mem_type="project",
+        body="Use the old command.",
+    )
+    edit = await MemoryEditTool(store).invoke(
+        {
+            "memory_id": record.id,
+            "description": "verified command",
+            "body": "Use uv run pytest.",
+        }
+    )
+    pin = await MemoryPinTool(store).invoke(
+        {"memory_id": record.id, "pinned": True}
+    )
+    future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    expire = await MemoryExpireTool(store).invoke(
+        {"memory_id": record.id, "expires_at": future}
+    )
+
+    active = store.list_all()
+    assert edit.is_error is False
+    assert pin.content.startswith("pinned")
+    assert expire.is_error is False
+    assert active[0].body == "Use uv run pytest."
+    assert active[0].pinned is True
+
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    await MemoryExpireTool(store).invoke(
+        {"memory_id": record.id, "expires_at": past}
+    )
+
+    assert store.list_all() == []
+    assert store.get(record.id) is not None

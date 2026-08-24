@@ -10,11 +10,12 @@ SSE 接口。默认监听 `127.0.0.1:7438`；TUI、IPC 和 HTTP 读取同一个
 
 ## 安全绑定
 
-- 回环地址默认可直接访问，也可以设置 token。
-- 监听 `0.0.0.0`、局域网地址或其他非回环地址时，必须设置
-  `CODEROOK_API_TOKEN`，否则 Core 启动失败。
-- token 只从环境变量读取，不写入项目配置、日志、事件或 Turn Receipt。
-- 配置 token 后，每个请求都需要 `Authorization: Bearer <token>`。
+- Runtime API 始终使用 Bearer token，包括 loopback 请求。
+- 非空 `CODEROOK_API_TOKEN` 优先；空或纯空白值视为未配置，不能关闭鉴权。未配置时 Core 以
+  no-follow/排他创建语义加载或创建 `~/.coderook/api-token`。POSIX 要求当前用户所有且严格为
+  `0600`；Windows 不虚假承诺 POSIX mode，而是验证父目录、普通文件、重解析点和句柄/路径身份边界。
+- 每个 HTTP/JSON 和 SSE 请求都必须发送 `Authorization: Bearer <token>`。
+- token 不进入项目配置、日志、事件或 Turn Receipt。
 
 ```powershell
 $env:CODEROOK_API_HOST = "127.0.0.1"
@@ -45,6 +46,11 @@ uv run coderook-core
 创建 turn 返回 `202 Accepted`。返回的 turn 已经写入 durable runtime，后续可以立即通过
 items、events 或 receipt 查询。
 
+`/v1/capabilities` 除 API/事件/stream-json 版本外，还返回 `feature_flags.stable/labs/internal`、
+`labs_enabled` 和当前宿主的 sandbox capability/state。`feature_flags.labs` 表示代码中存在实验能力；
+`labs_enabled=false`（默认）表示当前进程没有激活这些控制面。调用方必须同时协商级别与激活状态，不能
+仅因命令模型存在就调用 Labs；Windows 的 `windows_forced_sandbox=unavailable` 不能被 UI 描述为已隔离。
+
 ## SSE 事件
 
 ```text
@@ -56,6 +62,14 @@ Accept: text/event-stream
 最后收到的 id 作为 `after_seq`，或通过 `Last-Event-ID` header 重连；服务只返回严格大于该
 游标的事件，因此不会重复已确认事件，也不会跳过已提交事件。
 
+`run.finished` schema 1 已增加可选 `outcome`、`failure_category`、`changes`、`verification` 和
+`result_summary`。当前 Runner 会填写统一 outcome、稳定失败分类和有界结果摘要；`changes` 与
+`verification` 只有在发布端有可证明的结构化证据时才会出现。产品结果卡仍以 Turn Receipt 与其他
+durable 事件为权威，并在字段不可证明时显示 unavailable。schema 1 调用方必须把所有新增字段当作可选。
+`status` 保留兼容用的粗粒度状态；新客户端应优先读取 `outcome`。`tool_use`、`length`、`incomplete`
+映射为“不完整”，`cancelled` 映射为“已中断”，`content_filtered` 与 `transport_error` 保持独立且不能
+并入成功。
+
 ## Turn Receipt
 
 Receipt 只使用 SQLite 中的 TurnRecord、TurnItemRecord 和 RuntimeEventRecord 构建，Core
@@ -64,10 +78,15 @@ Receipt 只使用 SQLite 中的 TurnRecord、TurnItemRecord 和 RuntimeEventReco
 - 实际 route、model 和 wire format；
 - mode、authority、workspace trust、sandbox 与允许动作；
 - 起止时间、状态、token usage 和成本；
-- 工具与审批计数、修改文件、checkpoints、artifacts 和 workers；
+- 工具与审批计数、成功修改工具对应的文件、逐文件 additions/deletions、checkpoints、artifacts 和 workers；
 - diagnostics/verification evidence 与错误分类。
 
-无法从 durable records 证明的字段会列入 `unavailable`，不会伪造为已知事实。模型价格未
+Receipt schema 1 还可选保存原始 `outcome`、`failure_category` 和有界 `result_summary`。字段缺失表示
+旧记录或证据不可得，不能从 legacy status 猜测。
+
+文件改动只计入成功的写工具结果；失败调用和 `apply_patch` dry-run 不会冒充修改。旧事件没有行数时，
+对应 additions/deletions 保持 `null` 并在 `change_line_stats` 中标记 unavailable，不会拿查询时的当前
+workspace diff 回填历史 Turn。无法从 durable records 证明的其他字段同样列入 `unavailable`。模型价格未
 配置时 `cost` 固定为 `unknown`。
 
 ## Python SDK

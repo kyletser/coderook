@@ -5,10 +5,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from code_rook.core.audit import AuditHealth
+from code_rook.core.authority import RuntimeMode, ToolAction
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.goal import GoalService, GoalStore
+from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
+from code_rook.core.tools.base import ToolSideEffect
 from code_rook.core.tools.builtin.goal_update import GoalUpdateTool
 
 
@@ -20,28 +24,81 @@ def _tool(tmp_path: Path) -> tuple[GoalUpdateTool, GoalService, str]:
     return GoalUpdateTool(service, goal.id), service, goal.id
 
 
-# 功能：验证 update_goal 只有收到具体证据引用后才能显式完成持久 Goal
-# 设计：先提交无证据完成请求并检查校验错误，再提交测试报告引用并从真实存储核对终态
+# 功能：验证 update_goal 只有引用 daemon 已记录的通过验证后才能完成持久 Goal
+# 设计：依次提交空证据、伪造 URI 和 latest-verification，再从真实存储核对唯一可信证据
 async def test_goal_update_tool_requires_evidence_for_completion(tmp_path: Path) -> None:
     tool, service, goal_id = _tool(tmp_path)
 
     with pytest.raises(ValidationError, match="requires at least one evidence"):
         await tool.invoke({"status": "completed", "evidence": []})
-    completed = await tool.invoke(
+    forged = await tool.invoke(
         {
             "status": "completed",
             "evidence": ["tests://unit/green", "git://commit/abc123"],
-            "summary": "tests and commit verified",
+        }
+    )
+    assert forged.is_error
+    assert "daemon-verified" in forged.content
+    verified = service.record_verification(
+        goal_id,
+        run_id="run-1",
+        step=2,
+        tool="Run",
+        action="tests",
+        summary="42 passed",
+    )
+    completed = await tool.invoke(
+        {
+            "status": "completed",
+            "evidence": ["latest-verification"],
+            "summary": "daemon verification accepted",
         }
     )
 
     assert not completed.is_error
     stored = service.get(goal_id)
     assert stored.status == "completed"
-    assert [item.reference for item in stored.completion_evidence] == [
-        "tests://unit/green",
-        "git://commit/abc123",
-    ]
+    assert stored.completion_evidence == verified.completion_evidence
+    assert stored.completion_evidence[0].kind == "verified-run"
+
+
+# 功能：验证 update_goal 在权限清单中属于 mutation，Plan 模式不会把它暴露为只读工具
+# 设计：直接检查生产 ToolSpec 的副作用、authority action 和 visible_actions，覆盖审计降级共用判定入口
+def test_goal_update_tool_is_a_mutating_action(tmp_path: Path) -> None:
+    tool, _service, _goal_id = _tool(tmp_path)
+    spec = tool.build_spec()
+
+    assert tool.side_effect == ToolSideEffect.LOCAL_WRITE
+    assert spec.actions[0].authority_action() == ToolAction.MUTATE
+    assert spec.visible_actions(RuntimeMode.PLAN) == ()
+
+
+# 功能：验证 audit_degraded 会通过 update_goal 的 MUTATE action 拒绝其持久状态写入
+# 设计：触发真实 AuditHealth 降级并调用 PermissionManager 静态闸门，避免依赖交互审批超时
+async def test_goal_update_is_denied_when_audit_is_degraded(tmp_path: Path) -> None:
+    tool, _service, _goal_id = _tool(tmp_path)
+    health = AuditHealth()
+    await health.degrade("goal-store", OSError("disk full"))
+    manager = PermissionManager(
+        policy_file=tmp_path / "policy.toml",
+        audit_health=health,
+    )
+
+    # 降级分支会在发布审批请求前返回，此回调若被调用说明 fail-closed 顺序失效
+    async def unexpected_emit(_payload: dict[str, object]) -> None:
+        raise AssertionError("audit degraded must not request approval")
+
+    allowed, decision = await manager.check_and_wait(
+        tool_use_id="goal-update-1",
+        tool_name=tool.name,
+        params={"status": "blocked", "summary": "cannot continue"},
+        session_id="sess-a",
+        event_emitter=unexpected_emit,
+        action=tool.build_spec().actions[0].authority_action(),
+    )
+
+    assert allowed is False
+    assert decision == "audit_degraded"
 
 
 # 功能：验证 update_goal 标记 blocked 时必须给出阻塞原因且不会伪造完成证据

@@ -3,20 +3,49 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import keyring
 from pydantic import BaseModel, ConfigDict
 
 from code_rook.core.config import LlmConfig
 from code_rook.core.llm.kinds import SUPPORTED_LEGACY_PROVIDERS
+from code_rook.core.llm.provider_presets import get_provider_preset
 from code_rook.core.llm.routes import CredentialSource
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CREDENTIALS_PATH = "~/.coderook/credentials.json"
 _KEYRING_SERVICE = "coderook"
+_CREDENTIALS_VERSION = 2
+_CREDENTIAL_FIELDS = frozenset({"version", "api_keys", "route_credentials"})
+
+CredentialStoreStatus = Literal["missing", "ready", "invalid"]
+CredentialStoreErrorCode = Literal[
+    "unsafe_path",
+    "read_failed",
+    "invalid_json",
+    "invalid_format",
+    "unsupported_version",
+    "write_failed",
+]
+
+
+class CredentialStoreError(RuntimeError):
+    # 保存可供进程边界分类的脱敏凭据存储错误
+    def __init__(
+        self,
+        code: CredentialStoreErrorCode,
+        path: Path,
+        message: str,
+    ) -> None:
+        self.code = code
+        self.path = path
+        self.safe_message = message
+        super().__init__(f"{message} ({path})")
 
 
 class CredentialBackend(Protocol):
@@ -51,6 +80,18 @@ class CredentialResolution(BaseModel):
     source: CredentialSource
 
 
+# 按用户进程环境高于显式文件 overlay 的顺序解析单个凭据变量
+def resolve_env_credential(
+    name: str,
+    overlay: Mapping[str, str] | None = None,
+) -> str | None:
+    if name in os.environ:
+        value = os.environ.get(name)
+    else:
+        value = (overlay or {}).get(name)
+    return value if isinstance(value, str) and value else None
+
+
 # 将 provider 别名归一化为凭据文件使用的稳定键名
 def normalize_provider(provider: str) -> str:
     return provider.lower().replace("-", "_")
@@ -58,40 +99,160 @@ def normalize_provider(provider: str) -> str:
 
 # 返回凭据文件路径，允许环境变量覆盖以便测试和高级部署
 def credentials_path() -> Path:
-    return Path(
-        os.environ.get("CODEROOK_CREDENTIALS_FILE", _DEFAULT_CREDENTIALS_PATH)
-    ).expanduser()
+    return Path(os.environ.get("CODEROOK_CREDENTIALS_FILE", _DEFAULT_CREDENTIALS_PATH)).expanduser()
 
 
-# 读取凭据文件并在不存在或格式无效时返回空结构
+# 验证凭据文档及其直接父目录不会通过符号链接越出调用者选择的位置
+def _validated_credentials_path(path: Path) -> Path:
+    target = path.expanduser().absolute()
+    parent = target.parent
+    if os.path.lexists(parent) and (parent.is_symlink() or not parent.is_dir()):
+        raise CredentialStoreError(
+            "unsafe_path",
+            target,
+            "credential store parent directory is unsafe",
+        )
+    if os.path.lexists(target) and (target.is_symlink() or not target.is_file()):
+        raise CredentialStoreError(
+            "unsafe_path",
+            target,
+            "credential store must be a regular file",
+        )
+    return target
+
+
+# 严格读取凭据文件，兼容旧版但拒绝静默降级未来版本或丢弃未知字段
 def _load_credentials(path: Path | None = None) -> dict[str, Any]:
-    target = path or credentials_path()
+    target = _validated_credentials_path(path or credentials_path())
     if not target.exists():
-        return {"version": 2, "api_keys": {}, "route_credentials": {}}
+        return {
+            "version": _CREDENTIALS_VERSION,
+            "api_keys": {},
+            "route_credentials": {},
+        }
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Credentials parse error ({target}): {exc}") from exc
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get("api_keys", {}), dict)
-        or not isinstance(data.get("route_credentials", {}), dict)
+    except json.JSONDecodeError as exc:
+        raise CredentialStoreError(
+            "invalid_json",
+            target,
+            "credential store contains invalid JSON",
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise CredentialStoreError(
+            "read_failed",
+            target,
+            "credential store could not be read",
+        ) from exc
+    if not isinstance(data, dict):
+        raise CredentialStoreError(
+            "invalid_format",
+            target,
+            "credential store document must be an object",
+        )
+    version = data.get("version", 1)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise CredentialStoreError(
+            "invalid_format",
+            target,
+            "credential store version is invalid",
+        )
+    if version > _CREDENTIALS_VERSION:
+        raise CredentialStoreError(
+            "unsupported_version",
+            target,
+            "credential store version is newer than supported",
+        )
+    if version < 1:
+        raise CredentialStoreError(
+            "invalid_format",
+            target,
+            "credential store version is invalid",
+        )
+    unknown = sorted(set(data) - _CREDENTIAL_FIELDS)
+    if unknown:
+        raise CredentialStoreError(
+            "invalid_format",
+            target,
+            "credential store contains unknown fields",
+        )
+    api_keys = data.get("api_keys", {})
+    route_credentials = data.get("route_credentials", {})
+    if not _valid_credential_mapping(api_keys) or not _valid_credential_mapping(
+        route_credentials
     ):
-        raise SystemExit(f"Credentials format error ({target})")
-    return data
+        raise CredentialStoreError(
+            "invalid_format",
+            target,
+            "credential store mappings are invalid",
+        )
+    return {
+        "version": _CREDENTIALS_VERSION,
+        "api_keys": dict(api_keys),
+        "route_credentials": dict(route_credentials),
+    }
+
+
+# 判断凭据映射只包含字符串账户名与字符串密钥正文
+def _valid_credential_mapping(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(secret, str)
+        for key, secret in value.items()
+    )
 
 
 # 使用原子替换保存权限收紧的凭据文档
 def _save_credentials(data: dict[str, Any], target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(f"{target.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    os.chmod(temporary, 0o600)
-    temporary.replace(target)
-    os.chmod(target, 0o600)
+    target = _validated_credentials_path(target)
+    temporary: Path | None = None
+    descriptor = -1
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target = _validated_credentials_path(target)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = -1
+            stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        _validated_credentials_path(target)
+        os.replace(temporary, target)
+        temporary = None
+    except CredentialStoreError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise CredentialStoreError(
+            "write_failed",
+            target,
+            "credential store could not be written",
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+# 只读返回脱敏凭据存储健康状态且绝不移动、迁移或重写原文档
+def inspect_credential_store(path: Path | None = None) -> CredentialStoreStatus:
+    target = path or credentials_path()
+    try:
+        validated = _validated_credentials_path(target)
+        if not validated.exists():
+            return "missing"
+        _load_credentials(validated)
+    except CredentialStoreError:
+        return "invalid"
+    return "ready"
 
 
 # 按 provider 保存 API key，并使用仅当前用户可读写的文件权限
@@ -101,7 +262,7 @@ def save_api_key(provider: str, api_key: str, path: Path | None = None) -> Path:
     keys = dict(data.get("api_keys", {}))
     keys[normalize_provider(provider)] = api_key
     payload = {
-        "version": 2,
+        "version": _CREDENTIALS_VERSION,
         "api_keys": keys,
         "route_credentials": dict(data.get("route_credentials", {})),
     }
@@ -116,9 +277,11 @@ class CredentialStore:
         path: Path | None = None,
         *,
         backend: CredentialBackend | None = None,
+        env_overlay: Mapping[str, str] | None = None,
     ) -> None:
         self.path = path or credentials_path()
         self._backend = backend or _SystemCredentialBackend()
+        self._env_overlay = dict(env_overlay or {})
 
     # 解析 env/keyring/file 引用，只返回密钥来源而不在错误中包含正文
     def resolve(self, credential_ref: str) -> CredentialResolution:
@@ -126,7 +289,7 @@ class CredentialStore:
         if not separator or not account:
             return CredentialResolution(source="missing")
         if kind == "env":
-            value = os.environ.get(account)
+            value = resolve_env_credential(account, self._env_overlay)
             return CredentialResolution(
                 value=value or None,
                 source="env" if value else "missing",
@@ -147,9 +310,7 @@ class CredentialStore:
             if not isinstance(value, str) or not value:
                 legacy = data.get("api_keys", {})
                 value = (
-                    legacy.get(normalize_provider(account))
-                    if isinstance(legacy, dict)
-                    else None
+                    legacy.get(normalize_provider(account)) if isinstance(legacy, dict) else None
                 )
             return CredentialResolution(
                 value=value if isinstance(value, str) and value else None,
@@ -177,13 +338,13 @@ class CredentialStore:
                     "OS keyring unavailable for route %s (%s); "
                     "falling back to the credentials file",
                     route_id,
-                    exc,
+                    type(exc).__name__,
                 )
         data = _load_credentials(self.path)
         route_values = dict(data.get("route_credentials", {}))
         route_values[route_id] = secret
         payload = {
-            "version": 2,
+            "version": _CREDENTIALS_VERSION,
             "api_keys": dict(data.get("api_keys", {})),
             "route_credentials": route_values,
         }
@@ -207,7 +368,7 @@ class CredentialStore:
                 return
             route_values.pop(account)
             payload = {
-                "version": 2,
+                "version": _CREDENTIALS_VERSION,
                 "api_keys": dict(data.get("api_keys", {})),
                 "route_credentials": route_values,
             }
@@ -217,7 +378,10 @@ class CredentialStore:
 # 按环境变量优先、凭据文件兜底的顺序解析当前 provider 的 API key
 def resolve_api_key(config: LlmConfig, path: Path | None = None) -> str | None:
     if config.api_key_env:
-        env_value = os.environ.get(config.api_key_env)
+        env_value = resolve_env_credential(
+            config.api_key_env,
+            config.credential_overlay,
+        )
         if env_value:
             return env_value
     keys = _load_credentials(path).get("api_keys", {})
@@ -230,6 +394,12 @@ def llm_is_configured(config: LlmConfig, path: Path | None = None) -> bool:
     provider = normalize_provider(config.provider)
     if provider not in SUPPORTED_LEGACY_PROVIDERS:
         return False
-    if not config.default_model.strip() or resolve_api_key(config, path) is None:
+    if not config.default_model.strip():
+        return False
+    try:
+        credential_required = get_provider_preset(provider).credential_required
+    except ValueError:
+        credential_required = True
+    if credential_required and resolve_api_key(config, path) is None:
         return False
     return provider == "anthropic" or bool(config.base_url.strip())

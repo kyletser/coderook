@@ -12,6 +12,7 @@ from code_rook.core.runtime.migrations import (
     RuntimeMigrationError,
     _apply_v1,
     _apply_v2,
+    _apply_v3,
 )
 from code_rook.core.runtime.models import (
     ThreadRecord,
@@ -67,8 +68,8 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     first = RuntimeStore(path)
     second = RuntimeStore(path)
 
-    assert first.schema_version() == 3
-    assert second.schema_version() == 3
+    assert first.schema_version() == CURRENT_SCHEMA_VERSION
+    assert second.schema_version() == CURRENT_SCHEMA_VERSION
 
 
 # 功能：验证较新 runtime schema 不会被旧版 daemon 静默降级或覆盖
@@ -90,7 +91,7 @@ def test_store_operations_release_database_handles(tmp_path: Path) -> None:
     path = tmp_path / "runtime.db"
     moved = tmp_path / "runtime-moved.db"
     store = RuntimeStore(path)
-    assert store.schema_version() == 3
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
 
     path.rename(moved)
 
@@ -137,11 +138,83 @@ def test_v2_migration_adds_frozen_authority_defaults(tmp_path: Path) -> None:
     store = RuntimeStore(path)
     turn = store.get_turn("turn-v2")
 
-    assert store.schema_version() == 3
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
     assert turn.authority_profile == AuthorityProfile.ASK
     assert turn.workspace_trust == WorkspaceTrust.UNTRUSTED
     assert turn.sandbox.available is False
     assert turn.allowed_actions == frozenset(ToolAction)
+
+
+# 功能：验证 v3 迁移在首列已提交但 user_version 仍为二时可以安全重试
+# 设计：人工构造崩溃后的部分 ALTER 状态，再由 RuntimeStore 补齐其余列并升级版本
+def test_v3_migration_recovers_from_partially_added_columns(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-v3-partial.db"
+    connection = sqlite3.connect(path)
+    _apply_v1(connection)
+    _apply_v2(connection)
+    connection.execute(
+        "ALTER TABLE runtime_turns "
+        "ADD COLUMN workspace_trust TEXT NOT NULL DEFAULT 'untrusted'"
+    )
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+
+    store = RuntimeStore(path)
+    inspection = sqlite3.connect(path)
+    try:
+        columns = {
+            str(row[1])
+            for row in inspection.execute("PRAGMA table_info(runtime_turns)").fetchall()
+        }
+    finally:
+        inspection.close()
+
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
+    assert {"workspace_trust", "sandbox_json", "allowed_actions_json"} <= columns
+
+
+# 功能：验证 v3 facade 升级后获得当前逐行 schema 且旧记录仍可读取
+# 设计：直接构造无 schema_version 列的 v3 数据库，再检查 v4 ALTER 默认值和模型往返
+def test_v4_migration_adds_session_facade_record_schema(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-v3-facade.db"
+    now = _now().isoformat()
+    connection = sqlite3.connect(path)
+    _apply_v1(connection)
+    _apply_v2(connection)
+    _apply_v3(connection)
+    connection.execute("PRAGMA user_version = 3")
+    connection.execute(
+        """
+        INSERT INTO runtime_threads (
+            id, title, workspace, status, default_route_id,
+            created_at, updated_at, schema_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("thread-v3", "legacy facade", str(tmp_path), "idle", None, now, now, 1),
+    )
+    connection.execute(
+        "INSERT INTO runtime_session_facades (thread_id, mode, parent_thread_id) "
+        "VALUES (?, ?, ?)",
+        ("thread-v3", "chat", None),
+    )
+    connection.commit()
+    connection.close()
+
+    store = RuntimeStore(path)
+    facade = store.get_session_facade("thread-v3")
+    inspection = sqlite3.connect(path)
+    columns = {
+        str(row[1])
+        for row in inspection.execute(
+            "PRAGMA table_info(runtime_session_facades)"
+        ).fetchall()
+    }
+    inspection.close()
+
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
+    assert facade.schema_version == 1
+    assert "schema_version" in columns
 
 
 # 功能：验证 thread 和 turn 可无损写入并读取
@@ -534,3 +607,29 @@ def test_recover_stale_turns_repairs_tool_pair_and_is_idempotent(
     assert store.get_thread("thread-1").status.value == "interrupted"
     assert [event.type for event in recovered] == ["turn.interrupted"]
     assert repeated == []
+
+
+# 功能：验证旧 boot 恢复会在连续事件序列下安全重建缺失 counter
+# 设计：删除已有活动 Turn 的 counter 后执行恢复，断言事件序号承接且 daemon 路径不再失败
+def test_recover_stale_turns_rebuilds_missing_safe_counter(tmp_path: Path) -> None:
+    store = _store_with_turn(tmp_path)
+    now = _now()
+    store.append_event(
+        thread_id="thread-1",
+        turn_id="turn-1",
+        event_type="turn.started",
+        payload={},
+        ts=now,
+    )
+    connection = sqlite3.connect(store.path)
+    connection.execute(
+        "DELETE FROM runtime_event_counters WHERE thread_id = ?",
+        ("thread-1",),
+    )
+    connection.commit()
+    connection.close()
+
+    recovered = store.recover_stale_turns("boot-new", now + timedelta(seconds=1))
+
+    assert [event.seq for event in recovered] == [2]
+    assert store.latest_event_seq("thread-1") == 2

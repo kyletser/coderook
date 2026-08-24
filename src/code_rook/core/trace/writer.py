@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from code_rook.core.trace.record import TraceRecord
 from code_rook.core.trace.redaction import minimize_trace_data, redact_trace_data
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TraceWriterStatus:
+    degraded: bool
+    running: bool
+    queue_size: int
+    queue_capacity: int
+    dropped_records: int
+    last_error: str
 
 
 class TraceWriter:
@@ -17,17 +31,23 @@ class TraceWriter:
         max_bytes: int = 10 * 1024 * 1024,
         backup_count: int = 5,
         include_payload: bool = False,
+        queue_size: int = 1024,
     ) -> None:
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
         if backup_count < 0:
             raise ValueError("backup_count must be non-negative")
+        if queue_size < 1:
+            raise ValueError("trace queue_size must be positive")
         self._path = path
         self._max_bytes = max_bytes
         self._backup_count = backup_count
         self._include_payload = include_payload
-        self._queue: asyncio.Queue[TraceRecord] = asyncio.Queue()
+        self._queue: asyncio.Queue[TraceRecord] = asyncio.Queue(maxsize=queue_size)
         self._task: asyncio.Task[None] | None = None
+        self._degraded = False
+        self._dropped_records = 0
+        self._last_error = ""
 
     # 创建目录、启动后台 drain task
     async def start(self) -> None:
@@ -40,22 +60,45 @@ class TraceWriter:
     async def stop(self) -> None:
         await self._queue.join()
         if self._task is not None:
-            self._task.cancel()
+            task = self._task
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+            finally:
+                self._task = None
 
-    # 非阻塞地将 record 放入写入队列
-    def emit(self, record: TraceRecord) -> None:
+    # 返回当前有界队列、丢弃计数和最后写入错误的可观测快照
+    def status(self) -> TraceWriterStatus:
+        self._observe_task_failure()
+        return TraceWriterStatus(
+            degraded=self._degraded,
+            running=self._task is not None and not self._task.done(),
+            queue_size=self._queue.qsize(),
+            queue_capacity=self._queue.maxsize,
+            dropped_records=self._dropped_records,
+            last_error=self._last_error,
+        )
+
+    # 非阻塞地放入有界队列；满载或 writer 失败时丢弃并返回 False
+    def emit(self, record: TraceRecord) -> bool:
+        self._observe_task_failure()
+        if self._task is not None and self._task.done():
+            self._drop("trace writer task is not running")
+            return False
         data = record.data
         if not self._include_payload and record.layer != "llm":
             data = minimize_trace_data(record.layer, record.kind, data)
         safe_record = record.model_copy(
             update={"data": redact_trace_data(data)}
         )
-        self._queue.put_nowait(safe_record)
+        try:
+            self._queue.put_nowait(safe_record)
+        except asyncio.QueueFull:
+            self._drop("trace queue is full; record dropped")
+            return False
+        return True
 
     # 持续从队列读取 record 并追加写入文件
     async def _drain(self) -> None:
@@ -83,7 +126,8 @@ class TraceWriter:
                     self._queue.task_done()
         except asyncio.CancelledError:
             raise
-        except BaseException:
+        except BaseException as exc:
+            self._mark_degraded(f"{type(exc).__name__}: {exc}")
             while True:
                 try:
                     self._queue.get_nowait()
@@ -95,6 +139,27 @@ class TraceWriter:
         finally:
             if file is not None:
                 file.close()
+
+    # 记录一次丢弃并只在首次进入降级状态时输出错误日志
+    def _drop(self, reason: str) -> None:
+        self._dropped_records += 1
+        self._mark_degraded(reason)
+
+    # 将 writer 标记为降级并保存最后错误，供诊断面查询
+    def _mark_degraded(self, reason: str) -> None:
+        first_failure = not self._degraded
+        self._degraded = True
+        self._last_error = reason
+        if first_failure:
+            logger.error("TraceWriter degraded: %s", reason)
+
+    # 观察已终止后台 task 的异常并同步到降级状态
+    def _observe_task_failure(self) -> None:
+        if self._task is None or not self._task.done() or self._task.cancelled():
+            return
+        error = self._task.exception()
+        if error is not None:
+            self._mark_degraded(f"{type(error).__name__}: {error}")
 
     def _rotate(self) -> None:
         if not self._path.exists():

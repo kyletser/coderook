@@ -82,6 +82,34 @@ class TaskService:
     def _dependencies_completed(self, task: TaskRecord) -> bool:
         return all(self._store.get(task_id).status == "completed" for task_id in task.dependencies)
 
+    # 校验候选依赖子图保持无环，拒绝直接或间接回指当前任务
+    def _ensure_acyclic(self, task_id: int, dependencies: list[int]) -> None:
+        visiting: set[int] = set()
+        visited: set[int] = set()
+
+        # 深度优先检查依赖边，并在回到当前递归栈时报告完整环路
+        def visit(current_id: int, path: list[int]) -> None:
+            if current_id in visiting:
+                cycle_start = path.index(current_id)
+                cycle = [*path[cycle_start:], current_id]
+                raise ValueError(
+                    "task dependency cycle: " + " -> ".join(str(item) for item in cycle)
+                )
+            if current_id in visited:
+                return
+            visiting.add(current_id)
+            current_dependencies = (
+                dependencies
+                if current_id == task_id
+                else self._store.get(current_id).dependencies
+            )
+            for dependency_id in current_dependencies:
+                visit(dependency_id, [*path, current_id])
+            visiting.remove(current_id)
+            visited.add(current_id)
+
+        visit(task_id, [])
+
     # 创建带依赖、验收条件和 gate 的持久任务
     def create(
         self,
@@ -99,38 +127,43 @@ class TaskService:
         dependency_ids = list(dict.fromkeys(dependencies or []))
         for dependency_id in dependency_ids:
             self._store.get(dependency_id)
-        now = _now()
-        task = TaskRecord(
-            id=self._store.next_id(),
-            subject=clean_subject,
-            description=description,
-            status="ready" if not dependency_ids else "blocked",
-            dependencies=dependency_ids,
-            acceptance_criteria=[
-                item.strip() for item in acceptance_criteria or [] if item.strip()
-            ],
-            gates=[
-                TaskGate(name=name.strip(), updated_at=now)
-                for name in gates or []
-                if name.strip()
-            ],
-            created_by=actor.strip() or "agent",
-            updated_by=actor.strip() or "agent",
-            created_at=now,
-            updated_at=now,
-        )
-        if dependency_ids and self._dependencies_completed(task):
-            task.status = "ready"
-        self._record(
-            task,
-            "task.created",
-            actor,
-            {
-                "status": task.status,
-                "dependencies": cast(JsonValue, dependency_ids),
-            },
-        )
-        self._store.save(task)
+        # 在 store 的同一临界区内分配 ID、构造 timeline 并首次落盘
+        def build(task_id: int) -> TaskRecord:
+            now = _now()
+            task = TaskRecord(
+                id=task_id,
+                subject=clean_subject,
+                description=description,
+                status="ready" if not dependency_ids else "blocked",
+                dependencies=dependency_ids,
+                acceptance_criteria=[
+                    item.strip() for item in acceptance_criteria or [] if item.strip()
+                ],
+                gates=[
+                    TaskGate(name=name.strip(), updated_at=now)
+                    for name in gates or []
+                    if name.strip()
+                ],
+                created_by=actor.strip() or "agent",
+                updated_by=actor.strip() or "agent",
+                created_at=now,
+                updated_at=now,
+            )
+            self._ensure_acyclic(task.id, task.dependencies)
+            if dependency_ids and self._dependencies_completed(task):
+                task.status = "ready"
+            self._record(
+                task,
+                "task.created",
+                actor,
+                {
+                    "status": task.status,
+                    "dependencies": cast(JsonValue, dependency_ids),
+                },
+            )
+            return task
+
+        task = self._store.create(build)
         self._emit(task.timeline[-1])
         return task
 
@@ -209,11 +242,13 @@ class TaskService:
 
         # 在单次原子变更中更新依赖、状态和当前 attempt 终态
         def mutate(task: TaskRecord) -> TaskRecord:
-            task.dependencies = [
+            candidate_dependencies = [
                 dependency_id
                 for dependency_id in dict.fromkeys([*task.dependencies, *additions])
                 if dependency_id not in removals
             ]
+            self._ensure_acyclic(task_id, candidate_dependencies)
+            task.dependencies = candidate_dependencies
             requested = _normalize_status(status) if status is not None else task.status
             if requested == "completed" and any(gate.status != "passed" for gate in task.gates):
                 raise ValueError(f"task {task_id} has gates that have not passed")

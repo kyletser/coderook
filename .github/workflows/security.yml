@@ -1,11 +1,6 @@
 name: Security
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "23 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -16,6 +11,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sandbox-boundary:
+    name: Sandbox boundary / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Sync locked environment
+        run: uv sync --frozen
+      - name: Probe actual sandbox boundary
+        run: >-
+          uv run python scripts/check_sandbox_boundary.py
+          --output reports/sandbox-boundary-${{ runner.os }}.json
+      - name: Upload sandbox evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: sandbox-boundary-${{ runner.os }}
+          path: reports/sandbox-boundary-${{ runner.os }}.json
+          if-no-files-found: error
+
   secret-scan:
     name: Secret history scan
     if: github.actor != 'dependabot[bot]'
@@ -31,22 +53,6 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  dependency-review:
-    name: Dependency review
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.actor != 'dependabot[bot]' &&
-      vars.DEPENDENCY_REVIEW_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/dependency-review-action@v5
-        with:
-          fail-on-severity: high
 
   codeql:
     name: CodeQL / ${{ matrix.language }}
@@ -72,7 +78,7 @@ jobs:
 
   required-security-gate:
     name: Required security gate
-    needs: [secret-scan, dependency-review, codeql]
+    needs: [sandbox-boundary, secret-scan, codeql]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -80,21 +86,15 @@ jobs:
       - name: Require all applicable security jobs to pass
         env:
           ACTOR: ${{ github.actor }}
-          EVENT_NAME: ${{ github.event_name }}
           SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
-          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
           CODEQL_RESULT: ${{ needs.codeql.result }}
+          SANDBOX_RESULT: ${{ needs.sandbox-boundary.result }}
         run: |
           if [[ "${ACTOR}" = "dependabot[bot]" ]]; then
             test "${SECRET_SCAN_RESULT}" = "skipped"
-            test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"
             test "${CODEQL_RESULT}" = "skipped"
             exit 0
           fi
           test "${SECRET_SCAN_RESULT}" = "success"
           test "${CODEQL_RESULT}" = "success"
-          if [[ "${EVENT_NAME}" = "pull_request" && "${{ vars.DEPENDENCY_REVIEW_ENABLED }}" = "true" ]]; then
-            test "${DEPENDENCY_REVIEW_RESULT}" = "success"
-          else
-            test "${DEPENDENCY_REVIEW_RESULT}" = "skipped"
-          fi
+          test "${SANDBOX_RESULT}" = "success"

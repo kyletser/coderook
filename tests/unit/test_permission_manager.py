@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 
-from code_rook.core.authority import AuthorityProfile, SandboxCapability
+from code_rook.core.audit import AuditHealth
+from code_rook.core.authority import (
+    AuthorityProfile,
+    AuthoritySnapshot,
+    SandboxCapability,
+    ToolAction,
+)
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
 from code_rook.core.permissions.storage import (
@@ -14,7 +20,14 @@ from code_rook.core.permissions.storage import (
     load_policy_file,
     save_policy_file,
 )
-from code_rook.core.tools.spec import ApprovalRequirement
+from code_rook.core.tools.spec import (
+    ApprovalRequirement,
+    ResolvedToolCall,
+    ToolActionSpec,
+    ToolCaller,
+    ToolCapability,
+    ToolSpec,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +43,27 @@ async def _collect_emitted() -> tuple[list[dict[str, Any]], Any]:
         emitted.append(event)
 
     return emitted, emitter
+
+
+# 构建包含旧平铺策略别名的 File action manifest 调用
+def _resolved_file_call(action: str, alias: str) -> ResolvedToolCall:
+    action_spec = ToolActionSpec(
+        name=action,
+        capabilities=frozenset({ToolCapability.WRITE}),
+        permission_policy_aliases=(alias,),
+    )
+    spec = ToolSpec(
+        name="File",
+        description="file action",
+        input_schema={"type": "object", "properties": {"action": {"type": "string"}}},
+        actions=(action_spec,),
+        capabilities=action_spec.capabilities,
+    )
+    return ResolvedToolCall(
+        spec=spec,
+        action=action_spec,
+        caller=ToolCaller.MODEL,
+    )
 
 
 # ── evaluate() delegation ─────────────────────────────────────────────────────
@@ -450,15 +484,24 @@ async def test_always_allow_applies_to_outside_cwd() -> None:
     assert len(emitted) == 1
 
 
-# 功能：验证 Full Access 自动批准工作区外命令且不触发询问
-# 设计：给会话设置 full_access authority 后执行绝对路径命令，断言硬策略之后直接授权
+# 功能：验证有真实沙箱的平台上 Full Access 可批准工作区外命令且不触发询问
+# 设计：显式注入 bwrap 能力排除 Windows 降级分支，再断言硬策略之后直接授权
 async def test_full_access_allows_outside_cwd_without_prompt() -> None:
     mgr = _make_manager()
     emitted, emitter = await _collect_emitted()
     current = mgr.get_authority_snapshot("s-full")
     mgr.set_authority_snapshot(
         "s-full",
-        current.model_copy(update={"profile": AuthorityProfile.FULL_ACCESS}),
+        current.model_copy(
+            update={
+                "profile": AuthorityProfile.FULL_ACCESS,
+                "sandbox": SandboxCapability(
+                    available=True,
+                    kind="linux_bwrap",
+                    reason="test capability",
+                ),
+            }
+        ),
     )
 
     allowed, decision = await mgr.check_and_wait(
@@ -626,7 +669,7 @@ async def test_legacy_always_rule_maps_to_exact_family_action(
         params={"action": "write", "path": "x"},
         session_id="scope",
         event_emitter=emitter,
-        action="mutate",
+        resolved_call=_resolved_file_call("write", "write_file"),
     )
 
     async def _deny_edit() -> None:
@@ -640,7 +683,7 @@ async def test_legacy_always_rule_maps_to_exact_family_action(
         params={"action": "edit", "path": "x"},
         session_id="scope",
         event_emitter=emitter,
-        action="mutate",
+        resolved_call=_resolved_file_call("edit", "edit_file"),
     )
     await response
 
@@ -796,6 +839,93 @@ async def test_auto_review_with_sandbox_auto_allows_bash() -> None:
     assert emitted == []
 
 
+# 功能：验证 Windows 无 OS 沙箱时 Full Access 和历史 always 都不能静默放行 Shell
+# 设计：注入 windows_none 与双重自动放行条件，异步单次批准并检查醒目的安全提示
+async def test_windows_unisolated_shell_always_requires_explicit_approval() -> None:
+    mgr = _make_manager()
+    mgr._persistent_always["bash"] = "allow"
+    mgr.set_authority_snapshot(
+        "s-windows",
+        AuthoritySnapshot(
+            profile=AuthorityProfile.FULL_ACCESS,
+            sandbox=SandboxCapability(
+                available=False,
+                kind="windows_none",
+                reason="Windows has no enforced shell sandbox",
+            ),
+        ),
+    )
+    emitted, emitter = await _collect_emitted()
+
+    async def _approve() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("t-windows", "allow_once")
+
+    response = asyncio.create_task(_approve())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="t-windows",
+        tool_name="bash",
+        params={"command": "echo explicit"},
+        session_id="s-windows",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+    await response
+
+    assert allowed is True and decision == "allow_once"
+    assert emitted[0]["params"]["_safety_notice"].startswith("No OS sandbox")
+    assert "NO OS SANDBOX" in emitted[0]["param_preview"]
+
+
+# 功能：验证 active turn 权限快照不会被同会话或全局默认设置在执行中扩大
+# 设计：冻结 Ask 快照后把后续会话和默认值改成 Full Access，断言有效快照仍为 Ask
+def test_active_turn_authority_is_immutable_until_turn_ends() -> None:
+    mgr = _make_manager()
+    frozen = AuthoritySnapshot(profile=AuthorityProfile.ASK)
+    mgr.set_authority_snapshot("s-frozen", frozen)
+    mgr.begin_turn("s-frozen", frozen)
+
+    mgr.set_authority_snapshot(
+        "s-frozen",
+        frozen.model_copy(update={"profile": AuthorityProfile.FULL_ACCESS}),
+    )
+    mgr.set_default_profile(AuthorityProfile.FULL_ACCESS)
+
+    assert mgr.get_effective_authority_snapshot("s-frozen").profile == AuthorityProfile.ASK
+    mgr.end_turn("s-frozen")
+    assert (
+        mgr.get_effective_authority_snapshot("s-frozen").profile
+        == AuthorityProfile.FULL_ACCESS
+    )
+
+
+# 功能：子 Agent 的显式 authority override 必须覆盖父 session 的 Full Access
+# 设计：父会话允许全部动作但调用时传 READ-only ceiling，断言写入在询问前直接拒绝
+async def test_authority_override_prevents_child_privilege_inheritance() -> None:
+    mgr = _make_manager()
+    mgr.set_authority_snapshot(
+        "parent",
+        AuthoritySnapshot(profile=AuthorityProfile.FULL_ACCESS),
+    )
+    emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="child-write",
+        tool_name="write_file",
+        params={"path": "x", "content": "unsafe"},
+        session_id="parent",
+        event_emitter=emitter,
+        action=ToolAction.MUTATE,
+        authority_override=AuthoritySnapshot(
+            profile=AuthorityProfile.ASK,
+            allowed_actions=frozenset({ToolAction.READ}),
+        ),
+    )
+
+    assert (allowed, decision) == (False, "authority_denied")
+    assert emitted == []
+
+
 # 功能：验证不受支持的隔离后端即使标记 available 也不能让 AUTO_REVIEW shell 自动放行
 # 设计：使用默认 ASK bash 与不受支持 capability，确认请求仍进入审批而不是返回 sandbox allow
 async def test_auto_review_unsupported_backend_requires_approval() -> None:
@@ -895,3 +1025,49 @@ def test_shell_sandbox_plan_returns_wrapper_when_available() -> None:
     assert plan is not None
     assert plan.degraded is False
     assert plan.wrapper and plan.wrapper[0] == "bwrap"
+
+
+# 功能：验证审计账本降级后修改类工具即使具备 Full Access 也会失败关闭
+# 设计：先触发共享健康状态故障，再用显式 MUTATE 动作排除普通策略和审批缓存的影响
+async def test_audit_degraded_denies_mutating_action() -> None:
+    health = AuditHealth()
+    await health.degrade("runtime", OSError("disk full"))
+    manager = PermissionManager(audit_health=health)
+    manager.set_authority_snapshot(
+        "s1",
+        AuthoritySnapshot(profile=AuthorityProfile.FULL_ACCESS),
+    )
+    _emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await manager.check_and_wait(
+        "tool-1",
+        "write_file",
+        {"path": "safe.txt", "content": "x"},
+        "s1",
+        emitter,
+        action=ToolAction.MUTATE,
+    )
+
+    assert allowed is False
+    assert decision == "audit_degraded"
+
+
+# 功能：验证审计账本降级时诊断所需的只读工具仍保持可用
+# 设计：使用 READ 动作与允许策略，证明失败关闭只冻结副作用而不会锁死修复入口
+async def test_audit_degraded_keeps_read_action_available() -> None:
+    health = AuditHealth()
+    await health.degrade("runtime", OSError("disk full"))
+    manager = PermissionManager(audit_health=health)
+    _emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await manager.check_and_wait(
+        "tool-1",
+        "read_file",
+        {"path": "safe.txt"},
+        "s1",
+        emitter,
+        action=ToolAction.READ,
+    )
+
+    assert allowed is True
+    assert decision == "auto_allow"

@@ -47,6 +47,21 @@ def test_parse_pyright_diagnostics_filters_and_bounds(tmp_path: Path) -> None:
     assert diagnostics[0].message == "broken assignment"
 
 
+# 功能：验证 Python Diagnostics 对 Unicode 路径保持工作区相对原文
+# 设计：构造中文目录和文件名的 Pyright JSON，直接检查解析结果没有转义或替换字符
+def test_parse_pyright_diagnostics_preserves_unicode_path(tmp_path: Path) -> None:
+    boundary = WorkspaceBoundary(tmp_path)
+    target = tmp_path / "模块" / "样例.py"
+
+    diagnostics, truncated = parse_pyright_diagnostics(
+        {"generalDiagnostics": [_diagnostic(target)]},
+        boundary,
+    )
+
+    assert truncated is False
+    assert diagnostics[0].path == "模块/样例.py"
+
+
 # 功能：验证单文件与全局数量边界会裁剪诊断并标记 truncated
 # 设计：同文件写入三条 error 且限制为一条，直接命中最小裁剪分支
 def test_parse_pyright_diagnostics_marks_limit_truncation(tmp_path: Path) -> None:
@@ -157,3 +172,27 @@ async def test_client_accepts_diagnostic_json_with_nonzero_exit(
 
     assert report.status == "ok"
     assert len(report.diagnostics) == 1
+
+
+# 功能：验证 Python Diagnostics 异常退出且没有诊断项时不会返回假绿色
+# 设计：返回合法但空的 Pyright JSON 与退出码二，区分协议可解析和基础设施真实成功
+async def test_python_diagnostics_nonzero_empty_payload_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 模拟 Pyright 基础设施异常但仍打印合法 JSON 根对象
+    async def _output(*args: object, **kwargs: object) -> _CommandOutput:
+        return _CommandOutput(2, '{"generalDiagnostics": []}', False)
+
+    monkeypatch.setattr(client_module, "_run_bounded_command", _output)
+    client = PythonDiagnosticsClient(
+        WorkspaceBoundary(tmp_path),
+        executable="pyright",
+    )
+
+    report = await client.diagnose(["sample.py"])
+
+    assert report.status == "failed"
+    assert report.infrastructure_ok is False
+    assert "non-zero" in report.error
+    assert "Infrastructure status `failed`" in report.render_context()

@@ -54,8 +54,12 @@ def _metadata_count(metadata: dict[str, object], key: str) -> int:
     return 0
 
 
-# 校验手动管理的 Core 确实服务当前 workspace，不执行启动、停止或切换
-def validate_core_workspace(config: CodeRookConfig) -> None:
+# 校验手动 Core 的 workspace；显式 env overlay 无可验身份时失败关闭
+def validate_core_workspace(
+    config: CodeRookConfig,
+    *,
+    env_file: Path | None = None,
+) -> None:
     requested_workspace = Path.cwd().resolve()
     metadata = _core_metadata(config)
     if metadata is None:
@@ -72,12 +76,21 @@ def validate_core_workspace(config: CodeRookConfig) -> None:
             "Core is serving another workspace: "
             f"{served_workspace}; restart it from {requested_workspace}"
         )
+    if env_file is not None:
+        raise CoreLaunchError(
+            "Cannot verify that the manually managed Core was started with the "
+            "same explicit env file; remove --no-auto-core so CodeRook can restart "
+            "its managed Core, or omit --env-file"
+        )
 
 
-# 启动后台 Core 并记录 PID，返回进程对象供就绪等待与失败检测
-def _spawn_core() -> subprocess.Popen[bytes]:
+# 启动后台 Core 并显式转发用户选择的环境文件，返回进程对象供就绪等待
+def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
+    command = [sys.executable, "-m", "code_rook.core"]
+    if env_file is not None:
+        command.extend(["--env-file", str(env_file.expanduser().resolve())])
     proc = subprocess.Popen(
-        [sys.executable, "-m", "code_rook.core"],
+        command,
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -87,41 +100,69 @@ def _spawn_core() -> subprocess.Popen[bytes]:
     return proc
 
 
-# 确保 Core 可用；已有实例直接复用，否则后台启动并等待认证就绪
-def ensure_core_running(config: CodeRookConfig, timeout_s: float = 10.0) -> bool:
+# 确保 Core 可用；显式 env 文件会强制受管实例重启以冻结同一 overlay
+def ensure_core_running(
+    config: CodeRookConfig,
+    timeout_s: float = 10.0,
+    *,
+    env_file: Path | None = None,
+) -> bool:
     requested_workspace = Path.cwd().resolve()
     metadata = _core_metadata(config)
+    restarted_existing = False
     if metadata is not None:
         served_workspace = str(metadata.get("workspace") or "")
-        if served_workspace and _same_workspace(served_workspace, requested_workspace):
+        same_workspace = bool(served_workspace) and _same_workspace(
+            served_workspace,
+            requested_workspace,
+        )
+        if same_workspace and env_file is None:
             return False
         active_runs = _metadata_count(metadata, "active_runs")
         if active_runs:
+            scope = "this workspace" if same_workspace else "another workspace"
             raise CoreLaunchError(
-                "Core is busy in another workspace: "
+                f"Core is busy in {scope}: "
                 f"{served_workspace or '<unknown>'} ({active_runs} active run(s)); "
-                "finish or cancel that work before switching repositories"
+                "finish or cancel that work before restarting Core"
             )
         if _running_pid() is None:
+            reason = (
+                "an explicit env file requires a verified restart"
+                if same_workspace and env_file is not None
+                else "the requested workspace differs"
+            )
             raise CoreLaunchError(
-                "Core is serving another workspace but was not started by this CLI: "
-                f"{served_workspace or '<unknown>'}; stop it manually, then retry from "
-                f"{requested_workspace}"
+                "Core was not started by this CLI and cannot be safely reused because "
+                f"{reason}: {served_workspace or '<unknown>'}; stop it manually, then retry"
             )
         if not stop_core(config):
             raise CoreLaunchError(
                 f"Could not stop the Core serving {served_workspace or '<unknown>'}"
             )
+        restarted_existing = True
 
     port_open = asyncio.run(_port_open(config))
-    proc = None if port_open else _spawn_core()
+    if restarted_existing and port_open:
+        raise CoreLaunchError(
+            "Core still owns the configured port after the required restart; "
+            "refusing to reuse an instance whose explicit env overlay cannot be verified"
+        )
+    if env_file is not None and port_open:
+        raise CoreLaunchError(
+            "An unverified Core already owns the configured port; refusing to reuse it "
+            "with --env-file because its credential overlay cannot be authenticated"
+        )
+    proc = None
+    if not port_open:
+        proc = _spawn_core() if env_file is None else _spawn_core(env_file)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
             _PID_FILE.unlink(missing_ok=True)
             raise CoreLaunchError(
                 f"Core exited during startup with code {proc.returncode}; "
-                "check .env or run `uv run coderook-core` for details"
+                "run `uv run coderook-core` in the workspace for details"
             )
         ready = _core_metadata(config)
         if ready is not None:
@@ -274,9 +315,9 @@ def cmd_core_status(config: CodeRookConfig) -> None:
 
 
 # 在后台启动 daemon，若已在运行则提示并退出
-def cmd_core_start(config: CodeRookConfig) -> None:
+def cmd_core_start(config: CodeRookConfig, *, env_file: Path | None = None) -> None:
     try:
-        started = ensure_core_running(config)
+        started = ensure_core_running(config, env_file=env_file)
     except CoreLaunchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return
@@ -299,10 +340,10 @@ def cmd_core_stop(config: CodeRookConfig) -> None:
 
 
 # 重启后台 Core，使磁盘上的最新配置立即生效
-def cmd_core_restart(config: CodeRookConfig) -> None:
+def cmd_core_restart(config: CodeRookConfig, *, env_file: Path | None = None) -> None:
     stopped = stop_core(config)
     try:
-        started = ensure_core_running(config)
+        started = ensure_core_running(config, env_file=env_file)
     except CoreLaunchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return

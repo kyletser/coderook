@@ -6,17 +6,22 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from code_rook.core.artifacts import ArtifactError, ArtifactSpool, ArtifactStore
 from code_rook.core.bus.events import BackgroundJobFinishedEvent, BackgroundJobStartedEvent
 from code_rook.core.events.bus import EventBus
 from code_rook.core.processes import (
     ProcessSupervisor,
     bounded_shell_output,
+    wait_for_process_leader,
 )
 from code_rook.core.sandbox.planner import (
     SandboxPlan,
     SandboxSpawnRequest,
     spawn_sandboxed_shell,
 )
+
+_DEFAULT_OUTPUT_LIMIT = 64 * 1024
+_READ_CHUNK_SIZE = 8 * 1024
 
 
 # 返回当前 UTC ISO 时间字符串
@@ -38,6 +43,40 @@ class BackgroundJob:
     sandbox_backend: str = "degraded"
     cwd: str = ""
     process_usage: dict[str, object] | None = None
+    output_bytes: int = 0
+    output_truncated: bool = False
+    output_artifact: str = ""
+    output_artifact_size: int = 0
+    output_artifact_error: str = ""
+
+
+class _OutputRing:
+    # 初始化仅保留最新字节的固定容量输出环
+    def __init__(self, max_bytes: int) -> None:
+        self._max_bytes = max_bytes
+        self._buffer = bytearray()
+        self.total_bytes = 0
+        self.truncated = False
+
+    # 追加一个输出块并从头部淘汰超出容量的旧字节
+    def append(self, chunk: bytes) -> None:
+        self.total_bytes += len(chunk)
+        if len(chunk) >= self._max_bytes:
+            self._buffer = bytearray(chunk[-self._max_bytes :])
+            self.truncated = self.total_bytes > self._max_bytes
+            return
+        overflow = len(self._buffer) + len(chunk) - self._max_bytes
+        if overflow > 0:
+            del self._buffer[:overflow]
+            self.truncated = True
+        self._buffer.extend(chunk)
+
+    # 将当前尾部缓冲解码为可展示文本并明确标注早期输出已被截断
+    def render(self) -> str:
+        output, _truncated = bounded_shell_output(bytes(self._buffer))
+        if self.truncated:
+            return f"[earlier output truncated]\n{output}"
+        return output
 
 
 class BackgroundJobRegistry:
@@ -46,13 +85,22 @@ class BackgroundJobRegistry:
         self,
         bus: EventBus,
         process_supervisor: ProcessSupervisor | None = None,
+        *,
+        max_output_bytes: int = _DEFAULT_OUTPUT_LIMIT,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
+        if not 1 <= max_output_bytes <= _DEFAULT_OUTPUT_LIMIT:
+            raise ValueError(
+                f"max_output_bytes must be between 1 and {_DEFAULT_OUTPUT_LIMIT}"
+            )
         self._bus = bus
         self._jobs: dict[str, BackgroundJob] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._ready: dict[str, asyncio.Event] = {}
         self._process_supervisor = process_supervisor or ProcessSupervisor()
+        self._max_output_bytes = max_output_bytes
+        self._artifact_store = artifact_store
 
     # 启动后台 shell 任务并立即返回可查询的任务记录
     def start(
@@ -63,6 +111,7 @@ class BackgroundJobRegistry:
         run_id: str,
         sandbox_plan: SandboxPlan | None = None,
         cwd: Path | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> BackgroundJob:
         job = BackgroundJob(
             id=f"bg-{uuid.uuid4().hex[:12]}",
@@ -78,7 +127,13 @@ class BackgroundJobRegistry:
         self._jobs[job.id] = job
         self._ready[job.id] = asyncio.Event()
         self._tasks[job.id] = asyncio.create_task(
-            self._execute(job, timeout, sandbox_plan, cwd),
+            self._execute(
+                job,
+                timeout,
+                sandbox_plan,
+                cwd,
+                artifact_store or self._artifact_store,
+            ),
             name=f"background:{job.id}",
         )
         return job
@@ -90,8 +145,10 @@ class BackgroundJobRegistry:
         timeout: int,
         sandbox_plan: SandboxPlan | None,
         cwd: Path | None,
+        artifact_store: ArtifactStore | None,
     ) -> None:
-        output_task: asyncio.Task[bytes] | None = None
+        output_task: asyncio.Task[None] | None = None
+        output_ring = _OutputRing(self._max_output_bytes)
         await self._bus.publish(
             BackgroundJobStartedEvent(
                 job_id=job.id,
@@ -101,6 +158,7 @@ class BackgroundJobRegistry:
                 ts=_now(),
             )
         )
+        output_spool = ArtifactSpool(artifact_store)
         try:
             process = await spawn_sandboxed_shell(
                 sandbox_plan,
@@ -115,20 +173,32 @@ class BackgroundJobRegistry:
             self._processes[job.id] = process
             self._ready[job.id].set()
             assert process.stdout is not None
-            output_task = asyncio.create_task(process.stdout.read())
+            output_task = asyncio.create_task(
+                self._stream_output(job, process.stdout, output_ring, output_spool),
+                name=f"background-output:{job.id}",
+            )
             try:
-                await asyncio.wait_for(process.wait(), timeout=timeout)
+                await asyncio.wait_for(
+                    wait_for_process_leader(process),
+                    timeout=timeout,
+                )
             except TimeoutError:
                 job.process_usage = (
                     await self._process_supervisor.terminate(process)
                 ).to_dict()
-                stdout = await output_task
+                await self._join_output_reader(output_task)
+                captured = output_ring.render()
                 job.output = f"[timeout after {timeout}s]"
+                if captured:
+                    job.output += f"\n{captured}"
                 job.status = "failed"
                 job.is_error = True
             else:
-                stdout = await output_task
-                output, _truncated = bounded_shell_output(stdout)
+                job.process_usage = (
+                    await self._process_supervisor.terminate(process)
+                ).to_dict()
+                await self._join_output_reader(output_task)
+                output = output_ring.render()
                 return_code = process.returncode or 0
                 job.output = output or "[no output]"
                 job.is_error = return_code != 0
@@ -143,11 +213,12 @@ class BackgroundJobRegistry:
                 )
                 job.process_usage = usage.to_dict()
             if output_task is not None:
-                await asyncio.shield(
-                    asyncio.gather(output_task, return_exceptions=True)
-                )
+                await asyncio.shield(self._join_output_reader(output_task))
             job.status = "cancelled"
+            captured = output_ring.render()
             job.output = "Background job cancelled."
+            if captured:
+                job.output += f"\n{captured}"
             job.is_error = True
         except Exception as exc:
             job.status = "failed"
@@ -155,13 +226,31 @@ class BackgroundJobRegistry:
             job.is_error = True
         finally:
             active_process = self._processes.pop(job.id, None)
-            if active_process is not None:
-                if job.process_usage is None:
+            if active_process is not None and job.process_usage is None:
+                if active_process.returncode is None:
+                    job.process_usage = (
+                        await self._process_supervisor.terminate(active_process)
+                    ).to_dict()
+                else:
                     job.process_usage = self._process_supervisor.forget(
                         active_process
                     ).to_dict()
-                else:
-                    self._process_supervisor.forget(active_process)
+            if output_task is not None and not output_task.done():
+                await self._join_output_reader(output_task)
+            try:
+                artifact = await output_spool.finish(persist=output_ring.truncated)
+            except (ArtifactError, OSError) as exc:
+                job.output_artifact_error = getattr(exc, "code", "artifact_error")
+                if output_ring.truncated:
+                    job.output += "\n[full output artifact unavailable]"
+            else:
+                if artifact is not None:
+                    job.output_artifact = artifact.handle
+                    job.output_artifact_size = artifact.size
+                    job.output += (
+                        f"\n[full output: {artifact.handle}; size={artifact.size}; "
+                        "use artifact_read with offset/limit]"
+                    )
             self._ready[job.id].set()
             job.finished_at = _now()
             await self._bus.publish(
@@ -176,9 +265,44 @@ class BackgroundJobRegistry:
                 )
             )
 
+    # 持续分块读取 stdout/stderr 合流并实时刷新任务的有界输出快照
+    async def _stream_output(
+        self,
+        job: BackgroundJob,
+        stream: asyncio.StreamReader,
+        output_ring: _OutputRing,
+        output_spool: ArtifactSpool,
+    ) -> None:
+        while True:
+            chunk = await stream.read(_READ_CHUNK_SIZE)
+            if not chunk:
+                return
+            output_spool.write(chunk)
+            output_ring.append(chunk)
+            job.output_bytes = output_ring.total_bytes
+            job.output_truncated = output_ring.truncated
+            job.output = output_ring.render()
+
+    # 有界等待输出 reader 收到 EOF，避免遗留子进程持有管道导致任务永久卡住
+    async def _join_output_reader(self, task: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+        except TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     # 返回指定后台任务，不存在时返回 None
     def get(self, job_id: str) -> BackgroundJob | None:
         return self._jobs.get(job_id)
+
+    # 仅在任务属于指定非空 session 时返回记录，避免跨会话探测任务 ID
+    def get_for_session(self, job_id: str, session_id: str) -> BackgroundJob | None:
+        if not session_id:
+            return None
+        job = self._jobs.get(job_id)
+        if job is None or job.session_id != session_id:
+            return None
+        return job
 
     # 返回指定 session 或全部后台任务的快照
     def list(self, session_id: str = "") -> list[BackgroundJob]:
@@ -188,8 +312,18 @@ class BackgroundJobRegistry:
         return sorted(jobs, key=lambda job: job.created_at, reverse=True)
 
     # 等待指定任务到终态或达到本次轮询超时，并返回最新记录
-    async def wait(self, job_id: str, timeout: float) -> BackgroundJob | None:
-        job = self._jobs.get(job_id)
+    async def wait(
+        self,
+        job_id: str,
+        timeout: float,
+        *,
+        session_id: str | None = None,
+    ) -> BackgroundJob | None:
+        job = (
+            self.get_for_session(job_id, session_id)
+            if session_id is not None
+            else self._jobs.get(job_id)
+        )
         task = self._tasks.get(job_id)
         if job is None or task is None:
             return None
@@ -201,7 +335,16 @@ class BackgroundJobRegistry:
         return job
 
     # 向运行中的后台 shell 写入 stdin，并可按请求关闭输入流
-    async def interact(self, job_id: str, data: str, *, close_stdin: bool) -> bool:
+    async def interact(
+        self,
+        job_id: str,
+        data: str,
+        *,
+        close_stdin: bool,
+        session_id: str | None = None,
+    ) -> bool:
+        if session_id is not None and self.get_for_session(job_id, session_id) is None:
+            return False
         ready = self._ready.get(job_id)
         if ready is None:
             return False
@@ -223,7 +366,9 @@ class BackgroundJobRegistry:
         return True
 
     # 取消仍在运行的后台任务并等待子进程完成清理
-    async def cancel(self, job_id: str) -> bool:
+    async def cancel(self, job_id: str, *, session_id: str | None = None) -> bool:
+        if session_id is not None and self.get_for_session(job_id, session_id) is None:
+            return False
         task = self._tasks.get(job_id)
         if task is None or task.done():
             return False

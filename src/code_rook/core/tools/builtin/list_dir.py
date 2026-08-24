@@ -68,23 +68,45 @@ class ListDirTool(BaseTool):
 
         lines: list[str] = [str(root) + "/"]
         count = 0
+        visited = {root.resolve()}
 
+        # 递归目录树且拒绝跟随工作区外符号链接，并对工作区内链接环去重
         def _walk(directory: Path, depth: int, prefix: str) -> None:
             nonlocal count
             if depth > max_depth or count >= _MAX_ENTRIES:
                 return
-            entries = sorted(directory.iterdir(), key=lambda e: (e.is_file(), e.name))
+            entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
             for i, entry in enumerate(entries):
                 if count >= _MAX_ENTRIES:
                     lines.append(f"{prefix}... (truncated)")
                     return
                 connector = "└── " if i == len(entries) - 1 else "├── "
-                suffix = "/" if entry.is_dir() else ""
+                is_directory = False
+                recurse_target: Path | None = None
+                suffix = ""
+                if entry.is_symlink():
+                    try:
+                        target = entry.resolve(strict=False)
+                        target.relative_to(self._boundary.root)
+                    except (OSError, RuntimeError, ValueError):
+                        suffix = "@ [outside workspace]"
+                    else:
+                        is_directory = target.is_dir()
+                        recurse_target = target if is_directory else None
+                        suffix = "@/" if is_directory else "@"
+                else:
+                    is_directory = entry.is_dir()
+                    recurse_target = entry if is_directory else None
+                    suffix = "/" if is_directory else ""
                 lines.append(f"{prefix}{connector}{entry.name}{suffix}")
                 count += 1
-                if entry.is_dir() and depth < max_depth:
+                if recurse_target is not None and depth < max_depth:
+                    resolved_target = recurse_target.resolve()
+                    if resolved_target in visited:
+                        continue
+                    visited.add(resolved_target)
                     extension = "    " if i == len(entries) - 1 else "│   "
-                    _walk(entry, depth + 1, prefix + extension)
+                    _walk(resolved_target, depth + 1, prefix + extension)
 
         _walk(root, 1, "")
         return ToolResult(content="\n".join(lines))

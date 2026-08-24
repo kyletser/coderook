@@ -15,6 +15,8 @@ concurrency:
 jobs:
   distribution-gate:
     uses: ./.github/workflows/distribution.yml
+    with:
+      target: all
 
   validate:
     name: Version and complete quality contract
@@ -30,11 +32,11 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv python install 3.12
       - run: uv sync --frozen
-      - name: Match tag, packages, protocols and changelog
+      - name: Match tag, packages, protocols, changelog and channel readiness
         run: >-
           uv run python scripts/check_release_contract.py
           --tag "${GITHUB_REF_NAME}"
-          --require-go
+          --require-channel-readiness
       - name: Complete repository gate
         run: make verify
 
@@ -118,9 +120,25 @@ jobs:
           path: container-metadata/*
           if-no-files-found: error
 
+  pypi:
+    name: Publish PyPI with Trusted Publishing
+    needs: [distribution-gate, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/CodeRook
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel-ubuntu-latest
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
   release:
     name: Sign and publish GitHub Release assets
-    needs: [distribution-gate, validate, container]
+    needs: [distribution-gate, validate, container, pypi]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -141,12 +159,9 @@ jobs:
           path: release
       - uses: actions/download-artifact@v7
         with:
-          name: coderook-windows-portable
+          pattern: coderook-portable-*
           path: release
-      - uses: actions/download-artifact@v7
-        with:
-          name: coderook-vscode
-          path: release
+          merge-multiple: true
       - uses: actions/download-artifact@v7
         with:
           name: coderook-container
@@ -155,7 +170,7 @@ jobs:
         run: >-
           uv run python scripts/check_release_contract.py
           --tag "${GITHUB_REF_NAME}"
-          --require-go
+          --require-channel-readiness
           --output release/release-contract.json
       - name: Install Syft
         id: syft
@@ -165,12 +180,23 @@ jobs:
           SYFT: ${{ steps.syft.outputs.cmd }}
         run: |
           shopt -s nullglob
-          artifacts=(release/*.whl release/*.tar.gz release/*.zip release/*.vsix)
-          test "${#artifacts[@]}" -eq 4
+          artifacts=(release/*.whl release/*.tar.gz release/*.zip)
+          test "${#artifacts[@]}" -ge 7
           for artifact in "${artifacts[@]}"; do
             "${SYFT}" scan "${artifact}" -o "spdx-json=${artifact}.spdx.json"
           done
       - name: Generate release manifest and checksums
+        run: >-
+          uv run python scripts/generate_release_manifest.py
+          --input release
+          --version "${GITHUB_REF_NAME#v}"
+      - name: Generate Homebrew and Scoop manifests
+        run: >-
+          uv run python scripts/generate_package_manifests.py
+          --input release
+          --version "${GITHUB_REF_NAME}"
+          --repository "${GITHUB_REPOSITORY}"
+      - name: Include package-manager manifests in checksums
         run: >-
           uv run python scripts/generate_release_manifest.py
           --input release

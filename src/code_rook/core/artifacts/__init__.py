@@ -10,6 +10,7 @@ from code_rook.core.artifacts.store import (
     ArtifactNotFoundError,
     ArtifactRef,
     ArtifactSlice,
+    ArtifactSpool,
     ArtifactStore,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactRef",
     "ArtifactSlice",
+    "ArtifactSpool",
     "ArtifactStore",
     "ImageArtifactInput",
     "ImageMetadata",

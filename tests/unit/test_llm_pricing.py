@@ -31,6 +31,17 @@ def test_get_pricing_exact_prefix_and_override() -> None:
     assert get_pricing("") is None
 
 
+# 功能：验证 DeepSeek V4 当前模型名能命中独立输入、输出与缓存读取单价
+# 设计：直接查询两个 Catalog 模型 ID，并确认未知模型不会误套价格
+def test_deepseek_v4_pricing_uses_current_catalog_ids() -> None:
+    flash = get_pricing("deepseek-v4-flash")
+    pro = get_pricing("deepseek-v4-pro")
+
+    assert flash == ModelPricing(0.14, 0.28, 0.0028)
+    assert pro == ModelPricing(0.435, 0.87, 0.003625)
+    assert get_pricing("retired-model") is None
+
+
 # 功能：验证成本估算覆盖输入、输出与缓存读写四类用量
 # 设计：用整数 token 数乘单价手工核算期望值，避免浮点意外
 def test_estimate_cost_all_components() -> None:
@@ -50,7 +61,7 @@ def test_estimate_cost_all_components() -> None:
     )
 
     assert cost == pytest.approx(3.0 + 15.0 + 0.3 + 3.75)
-    assert cache_read_savings(pricing, 1_000_000) == pytest.approx(3.0)
+    assert cache_read_savings(pricing, 1_000_000) == pytest.approx(2.7)
 
 
 # 功能：验证成本金额格式化在零、极小与常规区间的展示
@@ -90,8 +101,8 @@ cache_read = 0.05
         load_pricing_overrides(bad)
 
 
-# 功能：验证 TUI 按 llm.usage 事件累计成本、分解与缓存节省
-# 设计：构造 harness 挂载后投递两条带模型名的用量事件，断言累计与 /cost 渲染
+# 功能：验证 TUI 按 llm.usage 事件即时更新当前会话的顶栏成本估算
+# 设计：投递已知与未知单价事件，只断言实时顶栏；/cost 的持久证据由 Runtime 测试覆盖
 async def test_tui_accumulates_cost_from_usage_events() -> None:
 
     from code_rook.tui.app import ChatTextArea, CodeRookTuiApp
@@ -135,19 +146,6 @@ async def test_tui_accumulates_cost_from_usage_events() -> None:
         assert "mystery-model" in app._unpriced_models
         header_text = str(app.query_one("#header").render())
         assert "0.4650" in header_text
-
-        appended: list[str] = []
-        app._append = lambda widget: appended.append(str(widget.render()))  # type: ignore[method-assign]
-        app._show_cost_breakdown()
-
-        body = "\n".join(appended)
-        assert "Cost" in body
-        assert "claude-sonnet-4-6" in body
-        assert "$0.4650" in body
-        assert "缓存命中节省" in body
-        assert "mystery-model" in body
-        assert "pricing.toml" in body
-
 
 # 功能：验证会话切换复位成本累计
 # 设计：先累计一笔成本，调用 _reset_cost_state 后断言全部分解归零

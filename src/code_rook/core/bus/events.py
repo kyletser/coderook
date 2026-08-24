@@ -2,13 +2,48 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator, Field
+from pydantic import BaseModel, Discriminator, Field, JsonValue
+
+RunOutcomeStatus = Literal[
+    "completed",
+    "tool_use",
+    "length",
+    "incomplete",
+    "content_filtered",
+    "failed",
+    "cancelled",
+    "transport_error",
+]
+RunFailureCategory = Literal[
+    "configuration",
+    "credential",
+    "network",
+    "model",
+    "tool",
+    "index",
+    "sandbox",
+    "runtime",
+    "permission",
+    "verification",
+    "user_cancelled",
+]
 
 
 class CoreStartedEvent(BaseModel):
     type: Literal["core.started"] = "core.started"
     listen_addr: str  # e.g. "127.0.0.1:7437"
     version: str
+
+
+class AuditDegradedEvent(BaseModel):
+    type: Literal["audit.degraded"] = "audit.degraded"
+    source: str
+    diagnostic_id: str
+    error_type: str
+    message: str = (
+        "Audit persistence is degraded; mutating tools are paused until repair and restart."
+    )
+    ts: str
 
 
 class RunStartedEvent(BaseModel):
@@ -24,6 +59,11 @@ class RunFinishedEvent(BaseModel):
     status: str  # "success" | "failed"
     reason: str | None = None  # "exceeded_max_steps" | "cancelled" | "llm_error" | ...
     steps: int
+    outcome: RunOutcomeStatus | None = None
+    failure_category: RunFailureCategory | None = None
+    changes: list[JsonValue] | None = None
+    verification: list[JsonValue] | None = None
+    result_summary: str | None = None
     ts: str
 
 
@@ -190,12 +230,39 @@ class SessionWaitingForInputEvent(BaseModel):
     ts: str
 
 
+class GoalContinueDecisionEvent(BaseModel):
+    type: Literal["goal.continue_decision"] = "goal.continue_decision"
+    goal_id: str
+    session_id: str
+    run_id: str
+    should_continue: bool
+    reason: str
+    auto_turns_used: int = Field(ge=0)
+    remaining_auto_turns: int = Field(ge=0)
+    tokens_used: int = Field(ge=0)
+    token_budget: int | None = Field(default=None, ge=1)
+    remaining_tokens: int | None = Field(default=None, ge=0)
+    wall_elapsed_seconds: int = Field(ge=0)
+    max_wall_seconds: int = Field(ge=1)
+    paused_needs_confirmation: bool
+    ts: str
+
+
 class PlanReadyEvent(BaseModel):
     type: Literal["plan.ready"] = "plan.ready"
     session_id: str
     run_id: str
     request: str
     plan: str
+    ts: str
+
+
+class PlanResolvedEvent(BaseModel):
+    type: Literal["plan.resolved"] = "plan.resolved"
+    session_id: str
+    run_id: str
+    decision: Literal["approve", "revise", "cancel"]
+    revision: str = ""
     ts: str
 
 
@@ -477,6 +544,7 @@ class RuntimeEventAppendedEvent(BaseModel):
 # 根据 type 字段决定事件类型的判别联合
 Event = Annotated[
     CoreStartedEvent
+    | AuditDegradedEvent
     | RunStartedEvent
     | RunFinishedEvent
     | StepStartedEvent
@@ -496,7 +564,9 @@ Event = Annotated[
     | SessionCreatedEvent
     | SessionMessageReceivedEvent
     | SessionWaitingForInputEvent
+    | GoalContinueDecisionEvent
     | PlanReadyEvent
+    | PlanResolvedEvent
     | PlanUpdatedEvent
     | SessionResumedEvent
     | SessionRenamedEvent

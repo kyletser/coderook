@@ -15,6 +15,7 @@ from rich.markup import escape
 from textual.css.query import NoMatches
 from textual.widgets import Static
 
+from code_rook.tui.product import tr
 from code_rook.tui.widgets import _preview as _preview
 from code_rook.tui.widgets.permission import PermissionBlock, PermissionSelect
 from code_rook.tui.widgets.pickers import PlanReview, UserQuestionSelect
@@ -22,10 +23,10 @@ from code_rook.tui.widgets.stream import LLMStreamBlock, ToolCallBlock, ToolStep
 
 log = logging.getLogger(__name__)
 
-_PROMPT_READY = "消息"
-_PROMPT_PERMISSION = "等待操作确认"
-_PROMPT_QUESTION = "请回答上方问题"
 
+# 读取宿主界面语言，旧测试替身缺少字段时保持中文默认
+def _locale(app: Any) -> str:
+    return str(getattr(app, "_locale", "zh-CN"))
 
 # 事件渲染总入口：先处理 LLM 流式前段，统一换块，再按事件族分派
 def render_event(app: Any, event: dict[str, Any]) -> None:
@@ -42,7 +43,7 @@ def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
         content = str(event.get("content") or "")
         app._break_llm()
         if content.strip():
-            reasoning_block = LLMStreamBlock()
+            reasoning_block = LLMStreamBlock(locale=_locale(app))
             reasoning_block.append_token(content)
             reasoning_block.set_kind("reasoning")
             reasoning_block.finalize_markdown()
@@ -52,7 +53,7 @@ def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
     if t == "llm.token":
         token = event.get("token", "")
         if app._current_llm is None:
-            llm_block = LLMStreamBlock()
+            llm_block = LLMStreamBlock(locale=_locale(app))
             app._append(llm_block)
             app._current_llm = llm_block
         app._current_llm.append_token(token)
@@ -88,9 +89,15 @@ def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "llm.retry":
         kind = str(event.get("kind") or "retry")
         attempt = int(event.get("attempt") or 0)
+        retry = tr(
+            "event.llm.retry",
+            _locale(app),
+            kind=escape(kind),
+            attempt=attempt,
+        )
         app._append(
             Static(
-                f"[dim]正在重试模型响应  {escape(kind)} #{attempt}[/dim]",
+                f"[dim]{retry}[/dim]",
                 classes="log-line",
             )
         )
@@ -98,10 +105,14 @@ def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "agent.stuck":
         tool_name = escape(str(event.get("tool_name") or "tool"))
         repeat_count = int(event.get("repeat_count") or 0)
+        stopped = tr(
+            "event.agent.stuck",
+            _locale(app),
+            count=repeat_count,
+        )
         app._append(
             Static(
-                f"[yellow]stopped repeated action[/yellow]  "
-                f"[bold]{tool_name}[/bold]  [dim]{repeat_count} identical results[/dim]",
+                f"[yellow]{stopped}[/yellow]  [bold]{tool_name}[/bold]",
                 classes="log-line",
             )
         )
@@ -119,9 +130,9 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
             prompt.disabled = app._plan_review_pending
             prompt.read_only = False
             if app._plan_review_pending:
-                prompt.border_title = "审阅上方计划"
+                prompt.border_title = tr("shell.review_plan", _locale(app))
             else:
-                prompt.border_title = _PROMPT_READY
+                prompt.border_title = tr("shell.connected", _locale(app))
                 prompt.focus()
         app._update_header("plan ready" if app._plan_review_pending else "ready")
 
@@ -135,7 +146,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
         if prompt is not None:
             prompt.disabled = False
             prompt.read_only = False
-            prompt.border_title = "任务已取消"
+            prompt.border_title = tr("shell.cancelled", _locale(app))
             prompt.focus()
         app._update_header("interrupted")
 
@@ -147,7 +158,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
         if prompt is not None:
             prompt.disabled = True
             prompt.read_only = False
-            prompt.border_title = "会话已关闭"
+            prompt.border_title = tr("shell.disconnected", _locale(app))
         app._update_header("disconnected")
 
 
@@ -160,6 +171,7 @@ def _render_plan(app: Any, t: str, event: dict[str, Any]) -> None:
             return
         app._plan_review_pending = True
         app._plan_session_id = session_id
+        app._plan_run_id = run_id
         app._plan_request = str(event.get("request", ""))
         try:
             app.query_one(PlanReview).remove()
@@ -168,9 +180,23 @@ def _render_plan(app: Any, t: str, event: dict[str, Any]) -> None:
         prompt = app._prompt()
         if prompt is not None:
             prompt.disabled = True
-            prompt.border_title = "审阅上方计划"
-        app.mount(PlanReview(run_id), before="#prompt")
+            prompt.border_title = tr("shell.review_plan", _locale(app))
+        app.mount(PlanReview(run_id, locale=_locale(app)), before="#prompt")
         app._update_header("plan ready")
+
+    elif t == "plan.resolved":
+        session_id = str(event.get("session_id", ""))
+        run_id = str(event.get("run_id", ""))
+        if (
+            session_id != app._session_id
+            or session_id != app._plan_session_id
+            or run_id != app._plan_run_id
+        ):
+            return
+        app._clear_plan_review()
+        if not app._busy:
+            app._restore_ready_prompt()
+            app._update_header("ready")
 
     elif t == "plan.updated":
         raw_plan = event.get("plan", [])
@@ -193,6 +219,40 @@ def _render_plan(app: Any, t: str, event: dict[str, Any]) -> None:
         app._append(Static("\n".join(lines), classes="log-line"))
 
 
+# 渲染有限 Goal Loop 的继续或暂停决策及累计预算
+def _render_goal(app: Any, event: dict[str, Any]) -> None:
+    should_continue = bool(event.get("should_continue", False))
+    reason = escape(str(event.get("reason") or "unknown"))
+    used = max(0, int(event.get("auto_turns_used", 0) or 0))
+    remaining = max(0, int(event.get("remaining_auto_turns", 0) or 0))
+    total = used + remaining
+    tokens_used = max(0, int(event.get("tokens_used", 0) or 0))
+    token_budget = event.get("token_budget")
+    token_limit = escape(str(token_budget)) if token_budget is not None else "unbounded"
+    wall_elapsed = max(0, int(event.get("wall_elapsed_seconds", 0) or 0))
+    max_wall = max(1, int(event.get("max_wall_seconds", 1) or 1))
+    confirmation = bool(event.get("paused_needs_confirmation", False))
+    if should_continue:
+        title = f"[bold green]{tr('event.goal.continue', _locale(app))}[/bold green]"
+    elif confirmation:
+        title = f"[bold yellow]{tr('event.goal.paused', _locale(app))}[/bold yellow]"
+    else:
+        title = f"[bold cyan]{tr('event.goal.ended', _locale(app))}[/bold cyan]"
+    next_action = (
+        f"\n[yellow]{tr('event.goal.resume', _locale(app))}[/yellow]"
+        if confirmation
+        else ""
+    )
+    app._append(
+        Static(
+            f"{title}  [dim]{reason}[/dim]\n"
+            f"[dim]auto={used}/{total}  tokens={tokens_used}/{token_limit}  "
+            f"wall={wall_elapsed}s/{max_wall}s[/dim]{next_action}",
+            classes="log-line",
+        )
+    )
+
+
 # 处理结构化用户问题，挂载问题选择面板
 def _render_user_question(app: Any, event: dict[str, Any]) -> None:
     session_id = str(event.get("session_id", ""))
@@ -208,7 +268,7 @@ def _render_user_question(app: Any, event: dict[str, Any]) -> None:
     prompt = app._prompt()
     if prompt is not None:
         prompt.disabled = True
-        prompt.border_title = _PROMPT_QUESTION
+        prompt.border_title = tr("question.prompt", _locale(app))
     app.mount(
         UserQuestionSelect(
             question_id,
@@ -216,6 +276,7 @@ def _render_user_question(app: Any, event: dict[str, Any]) -> None:
             str(event.get("header", "Question")),
             [str(option) for option in event.get("options", [])],
             bool(event.get("multi_select", False)),
+            locale=_locale(app),
         ),
         before="#prompt",
     )
@@ -245,24 +306,40 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         app._active_run_id = None
         app._cancel_requested = False
         app._cancel_armed = False
+        schedule_result = getattr(app, "_schedule_run_result", None)
+        scheduled = bool(schedule_result(event)) if callable(schedule_result) else False
         if status == "success":
             app._maybe_autotitle_session()
             return
+        if scheduled:
+            return
         if reason == "cancelled":
+            cancelled = tr(
+                "event.run.cancelled",
+                _locale(app),
+                steps=steps,
+                unit=step_label,
+            )
             app._append(Static(
-                f"[yellow]–[/yellow] [dim]Cancelled after {steps} {step_label}[/dim]",
+                f"[yellow]–[/yellow] [dim]{cancelled}[/dim]",
                 classes="run-err",
             ))
         else:
             detail = f"  [dim]{escape(reason)}[/dim]" if reason else ""
             model_failure = reason == "llm_error" or reason.startswith("model_error")
             guidance = (
-                "\n[dim]检查 /doctor、/provider 或 /config；修复路由后可重新提交任务。[/dim]"
+                f"\n[dim]{tr('event.run.model_guidance', _locale(app))}[/dim]"
                 if model_failure
                 else ""
             )
+            failed = tr(
+                "event.run.failed",
+                _locale(app),
+                steps=steps,
+                unit=step_label,
+            )
             app._append(Static(
-                f"[red]×[/red] [dim]Failed after {steps} {step_label}[/dim]"
+                f"[red]×[/red] [dim]{failed}[/dim]"
                 f"{detail}{guidance}",
                 classes="run-err",
             ))
@@ -381,7 +458,7 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
         raw_params = event.get("params") or {}
         params = raw_params if isinstance(raw_params, dict) else {}
         run_id = str(event.get("run_id", ""))
-        tc_block = ToolCallBlock(tool_name, params)
+        tc_block = ToolCallBlock(tool_name, params, locale=_locale(app))
         if run_id in app._subagent_run_ids:
             tc_block.styles.padding = (0, 2, 0, 6)
             app._append(tc_block)
@@ -390,7 +467,7 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
             group_key = (run_id, step)
             group = app._tool_step_groups.get(group_key)
             if group is None:
-                group = ToolStepGroup(step)
+                group = ToolStepGroup(step, locale=_locale(app))
                 app._tool_step_groups[group_key] = group
                 group.add_tool(tc_block)
                 app._append(group)
@@ -519,32 +596,49 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
             "permission.requested tool=%s id=%s  app.focused=%s",
             tool_name, tool_use_id, _focused_repr,
         )
-        perm_block = PermissionBlock(tool_use_id, tool_name, param_preview)
+        perm_block = PermissionBlock(
+            tool_use_id,
+            tool_name,
+            param_preview,
+            locale=_locale(app),
+        )
         app._pending_permission_blocks[tool_use_id] = perm_block
         prompt = app._prompt()
         if prompt is not None:
             prompt.disabled = True
-            prompt.border_title = _PROMPT_PERMISSION
+            prompt.border_title = tr("permission.pending", _locale(app))
         app._append(perm_block)
-        select = PermissionSelect(tool_use_id, tool_name, param_preview, params)
+        select = PermissionSelect(
+            tool_use_id,
+            tool_name,
+            param_preview,
+            params,
+            locale=_locale(app),
+        )
         app._mount_permission_select(select)
         log.debug(
             "PermissionSelect mounted before #prompt  pending=%d",
             len(app._pending_permission_blocks),
         )
 
-    elif t == "permission.denied":
-        # 处理超时或断连等非用户交互触发的 deny，失败结果由工具行统一展示。
+    elif t in {"permission.granted", "permission.denied"}:
+        # 清理来自其他客户端或历史对账的已解决审批，拒绝时再显示可见提示。
         tool_use_id = str(event.get("tool_use_id", ""))
         if tool_use_id in app._pending_permission_blocks:
             perm_block = app._pending_permission_blocks.pop(tool_use_id)
-            denied_tool = escape(perm_block._tool_name)
-            app._append(
-                Static(
-                    f"[yellow]审批超时或连接断开，{denied_tool} 已按拒绝处理[/yellow]",
-                    classes="log-line",
+            if t == "permission.denied":
+                denied_tool = escape(perm_block._tool_name)
+                denied = tr(
+                    "event.permission.denied",
+                    _locale(app),
+                    tool=denied_tool,
                 )
-            )
+                app._append(
+                    Static(
+                        f"[yellow]{denied}[/yellow]",
+                        classes="log-line",
+                    )
+                )
             perm_block.remove()
             try:
                 select = app.query_one(PermissionSelect)
@@ -556,7 +650,7 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
                 if p is not None:
                     p.disabled = False
                     p.read_only = False
-                    p.border_title = _PROMPT_READY
+                    p.border_title = tr("shell.connected", _locale(app))
                     p.focus()
 
     elif t == "lsp.diagnostics":
@@ -566,17 +660,27 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
         diagnostic_paths = ", ".join(str(p) for p in event.get("paths", [])[:3])
         if status == "ok" and count == 0:
             line = (
-                f"[green]诊断通过[/green]  "
+                f"[green]{tr('event.diagnostics.passed', _locale(app))}[/green]  "
                 f"[dim]{tool} · {escape(diagnostic_paths)}[/dim]"
             )
         elif status == "ok":
+            issues = tr(
+                "event.diagnostics.issues",
+                _locale(app),
+                count=count,
+            )
             line = (
-                f"[yellow]诊断发现 {count} 条问题[/yellow]  "
+                f"[yellow]{issues}[/yellow]  "
                 f"[dim]{tool} · {escape(diagnostic_paths)}[/dim]"
             )
         else:
             error = escape(str(event.get("error", ""))[:120])
-            line = f"[dim]诊断降级 {status} · {tool} · {error}[/dim]"
+            degraded = tr(
+                "event.diagnostics.degraded",
+                _locale(app),
+                status=status,
+            )
+            line = f"[dim]{degraded} · {tool} · {error}[/dim]"
         app._append(Static(line, classes="log-line"))
 
     elif t == "log.line":
@@ -602,6 +706,8 @@ def _render_rest(app: Any, event: dict[str, Any]) -> None:
         _render_session(app, t, event)
     elif t.startswith("plan."):
         _render_plan(app, t, event)
+    elif t == "goal.continue_decision":
+        _render_goal(app, event)
     elif t == "user_question.asked":
         _render_user_question(app, event)
     elif t.startswith("run."):

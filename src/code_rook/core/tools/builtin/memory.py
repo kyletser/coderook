@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from code_rook.core.memory import MemoryStore
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
+from code_rook.core.tools.spec import ApprovalRequirement, ToolSpec
 
 
 class MemorySaveParams(BaseModel):
@@ -26,6 +27,27 @@ class MemorySearchParams(BaseModel):
 class MemoryForgetParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
     memory_id: str
+
+
+class MemoryEditParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    memory_id: str
+    name: str | None = None
+    description: str | None = None
+    type: Literal["user", "feedback", "project", "reference"] | None = None
+    body: str | None = None
+
+
+class MemoryPinParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    memory_id: str
+    pinned: bool = True
+
+
+class MemoryExpireParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    memory_id: str
+    expires_at: str | None = None
 
 
 class MemorySaveTool(BaseTool):
@@ -57,6 +79,12 @@ class MemorySaveTool(BaseTool):
         self._store = store
         self._session_id = session_id
         self._run_id = run_id
+
+    # 强制 Agent 保存记忆时进入显式审批，不受普通写工具默认策略影响
+    def build_spec(self) -> ToolSpec:
+        return super().build_spec().model_copy(
+            update={"approval_requirement": ApprovalRequirement.ALWAYS}
+        )
 
     # 保存一条可跨会话使用的项目记忆
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -103,6 +131,104 @@ class MemorySearchTool(BaseTool):
                 [record.__dict__ for record in records], ensure_ascii=False, indent=2
             )
         )
+
+
+class MemoryEditTool(BaseTool):
+    name = "memory_edit"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
+    description = "Edit an existing durable memory without changing its provenance."
+    params_model = MemoryEditParams
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string"},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "type": {
+                "type": "string",
+                "enum": ["user", "feedback", "project", "reference"],
+            },
+            "body": {"type": "string"},
+        },
+        "required": ["memory_id"],
+    }
+
+    # 绑定项目记忆库
+    def __init__(self, store: MemoryStore) -> None:
+        self._store = store
+
+    # 修改一条已有记忆并保留来源信息
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        parsed = MemoryEditParams.model_validate(params)
+        try:
+            record = self._store.edit(
+                parsed.memory_id,
+                name=parsed.name,
+                description=parsed.description,
+                mem_type=parsed.type,
+                body=parsed.body,
+            )
+        except ValueError as exc:
+            return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
+        return ToolResult(content=f"edited memory_id={record.id}")
+
+
+class MemoryPinTool(BaseTool):
+    name = "memory_pin"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
+    description = "Pin or unpin a durable memory in recall order."
+    params_model = MemoryPinParams
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string"},
+            "pinned": {"type": "boolean", "default": True},
+        },
+        "required": ["memory_id"],
+    }
+
+    # 绑定项目记忆库
+    def __init__(self, store: MemoryStore) -> None:
+        self._store = store
+
+    # 固定或取消固定一条记忆
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        parsed = MemoryPinParams.model_validate(params)
+        try:
+            record = self._store.pin(parsed.memory_id, pinned=parsed.pinned)
+        except ValueError as exc:
+            return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
+        state = "pinned" if record.pinned else "unpinned"
+        return ToolResult(content=f"{state} memory_id={record.id}")
+
+
+class MemoryExpireTool(BaseTool):
+    name = "memory_expire"
+    side_effect = ToolSideEffect.EXTERNAL_WRITE
+    description = "Set or clear an ISO 8601 expiration time for a durable memory."
+    params_model = MemoryExpireParams
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string"},
+            "expires_at": {"type": ["string", "null"]},
+        },
+        "required": ["memory_id"],
+    }
+
+    # 绑定项目记忆库
+    def __init__(self, store: MemoryStore) -> None:
+        self._store = store
+
+    # 设置或清除一条记忆的过期时间
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        parsed = MemoryExpireParams.model_validate(params)
+        try:
+            record = self._store.expire(parsed.memory_id, parsed.expires_at)
+        except ValueError as exc:
+            return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
+        state = record.expires_at or "never"
+        return ToolResult(content=f"expires_at={state} memory_id={record.id}")
 
 
 class MemoryForgetTool(BaseTool):

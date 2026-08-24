@@ -31,11 +31,12 @@ class GoalUpdateTool(BaseTool):
     name = "update_goal"
     description = (
         "Update the active durable goal only when it is genuinely completed or blocked. "
-        "Completion requires concrete evidence references such as tests, files, commits, "
-        "or reports; a normal model response is not completion evidence."
+        "Completion requires a daemon-verified evidence reference emitted after a passing "
+        "verification event; use latest-verification for the newest passing gate. A normal "
+        "model response, file path, or claimed test result is not completion evidence."
     )
     params_model = GoalUpdateParams
-    side_effect = ToolSideEffect.NONE
+    side_effect = ToolSideEffect.LOCAL_WRITE
     input_schema: dict[str, object] = {
         "type": "object",
         "properties": {
@@ -48,7 +49,10 @@ class GoalUpdateTool(BaseTool):
                 "type": "array",
                 "items": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "maxItems": 20,
-                "description": "Concrete references that prove completion.",
+                "description": (
+                    "Daemon-verified references, or latest-verification for the newest "
+                    "passing verification gate."
+                ),
             },
             "summary": {
                 "type": "string",
@@ -72,7 +76,7 @@ class GoalUpdateTool(BaseTool):
             if parsed.status == "completed":
                 goal = self._service.complete(
                     self._goal_id,
-                    evidence=[("agent-evidence", item) for item in parsed.evidence],
+                    evidence=[("verified-run", item) for item in parsed.evidence],
                     summary=parsed.summary,
                 )
             else:

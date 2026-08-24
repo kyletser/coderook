@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import RuntimeMode, ToolAction
 from code_rook.core.tools.base import BaseTool
 from code_rook.core.tools.catalog import ToolCatalog
 from code_rook.core.tools.spec import (
@@ -26,6 +26,7 @@ class ToolRegistry:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         *,
         model_tool_limit: int = DEFAULT_MODEL_TOOL_LIMIT,
+        allowed_authority_actions: frozenset[ToolAction] | None = None,
     ) -> None:
         if model_tool_limit < 1:
             raise ValueError("model_tool_limit must be positive")
@@ -34,14 +35,38 @@ class ToolRegistry:
         self._runtime_mode = runtime_mode
         self._activated_deferred: list[str] = []
         self._model_tool_limit = model_tool_limit
+        self._allowed_authority_actions = allowed_authority_actions
+
+    # 按不可变 authority ceiling 裁剪 action，目录和直接调用共同 fail closed
+    def _authority_filtered_spec(self, spec: ToolSpec) -> ToolSpec | None:
+        if self._allowed_authority_actions is None:
+            return spec
+        actions = tuple(
+            action
+            for action in spec.actions
+            if action.authority_action() in self._allowed_authority_actions
+        )
+        if not actions:
+            return None
+        capabilities = frozenset(
+            capability
+            for action in actions
+            for capability in action.capabilities
+        )
+        return spec.model_copy(
+            update={"actions": actions, "capabilities": capabilities}
+        )
 
     # 注册工具；同名覆盖
     def register(self, tool: BaseTool, *, spec: ToolSpec | None = None) -> None:
-        self._tools[tool.name] = tool
         resolved_spec = spec or tool.build_spec()
         if resolved_spec.name != tool.name:
             raise ValueError("tool implementation and ToolSpec names must match")
-        self._catalog.register(resolved_spec)
+        filtered_spec = self._authority_filtered_spec(resolved_spec)
+        if filtered_spec is None:
+            return
+        self._tools[tool.name] = tool
+        self._catalog.register(filtered_spec)
 
     # 按名称查找工具，不存在返回 None
     def get(self, name: str) -> BaseTool | None:

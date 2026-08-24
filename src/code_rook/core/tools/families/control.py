@@ -22,6 +22,9 @@ from code_rook.core.tools.spec import (
 _MEMORY_ACTION_ALIASES = {
     "save": "memory_save",
     "search": "memory_search",
+    "edit": "memory_edit",
+    "pin": "memory_pin",
+    "expire": "memory_expire",
     "forget": "memory_forget",
 }
 _TASK_ACTION_ALIASES = {
@@ -34,6 +37,9 @@ _TASK_ACTION_ALIASES = {
 _MEMORY_ACTION_CAPABILITIES = {
     "save": frozenset({ToolCapability.WRITE}),
     "search": frozenset({ToolCapability.READ}),
+    "edit": frozenset({ToolCapability.WRITE}),
+    "pin": frozenset({ToolCapability.WRITE}),
+    "expire": frozenset({ToolCapability.WRITE}),
     "forget": frozenset({ToolCapability.WRITE}),
 }
 _TASK_ACTION_CAPABILITIES = {
@@ -64,10 +70,11 @@ def _family_spec(
             description=backend.description,
             input_schema=backend.input_schema,
             capabilities=capabilities[action],
+            permission_policy_aliases=(backend.name,),
             approval_requirement=(
                 ApprovalRequirement.NEVER
                 if capabilities[action] == frozenset({ToolCapability.READ})
-                else ApprovalRequirement.POLICY
+                else backend.build_spec().approval_requirement
             ),
             parallel_policy=(
                 ParallelPolicy.SAFE

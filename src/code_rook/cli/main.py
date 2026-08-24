@@ -20,6 +20,7 @@ from code_rook.cli.commands.doctor import (
     cmd_runtime_doctor,
     cmd_system_doctor,
 )
+from code_rook.cli.commands.memory import cmd_memory
 from code_rook.cli.commands.ping import cmd_ping
 from code_rook.cli.commands.provider import (
     cmd_model_list,
@@ -48,14 +49,30 @@ from code_rook.cli.commands.skills import (
 from code_rook.cli.commands.trace import cmd_trace
 from code_rook.cli.commands.version import cmd_version
 from code_rook.core.config import get_config
+from code_rook.core.llm.credentials import CredentialStoreError
+from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.state_migration import migrate_legacy_state
 
+_PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
 
-# CLI 主入口：无参数启动 TUI，其余参数分发到现有子命令
+
+# 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
 def main() -> int:
-    tui_flags = {"--continue", "--resume", "--replay", "--no-auto-core"}
-    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1] in tui_flags):
+    try:
+        return _run_cli()
+    except CredentialStoreError as exc:
+        print(f"credential store error: {exc.safe_message}", file=sys.stderr)
+        return 2
+
+
+# CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
+def _run_cli() -> int:
+    tui_flags = {"--continue", "--new", "--resume", "--replay", "--no-auto-core"}
+    tui_probe = list(sys.argv[1:])
+    if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
+        tui_probe = tui_probe[2:]
+    if not tui_probe or tui_probe[0] in tui_flags:
         from code_rook.tui.__main__ import main as tui_main
 
         tui_main()
@@ -64,11 +81,25 @@ def main() -> int:
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook", description="CodeRook CLI")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help="Explicit environment file; repository .env files are never loaded automatically",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("ping", help="Ping the core daemon")
     subparsers.add_parser("configure", aliases=["config"], help="Configure the LLM connection")
     subparsers.add_parser("config-status", help="Show the active LLM configuration")
+    migrate_project = subparsers.add_parser(
+        "migrate-project-state",
+        help="Explicitly migrate legacy project state into .coderook",
+    )
+    migrate_project.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the workspace-scoped migration",
+    )
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose a provider route")
     doctor_parser.add_argument("route_id", nargs="?", help="Configured route ID")
     doctor_parser.add_argument("--json", action="store_true", help="Print JSON result")
@@ -87,13 +118,7 @@ def main() -> int:
     add_provider.add_argument("route_id")
     add_provider.add_argument(
         "--preset",
-        choices=(
-            "anthropic",
-            "openai",
-            "openai-compatible",
-            "anthropic-compatible",
-            "opencode-zen",
-        ),
+        choices=_PROVIDER_PRESET_CHOICES,
     )
     add_provider.add_argument(
         "--provider-kind",
@@ -115,11 +140,6 @@ def main() -> int:
     add_provider.add_argument("--credential-ref")
     add_provider.add_argument("--set-key", action="store_true")
     add_provider.add_argument("--activate", action="store_true")
-    add_provider.add_argument(
-        "--skip-doctor",
-        action="store_true",
-        help="Commit without a live provider probe (not recommended)",
-    )
 
     edit_provider = provider_sub.add_parser("edit", help="Edit a provider route")
     edit_provider.add_argument("route_id")
@@ -143,11 +163,6 @@ def main() -> int:
     edit_provider.add_argument("--credential-ref")
     edit_provider.add_argument("--set-key", action="store_true")
     edit_provider.add_argument("--activate", action="store_true")
-    edit_provider.add_argument(
-        "--skip-doctor",
-        action="store_true",
-        help="Commit without a live provider probe (not recommended)",
-    )
 
     remove_provider = provider_sub.add_parser("remove", help="Remove a provider route")
     remove_provider.add_argument("route_id")
@@ -178,6 +193,44 @@ def main() -> int:
     remove_skill.add_argument("--scope", choices=("project", "user"), default="project")
     remove_skill.add_argument("--yes", action="store_true")
     skills_sub.add_parser("audit", help="Verify skill digests")
+
+    memory_parser = subparsers.add_parser("memory", help="Manage project memory")
+    memory_sub = memory_parser.add_subparsers(dest="memory_command")
+    memory_list = memory_sub.add_parser("list", help="List project memories")
+    memory_list.add_argument("--active-only", action="store_true")
+    memory_list.add_argument("--json", action="store_true")
+    memory_add = memory_sub.add_parser("add", help="Add a project memory")
+    memory_add.add_argument("name")
+    memory_add.add_argument("body")
+    memory_add.add_argument("--description", default="")
+    memory_add.add_argument(
+        "--type",
+        dest="memory_type",
+        choices=("user", "feedback", "project", "reference"),
+        default="project",
+    )
+    memory_edit = memory_sub.add_parser("edit", help="Edit a project memory")
+    memory_edit.add_argument("memory_id")
+    memory_edit.add_argument("--name")
+    memory_edit.add_argument("--description")
+    memory_edit.add_argument(
+        "--type",
+        dest="memory_type",
+        choices=("user", "feedback", "project", "reference"),
+    )
+    memory_edit.add_argument("--body")
+    memory_pin = memory_sub.add_parser("pin", help="Pin a project memory")
+    memory_pin.add_argument("memory_id")
+    memory_unpin = memory_sub.add_parser("unpin", help="Unpin a project memory")
+    memory_unpin.add_argument("memory_id")
+    memory_expire = memory_sub.add_parser("expire", help="Set or clear expiry")
+    memory_expire.add_argument("memory_id")
+    memory_expire.add_argument("expires_at", help="ISO 8601 timestamp or 'never'")
+    memory_delete = memory_sub.add_parser("delete", help="Delete a project memory")
+    memory_delete.add_argument("memory_id")
+    memory_delete.add_argument("--yes", action="store_true")
+    memory_auto = memory_sub.add_parser("auto", help="Control Agent memory writes")
+    memory_auto.add_argument("mode", choices=("prompt", "off"))
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an active agent run")
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
@@ -309,8 +362,18 @@ def main() -> int:
     if args.version:
         cmd_version()
         return 0
+    if args.command == "migrate-project-state":
+        if not args.yes:
+            parser.error("migrate-project-state requires --yes")
+        report = migrate_legacy_state(include_project=True)
+        print(
+            "legacy project state: "
+            f"found={report.legacy_project_state_found} "
+            f"copied={report.project_files_copied}"
+        )
+        return 0
 
-    config = get_config()
+    config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
 
     if args.command in {"configure", "config"}:
@@ -319,7 +382,7 @@ def main() -> int:
         print_llm_status(config)
     elif args.command == "doctor":
         if args.route_id == "runtime":
-            cmd_runtime_doctor(repair=args.repair, as_json=args.json)
+            return cmd_runtime_doctor(repair=args.repair, as_json=args.json)
         elif args.route_id in {None, "all"}:
             if args.repair:
                 parser.error("--repair requires 'coderook doctor runtime'")
@@ -351,7 +414,8 @@ def main() -> int:
                 credential_ref=args.credential_ref,
                 set_key=args.set_key,
                 activate=args.activate,
-                validate=not args.skip_doctor,
+                validate=True,
+                config=config,
             )
         elif args.provider_command == "edit":
             cmd_provider_edit(
@@ -364,7 +428,8 @@ def main() -> int:
                 credential_ref=args.credential_ref,
                 set_key=args.set_key,
                 activate=args.activate,
-                validate=not args.skip_doctor,
+                validate=True,
+                config=config,
             )
         elif args.provider_command == "remove":
             cmd_provider_remove(
@@ -372,7 +437,7 @@ def main() -> int:
                 delete_credential=args.delete_credential,
             )
         elif args.provider_command == "use":
-            cmd_provider_use(args.route_id)
+            cmd_provider_use(args.route_id, config=config)
         elif args.provider_command == "test":
             return cmd_doctor(config, args.route_id, as_json=args.json)
         else:
@@ -404,6 +469,73 @@ def main() -> int:
         else:
             skills_parser.print_help()
             sys.exit(1)
+    elif args.command == "memory":
+        if args.memory_command == "list":
+            return cmd_memory(
+                config,
+                "list",
+                params={"include_expired": not args.active_only},
+                as_json=args.json,
+            )
+        if args.memory_command == "add":
+            return cmd_memory(
+                config,
+                "add",
+                params={
+                    "name": args.name,
+                    "body": args.body,
+                    "description": args.description,
+                    "memory_type": args.memory_type,
+                },
+            )
+        if args.memory_command == "edit":
+            changes = {
+                key: value
+                for key, value in {
+                    "name": args.name,
+                    "description": args.description,
+                    "memory_type": args.memory_type,
+                    "body": args.body,
+                }.items()
+                if value is not None
+            }
+            return cmd_memory(
+                config,
+                "edit",
+                params={"memory_id": args.memory_id, **changes},
+            )
+        if args.memory_command in {"pin", "unpin"}:
+            return cmd_memory(
+                config,
+                args.memory_command,
+                params={"memory_id": args.memory_id},
+            )
+        if args.memory_command == "expire":
+            return cmd_memory(
+                config,
+                "expire",
+                params={
+                    "memory_id": args.memory_id,
+                    "expires_at": (
+                        None if args.expires_at in {"never", "clear"} else args.expires_at
+                    ),
+                },
+            )
+        if args.memory_command == "delete":
+            return cmd_memory(
+                config,
+                "delete",
+                params={"memory_id": args.memory_id},
+                confirmed=args.yes,
+            )
+        if args.memory_command == "auto":
+            return cmd_memory(
+                config,
+                "auto",
+                params={"auto_save": args.mode},
+            )
+        memory_parser.print_help()
+        return 1
     elif args.command == "ping":
         cmd_ping(config)
     elif args.command == "cancel":
@@ -472,11 +604,17 @@ def main() -> int:
             sys.exit(1)
     elif args.command == "core":
         if args.core_command == "start":
-            cmd_core_start(config)
+            if args.env_file is None:
+                cmd_core_start(config)
+            else:
+                cmd_core_start(config, env_file=args.env_file)
         elif args.core_command == "stop":
             cmd_core_stop(config)
         elif args.core_command == "restart":
-            cmd_core_restart(config)
+            if args.env_file is None:
+                cmd_core_restart(config)
+            else:
+                cmd_core_restart(config, env_file=args.env_file)
         elif args.core_command == "status":
             cmd_core_status(config)
         else:

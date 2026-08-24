@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -14,6 +15,10 @@ else:
 
 class DaemonLockError(RuntimeError):
     """另一个存活的 daemon 已持有同一状态目录的单写者锁。"""
+
+
+class DaemonLockBusyError(DaemonLockError):
+    """同一路径的排他锁当前正由另一个执行流持有。"""
 
 
 # 锁定区域的固定字节偏移；文件头部保留给持有者 PID 文本
@@ -44,15 +49,32 @@ class DaemonLock:
     def acquire(self) -> None:
         if self._fd is not None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        parent = self._path.parent.absolute()
+        if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+            raise DaemonLockError("lock parent must be a real directory")
+        parent.mkdir(parents=True, exist_ok=True)
+        if self._path.is_symlink():
+            raise DaemonLockError("lock path must not be a symbolic link")
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         try:
+            fd = os.open(self._path, flags, 0o600)
+        except OSError as exc:
+            raise DaemonLockError("lock path could not be opened safely") from exc
+        try:
+            opened = os.fstat(fd)
+            linked = os.stat(self._path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or stat.S_ISLNK(linked.st_mode)
+                or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+            ):
+                raise OSError("lock path identity is unsafe")
             self._lock_fd(fd)
         except OSError:
             holder = _read_holder_pid(self._path)
             os.close(fd)
             detail = f" (holder pid={holder})" if holder is not None else ""
-            raise DaemonLockError(
+            raise DaemonLockBusyError(
                 f"another coderook-core is already managing {self._path.parent}{detail}"
             ) from None
         old_size = os.fstat(fd).st_size

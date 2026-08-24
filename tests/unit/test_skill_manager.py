@@ -91,9 +91,10 @@ async def test_digest_mismatch_is_visible_before_skill_use(tmp_path: Path) -> No
     assert audit.digest != audit.expected_digest
     with pytest.raises(SkillIntegrityError, match="digest mismatch"):
         loader.resolve("custom")
-    result = await SkillTool(loader).invoke({"name": "custom"})
+    result = await SkillTool(loader, workspace_trusted=True).invoke({"name": "custom"})
     assert result.is_error
-    assert result.error_type == "integrity_error"
+    assert result.error_type == "runtime_error"
+    assert "unavailable in this trust context" in result.content
 
 
 # 功能：验证兼容目录只读导入且 remove 不会跨目录删除

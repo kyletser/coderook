@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,91 @@ def test_create_increments_id(tmp_path: Path) -> None:
     t2 = mgr.create("second")
     assert t1.id == 1
     assert t2.id == 2
+
+
+# 功能：验证损坏或非法命名的 Task 文件会被隔离且不阻断合法任务列表
+# 设计：同时注入坏 JSON 与坏文件名，覆盖内容迁移失败和扫描排序异常两条启动路径
+def test_invalid_tasks_are_quarantined_without_blocking_list(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+    valid = manager.create("valid task")
+    (tmp_path / "task_99.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "task_bad.json").write_text("{}", encoding="utf-8")
+
+    restored = manager.list_all()
+
+    assert [task.id for task in restored] == [valid.id]
+    quarantine = tmp_path / "_quarantine"
+    assert len(list(quarantine.glob("task_*.invalid.json"))) == 2
+    assert (quarantine / "quarantine.jsonl").is_file()
+
+
+# 功能：验证旧 Task schema 经读取和保存后升级为 v2 且新字段不挂旧版本号
+# 设计：手写最小 v1 任务，经 manager 更新触发读改写，再检查磁盘 schema 与迁移字段
+def test_legacy_task_schema_is_upgraded_before_rewrite(tmp_path: Path) -> None:
+    path = tmp_path / "task_1.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": 1,
+                "subject": "legacy",
+                "status": "pending",
+                "blocked_by": [],
+                "created_at": "t1",
+                "updated_at": "t2",
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = TaskManager(tmp_path)
+
+    manager.update(1, status="running")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["schema_version"] == 2
+    assert "gates" in payload and "timeline" in payload
+
+
+# 功能：验证未来 Task schema 会保留在原位而不会被当前列表扫描隔离
+# 设计：从合法任务改成 version=99 后调用 list，断言跳过记录且原始字节保持
+def test_future_task_schema_is_preserved_in_place(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+    manager.create("future")
+    path = tmp_path / "task_1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 99
+    original = json.dumps(payload) + "\n"
+    path.write_text(original, encoding="utf-8")
+
+    assert manager.list_all() == []
+    assert path.read_text(encoding="utf-8") == original
+    assert not (tmp_path / "_quarantine").exists()
+
+
+# 功能：验证 Task 文件名与正文 ID 不一致时不会进入任务控制面
+# 设计：把 task_1 正文 ID 改为二，调用 list 后确认记录被隔离而非以错误 ID 返回
+def test_task_filename_identity_mismatch_is_quarantined(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+    manager.create("identity")
+    path = tmp_path / "task_1.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["id"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert manager.list_all() == []
+    assert not path.exists()
+
+
+# 功能：验证并发创建任务时 ID 分配和首次落盘保持原子
+# 设计：多个线程共享同一 TaskManager 同时 create，断言 ID 唯一连续且文件无覆盖
+def test_concurrent_create_allocates_unique_ids(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        tasks = list(executor.map(lambda index: manager.create(f"task-{index}"), range(40)))
+
+    assert sorted(task.id for task in tasks) == list(range(1, 41))
+    assert len(list(tmp_path.glob("task_*.json"))) == 40
 
 
 # 功能：验证 create 传入不存在的 blocked_by 抛出 ValueError
@@ -82,6 +169,19 @@ def test_update_add_blocked_by(tmp_path: Path) -> None:
     mgr.create("b")
     mgr.update(2, add_blocked_by=[1])
     assert 1 in mgr.get(2).blocked_by
+
+
+# 功能：验证任务依赖更新拒绝形成间接环路且失败不会污染原记录
+# 设计：先建立 2→1，再尝试写入 1→2，断言报出 cycle 且任务 1 仍无依赖
+def test_update_rejects_dependency_cycle(tmp_path: Path) -> None:
+    manager = TaskManager(tmp_path)
+    manager.create("first")
+    manager.create("second", blocked_by=[1])
+
+    with pytest.raises(ValueError, match="task dependency cycle"):
+        manager.update(1, add_blocked_by=[2])
+
+    assert manager.get(1).dependencies == []
 
 
 # 功能：验证 update remove_blocked_by 正确移除依赖

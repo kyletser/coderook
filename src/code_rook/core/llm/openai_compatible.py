@@ -16,7 +16,13 @@ from code_rook.core.bus.events import (
     LlmUsageEvent,
 )
 from code_rook.core.events.bus import EventBus
-from code_rook.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
+from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.types import (
+    LlmResponse,
+    ToolCallBlock,
+    UsageStats,
+    completion_status_from_reason,
+)
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +33,8 @@ _SYSTEM_PROMPT = (
 )
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "deepseek-v4-pro": 128_000,
+    "deepseek-v4-pro": 1_048_576,
+    "deepseek-v4-flash": 1_048_576,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
@@ -50,6 +57,13 @@ class _StreamResult:
     usage: dict[str, Any] = field(default_factory=dict)
     finish_reason: str | None = None
     streamed: bool = False
+    finish_received: bool = True
+    done_received: bool = True
+
+    @property
+    # 仅同时收到语义终态与传输终止标记时，流式响应才算完整关闭
+    def terminal_received(self) -> bool:
+        return self.finish_received and self.done_received
 
 
 class OpenAICompatibleProvider:
@@ -60,6 +74,7 @@ class OpenAICompatibleProvider:
         base_url: str,
         api_key_env: str,
         api_key: str | None = None,
+        api_key_required: bool = True,
         use_max_completion_tokens: bool = False,
         context_window: int | None = None,
         thinking: str = "off",
@@ -69,11 +84,11 @@ class OpenAICompatibleProvider:
         if not base_url:
             raise SystemExit("CODEROOK_LLM_BASE_URL not set")
         resolved_key = api_key or os.environ.get(api_key_env)
-        if not resolved_key:
+        if api_key_required and not resolved_key:
             raise SystemExit(f"{api_key_env} not set")
         self._model = model
         self._base_url = base_url
-        self._api_key = resolved_key
+        self._api_key = resolved_key or ""
         self._use_max_completion_tokens = use_max_completion_tokens
         self._context_window = context_window
         self._thinking = thinking
@@ -102,9 +117,8 @@ class OpenAICompatibleProvider:
             )
         )
 
-        is_deepseek = (
-            "api.deepseek.com" in self._base_url
-            and resolved_model.startswith("deepseek-")
+        is_deepseek = "api.deepseek.com" in self._base_url and resolved_model.startswith(
+            "deepseek-"
         )
         if thinking is not None:
             effective_thinking = thinking
@@ -132,7 +146,7 @@ class OpenAICompatibleProvider:
         max_tokens_field = (
             "max_completion_tokens" if self._use_max_completion_tokens else "max_tokens"
         )
-        payload[max_tokens_field] = 8192
+        payload[max_tokens_field] = clamp_output_token_limit(8192)
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
         tools = _to_openai_tools(tool_schemas)
@@ -140,10 +154,9 @@ class OpenAICompatibleProvider:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -153,7 +166,19 @@ class OpenAICompatibleProvider:
 
         text = result.text
         reasoning = result.reasoning
-        tool_calls = _parse_tool_calls(result.raw_tool_calls)
+        completion_status = completion_status_from_reason(
+            result.finish_reason,
+            has_tool_calls=bool(result.raw_tool_calls),
+        )
+        if result.streamed and not result.terminal_received:
+            completion_status = "transport_error"
+        tool_calls = (
+            _parse_tool_calls(result.raw_tool_calls)
+            if completion_status in {"completed", "tool_use"}
+            else []
+        )
+        if completion_status == "completed" and tool_calls:
+            completion_status = "tool_use"
         if reasoning:
             await bus.publish(
                 LlmReasoningEvent(
@@ -186,12 +211,20 @@ class OpenAICompatibleProvider:
         )
 
         return LlmResponse(
-            stop_reason="tool_use" if tool_calls else "end_turn",
+            stop_reason=(
+                "tool_use"
+                if completion_status == "tool_use"
+                else "end_turn"
+                if completion_status == "completed"
+                else "max_tokens"
+                if completion_status == "length"
+                else completion_status
+            ),
             tool_calls=tool_calls,
             text=text,
-            thinking_blocks=(
-                [{"type": "thinking", "thinking": reasoning}] if reasoning else []
-            ),
+            completion_status=completion_status,
+            completion_reason=result.finish_reason or "",
+            thinking_blocks=([{"type": "thinking", "thinking": reasoning}] if reasoning else []),
             usage=UsageStats(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -231,10 +264,7 @@ class OpenAICompatibleProvider:
                 step,
                 exc.response.status_code,
             )
-            failure = (
-                "OpenAI-compatible request failed "
-                f"(HTTP {exc.response.status_code})"
-            )
+            failure = f"OpenAI-compatible request failed (HTTP {exc.response.status_code})"
         except httpx.HTTPError:
             log.error(
                 "openai-compatible transport failed run_id=%s step=%d",
@@ -261,12 +291,15 @@ class OpenAICompatibleProvider:
         tool_acc: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
+        finish_received = False
+        done_received = False
         async for line in response.aiter_lines():
             stripped = line.strip()
             if not stripped.startswith("data:"):
                 continue
             data_raw = stripped[5:].strip()
             if data_raw == "[DONE]":
+                done_received = True
                 break
             try:
                 chunk = json.loads(data_raw)
@@ -284,17 +317,16 @@ class OpenAICompatibleProvider:
             if not isinstance(first, dict):
                 continue
             raw_finish = first.get("finish_reason")
-            if isinstance(raw_finish, str):
-                finish_reason = raw_finish
+            if isinstance(raw_finish, str) and raw_finish.strip():
+                finish_reason = raw_finish.strip()
+                finish_received = True
             delta = first.get("delta")
             if not isinstance(delta, dict):
                 continue
             content = delta.get("content")
             if isinstance(content, str) and content:
                 text_parts.append(content)
-                await bus.publish(
-                    LlmTokenEvent(run_id=run_id, token=content, ts=_now())
-                )
+                await bus.publish(LlmTokenEvent(run_id=run_id, token=content, ts=_now()))
             reasoning = delta.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning:
                 reasoning_parts.append(reasoning)
@@ -305,9 +337,7 @@ class OpenAICompatibleProvider:
                         continue
                     raw_index = raw_call.get("index")
                     index = int(raw_index) if isinstance(raw_index, int) else 0
-                    slot = tool_acc.setdefault(
-                        index, {"id": "", "name": "", "arguments": ""}
-                    )
+                    slot = tool_acc.setdefault(index, {"id": "", "name": "", "arguments": ""})
                     call_id = raw_call.get("id")
                     if isinstance(call_id, str) and call_id:
                         slot["id"] = call_id
@@ -333,6 +363,8 @@ class OpenAICompatibleProvider:
             usage=usage,
             finish_reason=finish_reason,
             streamed=True,
+            finish_received=finish_received,
+            done_received=done_received,
         )
 
     # 从非流式完整响应提取正文、reasoning、工具调用与 usage
@@ -352,6 +384,8 @@ class OpenAICompatibleProvider:
             usage=usage if isinstance(usage, dict) else {},
             finish_reason=raw_finish if isinstance(raw_finish, str) else None,
             streamed=False,
+            finish_received=True,
+            done_received=True,
         )
 
 
@@ -451,15 +485,11 @@ def _to_openai_messages(
                 elif block.get("type") == "image":
                     data_uri = _image_block_to_data_uri(block)
                     if data_uri is not None:
-                        image_parts.append(
-                            {"type": "image_url", "image_url": {"url": data_uri}}
-                        )
+                        image_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
             if image_parts:
                 user_content: list[dict[str, object]] = []
                 if normal_parts:
-                    user_content.append(
-                        {"type": "text", "text": "\n".join(normal_parts)}
-                    )
+                    user_content.append({"type": "text", "text": "\n".join(normal_parts)})
                 user_content.extend(image_parts)
                 converted.append({"role": "user", "content": user_content})
             elif normal_parts:
@@ -490,13 +520,9 @@ def _parse_tool_calls(raw_tool_calls: list[Any]) -> list[ToolCallBlock]:
         elif isinstance(arguments_raw, dict):
             arguments = arguments_raw
         else:
-            raise RuntimeError(
-                "OpenAI-compatible provider returned invalid tool arguments"
-            )
+            raise RuntimeError("OpenAI-compatible provider returned invalid tool arguments")
         if not isinstance(arguments, dict):
-            raise RuntimeError(
-                "OpenAI-compatible tool arguments must be an object"
-            )
+            raise RuntimeError("OpenAI-compatible tool arguments must be an object")
         tool_calls.append(
             ToolCallBlock(
                 id=str(raw.get("id", "")),

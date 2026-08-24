@@ -104,6 +104,8 @@ class EditFileTool(BaseTool):
                     "old_hash": outcome.old_hash,
                     "new_hash": outcome.new_hash,
                     "bytes_written": outcome.bytes_written,
+                    "additions": outcome.additions,
+                    "deletions": outcome.deletions,
                     "diff": outcome.diff,
                     "diff_truncated": outcome.diff_truncated,
                     "checkpoint_id": outcome.checkpoint_id,

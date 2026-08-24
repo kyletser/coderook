@@ -15,6 +15,11 @@ TaskStatus = Literal[
 ]
 AttemptStatus = Literal["running", "completed", "failed", "cancelled"]
 GateStatus = Literal["pending", "passed", "failed"]
+TASK_SCHEMA_VERSION: Literal[2] = 2
+
+
+class UnsupportedTaskSchemaError(ValueError):
+    pass
 
 
 class TaskAttempt(BaseModel):
@@ -61,7 +66,7 @@ class TaskTimelineEntry(BaseModel):
 class TaskRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: int = 2
+    schema_version: Literal[2] = TASK_SCHEMA_VERSION
     id: int = Field(ge=1)
     subject: str = Field(min_length=1)
     description: str = ""
@@ -100,6 +105,16 @@ class TaskRecord(BaseModel):
     # 从 V1/V2 JSON 构造 TaskRecord，并迁移旧状态和字段名
     def from_dict(cls, data: dict[str, object]) -> TaskRecord:
         payload = dict(data)
+        raw_version = payload.get("schema_version", 1)
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            raise ValueError("invalid task schema version")
+        if raw_version > TASK_SCHEMA_VERSION:
+            raise UnsupportedTaskSchemaError(
+                f"task schema {raw_version} is newer than supported {TASK_SCHEMA_VERSION}"
+            )
+        if raw_version < 1:
+            raise ValueError(f"invalid task schema version: {raw_version}")
+        payload["schema_version"] = TASK_SCHEMA_VERSION
         task_id = int(str(payload.get("id", "0")))
         payload.pop("blocked_by", None)
         payload.pop("owner", None)
@@ -114,7 +129,6 @@ class TaskRecord(BaseModel):
         payload["status"] = {
             "in_progress": "running",
         }.get(legacy_status, legacy_status)
-        payload.setdefault("schema_version", 2)
         payload.setdefault("attempts", [])
         payload.setdefault("acceptance_criteria", [])
         payload.setdefault("gates", [])

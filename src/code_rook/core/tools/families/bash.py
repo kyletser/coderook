@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
@@ -94,6 +95,7 @@ class BashTool(BaseTool):
                     "required": ["command"],
                 },
                 capabilities=process,
+                permission_policy_aliases=("bash",),
                 approval_requirement=ApprovalRequirement.ALWAYS,
                 parallel_policy=ParallelPolicy.SERIAL,
             )
@@ -116,6 +118,7 @@ class BashTool(BaseTool):
                         "required": ["job_id"],
                     },
                     capabilities=frozenset({ToolCapability.READ}),
+                    permission_policy_aliases=("background_result",),
                     approval_requirement=ApprovalRequirement.NEVER,
                     parallel_policy=ParallelPolicy.RESOURCE_CLAIMS,
                 )
@@ -135,6 +138,7 @@ class BashTool(BaseTool):
                         "required": ["job_id"],
                     },
                     capabilities=process,
+                    permission_policy_aliases=("background_interact",),
                     approval_requirement=ApprovalRequirement.ALWAYS,
                     parallel_policy=ParallelPolicy.SERIAL,
                 )
@@ -150,6 +154,7 @@ class BashTool(BaseTool):
                         "required": ["job_id"],
                     },
                     capabilities=process,
+                    permission_policy_aliases=("background_cancel",),
                     approval_requirement=ApprovalRequirement.ALWAYS,
                     parallel_policy=ParallelPolicy.SERIAL,
                 )
@@ -254,6 +259,7 @@ def register_bash_family(
     allowed_names: set[str] | None = None,
     sandbox_plan: SandboxPlan | None = None,
     cwd: Path | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> BashTool | None:
     tools: list[BaseTool] = [shell]
     start: BackgroundStartTool | None = None
@@ -267,10 +273,11 @@ def register_bash_family(
             run_id,
             sandbox_plan,
             cwd,
+            artifact_store,
         )
-        result = BackgroundResultTool(background_registry)
-        interact = BackgroundInteractTool(background_registry)
-        cancel = BackgroundCancelTool(background_registry)
+        result = BackgroundResultTool(background_registry, session_id)
+        interact = BackgroundInteractTool(background_registry, session_id)
+        cancel = BackgroundCancelTool(background_registry, session_id)
         tools.extend(
             (
                 start,

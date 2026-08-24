@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import tempfile
 import uuid
@@ -13,12 +12,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from code_rook.core.session.model import Session
+from code_rook.core.quarantine import quarantine_invalid_file
+from code_rook.core.session.model import (
+    SESSION_ID_PATTERN,
+    Session,
+    UnsupportedSessionSchemaError,
+)
 
 logger = logging.getLogger(__name__)
 
 MessageContent = str | list[dict[str, Any]]
-_SESSION_ID_RE = re.compile(r"^sess-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -45,12 +48,22 @@ def _now() -> str:
 
 class SessionStore:
     # 初始化 session 文件存储根目录
-    def __init__(self, root: Path) -> None:
-        self._root = root.expanduser()
-        self._root.mkdir(parents=True, exist_ok=True)
+    def __init__(self, root: Path, *, initialize: bool = True) -> None:
+        self._root = root.expanduser().absolute()
+        if self._root.is_symlink() or (
+            self._root.exists() and not self._root.is_dir()
+        ):
+            raise ValueError("session state root must be a real directory")
         self._known_block_ids: dict[str, set[str]] = {}
         self._ledger_heads: dict[str, tuple[int, str]] = {}
-        self._cleanup_deleted_sessions()
+        if initialize:
+            self._root.mkdir(parents=True, exist_ok=True)
+            self._cleanup_deleted_sessions()
+
+    @property
+    # 返回 session 状态根目录，供只读一致性检查限定扫描边界
+    def root(self) -> Path:
+        return self._root
 
     def _cleanup_deleted_sessions(self) -> None:
         for tombstone in self._root.glob(".deleted-sess-*"):
@@ -61,9 +74,16 @@ class SessionStore:
 
     # 返回指定 session 的目录路径
     def session_dir(self, sid: str) -> Path:
-        if _SESSION_ID_RE.fullmatch(sid) is None:
+        if SESSION_ID_PATTERN.fullmatch(sid) is None:
             raise ValueError(f"invalid session id: {sid!r}")
-        return self._root / sid
+        path = self._root / sid
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ValueError(f"unsafe session state path: {sid!r}")
+        if path.exists() and self._root.exists() and not path.resolve().is_relative_to(
+            self._root.resolve()
+        ):
+            raise ValueError(f"session state path crosses root: {sid!r}")
+        return path
 
     # 返回指定 session 下的 runs 目录路径
     def runs_dir(self, sid: str) -> Path:
@@ -120,18 +140,43 @@ class SessionStore:
 
     # 从 meta.json 读取 session meta
     def read_meta(self, sid: str) -> Session:
-        data = json.loads((self.session_dir(sid) / "meta.json").read_text(encoding="utf-8"))
-        return Session.from_dict(data)
+        meta = self.session_dir(sid) / "meta.json"
+        if meta.is_symlink() or not meta.is_file():
+            raise ValueError("session metadata must be a real file")
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("session metadata must be an object")
+        session = Session.from_dict(data)
+        if session.id != sid:
+            raise ValueError("session id does not match its directory")
+        return session
 
-    # 扫描持久化目录，跳过损坏条目并按最近更新时间倒序返回
-    def list_sessions(self) -> list[Session]:
+    # 扫描持久化目录，隔离损坏元数据并按最近更新时间倒序返回
+    def list_sessions(self, *, quarantine_invalid: bool = True) -> list[Session]:
         sessions: list[Session] = []
         for meta_path in self._root.glob("sess-*/meta.json"):
             sid = meta_path.parent.name
             try:
                 sessions.append(self.read_meta(sid))
+            except UnsupportedSessionSchemaError:
+                logger.warning("skip unsupported future session metadata: %s", meta_path)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
-                logger.warning("skip invalid session metadata: %s", meta_path, exc_info=True)
+                quarantined = (
+                    quarantine_invalid_file(
+                        meta_path,
+                        category="session",
+                        reason="record failed strict Session validation",
+                        state_root=self._root,
+                    )
+                    if quarantine_invalid
+                    else None
+                )
+                logger.warning(
+                    "%s invalid session metadata: %s",
+                    "isolated" if quarantine_invalid else "skipped",
+                    quarantined or meta_path,
+                    exc_info=True,
+                )
         return sorted(sessions, key=lambda session: session.updated_at, reverse=True)
 
     # 追加一条 Anthropic API 消息到 thread.jsonl

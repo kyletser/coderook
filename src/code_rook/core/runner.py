@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.audit import AuditHealth
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import (
     ContextRepositoryEvent,
     LlmRouteSelectedEvent,
-    LlmUsageEvent,
+    RunFailureCategory,
     RunFinishedEvent,
+    RunOutcomeStatus,
     RunStartedEvent,
 )
 from code_rook.core.checkpoints import CheckpointStore
@@ -24,12 +25,11 @@ from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus, EventHandler
 from code_rook.core.events.writer import EventWriter
-from code_rook.core.goal import GoalService
+from code_rook.core.goal import GoalBudgetProvider, GoalService
 from code_rook.core.hooks import HookManager
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_llm_provider, create_provider_for_route
-from code_rook.core.llm.pricing import estimate_cost, get_pricing
 from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 from code_rook.core.llm.router import RoutingPolicy, select_route_id
 from code_rook.core.loop import AgentLoop
@@ -67,6 +67,33 @@ class RunOutcome:
     reason: str | None
 
 
+# 将内部运行状态归一为公开结果状态和安全失败类别
+def _public_run_outcome(
+    status: str,
+    reason: str | None,
+) -> tuple[RunOutcomeStatus, RunFailureCategory | None]:
+    if status == "success":
+        return "completed", None
+    normalized = (reason or "failed").strip().lower()
+    if normalized == "cancelled":
+        return "cancelled", "user_cancelled"
+    if normalized == "incomplete":
+        return "incomplete", "model"
+    if normalized == "content_filtered":
+        return "content_filtered", "model"
+    if normalized == "exceeded_max_steps":
+        return "failed", "model"
+    if normalized in {"transport_error", "stream_idle_timeout", "stream_wall_timeout"}:
+        return "transport_error", "network"
+    if normalized in {"permission_denied", "permission_timeout"}:
+        return "failed", "permission"
+    if normalized == "route_capability_error":
+        return "failed", "configuration"
+    if normalized.startswith("sandbox"):
+        return "failed", "sandbox"
+    return "failed", "runtime"
+
+
 class AgentRunner:
     # 组装所有运行时依赖，准备执行一次完整的 agent run
     def __init__(
@@ -90,6 +117,7 @@ class AgentRunner:
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
         goal_service: GoalService | None = None,
+        audit_health: AuditHealth | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -119,6 +147,8 @@ class AgentRunner:
         self._interaction_manager = interaction_manager
         self._route_registry = route_registry
         self._runtime = runtime_service
+        self._goal_service = goal_service
+        self._audit_health = audit_health
         self._artifact_store = ArtifactStore(
             self._workspace_boundary.root / ".coderook" / "artifacts"
         )
@@ -145,6 +175,7 @@ class AgentRunner:
             hooks=self._hooks,
             process_supervisor=process_supervisor,
             persistent_shell_pool=persistent_shell_pool,
+            env_overlay=self._config.llm.credential_overlay,
         )
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
@@ -163,6 +194,7 @@ class AgentRunner:
         checkpoint_store: CheckpointStore | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
+        authority_snapshot: AuthoritySnapshot | None = None,
     ) -> ToolRegistry:
         return self._tool_assembly.build(
             task_manager,
@@ -176,11 +208,13 @@ class AgentRunner:
             tool_whitelist=tool_whitelist,
             checkpoint_store=checkpoint_store,
             runtime_mode=runtime_mode,
+            authority_snapshot=authority_snapshot,
             supports_images=(
                 resolved_route.route.supports_images
                 if resolved_route is not None
                 else True
             ),
+            route_binding=resolved_route,
         )
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
@@ -199,6 +233,7 @@ class AgentRunner:
         tool_whitelist: list[str] | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
+        resolved_route_is_explicit: bool = False,
         initial_images: list[dict[str, object]] | None = None,
         persistent_goal_context: str = "",
     ) -> RunOutcome:
@@ -212,6 +247,16 @@ class AgentRunner:
             history = [{"role": "user", "content": goal}]
             notes = ""
         run_path.mkdir(parents=True, exist_ok=True)
+        session_id_str = session.id if session is not None else ""
+        permission_manager = self._permission_manager
+        turn_authority = (
+            permission_manager.get_authority_snapshot(session_id_str).model_copy(
+                update={"mode": runtime_mode}
+            )
+            if permission_manager is not None and session_id_str
+            else AuthoritySnapshot(mode=runtime_mode)
+        )
+        workspace_trusted = turn_authority.workspace_trust == WorkspaceTrust.TRUSTED
 
         global_ctx = load_context_file(Path("~/.coderook/context.md").expanduser())
         project_ctx = load_project_instructions(self._workspace_boundary.root)
@@ -249,8 +294,12 @@ class AgentRunner:
             project_context=project_ctx,
             runtime_context=build_runtime_context(self._workspace_boundary.root),
             capability_context=build_capability_context(
-                self._skill_loader.list_all_skills(),
-                self._agent_profile_loader.list_all(),
+                self._skill_loader.list_for_execution(
+                    workspace_trusted=workspace_trusted
+                ),
+                self._agent_profile_loader.list_for_execution(
+                    workspace_trusted=workspace_trusted
+                ),
             ),
             persistent_goal_context=persistent_goal_context,
             system_prompt_override=system_prompt_override,
@@ -292,7 +341,10 @@ class AgentRunner:
             else None
         )
 
-        async with EventWriter(run_path / "events.jsonl") as writer:
+        async with EventWriter(
+            run_path / "events.jsonl",
+            audit_health=self._audit_health,
+        ) as writer:
             writer.subscribe(bus)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
             await bus.publish(
@@ -311,9 +363,12 @@ class AgentRunner:
 
             cancelled = False
             try:
-                route_binding = resolved_route
-                if route_binding is None and self._route_registry is not None:
-                    route_binding = self._route_registry.resolve()
+                route_binding = await self.resolve_turn_binding(
+                    resolved_route=resolved_route,
+                    resolved_route_is_explicit=resolved_route_is_explicit,
+                    runtime_mode=runtime_mode,
+                    run_id=run_id,
+                )
                 if self._provider is not None:
                     provider: LLMProvider = self._provider
                 elif route_binding is not None:
@@ -350,94 +405,106 @@ class AgentRunner:
                         self._trace,
                         include_payload=self._config.trace.include_llm_payload,
                     )
-                session_id_str = session.id if session is not None else ""
+                if self._goal_service is not None and session_id_str:
+                    active_goal = self._goal_service.current(session_id_str)
+                    if (
+                        active_goal is not None
+                        and active_goal.current_run_id == run_id
+                        and active_goal.token_budget is not None
+                    ):
+                        provider = GoalBudgetProvider(
+                            provider,
+                            self._goal_service,
+                            active_goal.id,
+                        )
+                turn_authority_active = False
+                if permission_manager is not None and session_id_str:
+                    permission_manager.begin_turn(
+                        session_id_str,
+                        turn_authority,
+                    )
+                    turn_authority_active = True
                 child_runs_dir = (
                     store.runs_dir(session.id)
                     if session is not None and store is not None
                     else self._runs_dir
                 )
-                registry = self._build_registry(
-                    task_manager,
-                    session=session,
-                    store=store,
-                    run_id=run_id,
-                    provider=provider,
-                    bus=bus,
-                    child_runs_dir=child_runs_dir,
-                    session_id=session_id_str,
-                    tool_whitelist=tool_whitelist,
-                    checkpoint_store=checkpoint_store,
-                    runtime_mode=runtime_mode,
-                )
-                session_dir = (
-                    store.session_dir(session.id)
-                    if session is not None and store is not None
-                    else run_path
-                )
-                compactor = Compactor(
-                    bus,
-                    session_dir,
-                    session_id_str,
-                    store=store if session is not None else None,
-                    retain_ratio=self._config.compaction.retain_ratio,
-                )
-                loop = AgentLoop(
-                    provider, registry, bus,
-                    permission_manager=self._permission_manager,
-                    compactor=compactor,
-                    compact_threshold=self._config.compaction.auto_threshold,
-                    session_id=session_id_str,
-                    transcript=transcript,
-                    hooks=self._hooks,
-                    tool_result_limit=self._config.compaction.tool_result_limit,
-                    tool_result_keep=self._config.compaction.tool_result_keep,
-                    tool_result_summarize_threshold=(
-                        self._config.compaction.tool_result_summarize_threshold
-                    ),
-                    todo_state=task_manager,
-                    interaction_manager=self._interaction_manager,
-                    artifact_store=self._artifact_store,
-                    diagnostics_client=self._diagnostics_client,
-                    escalate_plan_thinking=(
-                        route_binding is not None
-                        and route_binding.route.thinking != "off"
-                    ),
-                    auto_step_continues=self._config.agent.max_step_continues,
-                    route_refresher=self._make_route_refresher(
-                        bus=bus,
-                        run_id=run_id,
-                        runtime_mode=runtime_mode,
-                        trace=self._trace,
-                        initial_binding=route_binding,
-                    ),
-                )
-                previous_authority = None
-                permission_manager = self._permission_manager
-                if permission_manager is not None and session_id_str:
-                    previous_authority = permission_manager.get_authority_snapshot(session_id_str)
-                    permission_manager.set_authority_snapshot(
-                        session_id_str,
-                        previous_authority.model_copy(update={"mode": runtime_mode}),
-                    )
-                if self._interaction_manager is not None:
-                    self._interaction_manager.register_run(run_id)
                 try:
+                    registry = self._build_registry(
+                        task_manager,
+                        session=session,
+                        store=store,
+                        run_id=run_id,
+                        provider=provider,
+                        bus=bus,
+                        child_runs_dir=child_runs_dir,
+                        session_id=session_id_str,
+                        tool_whitelist=tool_whitelist,
+                        checkpoint_store=checkpoint_store,
+                        runtime_mode=runtime_mode,
+                        resolved_route=route_binding,
+                        authority_snapshot=turn_authority,
+                    )
+                    session_dir = (
+                        store.session_dir(session.id)
+                        if session is not None and store is not None
+                        else run_path
+                    )
+                    compactor = Compactor(
+                        bus,
+                        session_dir,
+                        session_id_str,
+                        store=store if session is not None else None,
+                        retain_ratio=self._config.compaction.retain_ratio,
+                    )
+                    loop = AgentLoop(
+                        provider, registry, bus,
+                        permission_manager=self._permission_manager,
+                        compactor=compactor,
+                        compact_threshold=self._config.compaction.auto_threshold,
+                        session_id=session_id_str,
+                        transcript=transcript,
+                        hooks=self._hooks,
+                        tool_result_limit=self._config.compaction.tool_result_limit,
+                        tool_result_keep=self._config.compaction.tool_result_keep,
+                        tool_result_summarize_threshold=(
+                            self._config.compaction.tool_result_summarize_threshold
+                        ),
+                        todo_state=task_manager,
+                        interaction_manager=self._interaction_manager,
+                        artifact_store=self._artifact_store,
+                        diagnostics_client=self._diagnostics_client,
+                        escalate_plan_thinking=(
+                            route_binding is not None
+                            and route_binding.route.thinking != "off"
+                        ),
+                        supports_tools=(
+                            route_binding.route.supports_tools
+                            if route_binding is not None
+                            else True
+                        ),
+                        supports_parallel_tools=(
+                            route_binding.route.supports_parallel_tools
+                            if route_binding is not None
+                            else True
+                        ),
+                        supports_images=(
+                            route_binding.route.supports_images
+                            if route_binding is not None
+                            else True
+                        ),
+                        auto_step_continues=self._config.agent.max_step_continues,
+                        authority_snapshot=turn_authority,
+                    )
+                    if self._interaction_manager is not None:
+                        self._interaction_manager.register_run(run_id)
                     await loop.run(context)
                 finally:
                     if self._interaction_manager is not None:
                         self._interaction_manager.unregister_run(run_id)
-                    if previous_authority is not None:
+                    if turn_authority_active:
                         assert permission_manager is not None
-                        permission_manager.set_authority_snapshot(
-                            session_id_str,
-                            previous_authority,
-                        )
-                if context.status == "success":
-                    self._memory_store.remember_explicit_prompt(
-                        goal,
-                        source_session_id=session_id_str,
-                        source_run_id=run_id,
-                    )
+                        permission_manager.end_turn(session_id_str)
             except asyncio.CancelledError:
                 cancelled = True
                 if not context.is_done():
@@ -450,12 +517,19 @@ class AgentRunner:
                     context.mark_failed("llm_error")
 
             # 后台 subagent 由 daemon 级 registry 管理生命周期，不在此处清理。
+            public_outcome, failure_category = _public_run_outcome(
+                context.status,
+                context.reason,
+            )
             await bus.publish(
                 RunFinishedEvent(
                     run_id=run_id,
                     status=context.status,
                     reason=context.reason,
                     steps=context.step,
+                    outcome=public_outcome,
+                    failure_category=failure_category,
+                    result_summary=context.result.strip()[:4_000] or None,
                     ts=_now(),
                 )
             )
@@ -472,20 +546,24 @@ class AgentRunner:
             reason=context.reason,
         )
 
-    # 构造 per-turn 路由刷新回调：仅在配置了非 static 路由且存在 route registry 时启用；
-    # 每步根据策略选目标路由，模型或路由发生变化时重建 provider 并重新发布 route_selected 事件
-    def _make_route_refresher(
+    # 在 Turn 启动前选择并冻结完整路由绑定，运行中配置变化只影响下一 Turn
+    async def resolve_turn_binding(
         self,
         *,
-        bus: EventBus,
-        run_id: str,
+        resolved_route: ResolvedRoute | None,
+        resolved_route_is_explicit: bool = False,
         runtime_mode: RuntimeMode,
-        trace: TraceWriter | None,
-        initial_binding: ResolvedRoute | None,
-    ) -> Callable[[int], Awaitable[LLMProvider | None]] | None:
+        run_id: str,
+    ) -> ResolvedRoute | None:
+        if resolved_route is not None and resolved_route_is_explicit:
+            return resolved_route
+        registry = self._route_registry
+        if registry is None:
+            return resolved_route
+        active = resolved_route or registry.resolve()
         llm = self._config.llm
-        if self._route_registry is None or llm.router == "static":
-            return None
+        if llm.router == "static":
+            return active
         policy = RoutingPolicy(
             strategy=llm.router,
             plan_route_id=llm.router_plan_route,
@@ -493,106 +571,17 @@ class AgentRunner:
             cost_budget_usd=llm.router_cost_budget,
             cost_fallback_route_id=llm.router_cost_fallback,
         )
-        # 记录当前绑定键（route_id + model）与累计成本，供每步决策增量比较
-        current_key: str = self._binding_key(initial_binding)
         accumulated_cost: float = 0.0
-
-        # 无 durable runtime 的独立 runner 才订阅内存用量，生产 daemon 读取统一 usage 投影
-        async def _on_usage(event: object) -> None:
-            nonlocal accumulated_cost
-            if not isinstance(event, LlmUsageEvent) or event.run_id != run_id:
-                return
-            pricing = get_pricing(event.model or llm.default_model)
-            if pricing is None:
-                return
-            accumulated_cost += estimate_cost(
-                pricing,
-                input_tokens=event.input_tokens,
-                output_tokens=event.output_tokens,
-                cache_read_tokens=event.cache_read_input_tokens,
-                cache_write_tokens=event.cache_creation_input_tokens,
-            )
-
-        if policy.strategy == "cost_budget" and self._runtime is None:
-            bus.subscribe(_on_usage)
-
-        # 在每步 provider.chat 前被 loop 调用；返回新 provider 表示需要切换
-        async def _refresh(_step: int) -> LLMProvider | None:
-            nonlocal current_key, accumulated_cost
-            registry = self._route_registry
-            if registry is None:
-                return None
-            if policy.strategy == "cost_budget" and self._runtime is not None:
-                durable_cost = await self._runtime.get_estimated_cost(run_id)
-                if durable_cost is not None:
-                    accumulated_cost = durable_cost
-            res = registry.resolve()
-            target_route_id = select_route_id(
-                policy,
-                mode=runtime_mode,
-                step=_step,
-                cost_usd=accumulated_cost,
-            )
-            binding = res
-            if target_route_id is not None and target_route_id != res.route.id:
-                binding = registry.resolve(target_route_id)
-            new_key = f"{binding.route.id}:{binding.route.model}"
-            receipt = binding.receipt
-            if policy.strategy == "cost_budget":
-                reason = (
-                    "cost_budget_exceeded"
-                    if target_route_id is not None
-                    else "cost_budget_within_limit"
-                )
-            elif policy.strategy == "rule_based":
-                reason = (
-                    "rule_based_plan"
-                    if runtime_mode == RuntimeMode.PLAN and target_route_id is not None
-                    else "rule_based_act"
-                    if target_route_id is not None
-                    else "rule_based_active_fallback"
-                )
-            else:
-                reason = "active_route"
-            await bus.publish(
-                LlmRouteSelectedEvent(
-                    run_id=run_id,
-                    route_id=receipt.route_id,
-                    wire_format=receipt.wire_format,
-                    base_url_origin=receipt.base_url_origin,
-                    model=receipt.model,
-                    credential_source=receipt.credential_source,
-                    strategy=policy.strategy,
-                    candidates=registry.candidate_ids(),
-                    reason=reason,
-                    step=_step,
-                    accumulated_cost_usd=accumulated_cost,
-                    cost_budget_usd=(
-                        policy.cost_budget_usd
-                        if policy.strategy == "cost_budget"
-                        else None
-                    ),
-                    temperature=receipt.temperature,
-                    ts=_now(),
-                )
-            )
-            if new_key == current_key:
-                return None
-            current_key = new_key
-            provider = create_provider_for_route(binding.route, binding.credential)
-            if trace is not None:
-                provider = TracingProvider(
-                    provider,
-                    trace,
-                    include_payload=self._config.trace.include_llm_payload,
-                )
-            return provider
-
-        return _refresh
-
-    # 生成初始绑定的键；无绑定（纯配置路径）用空键占位
-    @staticmethod
-    def _binding_key(binding: ResolvedRoute | None) -> str:
-        if binding is None:
-            return ""
-        return f"{binding.route.id}:{binding.route.model}"
+        if policy.strategy == "cost_budget" and self._runtime is not None:
+            durable_cost = await self._runtime.get_estimated_cost(run_id)
+            if durable_cost is not None:
+                accumulated_cost = durable_cost
+        target_route_id = select_route_id(
+            policy,
+            mode=runtime_mode,
+            step=1,
+            cost_usd=accumulated_cost,
+        )
+        if target_route_id is None or target_route_id == active.route.id:
+            return active
+        return registry.resolve(target_route_id)

@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
+import json
+import os
 import re
 import subprocess
 import threading
+from collections import deque
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from code_rook.core.processes import sanitized_shell_environment
+from code_rook.core.repository.test_commands import (
+    TestCommandDiscovery,
+    discover_test_commands,
+)
 from code_rook.core.tools.builtin._search import (
     MAX_SEARCH_FILE_BYTES,
     iter_workspace_files,
@@ -74,17 +85,22 @@ _SENSITIVE_NAMES = {
     "ipc-token",
     "runtime.db",
 }
-_QUERY_TERM = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,}")
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_QUERY_TERM = re.compile(r"(?:_|[^\W\d])\w*", re.UNICODE)
+_GENERIC_IDENTIFIER = r"(?:[$_]|[^\W\d])[\w$]*"
 _GENERIC_SYMBOLS = (
-    re.compile(r"\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)"),
-    re.compile(r"\b(?:export\s+)?(?:class|interface|enum|trait|struct)\s+([A-Za-z_$][\w$]*)"),
-    re.compile(r"\b(?:export\s+)?(?:const|let|var|type)\s+([A-Za-z_$][\w$]*)"),
-    re.compile(r"\bfn\s+([A-Za-z_][\w]*)\s*\(([^)]*)\)"),
-    re.compile(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_][\w]*)\s*\(([^)]*)\)"),
+    re.compile(rf"\b(?:export\s+)?(?:async\s+)?function\s+({_GENERIC_IDENTIFIER})\s*\(([^)]*)\)"),
+    re.compile(rf"\b(?:export\s+)?(?:class|interface|enum|trait|struct)\s+({_GENERIC_IDENTIFIER})"),
+    re.compile(rf"\b(?:export\s+)?(?:const|let|var|type)\s+({_GENERIC_IDENTIFIER})"),
+    re.compile(rf"\bfn\s+({_GENERIC_IDENTIFIER})\s*\(([^)]*)\)"),
+    re.compile(rf"\bfunc\s+(?:\([^)]*\)\s*)?({_GENERIC_IDENTIFIER})\s*\(([^)]*)\)"),
 )
-_IMPORT_PATTERN = re.compile(
-    r"(?:from\s+['\"]([^'\"]+)['\"]|require\(\s*['\"]([^'\"]+)['\"]\s*\))"
+_IMPORT_PATTERN = re.compile(r"(?:from\s+['\"]([^'\"]+)['\"]|require\(\s*['\"]([^'\"]+)['\"]\s*\))")
+_CACHE_VERSION = 2
+_MAX_CACHE_BYTES = 32 * 1024 * 1024
+_MAX_SYMBOLS_PER_FILE = 128
+_MAX_IMPORTS_PER_FILE = 128
+_MONOREPO_CONTAINERS = frozenset(
+    {"apps", "crates", "libs", "modules", "packages", "plugins", "services"}
 )
 
 
@@ -119,6 +135,9 @@ class RepositorySnapshot:
     cache_hits: int
     parsed_files: int
     truncated: bool = False
+    partition_count: int = 0
+    indexed_partitions: tuple[str, ...] = ()
+    persistent_cache_hits: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,8 +154,161 @@ class ContextSelection:
 
 @dataclass(frozen=True)
 class _CachedFile:
-    signature: tuple[int, int]
+    signature: tuple[int, int, int]
     file: RepositoryFile
+
+
+# 为 Git 仓库选择不进入工作树的默认持久缓存，非 Git 目录回退到用户缓存
+def _default_cache_path(root: Path) -> Path:
+    git_directory = root / ".git"
+    if git_directory.is_dir() and not git_directory.is_symlink():
+        return git_directory / "coderook" / "repository-index-v2.json"
+    fingerprint = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:20]
+    return Path("~/.coderook/cache/repositories").expanduser() / f"{fingerprint}.json"
+
+
+# 把文件索引转换为不含源码正文的持久缓存对象
+def _repository_file_payload(repository_file: RepositoryFile) -> dict[str, object]:
+    return {
+        "path": repository_file.path,
+        "language": repository_file.language,
+        "size": repository_file.size,
+        "content_hash": repository_file.content_hash,
+        "symbols": [symbol.__dict__ for symbol in repository_file.symbols],
+        "imports": list(repository_file.imports),
+    }
+
+
+# 从持久缓存对象严格恢复文件摘要，字段损坏时拒绝该条目
+def _repository_file_from_payload(payload: object) -> RepositoryFile | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        symbols_raw = payload.get("symbols", [])
+        if not isinstance(symbols_raw, list):
+            return None
+        symbols = tuple(
+            RepositorySymbol(
+                name=str(item["name"]),
+                kind=str(item["kind"]),
+                path=str(item["path"]),
+                line=int(item["line"]),
+                end_line=int(item["end_line"]),
+                signature=str(item["signature"]),
+                parent=str(item.get("parent", "")),
+                reference_count=int(item.get("reference_count", 0)),
+            )
+            for item in symbols_raw
+            if isinstance(item, dict)
+        )
+        imports_raw = payload.get("imports", [])
+        if not isinstance(imports_raw, list):
+            return None
+        return RepositoryFile(
+            path=str(payload["path"]),
+            language=str(payload.get("language", "")),
+            size=int(payload["size"]),
+            content_hash=str(payload["content_hash"]),
+            symbols=symbols,
+            imports=tuple(str(value) for value in imports_raw),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+# 按 monorepo 常见容器的第二级目录划分索引分区
+def _partition_key(relative: str) -> str:
+    parts = Path(relative).parts
+    if not parts:
+        return "."
+    first = parts[0]
+    if len(parts) == 1:
+        return "."
+    if first.casefold() in _MONOREPO_CONTAINERS and len(parts) >= 3:
+        return f"{first}/{parts[1]}"
+    return first
+
+
+# 在分区与全局双重上限内轮询选取文件，避免字典序靠前包独占索引
+def _select_partitioned_candidates(
+    candidates: Iterable[tuple[Path, str]],
+    *,
+    max_files: int,
+    max_files_per_partition: int,
+) -> tuple[list[tuple[Path, str]], bool, tuple[str, ...]]:
+    partitions: dict[str, deque[tuple[Path, str]]] = {}
+    stored = 0
+    truncated = False
+    for candidate in candidates:
+        key = _partition_key(candidate[1])
+        bucket = partitions.get(key)
+        bucket_size = len(bucket) if bucket is not None else 0
+        if bucket_size >= max_files_per_partition:
+            truncated = True
+            continue
+        if stored >= max_files:
+            donors = (
+                (name, values)
+                for name, values in partitions.items()
+                if name != key and len(values) > bucket_size + 1
+            )
+            donor = max(
+                donors,
+                key=lambda item: (len(item[1]), item[0].casefold(), item[0]),
+                default=None,
+            )
+            if donor is None:
+                truncated = True
+                continue
+            donor[1].pop()
+            stored -= 1
+            truncated = True
+        if bucket is None:
+            bucket = partitions.setdefault(key, deque())
+        bucket.append(candidate)
+        stored += 1
+    for bucket in partitions.values():
+        ordered = sorted(bucket, key=lambda item: (item[1].casefold(), item[1]))
+        bucket.clear()
+        bucket.extend(ordered)
+    selected: list[tuple[Path, str]] = []
+    active = deque(sorted(partitions, key=lambda value: (value.casefold(), value)))
+    while active and len(selected) < max_files:
+        key = active.popleft()
+        bucket = partitions[key]
+        selected.append(bucket.popleft())
+        if bucket:
+            active.append(key)
+    if active or any(partitions[key] for key in partitions):
+        truncated = True
+    selected.sort(key=lambda item: (item[1].casefold(), item[1]))
+    indexed = tuple(
+        sorted(
+            {_partition_key(relative) for _path, relative in selected},
+            key=lambda value: (value.casefold(), value),
+        )
+    )
+    return selected, truncated, indexed
+
+
+# 按 NUL 分隔符迭代 Git 原始输出而不复制全部路径记录
+def _iter_nul_records(raw: bytes) -> Iterator[bytes]:
+    start = 0
+    while start < len(raw):
+        end = raw.find(b"\0", start)
+        if end < 0:
+            end = len(raw)
+        if end > start:
+            yield raw[start:end]
+        start = end + 1
+
+
+# 按 NUL 边界严格解码 Git 路径，拒绝损坏字节而不制造替换字符碰撞
+def _decode_git_path(value: bytes) -> str | None:
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 # 返回文件扩展名对应的稳定语言名称
@@ -155,7 +327,7 @@ def _python_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     rendered = f"{prefix} {node.name}({ast.unparse(node.args)})"
     if node.returns is not None:
         rendered += f" -> {ast.unparse(node.returns)}"
-    return rendered
+    return rendered[:500]
 
 
 # 解析 Python 顶层与类成员符号、导入依赖和近似引用计数
@@ -181,6 +353,8 @@ def _parse_python(path: str, text: str) -> tuple[tuple[RepositorySymbol, ...], t
     # 递归收集类、函数和异步函数，并保留父级限定名
     def _visit(nodes: list[ast.stmt], parent: str = "") -> None:
         for node in nodes:
+            if len(symbols) >= _MAX_SYMBOLS_PER_FILE:
+                return
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     imports.add(node.module)
@@ -217,13 +391,18 @@ def _parse_python(path: str, text: str) -> tuple[tuple[RepositorySymbol, ...], t
                 )
 
     _visit(tree.body)
-    return tuple(symbols), tuple(sorted(imports, key=str.casefold))
+    return (
+        tuple(symbols),
+        tuple(sorted(imports, key=str.casefold)[:_MAX_IMPORTS_PER_FILE]),
+    )
 
 
 # 用轻量语法模式为常见非 Python 语言提取声明与模块依赖
 def _parse_generic(path: str, text: str) -> tuple[tuple[RepositorySymbol, ...], tuple[str, ...]]:
     symbols: list[RepositorySymbol] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
+        if len(symbols) >= _MAX_SYMBOLS_PER_FILE:
+            break
         for pattern in _GENERIC_SYMBOLS:
             match = pattern.search(line)
             if match is None:
@@ -245,15 +424,17 @@ def _parse_generic(path: str, text: str) -> tuple[tuple[RepositorySymbol, ...], 
                     line=line_number,
                     end_line=line_number,
                     signature=signature,
-                    reference_count=max(0, len(re.findall(rf"\b{re.escape(name)}\b", text)) - 1),
+                    reference_count=max(0, text.count(name) - 1),
                 )
             )
             break
     imports = {
-        next(group for group in match.groups() if group)
-        for match in _IMPORT_PATTERN.finditer(text)
+        next(group for group in match.groups() if group) for match in _IMPORT_PATTERN.finditer(text)
     }
-    return tuple(symbols), tuple(sorted(imports, key=str.casefold))
+    return (
+        tuple(symbols),
+        tuple(sorted(imports, key=str.casefold)[:_MAX_IMPORTS_PER_FILE]),
+    )
 
 
 # 为单个工作区文件生成语言、hash、符号和依赖摘要
@@ -286,8 +467,18 @@ def _parse_file(path: Path, relative: str) -> RepositoryFile | None:
 def _git_bytes(root: Path, *args: str) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args],
+            [
+                "git",
+                "-c",
+                "core.quotepath=false",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                *args,
+            ],
             cwd=root,
+            env=sanitized_shell_environment(),
             check=False,
             capture_output=True,
             timeout=5,
@@ -309,11 +500,47 @@ def _is_indexable_path(relative: str) -> bool:
     return name in _TEXT_NAMES or path.suffix.casefold() in _TEXT_EXTENSIONS
 
 
+# 把 Git NUL 路径流转换为工作区内、尺寸受限的索引候选
+def _git_repository_candidates(
+    boundary: WorkspaceBoundary,
+    raw: bytes,
+) -> Iterator[tuple[Path, str]]:
+    for value in _iter_nul_records(raw):
+        relative = _decode_git_path(value)
+        if relative is None or not _is_indexable_path(relative):
+            continue
+        try:
+            path = boundary.resolve(relative)
+            if path.is_file() and path.stat().st_size <= MAX_SEARCH_FILE_BYTES:
+                yield path, relative
+        except (OSError, PermissionError):
+            continue
+
+
+# 以统一忽略规则流式产生非 Git 工作区候选并排除超大文件
+def _workspace_repository_candidates(
+    boundary: WorkspaceBoundary,
+) -> Iterator[tuple[Path, str]]:
+    for path, relative in iter_workspace_files(
+        boundary,
+        boundary.root,
+        include_hidden=True,
+    ):
+        if not _is_indexable_path(relative):
+            continue
+        try:
+            if path.stat().st_size <= MAX_SEARCH_FILE_BYTES:
+                yield path, relative
+        except OSError:
+            continue
+
+
 # 优先返回 Git 已跟踪与未忽略文件，非 Git 工作区回退统一忽略规则
 def _repository_files(
     boundary: WorkspaceBoundary,
     max_files: int,
-) -> tuple[list[tuple[Path, str]], bool]:
+    max_files_per_partition: int,
+) -> tuple[list[tuple[Path, str]], bool, tuple[str, ...]]:
     raw = _git_bytes(
         boundary.root,
         "ls-files",
@@ -322,78 +549,209 @@ def _repository_files(
         "--exclude-standard",
         "-z",
     )
-    candidates: list[tuple[Path, str]] = []
     if raw:
-        for value in raw.split(b"\0"):
-            if not value:
-                continue
-            relative = value.decode("utf-8", errors="replace").replace("\\", "/")
-            if not _is_indexable_path(relative):
-                continue
-            try:
-                path = boundary.resolve(relative)
-                if path.is_file() and path.stat().st_size <= MAX_SEARCH_FILE_BYTES:
-                    candidates.append((path, relative))
-            except (OSError, PermissionError):
-                continue
+        candidates: Iterable[tuple[Path, str]] = _git_repository_candidates(boundary, raw)
     else:
-        candidates.extend(
-            (path, relative)
-            for path, relative in iter_workspace_files(
-                boundary,
-                boundary.root,
-                include_hidden=True,
-            )
-            if _is_indexable_path(relative)
-        )
-    candidates.sort(key=lambda item: (item[1].casefold(), item[1]))
-    return candidates[:max_files], len(candidates) > max_files
+        candidates = _workspace_repository_candidates(boundary)
+    return _select_partitioned_candidates(
+        candidates,
+        max_files=max_files,
+        max_files_per_partition=max_files_per_partition,
+    )
+
+
+# 解析 porcelain v1 的 NUL 格式并正确跳过 rename/copy 的第二路径字段
+def _parse_git_status_paths(raw: bytes) -> tuple[str, ...]:
+    records = iter(_iter_nul_records(raw))
+    changed: set[str] = set()
+    for record in records:
+        if len(record) < 4 or record[2:3] != b" ":
+            continue
+        status = record[:2].decode("ascii", errors="ignore")
+        relative = _decode_git_path(record[3:])
+        if relative:
+            changed.add(relative)
+        if "R" in status or "C" in status:
+            next(records, None)
+    return tuple(sorted(changed, key=lambda value: (value.casefold(), value)))
 
 
 # 读取当前提交和脏工作区路径，供上下文排序与缓存收据使用
 def _git_state(root: Path) -> tuple[str, tuple[str, ...]]:
     head = _git_bytes(root, "rev-parse", "HEAD").decode("ascii", errors="replace").strip()
-    status = _git_bytes(root, "status", "--porcelain=v1", "--untracked-files=all")
-    changed: set[str] = set()
-    for raw_line in status.decode("utf-8", errors="replace").splitlines():
-        value = raw_line[3:] if len(raw_line) > 3 else ""
-        if " -> " in value:
-            value = value.split(" -> ", 1)[1]
-        value = value.strip('"').replace("\\", "/")
-        if value:
-            changed.add(value)
-    return head, tuple(sorted(changed, key=str.casefold))
+    status = _git_bytes(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    return head, _parse_git_status_paths(status)
 
 
 class RepositoryIndex:
-    # 初始化 daemon 内共享的增量索引，不向工作区写隐藏缓存
-    def __init__(self, boundary: WorkspaceBoundary, *, max_files: int = 5_000) -> None:
+    # 初始化分区有界索引并从不含源码正文的持久缓存恢复文件摘要
+    def __init__(
+        self,
+        boundary: WorkspaceBoundary,
+        *,
+        max_files: int = 5_000,
+        max_files_per_partition: int | None = None,
+        cache_path: Path | None = None,
+    ) -> None:
+        if max_files < 1:
+            raise ValueError("max_files must be positive")
+        partition_limit = (
+            min(1_000, max_files) if max_files_per_partition is None else max_files_per_partition
+        )
+        if partition_limit < 1:
+            raise ValueError("max_files_per_partition must be positive")
         self._boundary = boundary
         self._max_files = max_files
-        self._cache: dict[str, _CachedFile] = {}
+        self._max_files_per_partition = partition_limit
+        self._cache_path = cache_path or _default_cache_path(boundary.root)
+        self._cache = self._load_persistent_cache()
+        self._persistent_entries = set(self._cache)
         self._snapshot: RepositorySnapshot | None = None
         self._lock = threading.RLock()
+        self._prewarm_task: asyncio.Task[RepositorySnapshot] | None = None
+
+    # 返回当前索引使用的持久缓存路径，便于诊断和测试隔离
+    @property
+    def cache_path(self) -> Path:
+        return self._cache_path
+
+    # 从有界 JSON 文档恢复合法缓存条目，任何损坏均安全回退为空缓存
+    def _load_persistent_cache(self) -> dict[str, _CachedFile]:
+        try:
+            if not self._cache_path.is_file() or self._cache_path.stat().st_size > _MAX_CACHE_BYTES:
+                return {}
+            payload: Any = json.loads(self._cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != _CACHE_VERSION
+            or payload.get("root") != str(self._boundary.root)
+            or not isinstance(payload.get("files"), list)
+        ):
+            return {}
+        restored: dict[str, _CachedFile] = {}
+        for item in payload["files"][: self._max_files]:
+            if not isinstance(item, dict):
+                continue
+            signature = item.get("signature")
+            repository_file = _repository_file_from_payload(item.get("file"))
+            if repository_file is None or not isinstance(signature, list) or len(signature) != 3:
+                continue
+            try:
+                restored[repository_file.path] = _CachedFile(
+                    (
+                        int(signature[0]),
+                        int(signature[1]),
+                        int(signature[2]),
+                    ),
+                    repository_file,
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return restored
+
+    # 原子保存文件摘要和 stat 签名，不持久化任何源码正文
+    def _save_persistent_cache(self, cache: dict[str, _CachedFile]) -> None:
+        entries: list[dict[str, object]] = []
+        used_bytes = 256
+        for _path, cached in sorted(
+            cache.items(),
+            key=lambda item: (item[0].casefold(), item[0]),
+        ):
+            entry: dict[str, object] = {
+                "signature": list(cached.signature),
+                "file": _repository_file_payload(cached.file),
+            }
+            entry_bytes = len(
+                json.dumps(
+                    entry,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            if used_bytes + entry_bytes + 1 > _MAX_CACHE_BYTES:
+                break
+            entries.append(entry)
+            used_bytes += entry_bytes + 1
+        payload = {
+            "version": _CACHE_VERSION,
+            "root": str(self._boundary.root),
+            "files": entries,
+            "truncated": len(entries) < len(cache),
+        }
+        temporary = self._cache_path.with_name(
+            f".{self._cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            temporary.replace(self._cache_path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    # 清理由当前实例创建且已完成的预热任务引用
+    def _clear_prewarm_task(self, task: asyncio.Task[RepositorySnapshot]) -> None:
+        if self._prewarm_task is task:
+            self._prewarm_task = None
+
+    # 在当前事件循环启动去重的后台预热，不阻塞调用方
+    def start_prewarm(self) -> asyncio.Task[RepositorySnapshot]:
+        current = self._prewarm_task
+        if current is not None and not current.done():
+            return current
+        task = asyncio.create_task(
+            asyncio.to_thread(self.refresh),
+            name="coderook-repository-prewarm",
+        )
+        self._prewarm_task = task
+        task.add_done_callback(self._clear_prewarm_task)
+        return task
+
+    # 等待共享后台预热完成并返回所得快照
+    async def prewarm(self) -> RepositorySnapshot:
+        return await asyncio.shield(self.start_prewarm())
 
     # 按 mtime/size 复用解析结果，并以每文件内容 hash 生成工作区版本
     def refresh(self) -> RepositorySnapshot:
         with self._lock:
-            candidates, truncated = _repository_files(self._boundary, self._max_files)
+            candidates, truncated, indexed_partitions = _repository_files(
+                self._boundary,
+                self._max_files,
+                self._max_files_per_partition,
+            )
             head, changed_paths = _git_state(self._boundary.root)
             files: list[RepositoryFile] = []
             next_cache: dict[str, _CachedFile] = {}
             cache_hits = 0
+            persistent_cache_hits = 0
             parsed_files = 0
             for path, relative in candidates:
                 try:
                     stat = path.stat()
                 except OSError:
                     continue
-                signature = (stat.st_mtime_ns, stat.st_size)
+                signature = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
                 cached = self._cache.get(relative)
                 repository_file: RepositoryFile | None
                 if cached is not None and cached.signature == signature:
                     repository_file = cached.file
                     cache_hits += 1
+                    if relative in self._persistent_entries:
+                        persistent_cache_hits += 1
                 else:
                     repository_file = _parse_file(path, relative)
                     parsed_files += 1
@@ -414,14 +772,30 @@ class RepositoryIndex:
                 cache_hits=cache_hits,
                 parsed_files=parsed_files,
                 truncated=truncated,
+                partition_count=len(indexed_partitions),
+                indexed_partitions=indexed_partitions,
+                persistent_cache_hits=persistent_cache_hits,
             )
             self._cache = next_cache
+            self._persistent_entries.clear()
             self._snapshot = snapshot
+            self._save_persistent_cache(next_cache)
             return snapshot
 
     # 返回最近快照，尚未索引时立即构建
     def snapshot(self) -> RepositorySnapshot:
         return self._snapshot or self.refresh()
+
+    # 有界发现多语言项目测试命令，仅返回候选和 manifest 来源
+    def test_commands(
+        self,
+        *,
+        max_candidates: int = 100,
+    ) -> TestCommandDiscovery:
+        return discover_test_commands(
+            self._boundary,
+            max_candidates=max_candidates,
+        )
 
     # 按名称、限定名和路径执行确定性符号搜索
     def search_symbols(self, query: str, *, limit: int = 50) -> tuple[RepositorySymbol, ...]:
@@ -461,7 +835,7 @@ class RepositoryIndex:
         path: str = ".",
         limit: int = 100,
     ) -> tuple[dict[str, object], ...]:
-        if not _IDENTIFIER.fullmatch(symbol):
+        if not symbol.isidentifier():
             raise ValueError("symbol must be a plain identifier")
         search_root = self._boundary.resolve(path)
         expression = re.compile(rf"\b{re.escape(symbol)}\b")
@@ -534,7 +908,8 @@ class RepositoryIndex:
             "## Repository Map\n"
             f"- version: `{snapshot.worktree_hash}`; head: `{snapshot.head or 'unversioned'}`\n"
             f"- indexed files: {len(snapshot.files)}; changed: {len(snapshot.changed_paths)}; "
-            f"cache hits: {snapshot.cache_hits}; parsed: {snapshot.parsed_files}\n"
+            f"partitions: {snapshot.partition_count}; cache hits: {snapshot.cache_hits} "
+            f"(persistent: {snapshot.persistent_cache_hits}); parsed: {snapshot.parsed_files}\n"
             "- summaries below are selected for the current request; "
             "use Repository/File tools for source text.\n"
         )
@@ -543,9 +918,7 @@ class RepositoryIndex:
         selection_reasons: list[dict[str, object]] = []
         for score, repository_file, reasons in ranked:
             symbol_text = (
-                "; ".join(
-                    symbol.signature for symbol in repository_file.symbols[:12]
-                )
+                "; ".join(symbol.signature for symbol in repository_file.symbols[:12])
                 or "no indexed symbols"
             )
             imports = ", ".join(repository_file.imports[:8])

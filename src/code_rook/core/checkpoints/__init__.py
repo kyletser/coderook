@@ -3,6 +3,7 @@ from code_rook.core.checkpoints.store import (
     CheckpointInfo,
     CheckpointStore,
     RewindOutcome,
+    RewindPreview,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "CheckpointInfo",
     "CheckpointStore",
     "RewindOutcome",
+    "RewindPreview",
 ]

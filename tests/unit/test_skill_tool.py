@@ -26,7 +26,7 @@ def _write_skill(root: Path) -> None:
 # 设计：创建项目级 Skill 后检查 enum 和工具描述，覆盖自然语言描述驱动发现入口
 def test_skill_tool_exposes_available_metadata(tmp_path: Path) -> None:
     _write_skill(tmp_path)
-    tool = SkillTool(SkillLoader(tmp_path))
+    tool = SkillTool(SkillLoader(tmp_path), workspace_trusted=True)
 
     properties = tool.input_schema["properties"]
     assert isinstance(properties, dict)
@@ -40,7 +40,7 @@ def test_skill_tool_exposes_available_metadata(tmp_path: Path) -> None:
 # 设计：直接调用工具并检查正文、参数和声明工具，确认渐进式加载结果完整
 async def test_skill_tool_loads_instructions_on_demand(tmp_path: Path) -> None:
     _write_skill(tmp_path)
-    tool = SkillTool(SkillLoader(tmp_path))
+    tool = SkillTool(SkillLoader(tmp_path), workspace_trusted=True)
 
     result = await tool.invoke(
         {"name": "desktop-inventory", "arguments": "AI agent tools"}
@@ -59,3 +59,38 @@ async def test_skill_tool_rejects_unknown_name(tmp_path: Path) -> None:
     assert result.is_error
     assert result.error_type == "runtime_error"
     assert "Unknown skill" in result.content
+
+
+# 功能：未信任 workspace 的项目 Skill 名称、描述和正文都不能进入模型工具契约
+# 设计：先构造带唯一敏感标记的项目 Skill，再同时检查 schema、description 和直接调用结果
+async def test_skill_tool_hides_project_metadata_when_workspace_untrusted(
+    tmp_path: Path,
+) -> None:
+    _write_skill(tmp_path)
+    tool = SkillTool(SkillLoader(tmp_path), workspace_trusted=False)
+
+    serialized_schema = str(tool.input_schema)
+    result = await tool.invoke({"name": "desktop-inventory"})
+
+    assert "desktop-inventory" not in serialized_schema
+    assert "Inspect locally installed AI applications" not in tool.description
+    assert "Inspect the host" not in result.content
+    assert result.is_error
+
+
+# 功能：可信项目 Skill 在发现后发生内容变更时必须拒绝执行
+# 设计：先构建工具冻结发现 digest，再修改正文并直接调用，覆盖 schema 到 invoke 的 TOCTOU 窗口
+async def test_skill_tool_fails_closed_when_digest_changes_after_discovery(
+    tmp_path: Path,
+) -> None:
+    _write_skill(tmp_path)
+    loader = SkillLoader(tmp_path)
+    tool = SkillTool(loader, workspace_trusted=True)
+    entry = tmp_path / ".coderook" / "skills" / "desktop-inventory" / "SKILL.md"
+    entry.write_text(entry.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+
+    result = await tool.invoke({"name": "desktop-inventory"})
+
+    assert result.is_error
+    assert result.error_type == "integrity_error"
+    assert "digest changed after discovery" in result.content

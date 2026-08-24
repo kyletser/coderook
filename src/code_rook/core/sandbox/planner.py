@@ -131,7 +131,17 @@ class _BaseBackend:
         request: SandboxSpawnRequest,
         supervisor: ProcessSupervisor | None,
     ) -> asyncio.subprocess.Process:
-        from code_rook.core.processes import create_shell_process
+        from code_rook.core.processes import (
+            create_shell_process,
+            sanitized_shell_environment,
+        )
+
+        process_env = sanitized_shell_environment(request.env)
+        if plan.enforced and plan.capability.kind in {
+            "linux_bwrap",
+            "macos_seatbelt",
+        }:
+            process_env["HOME"] = "/tmp/coderook-home"
 
         if request.argv:
             argv = (
@@ -144,7 +154,7 @@ class _BaseBackend:
                     *argv,
                     label=request.label,
                     cwd=request.cwd,
-                    env=request.env,
+                    env=process_env,
                     stdin=request.stdin,
                     stdout=request.stdout,
                     stderr=request.stderr,
@@ -152,7 +162,7 @@ class _BaseBackend:
             return await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=request.cwd,
-                env=request.env,
+                env=process_env,
                 stdin=request.stdin,
                 stdout=request.stdout,
                 stderr=request.stderr,
@@ -166,11 +176,13 @@ class _BaseBackend:
                 label=request.label,
                 cwd=request.cwd,
                 interactive_stdin=request.interactive_stdin,
+                env=process_env,
             )
         return await create_shell_process(
             command,
             request.cwd,
             interactive_stdin=request.interactive_stdin,
+            env=process_env,
         )
 
     # 返回计划自身的稳定说明，供审计和 receipt 持久化
@@ -338,7 +350,39 @@ async def spawn_sandboxed_shell(
     return await backend.spawn(effective_plan, request, supervisor)
 
 
-# 构建 bwrap argv：整机只读覆盖，workspace_write 时仅工作区与临时目录可写
+# 返回 bwrap 内允许只读挂载的系统运行时路径，避免暴露整个 /etc
+def _bwrap_system_roots() -> list[str]:
+    candidates = [
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+        "/etc/pki",
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/passwd",
+        "/etc/group",
+        "/etc/localtime",
+        "/etc/timezone",
+    ]
+    return [path for path in candidates if Path(path).exists()]
+
+
+# 返回 bwrap 创建工作区挂载点前所需的空父目录
+def _bwrap_workspace_parents(workspace: str) -> list[str]:
+    resolved = Path(workspace).resolve()
+    parents = list(reversed(resolved.parents))
+    return [str(path) for path in parents if str(path) not in {"/", "."}]
+
+
+# 构建 bwrap argv：仅挂载系统运行时与工作区，宿主 Home 和根文件系统不可见
 def build_bwrap_argv(
     workspace: str,
     *,
@@ -351,18 +395,27 @@ def build_bwrap_argv(
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
-        "--ro-bind", "/", "/",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--dir", "/tmp/coderook-home",
+        "--dir", "/etc",
+        "--setenv", "HOME", "/tmp/coderook-home",
     ]
+    for system_root in _bwrap_system_roots():
+        argv += ["--ro-bind", system_root, system_root]
+    for parent in _bwrap_workspace_parents(ws):
+        argv += ["--dir", parent]
     if network:
         argv += ["--share-net"]
     if writable:
-        argv += ["--bind", ws, ws, "--tmpfs", "/tmp"]
+        argv += ["--bind", ws, ws]
     else:
         argv += ["--ro-bind", ws, ws]
     return argv
 
 
-# 构建 macOS Seatbelt 沙箱 profile 文本；writable 时允许写工作区
+# 构建 macOS Seatbelt 沙箱 profile 文本；仅读取系统运行时、工作区和临时目录
 def build_seatbelt_profile(
     workspace: str,
     *,
@@ -377,10 +430,18 @@ def build_seatbelt_profile(
         else ""
     )
     network_rules = "(allow network*)" if network else ""
+    read_rules = (
+        '(allow file-read* (subpath "/System") (subpath "/usr") '
+        '(subpath "/bin") (subpath "/sbin") '
+        '(literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") '
+        '(literal "/private/etc/passwd") (literal "/private/etc/group") '
+        '(subpath "/private/etc/ssl") (subpath "/private/tmp") '
+        f'(subpath "{ws}"))'
+    )
     return (
         "(version 1)\n"
         "(deny default)\n"
-        "(allow file-read*)\n"
+        f"{read_rules}\n"
         "(allow process*)\n"
         "(allow sysctl-read)\n"
         + (f"    {write_rules}\n" if write_rules else "")

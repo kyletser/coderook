@@ -70,9 +70,118 @@ async def test_get_tasks_success() -> None:
 # 设计：断言方法名与 limit=50 参数固定，返回原始结果 dict
 async def test_get_workers_success() -> None:
     client = _FakeClient({"worker.list": {"workers": [{"worker_id": "w"}]}})
-    result = await ipc_actions.get_workers(client)
+    result = await ipc_actions.get_workers(client, "sess-1")
     assert result["workers"][0]["worker_id"] == "w"
-    assert client.calls == [("worker.list", {"limit": 50})]
+    assert client.calls == [
+        ("worker.list", {"limit": 50, "session_id": "sess-1"})
+    ]
+
+
+# 功能：Worker 控制中心封装 session 过滤、事件游标、followup 与只审查不合入协议
+# 设计：用单个 fake 逐项核对 typed IPC 参数，避免 TUI 把 review 误当 apply
+async def test_worker_control_center_actions() -> None:
+    client = _FakeClient(
+        {
+            "worker.list": {"workers": []},
+            "worker.events": {"events": []},
+            "worker.followup": {"worker_id": "w1", "event_cursor": 2},
+            "worker.review": {
+                "worker_id": "w1",
+                "handoff_status": "approved",
+                "approved": True,
+                "applied": False,
+                "state_digest": "a" * 64,
+            },
+            "worker.apply": {
+                "worker_id": "w1",
+                "handoff_status": "applied",
+                "changed_files": ["src/a.py"],
+                "state_digest": "a" * 64,
+            },
+        }
+    )
+
+    await ipc_actions.get_workers(client, session_id="s1")
+    await ipc_actions.start_worker(
+        client,
+        "s1",
+        description="inspect",
+        prompt="inspect repository",
+        profile="reviewer",
+        route_id="route-a",
+        model="coder-model",
+        token_budget=500,
+    )
+    await ipc_actions.get_worker_status(client, "s1", "w1")
+    await ipc_actions.retry_worker(client, "s1", "w1")
+    await ipc_actions.get_worker_events(client, "s1", "w1", after_cursor=4)
+    await ipc_actions.followup_worker(client, "s1", "w1", "check tests")
+    reviewed = await ipc_actions.review_worker(
+        client,
+        "s1",
+        "w1",
+        approved=True,
+        confirmed=True,
+        expected_digest="a" * 64,
+    )
+    applied = await ipc_actions.apply_worker(client, "s1", "w1", "a" * 64)
+
+    assert reviewed["applied"] is False
+    assert reviewed["state_digest"] == "a" * 64
+    assert applied["handoff_status"] == "applied"
+    assert applied["changed_files"] == ["src/a.py"]
+    assert client.calls == [
+        ("worker.list", {"limit": 50, "session_id": "s1"}),
+        (
+            "worker.start",
+            {
+                "session_id": "s1",
+                "description": "inspect",
+                "prompt": "inspect repository",
+                "profile": "reviewer",
+                "route_id": "route-a",
+                "model": "coder-model",
+                "read_only": True,
+                "exact_files": [],
+                "write_roots": [],
+                "token_budget": 500,
+            },
+        ),
+        ("worker.status", {"session_id": "s1", "worker_id": "w1"}),
+        ("worker.retry", {"session_id": "s1", "worker_id": "w1"}),
+        (
+            "worker.events",
+            {
+                "session_id": "s1",
+                "worker_id": "w1",
+                "after_cursor": 4,
+                "limit": 50,
+            },
+        ),
+        (
+            "worker.followup",
+            {"session_id": "s1", "worker_id": "w1", "message": "check tests"},
+        ),
+        (
+            "worker.review",
+            {
+                "session_id": "s1",
+                "worker_id": "w1",
+                "approved": True,
+                "confirmed": True,
+                "expected_digest": "a" * 64,
+            },
+        ),
+        (
+            "worker.apply",
+            {
+                "session_id": "s1",
+                "worker_id": "w1",
+                "expected_digest": "a" * 64,
+                "confirmed": True,
+            },
+        ),
+    ]
 
 
 # 功能：验证 get_workflow 返回单个 workflow 投影
@@ -115,6 +224,57 @@ async def test_get_diff_success() -> None:
     ]
 
 
+# 功能：验证 Change Center stage 只发送显式文件集合、会话和确认位
+# 设计：用记录型 fake client 检查 typed IPC 参数，防止 TUI 退回隐式 stage-all
+async def test_stage_changes_sends_selected_paths_and_confirmation() -> None:
+    client = _FakeClient({"workspace.stage": {"payload": {"files": []}}})
+
+    await ipc_actions.stage_changes(
+        client,
+        "sess-1",
+        ["src/app.py", "tests/test_app.py"],
+        "a" * 64,
+    )
+
+    assert client.calls == [
+        (
+            "workspace.stage",
+            {
+                "session_id": "sess-1",
+                "paths": ["src/app.py", "tests/test_app.py"],
+                "expected_digest": "a" * 64,
+                "confirmed": True,
+            },
+        )
+    ]
+
+
+# 功能：验证 Change Center commit 只创建本地提交并发送显式确认位
+# 设计：固定会话和主题检查 typed IPC，不在客户端拼接 Git 命令或 push 行为
+async def test_commit_changes_sends_subject_and_confirmation() -> None:
+    client = _FakeClient({"workspace.commit": {"commit": "abc123", "files": []}})
+
+    result = await ipc_actions.commit_changes(
+        client,
+        "sess-1",
+        "fix: verified",
+        "b" * 64,
+    )
+
+    assert result["commit"] == "abc123"
+    assert client.calls == [
+        (
+            "workspace.commit",
+            {
+                "session_id": "sess-1",
+                "message": "fix: verified",
+                "expected_digest": "b" * 64,
+                "confirmed": True,
+            },
+        )
+    ]
+
+
 # 功能：验证 list_checkpoints 返回会话 checkpoint 列表（是否可用交由上层过滤）
 # 设计：抽出 checkpoints 字段返回原样 list，避免封装层掺杂状态过滤逻辑
 async def test_list_checkpoints_success() -> None:
@@ -128,14 +288,33 @@ async def test_list_checkpoints_success() -> None:
     ]
 
 
-# 功能：验证 rewind 携带 checkpoint_id 回滚会话
-# 设计：断言 session_id 与 checkpoint_id 都透传给 session.rewind
+# 功能：验证 rewind 预览与执行分别使用只读摘要和显式确认协议
+# 设计：先请求预览再携带摘要恢复，固定二阶段 typed IPC 合同
 async def test_rewind_success() -> None:
-    client = _FakeClient({"session.rewind": {"restored": ["a.txt"]}})
-    result = await ipc_actions.rewind(client, "sess-1", "cp-1")
+    client = _FakeClient(
+        {
+            "session.rewind_preview": {"state_digest": "a" * 64},
+            "session.rewind": {"restored": ["a.txt"]},
+        }
+    )
+    preview = await ipc_actions.preview_rewind(client, "sess-1", "cp-1")
+    result = await ipc_actions.rewind(client, "sess-1", "cp-1", "a" * 64)
+    assert preview["state_digest"] == "a" * 64
     assert result["restored"] == ["a.txt"]
     assert client.calls == [
-        ("session.rewind", {"session_id": "sess-1", "checkpoint_id": "cp-1"})
+        (
+            "session.rewind_preview",
+            {"session_id": "sess-1", "checkpoint_id": "cp-1"},
+        ),
+        (
+            "session.rewind",
+            {
+                "session_id": "sess-1",
+                "checkpoint_id": "cp-1",
+                "expected_digest": "a" * 64,
+                "confirmed": True,
+            },
+        ),
     ]
 
 
@@ -291,6 +470,61 @@ async def test_list_memories_success() -> None:
     assert client.calls == [("memory.list", {})]
 
 
+# 功能：验证新增和编辑记忆使用独立 typed IPC 且保留会话来源
+# 设计：连续调用两个 action 并精确断言 payload，避免 TUI 回退到自由格式 Agent 提示
+async def test_add_and_edit_memory_use_typed_ipc() -> None:
+    client = _FakeClient(
+        {
+            "memory.add": {"memory": {"id": "m1"}},
+            "memory.edit": {"memory": {"id": "m1"}},
+        }
+    )
+
+    await ipc_actions.add_memory(
+        client,
+        name="tests",
+        body="Run pytest.",
+        source_session_id="sess-1",
+    )
+    await ipc_actions.edit_memory(client, "m1", body="Run uv run pytest.")
+
+    assert client.calls == [
+        (
+            "memory.add",
+            {
+                "name": "tests",
+                "body": "Run pytest.",
+                "description": "",
+                "memory_type": "project",
+                "source_session_id": "sess-1",
+            },
+        ),
+        ("memory.edit", {"memory_id": "m1", "body": "Run uv run pytest."}),
+    ]
+
+
+# 功能：验证 pin、expire 与自动保存设置通过 typed IPC 精确传递
+# 设计：覆盖 bool、nullable 时间和枚举三类参数，防止字符串拼接造成语义漂移
+async def test_memory_governance_actions_use_typed_ipc() -> None:
+    client = _FakeClient(
+        {
+            "memory.pin": {"memory": {"id": "m1"}},
+            "memory.expire": {"memory": {"id": "m1"}},
+            "memory.settings.set": {"settings": {"auto_save": "off"}},
+        }
+    )
+
+    await ipc_actions.pin_memory(client, "m1", pinned=False)
+    await ipc_actions.expire_memory(client, "m1", expires_at=None)
+    await ipc_actions.set_memory_auto_save(client, "off")
+
+    assert client.calls == [
+        ("memory.pin", {"memory_id": "m1", "pinned": False}),
+        ("memory.expire", {"memory_id": "m1", "expires_at": None}),
+        ("memory.settings.set", {"auto_save": "off"}),
+    ]
+
+
 # 功能：验证 delete_memory 按 memory_id 调用 memory.delete
 # 设计：断言 memory_id 透传
 async def test_delete_memory_success() -> None:
@@ -304,33 +538,68 @@ async def test_delete_memory_success() -> None:
 # 设计：job_id 为空时参数固定为 {}，覆盖列表模式的调用约定
 async def test_get_background_list_default() -> None:
     client = _FakeClient({"background.get": {"jobs": []}})
-    result = await ipc_actions.get_background(client)
+    result = await ipc_actions.get_background(client, "sess-1")
     assert result["jobs"] == []
-    assert client.calls == [("background.get", {"job_id": ""})]
+    assert client.calls == [
+        ("background.get", {"session_id": "sess-1", "job_id": ""})
+    ]
 
 
 # 功能：验证 get_background 带 job_id 时查询单个任务输出
 # 设计：job_id 非空时透传，覆盖查看增量输出的调用约定
 async def test_get_background_by_job() -> None:
     client = _FakeClient({"background.get": {"jobs": [{"id": "j1"}]}})
-    result = await ipc_actions.get_background(client, job_id="j1")
+    result = await ipc_actions.get_background(client, "sess-1", job_id="j1")
     assert result["jobs"][0]["id"] == "j1"
-    assert client.calls == [("background.get", {"job_id": "j1"})]
+    assert client.calls == [
+        ("background.get", {"session_id": "sess-1", "job_id": "j1"})
+    ]
 
 
 # 功能：验证 cancel_background 按 job_id 调用 background.cancel
 # 设计：断言 job_id 透传
 async def test_cancel_background_success() -> None:
     client = _FakeClient({"background.cancel": {"job_id": "j1"}})
-    result = await ipc_actions.cancel_background(client, "j1")
+    result = await ipc_actions.cancel_background(client, "sess-1", "j1")
     assert result["job_id"] == "j1"
-    assert client.calls == [("background.cancel", {"job_id": "j1"})]
+    assert client.calls == [
+        ("background.cancel", {"session_id": "sess-1", "job_id": "j1"})
+    ]
 
 
-# 功能：验证 cancel_worker 按 worker_id 调用 worker.cancel
-# 设计：断言 worker_id 透传，复用现有 worker.cancel 协议
+# 功能：验证 cancel_worker 按 session_id 与 worker_id 调用 worker.cancel
+# 设计：断言会话边界和 Worker 标识同时透传，避免跨会话取消
 async def test_cancel_worker_success() -> None:
     client = _FakeClient({"worker.cancel": {"worker_id": "w1"}})
-    result = await ipc_actions.cancel_worker(client, "w1")
+    result = await ipc_actions.cancel_worker(client, "s1", "w1")
     assert result["worker_id"] == "w1"
-    assert client.calls == [("worker.cancel", {"worker_id": "w1"})]
+    assert client.calls == [
+        ("worker.cancel", {"session_id": "s1", "worker_id": "w1"})
+    ]
+
+
+# 功能：验证计划审阅决定通过 typed plan.respond 发送完整归属与修订字段
+# 设计：用记录型 fake 精确核对 session/run/decision，防止客户端退回本地墓碑状态
+async def test_respond_plan_uses_typed_durable_command() -> None:
+    client = _FakeClient({"plan.respond": {"status": "resolved"}})
+
+    result = await ipc_actions.respond_plan(
+        client,
+        "sess-plan",
+        "run-plan",
+        "revise",
+        revision="check tests",
+    )
+
+    assert result["status"] == "resolved"
+    assert client.calls == [
+        (
+            "plan.respond",
+            {
+                "session_id": "sess-plan",
+                "run_id": "run-plan",
+                "decision": "revise",
+                "revision": "check tests",
+            },
+        )
+    ]

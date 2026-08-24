@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from code_rook.core.artifacts import ArtifactStore
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.events.bus import EventBus
@@ -15,7 +17,10 @@ from code_rook.core.memory import MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import ProcessSupervisor
-from code_rook.core.repository import RepositoryIndex, RepositoryTool
+from code_rook.core.repository import (
+    RepositoryIndex,
+    RepositoryTool,
+)
 from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
@@ -38,7 +43,10 @@ from code_rook.core.tools.builtin import (
     GoalUpdateTool,
     GrepTool,
     ListDirTool,
+    MemoryEditTool,
+    MemoryExpireTool,
     MemoryForgetTool,
+    MemoryPinTool,
     MemorySaveTool,
     MemorySearchTool,
     NoteSaveTool,
@@ -75,7 +83,7 @@ from code_rook.core.worktree import WorktreeManager
 if TYPE_CHECKING:
     from code_rook.core.goal import GoalService
     from code_rook.core.hooks import HookManager
-    from code_rook.core.llm.route_registry import RouteRegistry
+    from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 
 
 class RuntimeToolAssembly:
@@ -101,6 +109,7 @@ class RuntimeToolAssembly:
         hooks: HookManager | None = None,
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
+        env_overlay: Mapping[str, str] | None = None,
     ) -> None:
         self._boundary = workspace_boundary
         self._artifact_store = artifact_store
@@ -118,10 +127,12 @@ class RuntimeToolAssembly:
         self._repository_index = repository_index
         self._goal_service = goal_service
         self._hooks = hooks
+        self._env_overlay = MappingProxyType(dict(env_overlay or {}))
         # daemon 级持久 shell 池：同一 chat 会话的命令共享 cwd/env 状态
         self._process_supervisor = process_supervisor
         self._persistent_pool = persistent_shell_pool or PersistentShellPool(
-            process_supervisor=process_supervisor
+            process_supervisor=process_supervisor,
+            artifact_store=self._artifact_store,
         )
 
     # 依据权限管理层计算当前 session 应施加的 OS 沙箱计划（无权限管理器则返回 None）
@@ -149,6 +160,8 @@ class RuntimeToolAssembly:
         checkpoint_store: CheckpointStore | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         supports_images: bool = True,
+        authority_snapshot: AuthoritySnapshot | None = None,
+        route_binding: ResolvedRoute | None = None,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
 
@@ -162,7 +175,14 @@ class RuntimeToolAssembly:
                 runtime_mode != RuntimeMode.PLAN or tool.is_read_only
             )
 
-        registry = ToolRegistry(runtime_mode=runtime_mode)
+        frozen_authority = authority_snapshot or AuthoritySnapshot(mode=runtime_mode)
+        workspace_trusted = (
+            frozen_authority.workspace_trust == WorkspaceTrust.TRUSTED
+        )
+        registry = ToolRegistry(
+            runtime_mode=runtime_mode,
+            allowed_authority_actions=frozen_authority.allowed_actions,
+        )
         file_tools = [
             ReadFileTool(self._boundary),
             GlobTool(self._boundary, process_supervisor=self._process_supervisor),
@@ -201,8 +221,14 @@ class RuntimeToolAssembly:
             persistent_key=session_id,
             sandbox_plan=sandbox_plan,
             process_supervisor=self._process_supervisor,
+            artifact_store=self._artifact_store,
         )
-        register_run_family(registry, shell, allowed_names=allowed)
+        register_run_family(
+            registry,
+            shell,
+            allowed_names=allowed,
+            verification_boundary=self._boundary,
+        )
         register_bash_family(
             registry,
             shell,
@@ -212,8 +238,12 @@ class RuntimeToolAssembly:
             allowed_names=allowed,
             sandbox_plan=sandbox_plan,
             cwd=self._boundary.root,
+            artifact_store=self._artifact_store,
         )
-        skill_tool = SkillTool(self._skill_loader)
+        skill_tool = SkillTool(
+            self._skill_loader,
+            workspace_trusted=workspace_trusted,
+        )
         if _ok(skill_tool):
             registry.register(skill_tool)
         if checkpoint_store is not None:
@@ -232,10 +262,17 @@ class RuntimeToolAssembly:
         ]
         register_tasks_family(registry, task_tools, allowed_names=allowed)
         memory_tools = [
-            MemorySaveTool(self._memory_store, session_id, run_id or ""),
             MemorySearchTool(self._memory_store),
+            MemoryEditTool(self._memory_store),
+            MemoryPinTool(self._memory_store),
+            MemoryExpireTool(self._memory_store),
             MemoryForgetTool(self._memory_store),
         ]
+        if self._memory_store.load_settings().auto_save != "off":
+            memory_tools.insert(
+                0,
+                MemorySaveTool(self._memory_store, session_id, run_id or ""),
+            )
         register_memory_family(registry, memory_tools, allowed_names=allowed)
         if bus is not None and run_id is not None and _name_allowed("update_plan"):
             registry.register(UpdatePlanTool(bus, run_id))
@@ -276,6 +313,8 @@ class RuntimeToolAssembly:
                 route_registry=self._route_registry,
                 hooks=self._hooks,
                 interaction_manager=self._interaction_manager,
+                authority_ceiling=frozen_authority,
+                route_binding=route_binding,
             )
             if _name_allowed("agent"):
                 registry.register(AgentTool(self._task_registry, spawn_tool))
@@ -315,7 +354,10 @@ class RuntimeToolAssembly:
         ):
             if _ok(worktree_tool):
                 registry.register(worktree_tool)
-        for web_tool in (WebFetchTool(), WebSearchTool()):
+        for web_tool in (
+            WebFetchTool(),
+            WebSearchTool(env_overlay=self._env_overlay),
+        ):
             if _ok(web_tool):
                 registry.register(web_tool)
         if supports_images:

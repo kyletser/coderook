@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from code_rook.core.artifacts import (
     ArtifactError,
@@ -16,10 +18,12 @@ from code_rook.core.artifacts import (
     ImageArtifactInput,
     inspect_image,
 )
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
+    GoalContinueDecisionEvent,
     PlanReadyEvent,
+    PlanResolvedEvent,
     RunSteeredEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
@@ -51,7 +55,7 @@ from code_rook.core.task.model import Task
 from code_rook.core.workspace import WorkspaceBoundary
 
 if TYPE_CHECKING:
-    from code_rook.core.goal import GoalRecord, GoalService
+    from code_rook.core.goal import GoalContinueDecision, GoalRecord, GoalService
     from code_rook.core.llm.base import LLMProvider
     from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
     from code_rook.core.runner import AgentRunner
@@ -62,6 +66,19 @@ SESSION_CLOSED = -32011
 SESSION_BUSY = -32012
 SESSION_NOT_RESUMABLE = -32013
 RUN_NOT_ACTIVE = -32014
+_TRANSIENT_GOAL_FAILURES = {
+    "stream_idle_timeout",
+    "stream_wall_timeout",
+    "token_budget_reserved",
+    "transport_error",
+}
+_AUTO_GOAL_PROMPT = (
+    "Continue the active durable goal. Work only on unmet completion criteria, "
+    "reuse existing evidence, verify every change, and request confirmation when "
+    "the bounded continuation policy pauses."
+)
+_EMPTY_SESSION_RETENTION = timedelta(hours=24)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,6 +86,49 @@ class _ActiveRun:
     session_id: str
     task: asyncio.Task[Any]
     finished: asyncio.Event
+
+
+@dataclass
+class _GoalContinuation:
+    session_id: str
+    task: asyncio.Task[None]
+
+
+@dataclass(frozen=True)
+class _PendingPlan:
+    session_id: str
+    run_id: str
+    request: str
+    plan: str
+
+
+class WorkspaceMutationGuard:
+    # 初始化允许并发 Turn、但让工作区变更独占且等待活动 Turn 排空的异步门闩
+    def __init__(self, entry_lock: asyncio.Lock | None = None) -> None:
+        self._entry_lock = entry_lock or asyncio.Lock()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._active_turns = 0
+
+    # 为一次 Turn 登记共享占用，变更开始后禁止新 Turn 穿透
+    @asynccontextmanager
+    async def turn(self) -> AsyncIterator[None]:
+        async with self._entry_lock:
+            self._active_turns += 1
+            self._idle.clear()
+        try:
+            yield
+        finally:
+            self._active_turns -= 1
+            if self._active_turns == 0:
+                self._idle.set()
+
+    # 独占工作区变更窗口并等待所有已登记 Turn 完成
+    @asynccontextmanager
+    async def mutation(self) -> AsyncIterator[None]:
+        async with self._entry_lock:
+            await self._idle.wait()
+            yield
 
 
 # 返回当前 UTC 时间的 ISO 8601 字符串
@@ -90,7 +150,14 @@ class SessionManager:
         route_registry: RouteRegistry | None = None,
         hooks: HookManager | None = None,
         goal_service: GoalService | None = None,
+        authority_provider: Callable[[str], AuthoritySnapshot] | None = None,
+        workspace_mutation_guard: WorkspaceMutationGuard | None = None,
+        workspace_mutation_lock: asyncio.Lock | None = None,
     ) -> None:
+        if workspace_mutation_guard is not None and workspace_mutation_lock is not None:
+            raise ValueError(
+                "workspace_mutation_guard and workspace_mutation_lock are mutually exclusive"
+            )
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
@@ -101,16 +168,161 @@ class SessionManager:
         self._route_registry = route_registry
         self._hooks = hooks
         self._goal_service = goal_service
+        self._authority_provider = authority_provider
+        self._workspace_mutation_guard = workspace_mutation_guard or WorkspaceMutationGuard(
+            workspace_mutation_lock
+        )
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
-        self._skill_loader = SkillLoader()
+        self._goal_continuations: dict[str, _GoalContinuation] = {}
+        self._pending_plans: dict[str, _PendingPlan] = {}
+        self._pending_plans_loaded: set[str] = set()
         workspace = WorkspaceBoundary.current().root
         self._workspace = workspace.resolve()
+        self._skill_loader = SkillLoader(self._workspace)
         self._artifact_store = ArtifactStore(workspace / ".coderook" / "artifacts")
         self._rehydrate()
+
+    # 完成 Goal run 后持久化有限继续决策并发布可回放的 typed 事件
+    async def _finish_goal_run(
+        self,
+        goal_id: str,
+        run_id: str,
+        *,
+        succeeded: bool,
+        reason: str,
+    ) -> GoalContinueDecision | None:
+        if self._goal_service is None:
+            return None
+        transient_failure = not succeeded and reason in _TRANSIENT_GOAL_FAILURES
+        goal = self._goal_service.finish_run(
+            goal_id,
+            run_id,
+            succeeded=succeeded,
+            reason=reason,
+            transient_failure=transient_failure,
+        )
+        if not goal.auto_continue:
+            return None
+        authority = (
+            self._authority_provider(goal.session_id)
+            if self._authority_provider is not None
+            else None
+        )
+        decision = self._goal_service.decide_continue(
+            goal.id,
+            current_authority=authority,
+        )
+        await self._bus.publish(
+            GoalContinueDecisionEvent(
+                goal_id=decision.goal_id,
+                session_id=decision.session_id,
+                run_id=run_id,
+                should_continue=decision.should_continue,
+                reason=decision.reason,
+                auto_turns_used=decision.auto_turns_used,
+                remaining_auto_turns=decision.remaining_auto_turns,
+                tokens_used=decision.tokens_used,
+                token_budget=decision.token_budget,
+                remaining_tokens=decision.remaining_tokens,
+                wall_elapsed_seconds=decision.wall_elapsed_seconds,
+                max_wall_seconds=decision.max_wall_seconds,
+                paused_needs_confirmation=decision.paused_needs_confirmation,
+                ts=decision.decided_at,
+            )
+        )
+        return decision
+
+    # 将允许的下一 Goal Turn 排入 daemon 生命周期，并在会话锁释放后启动
+    def _schedule_goal_continuation(
+        self,
+        goal_id: str,
+        session_id: str,
+        *,
+        delay_s: float = 0.0,
+    ) -> None:
+        existing = self._goal_continuations.get(goal_id)
+        if existing is not None and not existing.task.done():
+            return
+
+        # 重新读取 Goal 真值后启动下一轮，用户在间隙执行 pause/cancel 会使任务安全退出
+        async def continue_goal() -> None:
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+            while self._goal_service is not None:
+                goal = self._goal_service.get(goal_id)
+                if (
+                    goal.status != "active"
+                    or not goal.auto_continue
+                    or goal.paused_needs_confirmation
+                ):
+                    return
+                authority = (
+                    self._authority_provider(session_id)
+                    if self._authority_provider is not None
+                    else None
+                )
+                decision = self._goal_service.decide_continue(
+                    goal_id,
+                    current_authority=authority,
+                )
+                if decision.reason == "token_budget_reserved":
+                    await asyncio.sleep(0.1)
+                    continue
+                if not decision.should_continue:
+                    return
+                await self.send_message(
+                    session_id,
+                    _AUTO_GOAL_PROMPT,
+                    runtime_mode=goal.permission_ceiling.mode,
+                )
+                return
+
+        task = asyncio.create_task(
+            continue_goal(),
+            name=f"goal-continuation:{goal_id}",
+        )
+        self._goal_continuations[goal_id] = _GoalContinuation(
+            session_id=session_id,
+            task=task,
+        )
+
+        # 清理已终结任务，并把意外调度故障安全地转为 Goal blocked 状态
+        def cleanup(completed: asyncio.Task[None]) -> None:
+            current = self._goal_continuations.get(goal_id)
+            if current is not None and current.task is completed:
+                self._goal_continuations.pop(goal_id, None)
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is None:
+                return
+            logger.error(
+                "automatic goal continuation failed goal_id=%s error_type=%s",
+                goal_id,
+                type(error).__name__,
+            )
+            if self._goal_service is None:
+                return
+            try:
+                goal = self._goal_service.get(goal_id)
+                if goal.status == "active":
+                    self._goal_service.set_status(
+                        goal_id,
+                        "blocked",
+                        reason="automatic continuation dispatch failed",
+                        actor="system",
+                    )
+            except (ValueError, OSError):
+                logger.exception(
+                    "could not persist automatic continuation failure goal_id=%s",
+                    goal_id,
+                )
+
+        task.add_done_callback(cleanup)
 
     # 校验图片 artifact 元数据并构造只用于下一次模型请求的内存图片块
     async def _prepare_image_attachments(
@@ -165,6 +377,55 @@ class SessionManager:
                 turn_times.update(self._store.run_time_ranges(session.id))
             await self._runtime.bootstrap_sessions(sessions, turn_times)
             self._runtime_bootstrapped = True
+            await self._prune_stale_empty_sessions()
+
+    # 删除超过保留期且从未使用的无标题会话，避免首启列表长期堆积
+    async def _prune_stale_empty_sessions(self) -> None:
+        cutoff = datetime.now(UTC) - _EMPTY_SESSION_RETENTION
+        stale_ids: list[str] = []
+        for session in tuple(self._sessions.values()):
+            if (
+                session.mode != "chat"
+                or session.run_ids
+                or session.title.strip() not in {"", "Untitled"}
+                or self._locks[session.id].locked()
+            ):
+                continue
+            try:
+                updated_at = datetime.fromisoformat(
+                    session.updated_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            if updated_at > cutoff or self._store.read_messages(session.id):
+                continue
+            stale_ids.append(session.id)
+        for session_id in stale_ids:
+            try:
+                self._store.delete_session(session_id)
+            except OSError:
+                logger.warning(
+                    "stale empty session cleanup failed sid=%s",
+                    session_id,
+                    exc_info=True,
+                )
+                continue
+            self._sessions.pop(session_id, None)
+            self._locks.pop(session_id, None)
+            if self._runtime is not None:
+                try:
+                    await self._runtime.delete_session(session_id)
+                except Exception:
+                    logger.warning(
+                        "stale empty runtime projection cleanup failed sid=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+            await self._bus.publish(
+                SessionDeletedEvent(session_id=session_id, ts=_now())
+            )
 
     # 从磁盘恢复会话索引；active 表示 daemon 在一次 run 中退出，恢复为 interrupted
     def _rehydrate(self) -> None:
@@ -205,14 +466,121 @@ class SessionManager:
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
+        self._pending_plans_loaded.add(sid)
         self._store.write_meta(session)
         if self._runtime is not None:
             await self._runtime.sync_session(session)
         await self._bus.publish(SessionCreatedEvent(session_id=sid, mode=mode, ts=ts))
         return session
 
-    # 处理用户消息，追加 thread 并启动一次 agent run
+    # 从 durable runtime 事件恢复指定会话最终仍待处理的计划审批
+    async def _load_pending_plan(self, sid: str) -> _PendingPlan | None:
+        if sid in self._pending_plans_loaded:
+            return self._pending_plans.get(sid)
+        pending: _PendingPlan | None = None
+        if self._runtime is not None:
+            cursor = 0
+            while True:
+                events = await self._runtime.list_events(sid, after_seq=cursor, limit=1000)
+                if not events:
+                    break
+                for event in events:
+                    if event.type == "plan.ready" and event.turn_id:
+                        pending = _PendingPlan(
+                            session_id=sid,
+                            run_id=event.turn_id,
+                            request=str(event.payload.get("request", "")),
+                            plan=str(event.payload.get("plan", "")),
+                        )
+                    elif (
+                        event.type == "plan.resolved"
+                        and pending is not None
+                        and event.turn_id == pending.run_id
+                    ):
+                        pending = None
+                    elif (
+                        event.type in {"turn.started", "run.started"}
+                        and pending is not None
+                        and event.turn_id != pending.run_id
+                    ):
+                        pending = None
+                cursor = events[-1].seq
+                if len(events) < 1000:
+                    break
+        if pending is None:
+            self._pending_plans.pop(sid, None)
+        else:
+            self._pending_plans[sid] = pending
+        self._pending_plans_loaded.add(sid)
+        return pending
+
+    # 校验并持久解决当前计划审批，拒绝过期 run 或重复决定
+    async def respond_plan(
+        self,
+        sid: str,
+        run_id: str,
+        decision: Literal["approve", "revise", "cancel"],
+        revision: str = "",
+    ) -> PlanResolvedEvent:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        lock = self._locks[sid]
+        async with lock:
+            pending = await self._load_pending_plan(sid)
+            if pending is None:
+                raise HandlerError(INVALID_PARAMS, "plan is not pending")
+            if pending.run_id != run_id:
+                raise HandlerError(INVALID_PARAMS, "plan response does not match the pending run")
+            resolved = PlanResolvedEvent(
+                session_id=sid,
+                run_id=run_id,
+                decision=decision,
+                revision=revision.strip(),
+                ts=_now(),
+            )
+            await self._bus.publish(resolved)
+            if self._runtime is not None:
+                events = await self._runtime.list_turn_events(run_id)
+                durable = any(
+                    event.type == "plan.resolved"
+                    and event.payload.get("decision") == decision
+                    and str(event.payload.get("revision", "")) == revision.strip()
+                    for event in events
+                )
+                if not durable:
+                    raise HandlerError(
+                        INVALID_PARAMS,
+                        "plan response could not be persisted; retry after repairing audit storage",
+                    )
+            self._pending_plans.pop(sid, None)
+            self._pending_plans_loaded.add(sid)
+            return resolved
+
+    # 返回供 Change Center 与 rewind 使用的独占工作区变更上下文
+    def workspace_mutation(self) -> Any:
+        return self._workspace_mutation_guard.mutation()
+
+    # 在工作区共享 Turn 门闩内处理用户消息
     async def send_message(
+        self,
+        sid: str,
+        content: str,
+        *,
+        run_id: str | None = None,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        attachments: list[ImageArtifactInput] | None = None,
+    ) -> str:
+        async with self._workspace_mutation_guard.turn():
+            return await self._send_message(
+                sid,
+                content,
+                run_id=run_id,
+                runtime_mode=runtime_mode,
+                attachments=attachments,
+            )
+
+    # 追加 thread 并启动一次 agent run
+    async def _send_message(
         self,
         sid: str,
         content: str,
@@ -230,6 +598,35 @@ class SessionManager:
         async with lock:
             if session.status == "closed":
                 raise HandlerError(SESSION_CLOSED, "session already closed")
+            pending_plan = await self._load_pending_plan(sid)
+            if pending_plan is not None:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "pending plan must be approved, revised, or cancelled before a new turn",
+                )
+
+            active_goal_candidate: GoalRecord | None = None
+            active_goal_authority: AuthoritySnapshot | None = None
+            if self._goal_service is not None:
+                candidate = self._goal_service.current(sid)
+                if candidate is not None and candidate.status == "active":
+                    active_goal_candidate = candidate
+                    active_goal_authority = (
+                        self._authority_provider(sid)
+                        if self._authority_provider is not None
+                        else None
+                    )
+                    if candidate.auto_continue and candidate.linked_run_ids:
+                        decision = self._goal_service.decide_continue(
+                            candidate.id,
+                            current_authority=active_goal_authority,
+                        )
+                        if not decision.should_continue:
+                            raise HandlerError(
+                                INVALID_PARAMS,
+                                "goal continuation requires user confirmation: "
+                                f"{decision.reason}",
+                            )
 
             resolved_route: ResolvedRoute | None = None
             if self._route_registry is not None:
@@ -238,15 +635,6 @@ class SessionManager:
                 except RouteResolutionError as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             image_attachments = attachments or []
-            if (
-                image_attachments
-                and resolved_route is not None
-                and not resolved_route.route.supports_images
-            ):
-                raise HandlerError(
-                    INVALID_PARAMS,
-                    "active route does not support images; select an image-capable route",
-                )
             attachment_text, image_blocks = await self._prepare_image_attachments(
                 image_attachments
             )
@@ -255,9 +643,6 @@ class SessionManager:
                 if attachment_text
                 else content
             )
-
-            if session.status in ("waiting_for_input", "interrupted"):
-                await self._bus.publish(SessionResumedEvent(session_id=sid, ts=_now()))
 
             run_id = run_id or new_run_id()
             requested_skill: Skill | None = None
@@ -268,7 +653,16 @@ class SessionManager:
                 skill_name = parts[0]
                 skill_arguments = parts[1] if len(parts) > 1 else ""
                 try:
-                    requested_skill = self._skill_loader.resolve(skill_name)
+                    workspace_trusted = (
+                        self._authority_provider is not None
+                        and self._authority_provider(sid).workspace_trust
+                        == WorkspaceTrust.TRUSTED
+                    )
+                    requested_skill = self._skill_loader.resolve(
+                        skill_name,
+                        require_trusted=True,
+                        workspace_trusted=workspace_trusted,
+                    )
                 except SkillError as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             if self._hooks is not None:
@@ -294,62 +688,56 @@ class SessionManager:
                         INVALID_PARAMS,
                         turn_decision.reason or "turn blocked by hook",
                     )
-            self._store.append_message(
-                sid,
-                "user",
-                ledger_content,
-                run_id=run_id,
-                message_id=f"{run_id}:user",
-            )
-            await self._bus.publish(
-                SessionMessageReceivedEvent(
-                    session_id=sid,
-                    content=ledger_content,
-                    ts=_now(),
-                )
-            )
-
-            if not session.title:
-                session.title = content[:40]
-
-            session.run_ids.append(run_id)
-            session.status = "active"
-            session.updated_at = _now()
-            self._store.write_meta(session)
-            if self._runtime is not None:
-                await self._runtime.start_turn(
-                    session,
-                    run_id,
-                    ledger_content,
-                    runtime_mode=runtime_mode,
-                    route=(resolved_route.receipt if resolved_route is not None else None),
-                )
-
             # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
             goal = ledger_content
             system_prompt_override: str | None = None
             tool_whitelist: list[str] | None = None
             if requested_skill is not None:
-                goal = self._skill_loader.render_prompt(requested_skill, skill_arguments)
+                workspace_trusted = (
+                    self._authority_provider is not None
+                    and self._authority_provider(sid).workspace_trust
+                    == WorkspaceTrust.TRUSTED
+                )
+                goal = self._skill_loader.render_prompt(
+                    requested_skill,
+                    skill_arguments,
+                    require_trusted=True,
+                    workspace_trusted=workspace_trusted,
+                )
                 system_prompt_override = requested_skill.system_prompt_template
                 tool_whitelist = requested_skill.allowed_tools or None
-                await self._bus.publish(
-                    SkillInvokedEvent(
-                        skill_name=skill_name,
-                        arguments=skill_arguments,
-                        run_id=run_id,
-                        ts=_now(),
-                    )
-                )
 
             runner = self._runner_factory()
+            if resolved_route is not None:
+                resolved_route = await runner.resolve_turn_binding(
+                    resolved_route=resolved_route,
+                    runtime_mode=runtime_mode,
+                    run_id=run_id,
+                )
+            if (
+                image_attachments
+                and resolved_route is not None
+                and not resolved_route.route.supports_images
+            ):
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "selected Turn route does not support images; "
+                    "select an image-capable route",
+                )
             active_goal: GoalRecord | None = None
+            continuation_decision: GoalContinueDecision | None = None
             persistent_goal_context = ""
-            if self._goal_service is not None:
-                candidate = self._goal_service.current(sid)
-                if candidate is not None and candidate.status == "active":
-                    active_goal = self._goal_service.start_run(candidate.id, run_id)
-                    persistent_goal_context = self._goal_service.render_context(active_goal)
+            goal_wall_timeout_s: float | None = None
+            if self._goal_service is not None and active_goal_candidate is not None:
+                active_goal = self._goal_service.start_run(
+                    active_goal_candidate.id,
+                    run_id,
+                    current_authority=active_goal_authority,
+                )
+                persistent_goal_context = self._goal_service.render_context(active_goal)
+                goal_wall_timeout_s = self._goal_service.remaining_wall_seconds(
+                    active_goal.id
+                )
             run_options: dict[str, Any] = {
                 "run_id": run_id,
                 "session": session,
@@ -362,11 +750,31 @@ class SessionManager:
                 run_options["persistent_goal_context"] = persistent_goal_context
             if resolved_route is not None:
                 run_options["resolved_route"] = resolved_route
+                run_options["resolved_route_is_explicit"] = True
             if image_blocks:
                 run_options["initial_images"] = image_blocks
-            run_coroutine = runner.run_and_capture(goal, **run_options)
+
+            persistence_ready = asyncio.Event()
+
+            # 让可取消 runner 在所有 session/runtime 写入完成前停在内存屏障
+            async def execute_after_persistence() -> Any:
+                await persistence_ready.wait()
+                if goal_wall_timeout_s is None:
+                    return await runner.run_and_capture(goal, **run_options)
+                from code_rook.core.runner import RunOutcome
+
+                try:
+                    async with asyncio.timeout(goal_wall_timeout_s):
+                        return await runner.run_and_capture(goal, **run_options)
+                except TimeoutError:
+                    return RunOutcome(
+                        status="failed",
+                        result="",
+                        reason="max_wall_seconds_reached",
+                    )
+
             runner_task = asyncio.create_task(
-                run_coroutine,
+                execute_after_persistence(),
                 name=f"run:{run_id}",
             )
             active = _ActiveRun(
@@ -375,11 +783,66 @@ class SessionManager:
                 finished=asyncio.Event(),
             )
             self._active_runs[run_id] = active
+            runtime_started = False
+            runtime_attempted = False
             try:
+                if session.status in ("waiting_for_input", "interrupted"):
+                    await self._bus.publish(
+                        SessionResumedEvent(session_id=sid, ts=_now())
+                    )
+                self._store.append_message(
+                    sid,
+                    "user",
+                    ledger_content,
+                    run_id=run_id,
+                    message_id=f"{run_id}:user",
+                )
+                await self._bus.publish(
+                    SessionMessageReceivedEvent(
+                        session_id=sid,
+                        content=ledger_content,
+                        ts=_now(),
+                    )
+                )
+
+                if not session.title:
+                    session.title = content[:40]
+                if run_id not in session.run_ids:
+                    session.run_ids.append(run_id)
+                session.status = "active"
+                session.updated_at = _now()
+                self._store.write_meta(session)
+                if self._runtime is not None:
+                    runtime_attempted = True
+                    await self._runtime.start_turn(
+                        session,
+                        run_id,
+                        ledger_content,
+                        runtime_mode=runtime_mode,
+                        route=(
+                            resolved_route.receipt
+                            if resolved_route is not None
+                            else None
+                        ),
+                    )
+                    runtime_started = True
+                if requested_skill is not None:
+                    await self._bus.publish(
+                        SkillInvokedEvent(
+                            skill_name=skill_name,
+                            arguments=skill_arguments,
+                            run_id=run_id,
+                            ts=_now(),
+                        )
+                    )
+                persistence_ready.set()
                 outcome = await runner_task
             except asyncio.CancelledError:
+                if not runner_task.done():
+                    runner_task.cancel()
+                    await asyncio.gather(runner_task, return_exceptions=True)
                 if active_goal is not None and self._goal_service is not None:
-                    self._goal_service.finish_run(
+                    await self._finish_goal_run(
                         active_goal.id,
                         run_id,
                         succeeded=False,
@@ -388,7 +851,7 @@ class SessionManager:
                 session.status = "interrupted"
                 session.updated_at = _now()
                 self._store.write_meta(session)
-                if self._runtime is not None:
+                if self._runtime is not None and runtime_started:
                     await self._runtime.finish_turn(
                         session,
                         run_id,
@@ -407,13 +870,63 @@ class SessionManager:
                 if current is not None and current.cancelling():
                     raise
                 return run_id
+            except Exception as exc:
+                if not persistence_ready.is_set() and not runner_task.done():
+                    runner_task.cancel()
+                    await asyncio.gather(runner_task, return_exceptions=True)
+                if active_goal is not None and self._goal_service is not None:
+                    try:
+                        latest = self._goal_service.get(active_goal.id)
+                        if latest.current_run_id == run_id:
+                            self._goal_service.abort_run(
+                                active_goal.id,
+                                run_id,
+                                reason=(
+                                    f"runner failed: {type(exc).__name__}"
+                                    if persistence_ready.is_set()
+                                    else "turn preparation failed: "
+                                    f"{type(exc).__name__}"
+                                ),
+                            )
+                    except (OSError, ValueError):
+                        logger.exception(
+                            "could not release failed goal run reservation run_id=%s",
+                            run_id,
+                        )
+                session.status = "interrupted"
+                session.updated_at = _now()
+                try:
+                    self._store.write_meta(session)
+                except OSError:
+                    logger.exception(
+                        "could not persist interrupted session after turn failure run_id=%s",
+                        run_id,
+                    )
+                if self._runtime is not None and runtime_attempted:
+                    try:
+                        await self._runtime.finish_turn(
+                            session,
+                            run_id,
+                            TurnStatus.FAILED,
+                            reason=(
+                                "runner_failed"
+                                if persistence_ready.is_set()
+                                else "turn_preparation_failed"
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "could not finalize failed runtime turn run_id=%s",
+                            run_id,
+                        )
+                raise
             finally:
                 self._active_runs.pop(run_id, None)
                 active.finished.set()
 
             session.updated_at = _now()
             if active_goal is not None and self._goal_service is not None:
-                self._goal_service.finish_run(
+                continuation_decision = await self._finish_goal_run(
                     active_goal.id,
                     run_id,
                     succeeded=outcome.status == "success",
@@ -424,6 +937,13 @@ class SessionManager:
                 and outcome.status == "success"
                 and outcome.result.strip()
             ):
+                self._pending_plans[sid] = _PendingPlan(
+                    session_id=sid,
+                    run_id=run_id,
+                    request=content,
+                    plan=outcome.result.strip(),
+                )
+                self._pending_plans_loaded.add(sid)
                 await self._bus.publish(
                     PlanReadyEvent(
                         session_id=sid,
@@ -464,12 +984,34 @@ class SessionManager:
                     reason=outcome.reason,
                     result=outcome.result,
                 )
+            if (
+                active_goal is not None
+                and continuation_decision is not None
+                and (
+                    continuation_decision.should_continue
+                    or continuation_decision.reason == "token_budget_reserved"
+                )
+                and session.mode == "chat"
+            ):
+                retry_delay_s = (
+                    min(30.0, float(2 ** continuation_decision.auto_turns_used))
+                    if outcome.status != "success"
+                    else 0.0
+                )
+                self._schedule_goal_continuation(
+                    active_goal.id,
+                    session.id,
+                    delay_s=retry_delay_s,
+                )
             return run_id
 
     # 返回指定会话当前是否正持有 turn 执行锁
     def is_busy(self, sid: str) -> bool:
         self._get_session(sid)
-        return self._locks[sid].locked()
+        return self._locks[sid].locked() or any(
+            continuation.session_id == sid and not continuation.task.done()
+            for continuation in self._goal_continuations.values()
+        )
 
     # 返回指定 session 的 active run ID，不存在时返回 None
     def active_run_id(self, sid: str) -> str | None:
@@ -481,7 +1023,17 @@ class SessionManager:
 
     # 返回当前 workspace 正在执行的 run 数，供启动器安全切换 daemon 工作目录
     def active_run_count(self) -> int:
-        return sum(not active.task.done() for active in self._active_runs.values())
+        sessions = {
+            active.session_id
+            for active in self._active_runs.values()
+            if not active.task.done()
+        }
+        sessions.update(
+            continuation.session_id
+            for continuation in self._goal_continuations.values()
+            if not continuation.task.done()
+        )
+        return len(sessions)
 
     async def cancel_run(self, run_id: str) -> str:
         active = self._active_runs.get(run_id)
@@ -519,6 +1071,15 @@ class SessionManager:
         return active.session_id
 
     async def cancel_all(self) -> None:
+        continuation_tasks = [
+            continuation.task
+            for continuation in self._goal_continuations.values()
+            if not continuation.task.done()
+        ]
+        for task in continuation_tasks:
+            task.cancel()
+        if continuation_tasks:
+            await asyncio.gather(*continuation_tasks, return_exceptions=True)
         run_ids = list(self._active_runs)
         if not run_ids:
             return
@@ -656,9 +1217,47 @@ class SessionManager:
         ]
         return run_id, checkpoints
 
+    # 读取指定 checkpoint 的恢复范围、冲突和当前状态摘要，不修改任何文件
+    def preview_rewind(
+        self,
+        sid: str,
+        checkpoint_id: str,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        session = self._get_session(sid)
+        resolved_run_id = self._resolve_run_id(session, run_id)
+        if resolved_run_id is None:
+            raise HandlerError(INVALID_PARAMS, "session has no run checkpoints")
+        root = self._store.runs_dir(sid) / resolved_run_id / ".checkpoints"
+        try:
+            preview = CheckpointStore(
+                root,
+                WorkspaceBoundary.current(),
+                create=False,
+            ).preview_rewind(checkpoint_id)
+        except CheckpointError as exc:
+            raise HandlerError(
+                INVALID_PARAMS,
+                str(exc),
+                {"code": exc.code, "conflicts": exc.conflicts},
+            ) from exc
+        return {
+            "checkpoint_id": preview.checkpoint_id,
+            "paths": preview.paths,
+            "restorable": preview.restorable,
+            "already_restored": preview.already_restored,
+            "conflicts": preview.conflicts,
+            "state_digest": preview.state_digest,
+        }
+
     # 安全恢复指定（默认最近一次）run 中用户明确选择的 checkpoint
     def rewind(
-        self, sid: str, checkpoint_id: str, run_id: str | None = None
+        self,
+        sid: str,
+        checkpoint_id: str,
+        run_id: str | None = None,
+        *,
+        expected_digest: str | None = None,
     ) -> dict[str, Any]:
         session = self._get_session(sid)
         if self._locks[sid].locked():
@@ -669,7 +1268,8 @@ class SessionManager:
         root = self._store.runs_dir(sid) / run_id / ".checkpoints"
         try:
             outcome = CheckpointStore(root, WorkspaceBoundary.current()).rewind(
-                checkpoint_id
+                checkpoint_id,
+                expected_digest=expected_digest,
             )
         except CheckpointError as exc:
             raise HandlerError(
@@ -794,6 +1394,7 @@ class SessionManager:
             self._store.create_fork(source.id, forked)
             self._sessions[fork_id] = forked
             self._locks[fork_id] = asyncio.Lock()
+            self._pending_plans_loaded.add(fork_id)
             if self._runtime is not None:
                 await self._runtime.sync_session(forked)
             await self._bus.publish(
@@ -841,6 +1442,8 @@ class SessionManager:
             self._store.delete_session(sid)
         self._sessions.pop(sid, None)
         self._locks.pop(sid, None)
+        self._pending_plans.pop(sid, None)
+        self._pending_plans_loaded.discard(sid)
         if self._runtime is not None:
             await self._runtime.delete_session(sid)
         await self._bus.publish(SessionDeletedEvent(session_id=sid, ts=_now()))

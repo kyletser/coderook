@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import getpass
 import json
 import os
@@ -11,19 +12,19 @@ from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
-from dotenv import dotenv_values, set_key, unset_key
-
 from code_rook.core.config import CodeRookConfig, LlmConfig, get_config
+from code_rook.core.configuration import ConfigurationService
 from code_rook.core.llm.credentials import (
+    CredentialStore,
     credentials_path,
-    llm_is_configured,
     normalize_provider,
     resolve_api_key,
     save_api_key,
 )
-from code_rook.core.llm.provider_presets import get_provider_preset
-from code_rook.core.llm.route_registry import legacy_config_route
-from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.doctor import ProviderDoctor
+from code_rook.core.llm.provider_presets import PROVIDER_PRESETS, get_provider_preset
+from code_rook.core.llm.routes import ProviderRoute, get_route_preset
+from code_rook.core.upgrade import v1_state_mutation
 
 _DEFAULT_CONFIG_PATH = Path("~/.coderook/config.toml").expanduser()
 _SECTION_PATTERN = re.compile(r"(?m)^\s*\[\[?[^\]\r\n]+\]\]?\s*(?:#.*)?$")
@@ -33,9 +34,17 @@ _SECTION_PATTERN = re.compile(r"(?m)^\s*\[\[?[^\]\r\n]+\]\]?\s*(?:#.*)?$")
 def config_write_path() -> Path:
     explicit = os.environ.get("CODEROOK_CONFIG")
     if explicit:
-        return Path(explicit).expanduser()
-    local = Path(".coderook/config.toml")
-    return local if local.exists() else _DEFAULT_CONFIG_PATH
+        target = Path(explicit).expanduser()
+        project = Path(".coderook/config.toml")
+        try:
+            if target.resolve(strict=False) == project.resolve(strict=False):
+                raise SystemExit(
+                    "Project .coderook/config.toml cannot store provider route settings"
+                )
+        except OSError:
+            pass
+        return target
+    return _DEFAULT_CONFIG_PATH
 
 
 # 使用 TOML 基本字符串语法安全编码配置值
@@ -44,8 +53,7 @@ def _toml_string(value: str) -> str:
 
 
 # 将新的 llm 表原子写入配置文件，同时保留其他 TOML 小节
-def write_llm_config(config: LlmConfig, path: Path | None = None) -> Path:
-    target = path or config_write_path()
+def _write_llm_config_unlocked(config: LlmConfig, target: Path) -> Path:
     original = target.read_text(encoding="utf-8") if target.exists() else ""
     if original:
         try:
@@ -68,7 +76,7 @@ def write_llm_config(config: LlmConfig, path: Path | None = None) -> Path:
     else:
         next_section = _SECTION_PATTERN.search(original, match.end())
         end = next_section.start() if next_section else len(original)
-        prefix = original[:match.start()]
+        prefix = original[: match.start()]
         suffix = original[end:]
         updated = f"{prefix}{block}"
         if suffix and not updated.endswith("\n\n"):
@@ -82,20 +90,34 @@ def write_llm_config(config: LlmConfig, path: Path | None = None) -> Path:
     return target
 
 
+# 在 v1 前置备份与用户状态互斥区内写入旧版 llm 配置
+def write_llm_config(
+    config: LlmConfig,
+    path: Path | None = None,
+    *,
+    state_root: Path | None = None,
+) -> Path:
+    target = path or config_write_path()
+    with v1_state_mutation(state_root):
+        return _write_llm_config_unlocked(config, target)
+
+
 # 仅更新默认模型，保留 provider、endpoint、router 和凭据引用
 def switch_llm_model(
     current: CodeRookConfig,
     model: str,
     *,
     config_path: Path | None = None,
+    state_root: Path | None = None,
 ) -> CodeRookConfig:
     selected = model.strip()
     if not selected:
         raise ValueError("model name cannot be empty")
     updated = replace(current.llm, default_model=selected)
-    write_llm_config(updated, config_path)
-    _sync_project_dotenv(updated, current.llm.api_key_env)
-    os.environ["CODEROOK_LLM_DEFAULT_MODEL"] = selected
+    target = config_path or config_write_path()
+    with v1_state_mutation(state_root):
+        _write_llm_config_unlocked(updated, target)
+    _apply_runtime_llm_env(updated)
     return get_config()
 
 
@@ -108,11 +130,12 @@ def save_provider_config(
     *,
     config_path: Path | None = None,
     credential_file: Path | None = None,
+    state_root: Path | None = None,
 ) -> CodeRookConfig:
     preset = get_provider_preset(provider)
     selected_model = model.strip()
     selected_key = api_key.strip()
-    if not selected_key:
+    if preset.credential_required and not selected_key:
         raise ValueError("API key cannot be empty")
     if not selected_model:
         raise ValueError("model name cannot be empty")
@@ -123,18 +146,17 @@ def save_provider_config(
         base_url=preset.chat_url,
         api_key_env=preset.api_key_env,
     )
-    save_api_key(preset.id, selected_key, credential_file)
-    write_llm_config(updated, config_path)
-    _sync_project_dotenv(updated, current.llm.api_key_env)
+    target = config_path or config_write_path()
+    with v1_state_mutation(state_root):
+        if selected_key:
+            save_api_key(preset.id, selected_key, credential_file)
+        _write_llm_config_unlocked(updated, target)
+    _apply_runtime_llm_env(updated)
     return get_config()
 
 
-# 若项目使用 .env，则同步非敏感 LLM 设置并把旧明文 key 迁出该文件
-def _sync_project_dotenv(config: LlmConfig, previous_key_env: str) -> None:
-    dotenv_path = Path(".env")
-    if not dotenv_path.exists():
-        return
-    values = dotenv_values(dotenv_path)
+# 只更新当前进程的非敏感路由字段，不读取或改写仓库 .env
+def _apply_runtime_llm_env(config: LlmConfig) -> None:
     updates = {
         "CODEROOK_LLM_PROVIDER": normalize_provider(config.provider),
         "CODEROOK_LLM_DEFAULT_MODEL": config.default_model,
@@ -142,21 +164,7 @@ def _sync_project_dotenv(config: LlmConfig, previous_key_env: str) -> None:
         "CODEROOK_LLM_API_KEY_ENV": config.api_key_env,
     }
     for name, value in updates.items():
-        set_key(dotenv_path, name, value, quote_mode="always")
         os.environ[name] = value
-    secret_names = {
-        "ANTHROPIC_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "OPENAI_API_KEY",
-        "SILICONFLOW_API_KEY",
-        "CODEROOK_LLM_API_KEY",
-        previous_key_env,
-        config.api_key_env,
-    }
-    for name in secret_names:
-        if name and name in values:
-            unset_key(dotenv_path, name)
-            os.environ.pop(name, None)
 
 
 # 循环读取选项，直到用户输入受支持的 provider 编号或名称
@@ -165,8 +173,7 @@ def _prompt_provider(input_fn: Callable[[str], str], current: str) -> str:
     default = "1" if current_name == "anthropic" else "2"
     while True:
         raw = input_fn(
-            "API 格式 [1=Anthropic-compatible, 2=OpenAI-compatible] "
-            f"(默认 {default}): "
+            f"API 格式 [1=Anthropic-compatible, 2=OpenAI-compatible] (默认 {default}): "
         ).strip()
         choice = raw or default
         if choice in {"1", "anthropic", "Anthropic"}:
@@ -206,6 +213,7 @@ def configure_llm(
     secret_fn: Callable[[str], str] = getpass.getpass,
     config_path: Path | None = None,
     credential_file: Path | None = None,
+    state_root: Path | None = None,
 ) -> CodeRookConfig:
     provider = _prompt_provider(input_fn, current.llm.provider)
     same_provider = normalize_provider(current.llm.provider) == provider
@@ -214,7 +222,8 @@ def configure_llm(
         base_default = current.llm.base_url if same_provider else ""
         base_label = "Anthropic Base URL，官方接口可留空"
         api_key_env = (
-            current.llm.api_key_env if same_provider and current.llm.api_key_env
+            current.llm.api_key_env
+            if same_provider and current.llm.api_key_env
             else "ANTHROPIC_API_KEY"
         )
     else:
@@ -222,7 +231,8 @@ def configure_llm(
         base_default = current.llm.base_url if same_provider else ""
         base_label = "Chat Completions 完整地址"
         api_key_env = (
-            current.llm.api_key_env if same_provider and current.llm.api_key_env
+            current.llm.api_key_env
+            if same_provider and current.llm.api_key_env
             else "OPENAI_API_KEY"
         )
 
@@ -250,42 +260,115 @@ def configure_llm(
     api_key = secret_fn(f"API key{hint}: ").strip()
     if not api_key and existing_key is None:
         raise SystemExit("API key 不能为空。")
-    save_api_key(provider, api_key or existing_key or "", credential_file)
-
-    written_path = write_llm_config(probe, config_path)
-    _sync_project_dotenv(probe, current.llm.api_key_env)
+    target = config_path or config_write_path()
+    with v1_state_mutation(state_root):
+        save_api_key(provider, api_key or existing_key or "", credential_file)
+        written_path = _write_llm_config_unlocked(probe, target)
+    _apply_runtime_llm_env(probe)
     print(f"LLM 配置已保存：{written_path}")
     print(f"API key 已安全保存：{credential_file or credentials_path()}")
     return get_config()
 
 
 # 打印当前配置状态，隐藏密钥正文
-def print_llm_status(config: CodeRookConfig) -> None:
-    provider = normalize_provider(config.llm.provider)
-    endpoint = config.llm.base_url or "(Anthropic official)"
-    key_source = (
-        f"environment:{config.llm.api_key_env}"
-        if config.llm.api_key_env and os.environ.get(config.llm.api_key_env)
-        else f"credentials:{credentials_path()}"
+def print_llm_status(
+    config: CodeRookConfig,
+    *,
+    configuration: ConfigurationService | None = None,
+) -> None:
+    service = configuration or ConfigurationService(
+        credential_store=CredentialStore(env_overlay=config.llm.credential_overlay)
     )
-    state = "configured" if llm_is_configured(config.llm) else "incomplete"
-    print(f"status:   {state}")
-    print(f"provider: {provider}")
-    print(f"model:    {config.llm.default_model}")
-    print(f"endpoint: {endpoint}")
-    print(f"api key:  {key_source if resolve_api_key(config.llm) else '(missing)'}")
+    readiness = service.snapshot().readiness
+    print(f"status:   {readiness.status}")
+    print(f"provider: {readiness.catalog_id or readiness.provider or '(none)'}")
+    print(f"model:    {readiness.model or '(none)'}")
+    print(f"endpoint: {readiness.endpoint_origin or '(none)'}")
+    print(f"credential: {readiness.credential_source}")
+    print(f"validation: {readiness.provider_validation}")
 
 
-# 执行手动配置命令并将结果激活为显式 route，无需重启 Core
-def cmd_configure(config: CodeRookConfig) -> None:
+# 从统一 Catalog 选择 Provider，并在返回前构造尚未持久化的候选 route 与密钥
+def _prompt_catalog_route(
+    configuration: ConfigurationService,
+    *,
+    input_fn: Callable[[str], str],
+    secret_fn: Callable[[str], str],
+) -> tuple[ProviderRoute, str | None, bool]:
+    print("可用 Provider：")
+    for index, preset in enumerate(PROVIDER_PRESETS, start=1):
+        credential = "API key" if preset.credential_required else "本地免密"
+        print(f"  {index}. {preset.name} ({credential})")
+    raw = input_fn("选择编号或 Provider ID: ").strip()
+    try:
+        preset = (
+            PROVIDER_PRESETS[int(raw) - 1]
+            if raw.isdigit() and 1 <= int(raw) <= len(PROVIDER_PRESETS)
+            else get_provider_preset(raw)
+        )
+    except (IndexError, ValueError) as exc:
+        raise SystemExit("未知 Provider；请使用列表中的编号或 ID。") from exc
+
+    existing = next(
+        (route for route in configuration.routes.list() if route.id == preset.id),
+        None,
+    )
+    default_model = existing.model if existing is not None else preset.default_model
+    model = input_fn(f"模型 ID (默认 {default_model}): ").strip() or default_model
+    route = get_route_preset(preset.id).model_copy(
+        update={
+            "model": model,
+            **({"credential_ref": existing.credential_ref} if existing is not None else {}),
+            "doctor_receipt": None,
+        }
+    )
+    secret: str | None = None
+    if preset.credential_required:
+        existing_credential = configuration.credentials.resolve(route.credential_ref)
+        hint = "（回车使用现有凭据）" if existing_credential.value else ""
+        entered = secret_fn(f"API key{hint}: ").strip()
+        if not entered and existing_credential.value is None:
+            raise SystemExit("API key 不能为空。")
+        secret = entered or None
+    return route, secret, existing is not None
+
+
+# 使用统一 Provider Catalog 完成真实 Doctor 后原子保存并激活 route
+def cmd_configure(
+    config: CodeRookConfig,
+    *,
+    input_fn: Callable[[str], str] = input,
+    secret_fn: Callable[[str], str] = getpass.getpass,
+    configuration: ConfigurationService | None = None,
+    doctor: ProviderDoctor | None = None,
+    state_root: Path | None = None,
+) -> None:
     if not sys.stdin.isatty():
         raise SystemExit("Interactive terminal required for `coderook configure`.")
-    updated = configure_llm(config)
-    route = legacy_config_route(updated.llm)
-    routes = RouteStore()
-    if any(current.id == route.id for current in routes.list()):
-        routes.update(route)
-        routes.set_active(route.id)
-    else:
-        routes.add(route, activate=True)
-    print(f"活动 route 已更新：{route.id}/{route.model}")
+    service = configuration or ConfigurationService(
+        credential_store=CredentialStore(
+            env_overlay=config.llm.credential_overlay,
+        )
+    )
+    route, secret, update = _prompt_catalog_route(
+        service,
+        input_fn=input_fn,
+        secret_fn=secret_fn,
+    )
+    print("正在验证认证、流式、终止状态和声明能力……")
+    mutation_root = (
+        service.routes.path.parent
+        if state_root is None and configuration is not None
+        else state_root
+    )
+    with v1_state_mutation(mutation_root):
+        validated = asyncio.run(
+            service.save_route_checked(
+                route,
+                secret=secret,
+                activate=True,
+                update=update,
+                doctor=doctor,
+            )
+        )
+    print(f"活动 route 已验证并保存：{validated.id}/{validated.model}")

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -368,15 +369,28 @@ class StructuredSearchBackend:
         ]
 
 
-# 按显式环境配置组装结构化、SearXNG、DuckDuckGo 降级链
-def default_search_backends() -> list[WebSearchBackend]:
+# 按进程环境高于显式文件 overlay 的顺序读取非敏感端点配置
+def _configured_endpoint(
+    name: str,
+    env_overlay: Mapping[str, str] | None,
+) -> str:
+    value = os.environ.get(name) if name in os.environ else (env_overlay or {}).get(name)
+    return value.strip() if isinstance(value, str) else ""
+
+
+# 按显式端点配置组装降级链，结构化后端始终只解析固定 file:web-search 凭据
+def default_search_backends(
+    env_overlay: Mapping[str, str] | None = None,
+    *,
+    credential_store: CredentialStore | None = None,
+) -> list[WebSearchBackend]:
     backends: list[WebSearchBackend] = []
-    structured_url = os.environ.get("CODEROOK_WEB_SEARCH_URL", "").strip()
+    structured_url = _configured_endpoint("CODEROOK_WEB_SEARCH_URL", env_overlay)
     if structured_url:
-        credential = CredentialStore().resolve("file:web-search")
+        credential = (credential_store or CredentialStore()).resolve("file:web-search")
         if credential.value:
             backends.append(StructuredSearchBackend(structured_url, credential.value))
-    searxng_url = os.environ.get("CODEROOK_SEARXNG_URL", "").strip()
+    searxng_url = _configured_endpoint("CODEROOK_SEARXNG_URL", env_overlay)
     if searxng_url:
         backends.append(SearXngSearchBackend(searxng_url))
     backends.append(DuckDuckGoSearchBackend())
@@ -412,6 +426,8 @@ class WebSearchTool(BaseTool):
         base_url: str = "https://html.duckduckgo.com/html/",
         transport: httpx.AsyncBaseTransport | None = None,
         backends: list[WebSearchBackend] | None = None,
+        env_overlay: Mapping[str, str] | None = None,
+        credential_store: CredentialStore | None = None,
     ) -> None:
         self._backends = (
             backends
@@ -419,7 +435,10 @@ class WebSearchTool(BaseTool):
             else (
                 [DuckDuckGoSearchBackend(base_url, transport)]
                 if transport is not None or base_url != "https://html.duckduckgo.com/html/"
-                else default_search_backends()
+                else default_search_backends(
+                    env_overlay,
+                    credential_store=credential_store,
+                )
             )
         )
 

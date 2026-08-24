@@ -10,11 +10,7 @@ from typing import Any, cast
 import code_rook
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import RuntimeEventAppendedEvent
-from code_rook.core.compatibility import (
-    HTTP_API_VERSION,
-    RUNTIME_EVENT_SCHEMA_VERSION,
-    STREAM_JSON_SCHEMA_VERSIONS,
-)
+from code_rook.core.compatibility import build_runtime_capabilities
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.receipts.models import TurnReceipt
 from code_rook.core.runs import new_run_id
@@ -44,6 +40,7 @@ class RuntimeApiService:
         *,
         permission_manager: PermissionManager | None = None,
         workspace_boundary: WorkspaceBoundary | None = None,
+        labs_enabled: bool | None = None,
     ) -> None:
         self._runtime = runtime
         self._sessions = sessions
@@ -51,6 +48,7 @@ class RuntimeApiService:
         self._event_changed = asyncio.Condition()
         self._permission_manager = permission_manager
         self._git_diff = GitDiffTool(workspace_boundary) if workspace_boundary else None
+        self._labs_enabled = labs_enabled
 
     # 响应活动工具审批并返回是否命中待处理请求
     async def respond_permission(
@@ -223,23 +221,19 @@ class RuntimeApiService:
 
     # 返回服务端可协商的 API 和运行能力
     async def capabilities(self) -> dict[str, Any]:
-        return {
-            "version": code_rook.__version__,
-            "api_version": HTTP_API_VERSION,
-            "runtime_event_schema_version": RUNTIME_EVENT_SCHEMA_VERSION,
-            "stream_json_schema_versions": list(STREAM_JSON_SCHEMA_VERSIONS),
-            "runtime_modes": [mode.value for mode in RuntimeMode],
-            "features": [
-                "durable_threads",
-                "durable_turns",
-                "sse_cursor_replay",
-                "turn_receipts",
-                "interrupt",
-                "steer",
-                "permission_response",
-                "workspace_diff",
-            ],
-        }
+        permission_manager = getattr(self, "_permission_manager", None)
+        sandbox = (
+            permission_manager.get_authority_snapshot(
+                "__runtime_capabilities__"
+            ).sandbox
+            if permission_manager is not None
+            else None
+        )
+        return build_runtime_capabilities(
+            code_rook.__version__,
+            sandbox=sandbox,
+            labs_enabled=getattr(self, "_labs_enabled", None),
+        ).model_dump(mode="json")
 
     # 汇总全部 durable turns 的 token usage 与状态计数
     async def usage(self) -> dict[str, Any]:

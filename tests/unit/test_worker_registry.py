@@ -29,6 +29,10 @@ def _record(
     merge_reviewer: str = "",
     token_budget: int | None = None,
 ) -> WorkerRecord:
+    if claim is not None and not claim.read_only:
+        worktree = worktree or "shared"
+        merge_owner = merge_owner or "parent"
+        merge_reviewer = merge_reviewer or "reviewer"
     return registry.new_record(
         worker_id=worker_id,
         parent_turn_id="turn-parent",
@@ -177,11 +181,17 @@ def test_independent_worktrees_require_merge_owners(tmp_path: Path) -> None:
         )
     )
     with pytest.raises(ValidationError, match="merge owner and reviewer"):
-        _record(
-            registry,
-            right,
-            "worker-invalid",
-            claim=claim,
+        registry.new_record(
+            worker_id="worker-invalid",
+            parent_turn_id="turn-parent",
+            root_goal_id="goal-root",
+            description="invalid merge contract",
+            prompt="perform a bounded task",
+            workspace=str(right),
+            authority_ceiling=AuthoritySnapshot(),
+            depth=1,
+            max_steps=10,
+            write_claim=claim,
             worktree="invalid",
         )
 
@@ -272,6 +282,163 @@ def test_root_goal_budget_is_single_shared_ledger(tmp_path: Path) -> None:
     assert registry.record("worker-a").token_budget == 20  # type: ignore[union-attr]
     with pytest.raises(WorkerConflictError, match="share one token budget"):
         registry.create(_record(registry, tmp_path, "worker-c", token_budget=30))
+
+
+# 功能：WorkerStore 持久化细分 token、缓存用量和可解释的模型成本
+# 设计：使用内置有单价的模型累计一次 usage，再重启 registry 验证字段不依赖进程内计数
+def test_worker_llm_usage_and_estimated_cost_survive_restart(tmp_path: Path) -> None:
+    store_path = tmp_path / "workers"
+    registry = BackgroundTaskRegistry(store_path=store_path, boot_id="boot-a")
+    worker = _record(registry, tmp_path, "worker-usage")
+    worker.model = "gpt-5.6"
+    registry.create(worker)
+
+    exhausted = registry.add_llm_usage(
+        worker.id,
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_input_tokens=30,
+        cache_creation_input_tokens=10,
+        model="gpt-5.6",
+    )
+    restored = BackgroundTaskRegistry(
+        store_path=store_path,
+        boot_id="boot-a",
+        recover=False,
+    ).record(worker.id)
+
+    assert exhausted is False
+    assert restored is not None
+    assert restored.token_usage == 120
+    assert restored.input_tokens == 100
+    assert restored.output_tokens == 20
+    assert restored.cache_read_input_tokens == 30
+    assert restored.cache_creation_input_tokens == 10
+    assert restored.cost_status == "estimated"
+    assert restored.estimated_cost_usd is not None
+    assert restored.estimated_cost_usd > 0
+
+
+# 功能：人工 review 只推进 handoff 审查状态，绝不写成已 apply
+# 设计：先构造已完成且待审查的写 Worker，再批准并检查持久状态与审计事件
+def test_worker_review_records_approval_without_apply(tmp_path: Path) -> None:
+    registry = BackgroundTaskRegistry(store_path=tmp_path / "workers")
+    worker = _record(
+        registry,
+        tmp_path,
+        "worker-review",
+        claim=WriteClaim(exact_files=["src/app.py"]),
+    )
+    registry.create(worker)
+    registry.update_status(
+        worker.id,
+        WorkerStatus.COMPLETED,
+        handoff_status="pending_review",
+        changed_files=["src/app.py"],
+    )
+
+    reviewed = registry.review_handoff(
+        worker.id,
+        approved=True,
+        review_digest="a" * 64,
+    )
+
+    assert reviewed.approved is True
+    assert reviewed.handoff_status == "reviewed_not_applied"
+    assert reviewed.review_digest == "a" * 64
+    assert reviewed.changed_files == ["src/app.py"]
+    assert registry.events(worker.id)[-1].kind == "worker.handoff_reviewed"
+
+
+# 功能：Worker apply 仅接受完成、真实验证且绑定人工审查摘要的 handoff
+# 设计：从待审查记录逐步补齐 verified 与 approval，再用同一摘要推进 applied 并检查持久事件
+def test_worker_apply_requires_verified_digest_bound_review(tmp_path: Path) -> None:
+    registry = BackgroundTaskRegistry(store_path=tmp_path / "workers")
+    worker = _record(
+        registry,
+        tmp_path,
+        "worker-apply",
+        claim=WriteClaim(exact_files=["src/app.py"]),
+    )
+    registry.create(worker)
+    registry.update_status(
+        worker.id,
+        WorkerStatus.COMPLETED,
+        handoff_status="pending_review",
+        changed_files=["src/app.py"],
+        verification_status="reported_unverified",
+    )
+    registry.review_handoff(
+        worker.id,
+        approved=True,
+        review_digest="b" * 64,
+    )
+
+    with pytest.raises(ValueError, match="daemon-verified"):
+        registry.require_applicable_handoff(
+            worker.id,
+            expected_digest="b" * 64,
+        )
+
+    registry.update_status(
+        worker.id,
+        WorkerStatus.COMPLETED,
+        verification_status="verified",
+    )
+    applied = registry.mark_handoff_applied(
+        worker.id,
+        state_digest="b" * 64,
+        changed_files=["src/app.py"],
+    )
+    assert applied.handoff_status == "applied"
+    assert registry.events(worker.id)[-1].kind == "worker.handoff_applied"
+
+
+# 功能：协调文本或截断检查不能替代可枚举的 Worker 文件 claim
+# 设计：分别构造无路径 coordination claim 与截断 diff，验证审批阶段即 fail closed
+def test_worker_review_rejects_unbounded_or_truncated_handoff(tmp_path: Path) -> None:
+    registry = BackgroundTaskRegistry(store_path=tmp_path / "workers")
+    unbounded = _record(
+        registry,
+        tmp_path,
+        "worker-unbounded",
+        claim=WriteClaim(coordination_contract="coordinate with parent"),
+    )
+    truncated = _record(
+        registry,
+        tmp_path,
+        "worker-truncated",
+        claim=WriteClaim(write_roots=["src"]),
+        worktree="truncated",
+    )
+    registry.create(unbounded)
+    registry.create(truncated)
+    registry.update_status(
+        unbounded.id,
+        WorkerStatus.COMPLETED,
+        handoff_status="pending_review",
+        changed_files=["src/app.py"],
+    )
+    registry.update_status(
+        truncated.id,
+        WorkerStatus.COMPLETED,
+        handoff_status="pending_review",
+        changed_files=["src/app.py"],
+        diff_truncated=True,
+    )
+
+    with pytest.raises(ValueError, match="write claim"):
+        registry.review_handoff(
+            unbounded.id,
+            approved=True,
+            review_digest="c" * 64,
+        )
+    with pytest.raises(ValueError, match="truncated"):
+        registry.review_handoff(
+            truncated.id,
+            approved=True,
+            review_digest="d" * 64,
+        )
 
 
 # 功能：daemon shutdown 取消活跃任务时持久终态为 interrupted 而不是用户 cancelled

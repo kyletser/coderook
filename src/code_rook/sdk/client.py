@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 import httpx
-from pydantic import TypeAdapter
+from pydantic import BaseModel
 
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.receipts.models import TurnReceipt
@@ -17,9 +18,50 @@ from code_rook.core.runtime.models import (
     TurnRecord,
 )
 
-_THREAD_LIST = TypeAdapter(list[ThreadRecord])
-_TURN_LIST = TypeAdapter(list[TurnRecord])
-_ITEM_LIST = TypeAdapter(list[TurnItemRecord])
+
+# 删除公共响应模型及其嵌套模型尚未识别的增量字段
+def _filter_public_payload(model: type[BaseModel], payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    return {
+        name: _filter_public_value(field.annotation, payload[name])
+        for name, field in model.model_fields.items()
+        if name in payload
+    }
+
+
+# 按字段类型递归处理嵌套公共模型和容器
+def _filter_public_value(annotation: Any, value: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin in {list, tuple, set, frozenset}:
+        args = get_args(annotation)
+        if args and isinstance(value, (list, tuple, set, frozenset)):
+            return [_filter_public_value(args[0], item) for item in value]
+        return value
+    if origin in {UnionType, Union}:
+        for candidate in get_args(annotation):
+            if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                return _filter_public_payload(candidate, value)
+        return value
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _filter_public_payload(annotation, value)
+    return value
+
+
+# 以向前兼容方式校验单个公共 API 响应模型
+def _validate_public_model[ModelT: BaseModel](
+    model: type[ModelT], payload: Any
+) -> ModelT:
+    return model.model_validate(_filter_public_payload(model, payload))
+
+
+# 以向前兼容方式校验公共 API 响应模型列表
+def _validate_public_list[ModelT: BaseModel](
+    model: type[ModelT], payload: Any
+) -> list[ModelT]:
+    if not isinstance(payload, list):
+        raise ValueError("public API list response must be an array")
+    return [_validate_public_model(model, item) for item in payload]
 
 
 class SdkError(RuntimeError):
@@ -83,7 +125,9 @@ class AsyncCodeRookClient:
 
     # 列出 durable threads
     async def list_threads(self) -> list[ThreadRecord]:
-        return _THREAD_LIST.validate_python(await self._request("GET", "/v1/threads"))
+        return _validate_public_list(
+            ThreadRecord, await self._request("GET", "/v1/threads")
+        )
 
     # 创建 durable thread
     async def create_thread(self, title: str = "", mode: str = "chat") -> ThreadRecord:
@@ -92,12 +136,12 @@ class AsyncCodeRookClient:
             "/v1/threads",
             json={"title": title, "mode": mode},
         )
-        return ThreadRecord.model_validate(payload)
+        return _validate_public_model(ThreadRecord, payload)
 
     # 读取单个 durable thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:
-        return ThreadRecord.model_validate(
-            await self._request("GET", f"/v1/threads/{thread_id}")
+        return _validate_public_model(
+            ThreadRecord, await self._request("GET", f"/v1/threads/{thread_id}")
         )
 
     # 更新 thread 标题或将其归档
@@ -113,19 +157,20 @@ class AsyncCodeRookClient:
             for key, value in {"title": title, "archived": archived}.items()
             if value is not None
         }
-        return ThreadRecord.model_validate(
-            await self._request("PATCH", f"/v1/threads/{thread_id}", json=body)
+        return _validate_public_model(
+            ThreadRecord,
+            await self._request("PATCH", f"/v1/threads/{thread_id}", json=body),
         )
 
     # 列出 thread 的 durable turns
     async def list_turns(self, thread_id: str) -> list[TurnRecord]:
         payload = await self._request("GET", f"/v1/threads/{thread_id}/turns")
-        return _TURN_LIST.validate_python(payload)
+        return _validate_public_list(TurnRecord, payload)
 
     # 读取单个 durable turn
     async def get_turn(self, turn_id: str) -> TurnRecord:
-        return TurnRecord.model_validate(
-            await self._request("GET", f"/v1/turns/{turn_id}")
+        return _validate_public_model(
+            TurnRecord, await self._request("GET", f"/v1/turns/{turn_id}")
         )
 
     # 在指定 thread 启动 turn
@@ -140,12 +185,12 @@ class AsyncCodeRookClient:
             f"/v1/threads/{thread_id}/turns",
             json={"content": content, "mode": mode.value},
         )
-        return TurnRecord.model_validate(payload)
+        return _validate_public_model(TurnRecord, payload)
 
     # 中断活动 turn
     async def interrupt_turn(self, turn_id: str) -> TurnRecord:
         payload = await self._request("POST", f"/v1/turns/{turn_id}/interrupt")
-        return TurnRecord.model_validate(payload)
+        return _validate_public_model(TurnRecord, payload)
 
     # 向活动 turn 注入 steering 内容
     async def steer_turn(self, turn_id: str, content: str) -> TurnRecord:
@@ -154,17 +199,17 @@ class AsyncCodeRookClient:
             f"/v1/turns/{turn_id}/steer",
             json={"content": content},
         )
-        return TurnRecord.model_validate(payload)
+        return _validate_public_model(TurnRecord, payload)
 
     # 读取 turn 的持久 item
     async def list_items(self, turn_id: str) -> list[TurnItemRecord]:
         payload = await self._request("GET", f"/v1/turns/{turn_id}/items")
-        return _ITEM_LIST.validate_python(payload)
+        return _validate_public_list(TurnItemRecord, payload)
 
     # 读取可离线审计的 turn receipt
     async def get_receipt(self, turn_id: str) -> TurnReceipt:
         payload = await self._request("GET", f"/v1/turns/{turn_id}/receipt")
-        return TurnReceipt.model_validate(payload)
+        return _validate_public_model(TurnReceipt, payload)
 
     # 响应工具审批，可附带逐 hunk 选择与 PatchPlan 标识
     async def respond_permission(
@@ -233,8 +278,9 @@ class AsyncCodeRookClient:
                         if line.startswith("data:"):
                             data_lines.append(line.removeprefix("data:").lstrip())
                         elif not line and data_lines:
-                            event = RuntimeEventRecord.model_validate_json(
-                                "\n".join(data_lines)
+                            event = _validate_public_model(
+                                RuntimeEventRecord,
+                                json.loads("\n".join(data_lines)),
                             )
                             data_lines.clear()
                             if event.seq <= cursor:
@@ -287,7 +333,7 @@ class CodeRookClient:
 
     # 列出 durable threads
     def list_threads(self) -> list[ThreadRecord]:
-        return _THREAD_LIST.validate_python(self._request("GET", "/v1/threads"))
+        return _validate_public_list(ThreadRecord, self._request("GET", "/v1/threads"))
 
     # 创建 durable thread
     def create_thread(self, title: str = "", mode: str = "chat") -> ThreadRecord:
@@ -296,12 +342,12 @@ class CodeRookClient:
             "/v1/threads",
             json={"title": title, "mode": mode},
         )
-        return ThreadRecord.model_validate(payload)
+        return _validate_public_model(ThreadRecord, payload)
 
     # 读取单个 durable thread
     def get_thread(self, thread_id: str) -> ThreadRecord:
-        return ThreadRecord.model_validate(
-            self._request("GET", f"/v1/threads/{thread_id}")
+        return _validate_public_model(
+            ThreadRecord, self._request("GET", f"/v1/threads/{thread_id}")
         )
 
     # 更新 thread 标题或将其归档
@@ -317,20 +363,21 @@ class CodeRookClient:
             for key, value in {"title": title, "archived": archived}.items()
             if value is not None
         }
-        return ThreadRecord.model_validate(
-            self._request("PATCH", f"/v1/threads/{thread_id}", json=body)
+        return _validate_public_model(
+            ThreadRecord,
+            self._request("PATCH", f"/v1/threads/{thread_id}", json=body),
         )
 
     # 列出 thread 的 durable turns
     def list_turns(self, thread_id: str) -> list[TurnRecord]:
-        return _TURN_LIST.validate_python(
-            self._request("GET", f"/v1/threads/{thread_id}/turns")
+        return _validate_public_list(
+            TurnRecord, self._request("GET", f"/v1/threads/{thread_id}/turns")
         )
 
     # 读取单个 durable turn
     def get_turn(self, turn_id: str) -> TurnRecord:
-        return TurnRecord.model_validate(
-            self._request("GET", f"/v1/turns/{turn_id}")
+        return _validate_public_model(
+            TurnRecord, self._request("GET", f"/v1/turns/{turn_id}")
         )
 
     # 在指定 thread 启动 turn
@@ -345,34 +392,36 @@ class CodeRookClient:
             f"/v1/threads/{thread_id}/turns",
             json={"content": content, "mode": mode.value},
         )
-        return TurnRecord.model_validate(payload)
+        return _validate_public_model(TurnRecord, payload)
 
     # 中断活动 turn
     def interrupt_turn(self, turn_id: str) -> TurnRecord:
-        return TurnRecord.model_validate(
-            self._request("POST", f"/v1/turns/{turn_id}/interrupt")
+        return _validate_public_model(
+            TurnRecord,
+            self._request("POST", f"/v1/turns/{turn_id}/interrupt"),
         )
 
     # 向活动 turn 注入 steering 内容
     def steer_turn(self, turn_id: str, content: str) -> TurnRecord:
-        return TurnRecord.model_validate(
+        return _validate_public_model(
+            TurnRecord,
             self._request(
                 "POST",
                 f"/v1/turns/{turn_id}/steer",
                 json={"content": content},
-            )
+            ),
         )
 
     # 读取 turn 的持久 item
     def list_items(self, turn_id: str) -> list[TurnItemRecord]:
-        return _ITEM_LIST.validate_python(
-            self._request("GET", f"/v1/turns/{turn_id}/items")
+        return _validate_public_list(
+            TurnItemRecord, self._request("GET", f"/v1/turns/{turn_id}/items")
         )
 
     # 读取可离线审计的 turn receipt
     def get_receipt(self, turn_id: str) -> TurnReceipt:
-        return TurnReceipt.model_validate(
-            self._request("GET", f"/v1/turns/{turn_id}/receipt")
+        return _validate_public_model(
+            TurnReceipt, self._request("GET", f"/v1/turns/{turn_id}/receipt")
         )
 
     # 同步响应工具审批，可附带逐 hunk 选择
@@ -438,7 +487,10 @@ class CodeRookClient:
                 if line.startswith("data:"):
                     data_lines.append(line.removeprefix("data:").lstrip())
                 elif not line and data_lines:
-                    event = RuntimeEventRecord.model_validate_json("\n".join(data_lines))
+                    event = _validate_public_model(
+                        RuntimeEventRecord,
+                        json.loads("\n".join(data_lines)),
+                    )
                     data_lines.clear()
                     if event.seq <= cursor:
                         continue

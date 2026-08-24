@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority.models import SandboxCapability
 from code_rook.core.persistent_shell import (
     PersistentShellPool,
@@ -192,3 +194,84 @@ def test_default_shell_argv_matches_platform() -> None:
         assert argv[:2] == ["cmd", "/Q"]
     else:
         assert argv == ["/bin/sh"]
+
+
+# 功能：验证常驻 Shell 可消费 10MB 无换行输出且只在结果边界有界截断
+# 设计：使用当前 Python 写单个超长字节流，覆盖 readline LimitOverrun 的历史失效路径
+async def test_persistent_shell_handles_ten_megabytes_without_newline(
+    tmp_path: Path,
+) -> None:
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    session = PersistentShellSession(artifact_store=artifact_store)
+    command = f'"{sys.executable}" -c "import sys;sys.stdout.write(\'x\'*10485760)"'
+
+    outcome = await session.run(command, timeout_s=30.0)
+
+    assert outcome.exit_code == 0
+    assert outcome.truncated is True
+    assert len(outcome.text.encode("utf-8")) == 64 * 1024
+    assert outcome.text.count("x") > 60 * 1024
+    assert outcome.output_bytes >= 10 * 1024 * 1024
+    assert outcome.output_artifact.startswith("artifact:")
+    assert outcome.output_artifact_size == outcome.output_bytes
+    sha256 = outcome.output_artifact.removeprefix("artifact:")
+    first = await artifact_store.read(sha256, limit=50_000)
+    second = await artifact_store.read(
+        sha256,
+        offset=first.next_offset or 0,
+        limit=50_000,
+    )
+    assert first.next_offset == 50_000
+    assert second.offset == 50_000
+    recovered = await artifact_store.read_bytes(sha256, max_bytes=11 * 1024 * 1024)
+    assert recovered.count(b"x") == 10 * 1024 * 1024
+    await session._terminate()
+
+
+# 功能：验证同一常驻 Shell 的并发调用被串行化且输出不会互相串线
+# 设计：同时调度两条带唯一标记的命令，锁定顺序协议并分别检查结果隔离
+async def test_persistent_shell_serializes_concurrent_calls() -> None:
+    session = PersistentShellSession()
+
+    first, second = await asyncio.gather(
+        session.run("echo concurrent-one", timeout_s=15.0),
+        session.run("echo concurrent-two", timeout_s=15.0),
+    )
+
+    assert "concurrent-one" in first.text and "concurrent-two" not in first.text
+    assert "concurrent-two" in second.text and "concurrent-one" not in second.text
+    await session._terminate()
+
+
+# 功能：验证 POSIX 常驻 Shell 会清理命令遗留的持续输出后台进程且不污染下一次调用
+# 设计：启动 yes 后立即返回，随后执行唯一标记命令，断言有界队列和 job 清理阻断串流
+async def test_persistent_shell_cleans_background_output_between_commands() -> None:
+    if _IS_WINDOWS:
+        return
+    session = PersistentShellSession()
+
+    first = await session.run("yes CODEROOK_LEAK &", timeout_s=10.0)
+    second = await session.run("printf CODEROOK_CLEAN", timeout_s=10.0)
+
+    assert first.exit_code == 0
+    assert "CODEROOK_CLEAN" in second.text
+    assert "CODEROOK_LEAK" not in second.text
+    assert session._queue.qsize() <= session._queue.maxsize
+    await session._terminate()
+
+
+# 功能：验证取消常驻 Shell 调用会终止整棵进程树并使会话不可复用
+# 设计：启动长任务后取消等待协程，断言 CancelledError 传播且 alive 立即转为 false
+async def test_persistent_shell_cancellation_terminates_session() -> None:
+    session = PersistentShellSession()
+    command = "ping -n 30 127.0.0.1 > nul" if _IS_WINDOWS else "sleep 30"
+    task = asyncio.create_task(session.run(command, timeout_s=60.0))
+    await asyncio.sleep(0.2)
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert session.alive is False

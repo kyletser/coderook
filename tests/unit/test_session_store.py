@@ -61,6 +61,46 @@ def test_future_session_schema_blocks_unsupported_downgrade(tmp_path: Path) -> N
 
     assert meta.read_text(encoding="utf-8") == original
 
+    assert SessionStore(tmp_path).list_sessions() == []
+    assert meta.read_text(encoding="utf-8") == original
+    assert not (session_dir / "_quarantine").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", "sess-other"),
+        ("mode", "evil"),
+        ("status", "corrupt"),
+        ("run_ids", "run-xy"),
+    ],
+)
+# 功能：验证 Session 元数据的路径身份、枚举和列表类型无法伪造会话作用域
+# 设计：逐项篡改合法 meta 并经 list 扫描，断言单条记录被隔离且不会返回错绑 Session
+def test_invalid_session_metadata_is_quarantined(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    store = SessionStore(tmp_path)
+    session = Session(
+        id="sess-valid",
+        mode="chat",
+        status="active",
+        title="valid",
+        created_at="t1",
+        updated_at="t2",
+    )
+    store.write_meta(session)
+    meta = tmp_path / "sess-valid" / "meta.json"
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+    payload[field] = value
+    meta.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.list_sessions() == []
+    assert not meta.exists()
+    assert list((meta.parent / "_quarantine").glob("*.invalid.json"))
+
 
 # 功能：验证含 tool_use/tool_result block 的 thread 消息能按 Anthropic 格式读回
 # 设计：追加 assistant tool_use 和 user tool_result，读取时应剥离 ts/run_id，只保留 API messages 所需字段

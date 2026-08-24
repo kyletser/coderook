@@ -70,6 +70,12 @@ def _status_object(worker: WorkerRecord) -> dict[str, object]:
         "lease_timeout_s": worker.lease_timeout_s,
         "token_budget": worker.token_budget,
         "token_usage": worker.token_usage,
+        "input_tokens": worker.input_tokens,
+        "output_tokens": worker.output_tokens,
+        "cache_read_input_tokens": worker.cache_read_input_tokens,
+        "cache_creation_input_tokens": worker.cache_creation_input_tokens,
+        "estimated_cost_usd": worker.estimated_cost_usd,
+        "cost_status": worker.cost_status,
         "event_cursor": worker.event_cursor,
         "summary": worker.summary[:1_000],
         "blockers": worker.blockers[:10],
@@ -79,7 +85,8 @@ def _status_object(worker: WorkerRecord) -> dict[str, object]:
 class AgentTool(BaseTool):
     name = "agent"
     description = (
-        "Manage durable subagents with start, status, peek, wait, cancel, and followup actions."
+        "Manage durable subagents with start, retry, status, peek, wait, cancel, and "
+        "followup actions."
     )
     side_effect = ToolSideEffect.EXTERNAL_WRITE
     input_schema: dict[str, object] = {
@@ -116,6 +123,23 @@ class AgentTool(BaseTool):
                 description="Start a durable background worker after validating its write claim.",
                 input_schema=start_schema,
                 capabilities=external,
+                permission_policy_aliases=("spawn_agent",),
+                approval_requirement=ApprovalRequirement.POLICY,
+                parallel_policy=ParallelPolicy.SERIAL,
+            ),
+            ToolActionSpec(
+                name="retry",
+                description=(
+                    "Retry a durable interrupted or failed worker without widening its "
+                    "original role, budget, authority, or write claim."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {"worker_id": {"type": "string"}},
+                    "required": ["worker_id"],
+                },
+                capabilities=external,
+                permission_policy_aliases=("spawn_agent",),
                 approval_requirement=ApprovalRequirement.POLICY,
                 parallel_policy=ParallelPolicy.SERIAL,
             ),
@@ -131,6 +155,7 @@ class AgentTool(BaseTool):
                     },
                 },
                 capabilities=read,
+                permission_policy_aliases=("agent_result",),
                 approval_requirement=ApprovalRequirement.NEVER,
                 parallel_policy=ParallelPolicy.SAFE,
             ),
@@ -147,6 +172,7 @@ class AgentTool(BaseTool):
                     "required": ["worker_id"],
                 },
                 capabilities=read,
+                permission_policy_aliases=("agent_result",),
                 approval_requirement=ApprovalRequirement.NEVER,
                 parallel_policy=ParallelPolicy.SAFE,
             ),
@@ -162,6 +188,7 @@ class AgentTool(BaseTool):
                     "required": ["worker_id"],
                 },
                 capabilities=read,
+                permission_policy_aliases=("agent_result",),
                 approval_requirement=ApprovalRequirement.NEVER,
                 parallel_policy=ParallelPolicy.SAFE,
             ),
@@ -174,6 +201,7 @@ class AgentTool(BaseTool):
                     "required": ["worker_id"],
                 },
                 capabilities=external,
+                permission_policy_aliases=("spawn_agent",),
                 approval_requirement=ApprovalRequirement.POLICY,
                 parallel_policy=ParallelPolicy.SERIAL,
             ),
@@ -189,6 +217,7 @@ class AgentTool(BaseTool):
                     "required": ["worker_id", "message"],
                 },
                 capabilities=external,
+                permission_policy_aliases=("spawn_agent",),
                 approval_requirement=ApprovalRequirement.POLICY,
                 parallel_policy=ParallelPolicy.SERIAL,
             ),
@@ -290,8 +319,14 @@ class AgentTool(BaseTool):
         payload = dict(params)
         payload.pop("action", None)
         try:
-            if action == "start":
+            if action in {"start", "retry"}:
                 worker_id = payload.get("worker_id")
+                if action == "retry" and (not isinstance(worker_id, str) or not worker_id):
+                    return ToolResult(
+                        "worker_id is required for agent.retry",
+                        is_error=True,
+                        error_type="schema_error",
+                    )
                 if isinstance(worker_id, str) and worker_id:
                     existing = self._registry.record(worker_id)
                     if existing is None:

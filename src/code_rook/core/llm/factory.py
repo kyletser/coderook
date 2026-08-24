@@ -7,6 +7,7 @@ from code_rook.core.llm.kinds import OPENAI_CHAT_PROVIDERS
 from code_rook.core.llm.openai_compatible import OpenAICompatibleProvider
 from code_rook.core.llm.openai_responses import OpenAIResponsesProvider
 from code_rook.core.llm.provider import AnthropicProvider
+from code_rook.core.llm.provider_presets import get_provider_preset
 from code_rook.core.llm.routes import ProviderRoute
 
 
@@ -28,6 +29,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             base_url=str(route.base_url).rstrip("/"),
             api_key_env="",
             api_key=credential,
+            api_key_required=route.credential_required,
             use_max_completion_tokens=route.provider == "openai",
             context_window=route.context_window,
             thinking=route.thinking,
@@ -38,6 +40,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             route.model,
             base_url=str(route.base_url).rstrip("/"),
             api_key=credential,
+            api_key_required=route.credential_required,
             context_window=route.context_window,
             thinking=route.thinking,
             temperature=route.temperature,
@@ -49,7 +52,12 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
 def create_llm_provider(config: LlmConfig) -> LLMProvider:
     provider = normalize_provider(config.provider)
     api_key = resolve_api_key(config)
-    if not api_key:
+    try:
+        preset = get_provider_preset(provider)
+        credential_required = preset.credential_required
+    except ValueError:
+        credential_required = True
+    if credential_required and not api_key:
         raise SystemExit(
             f"{config.api_key_env} not set and no saved credential for {provider}; "
             "run `uv run coderook configure`"
@@ -65,7 +73,8 @@ def create_llm_provider(config: LlmConfig) -> LLMProvider:
             config.default_model,
             base_url=config.base_url,
             api_key_env=config.api_key_env,
-            api_key=api_key,
+            api_key=api_key or "",
+            api_key_required=credential_required,
             use_max_completion_tokens=provider == "openai",
         )
     raise SystemExit(f"Unsupported LLM provider: {config.provider}")

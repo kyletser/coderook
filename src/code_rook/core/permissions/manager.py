@@ -10,6 +10,7 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any, Literal
 
+from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import (
     AuthorityDecision,
     AuthorityProfile,
@@ -40,50 +41,38 @@ from code_rook.core.sandbox.planner import (
     plan_sandbox,
     tier_for_auto_review,
 )
-from code_rook.core.tools.spec import ApprovalRequirement
+from code_rook.core.tools.spec import (
+    ApprovalRequirement,
+    PermissionScope,
+    ResolvedToolCall,
+)
 
 logger = logging.getLogger(__name__)
 
 PermissionRunMode = Literal["interactive", "deny", "fail_fast", "allow_list"]
 
-_FAMILY_POLICY_ALIASES: dict[tuple[str, str], str] = {
-    ("Bash", "run"): "bash",
-    ("Bash", "wait"): "background_result",
-    ("Bash", "interact"): "background_interact",
-    ("Bash", "cancel"): "background_cancel",
-    ("File", "read"): "read_file",
-    ("File", "list"): "list_dir",
-    ("File", "search_name"): "glob",
-    ("File", "search_content"): "grep",
-    ("File", "write"): "write_file",
-    ("File", "edit"): "edit_file",
-    ("File", "patch"): "apply_patch",
-    ("Git", "diff"): "git_diff",
-    ("Run", "tests"): "run_tests",
-    ("Run", "verifiers"): "run_verifiers",
-    ("agent", "start"): "spawn_agent",
-    ("agent", "status"): "agent_result",
-    ("agent", "peek"): "agent_result",
-    ("agent", "wait"): "agent_result",
-    ("agent", "cancel"): "spawn_agent",
-    ("agent", "followup"): "spawn_agent",
-}
-
-
 def _now() -> str:
     return datetime.datetime.now(UTC).isoformat()
 
 
-# 返回 action-family 调用的精确缓存键和兼容旧策略名
+# 从已解析 manifest 返回权限范围；旧直调仅生成精确键且不猜测兼容别名
 def _permission_scope(
     tool_name: str,
     params: dict[str, Any],
-) -> tuple[str, str]:
+    resolved_call: ResolvedToolCall | None = None,
+) -> PermissionScope | None:
+    if resolved_call is not None:
+        if resolved_call.spec.name != tool_name:
+            return None
+        if resolved_call.spec.is_action_family:
+            action = params.get("action")
+            if action != resolved_call.action.name:
+                return None
+        return resolved_call.permission_scope
     action = params.get("action")
     if not isinstance(action, str) or not action:
-        return tool_name, tool_name
-    scope = f"{tool_name}.{action}"
-    return scope, _FAMILY_POLICY_ALIASES.get((tool_name, action), scope)
+        return PermissionScope(key=tool_name)
+    return PermissionScope(key=f"{tool_name}.{action}")
 
 
 @dataclass
@@ -107,6 +96,7 @@ class PermissionManager:
         *,
         policy_file: Path | None = None,
         timeout_s: float = 60.0,
+        audit_health: AuditHealth | None = None,
     ) -> None:
         self._policies: dict[str, ToolPolicy] = policies or dict(DEFAULT_POLICIES)
         # tool_use_id → pending Future + metadata
@@ -130,16 +120,15 @@ class PermissionManager:
             sandbox=detect_sandbox_capability(),
         )
         self._session_authorities: dict[str, AuthoritySnapshot] = {}
+        # active turn 使用独立不可变快照；会话设置只能影响后续 turn
+        self._active_turn_authorities: dict[str, AuthoritySnapshot] = {}
+        self._audit_health = audit_health
 
-    # 持久化全局权限姿态并同步已有会话，避免每次启动后重新批准
+    # 持久化新会话的默认权限姿态，不修改已有会话或正在运行的 turn
     def set_default_profile(self, profile: AuthorityProfile) -> None:
         self._default_authority = self._default_authority.model_copy(
             update={"profile": profile}
         )
-        self._session_authorities = {
-            session_id: snapshot.model_copy(update={"profile": profile})
-            for session_id, snapshot in self._session_authorities.items()
-        }
         if self._policy_file is not None:
             save_policy_file(
                 self._persistent_always,
@@ -159,13 +148,30 @@ class PermissionManager:
     def get_authority_snapshot(self, session_id: str) -> AuthoritySnapshot:
         return self._session_authorities.get(session_id, self._default_authority)
 
+    # 冻结当前 turn 的执行权限，后续会话设置变更不得影响该快照
+    def begin_turn(self, session_id: str, snapshot: AuthoritySnapshot) -> None:
+        if session_id in self._active_turn_authorities:
+            raise RuntimeError(f"turn authority already active for session {session_id}")
+        self._active_turn_authorities[session_id] = snapshot
+
+    # 清除已结束 turn 的冻结权限快照
+    def end_turn(self, session_id: str) -> None:
+        self._active_turn_authorities.pop(session_id, None)
+
+    # 返回工具审批和沙箱启动必须共同消费的有效权限快照
+    def get_effective_authority_snapshot(self, session_id: str) -> AuthoritySnapshot:
+        return self._active_turn_authorities.get(
+            session_id,
+            self.get_authority_snapshot(session_id),
+        )
+
     # 清除 session 的 authority 配置并恢复默认值
     def clear_authority_snapshot(self, session_id: str) -> None:
         self._session_authorities.pop(session_id, None)
 
     # 依据 authority 快照决定是否给 shell 施加真实 OS 沙箱；非 AUTO_REVIEW 或无后端时返回 None
     def shell_sandbox_plan(self, session_id: str, workspace: str) -> SandboxPlan | None:
-        snap = self.get_authority_snapshot(session_id)
+        snap = self.get_effective_authority_snapshot(session_id)
         if snap.profile != AuthorityProfile.AUTO_REVIEW:
             return None
         if tier_for_auto_review(snap.sandbox) == SandboxTier.NONE:
@@ -191,11 +197,31 @@ class PermissionManager:
     def clear_session_mode(self, session_id: str) -> None:
         self._session_modes.pop(session_id, None)
 
+    # 按 manifest 新键优先、旧别名回退选择静态策略
+    def _policy_for_scope(
+        self,
+        scope: PermissionScope,
+    ) -> tuple[str, ToolPolicy | None]:
+        for key in scope.lookup_keys:
+            policy = self._policies.get(key)
+            if policy is not None:
+                return key, policy
+        return scope.key, None
+
     # 对工具名 + 参数执行 4 层静态评估，不挂起
-    def evaluate(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
+    def evaluate(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        *,
+        resolved_call: ResolvedToolCall | None = None,
+    ) -> PermissionDecision:
         from code_rook.core.permissions.policy import evaluate
-        _permission_key, policy_name = _permission_scope(tool_name, params)
-        policy = self._policies.get(policy_name)
+
+        scope = _permission_scope(tool_name, params, resolved_call)
+        if scope is None:
+            return PermissionDecision.DENY
+        policy_name, policy = self._policy_for_scope(scope)
         return evaluate(policy_name, params, policy)
 
     # 检查权限；如需 ask 则向客户端发事件并等待响应；返回 (allowed, decision_str)
@@ -207,28 +233,65 @@ class PermissionManager:
         session_id: str,
         event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
         *,
+        resolved_call: ResolvedToolCall | None = None,
         action: ToolAction | str | None = None,
         approval_requirement: ApprovalRequirement = ApprovalRequirement.POLICY,
+        authority_override: AuthoritySnapshot | None = None,
     ) -> tuple[bool, str]:
-        permission_key, policy_name = _permission_scope(tool_name, params)
-        command = str(params.get("command", "")) if policy_name == "bash" else ""
-        policy = self._policies.get(policy_name)
+        effective_action = (
+            resolved_call.authority_action if resolved_call is not None else action
+        )
+        effective_approval = (
+            resolved_call.effective_approval_requirement
+            if resolved_call is not None
+            else approval_requirement
+        )
+        scope = _permission_scope(tool_name, params, resolved_call)
+        if scope is None:
+            logger.error("permission manifest mismatch: tool=%s", tool_name)
+            return False, "manifest_mismatch"
+        if (
+            self._audit_health is not None
+            and self._audit_health.degraded
+            and effective_action not in {ToolAction.READ, ToolAction.READ.value}
+        ):
+            logger.error(
+                "audit degraded: denied mutating tool=%s action=%s",
+                tool_name,
+                effective_action,
+            )
+            return False, "audit_degraded"
+        permission_key = scope.key
+        policy_name, policy = self._policy_for_scope(scope)
+        is_declared_shell = effective_action in {
+            ToolAction.SHELL,
+            ToolAction.SHELL.value,
+        }
+        is_shell = is_declared_shell or (
+            resolved_call is None and tool_name == "bash"
+        )
+        command = str(params.get("command", "")) if is_shell else ""
         session_mode = self._session_modes.get(
             session_id,
             _SessionPermissionMode("interactive"),
         )
+        authority_snapshot = (
+            authority_override
+            if authority_override is not None
+            else self.get_effective_authority_snapshot(session_id)
+        )
         authority_decision = AuthorityDecision.ASK
-        if action is not None:
+        if effective_action is not None:
             authority = evaluate_action(
-                self.get_authority_snapshot(session_id),
-                action,
+                authority_snapshot,
+                effective_action,
             )
             authority_decision = authority.decision
             if authority.decision == AuthorityDecision.DENY:
                 logger.info(
                     "authority: denied tool=%s action=%s reason=%s",
                     tool_name,
-                    action,
+                    effective_action,
                     authority.reason,
                 )
                 return False, "authority_denied"
@@ -243,7 +306,12 @@ class PermissionManager:
         # Tier 2: 标记工作区外 bash，未显式 always 或 Full Access 时仍要求确认
         outside_cwd = bool(command and matches_outside_cwd(command))
 
-        if session_mode.mode == "interactive":
+        unisolated_windows_shell = (
+            is_declared_shell
+            and authority_snapshot.sandbox.kind == "windows_none"
+        )
+
+        if session_mode.mode == "interactive" and not unisolated_windows_shell:
             # Tier 3: session always 缓存（用户显式选择后也适用于工作区外命令）
             session_key = (session_id, permission_key)
             if session_key in self._session_always:
@@ -256,12 +324,15 @@ class PermissionManager:
                 return cached == "allow", f"auto_{cached}"
 
             # Tier 4: persistent always（跨 session，同样尊重用户对工作区外命令的选择）
-            cached_key = (
-                permission_key
-                if permission_key in self._persistent_always
-                else policy_name
+            cached_key = next(
+                (
+                    key
+                    for key in scope.lookup_keys
+                    if key in self._persistent_always
+                ),
+                None,
             )
-            if cached_key in self._persistent_always:
+            if cached_key is not None:
                 cached = self._persistent_always[cached_key]
                 logger.debug(
                     "permission: persistent cache hit tool=%s decision=%s",
@@ -281,19 +352,23 @@ class PermissionManager:
                 )
                 return prefix_hit == "allow", "auto_always_prefix"
 
-        if approval_requirement == ApprovalRequirement.NEVER:
+        if (
+            effective_approval == ApprovalRequirement.NEVER
+            and not unisolated_windows_shell
+        ):
             return True, "auto_allow"
 
-        force_approval = approval_requirement == ApprovalRequirement.ALWAYS
+        force_approval = effective_approval == ApprovalRequirement.ALWAYS
         if force_approval and (
-            self.get_authority_snapshot(session_id).profile
-            == AuthorityProfile.FULL_ACCESS
+            authority_snapshot.profile == AuthorityProfile.FULL_ACCESS
+            and not unisolated_windows_shell
         ):
             return True, "authority_allow"
 
         # Full Access 可自动执行工作区外命令，但前面的 deny_patterns 仍不可绕过
         if (
             not force_approval
+            and not unisolated_windows_shell
             and outside_cwd
             and authority_decision == AuthorityDecision.ALLOW
         ):
@@ -303,18 +378,16 @@ class PermissionManager:
         # 沙箱不可用（降级）则回落后续 ASK 路径，deny_patterns 在 Tier 1 已不可绕过
         if (
             not force_approval
+            and not unisolated_windows_shell
             and policy_name == "bash"
             and command
-            and self.get_authority_snapshot(session_id).profile
-            == AuthorityProfile.AUTO_REVIEW
-            and tier_for_auto_review(
-                self.get_authority_snapshot(session_id).sandbox
-            )
+            and authority_snapshot.profile == AuthorityProfile.AUTO_REVIEW
+            and tier_for_auto_review(authority_snapshot.sandbox)
             != SandboxTier.NONE
         ):
             return True, "authority_sandbox_allow"
 
-        if not outside_cwd and not force_approval:
+        if not outside_cwd and not force_approval and not unisolated_windows_shell:
             # Tier 5: allow_patterns（bash only）
             if command and policy:
                 for pat in policy.allow_patterns:
@@ -338,7 +411,7 @@ class PermissionManager:
                 not outside_cwd
                 and session_mode.mode == "allow_list"
                 and bool(
-                    {tool_name, permission_key, policy_name}
+                    {tool_name, *scope.lookup_keys}
                     & session_mode.allow_tools
                 )
             ):
@@ -356,13 +429,21 @@ class PermissionManager:
             tool_name=tool_name,
         )
 
+        preview = param_preview(policy_name, params)
+        event_params = params
+        if unisolated_windows_shell:
+            preview = f"{preview} [NO OS SANDBOX: explicit approval required]"
+            event_params = {
+                **params,
+                "_safety_notice": "No OS sandbox is available on Windows.",
+            }
         await event_emitter(
             {
                 "type": "permission.requested",
                 "tool_use_id": tool_use_id,
                 "tool_name": tool_name,
-                "params": params,
-                "param_preview": param_preview(tool_name, params),
+                "params": event_params,
+                "param_preview": preview,
                 "session_id": session_id,
                 "ts": _now(),
             }

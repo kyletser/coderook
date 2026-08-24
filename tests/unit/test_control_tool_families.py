@@ -9,9 +9,11 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.memory import MemoryStore
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.invocation import invoke_tool
+from code_rook.core.tools.spec import ApprovalRequirement
 
 
 # 从 action-family schema 提取可见 action 名称
@@ -68,6 +70,33 @@ def test_plan_mode_filters_control_family_mutations(tmp_path: Path) -> None:
     assert _actions(schemas["memory"]) == {"search"}
     assert _actions(schemas["tasks"]) == {"list", "get"}
     assert "update_plan" in schemas
+
+
+# 功能：验证 Agent 保存记忆默认强制审批且可由工作区设置彻底关闭
+# 设计：先检查 family 的 save action 为 ALWAYS，再落盘 off 并重建 registry 验证 action 不可见
+def test_memory_agent_save_defaults_to_prompt_and_can_be_disabled(tmp_path: Path) -> None:
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, bus=EventBus())
+    registry = runner._build_registry(
+        TaskManager(tmp_path / ".tasks"),
+        run_id="run-memory-prompt",
+        bus=EventBus(),
+    )
+    save_call = registry.resolve_call(
+        "memory",
+        {"action": "save", "name": "rule", "body": "Run tests."},
+    )
+    assert save_call.effective_approval_requirement == ApprovalRequirement.ALWAYS
+
+    MemoryStore(tmp_path / ".coderook" / "memory").set_auto_save("off")
+    disabled = runner._build_registry(
+        TaskManager(tmp_path / ".tasks-off"),
+        run_id="run-memory-off",
+        bus=EventBus(),
+    )
+    schemas = {str(item["name"]): item for item in disabled.tool_schemas()}
+
+    assert "save" not in _actions(schemas["memory"])
+    assert disabled.get("memory_save") is None
 
 
 # 功能：memory 与 tasks family 调用真实 backend 并保持持久状态

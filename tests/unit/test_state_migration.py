@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from code_rook.core.state_migration import migrate_legacy_state
 
@@ -56,9 +59,81 @@ def test_project_migration_skips_managed_worktrees(tmp_path: Path) -> None:
     memory.write_text(json.dumps({"body": "project rule"}), encoding="utf-8")
     worktree.write_text("print('old worktree')\n", encoding="utf-8")
 
-    report = migrate_legacy_state(user_home=home, workspace=workspace)
+    report = migrate_legacy_state(
+        user_home=home,
+        workspace=workspace,
+        include_project=True,
+    )
 
     assert (workspace / ".coderook" / "memory" / "records" / "mem-1.json").is_file()
     assert not (workspace / ".coderook" / "worktrees").exists()
     assert report.project_files_copied == 1
+
+
+# 功能：验证普通 CLI/TUI/Core 启动不会自动复制工作区内的旧项目状态
+# 设计：保留真实旧 memory 文件并使用默认参数，断言只报告发现而不创建项目 .coderook
+def test_project_migration_requires_explicit_confirmation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    legacy = workspace / ".kyle" / "memory" / "rule.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("legacy project state", encoding="utf-8")
+
+    report = migrate_legacy_state(user_home=home, workspace=workspace)
+
+    assert report.legacy_project_state_found is True
+    assert report.project_files_copied == 0
+    assert not (workspace / ".coderook").exists()
+
+
+# 功能：验证显式项目迁移拒绝把 .coderook 根 symlink 当作写入目录
+# 设计：让目标指向工作区外哨兵目录，若平台支持 symlink 则断言外部文件始终不会出现
+def test_project_migration_rejects_symlinked_target_root(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    legacy = workspace / ".kyle" / "memory" / "rule.md"
+    legacy.parent.mkdir(parents=True)
+    outside.mkdir()
+    legacy.write_text("must stay inside", encoding="utf-8")
+    try:
+        os.symlink(outside, workspace / ".coderook", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        migrate_legacy_state(
+            user_home=home,
+            workspace=workspace,
+            include_project=True,
+        )
+
+    assert not (outside / "memory" / "rule.md").exists()
+
+
+# 功能：验证迁移拒绝穿过 .coderook 内部已有的目录 symlink
+# 设计：只把 memory 子目录指向外部，覆盖根目录合法但递归目标逃逸的路径
+def test_project_migration_rejects_nested_target_symlink(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    legacy = workspace / ".kyle" / "memory" / "rule.md"
+    target_root = workspace / ".coderook"
+    legacy.parent.mkdir(parents=True)
+    target_root.mkdir(parents=True)
+    outside.mkdir()
+    legacy.write_text("must stay inside", encoding="utf-8")
+    try:
+        os.symlink(outside, target_root / "memory", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        migrate_legacy_state(
+            user_home=home,
+            workspace=workspace,
+            include_project=True,
+        )
+
+    assert not (outside / "rule.md").exists()
 

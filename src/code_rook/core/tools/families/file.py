@@ -84,6 +84,7 @@ class FileTool(BaseTool):
                 description=backend.description,
                 input_schema=backend.input_schema,
                 capabilities=_ACTION_CAPABILITIES[action],
+                permission_policy_aliases=(_ACTION_ALIASES[action],),
                 approval_requirement=(
                     ApprovalRequirement.NEVER
                     if _ACTION_CAPABILITIES[action] == frozenset({ToolCapability.READ})

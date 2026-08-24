@@ -23,10 +23,17 @@ class SkillTool(BaseTool):
     )
     params_model = SkillParams
 
-    # 绑定 skill 加载器并把当前可用名称写入工具 schema
-    def __init__(self, loader: SkillLoader) -> None:
+    # 绑定加载器与冻结的 workspace trust，仅把可信 skill 元数据写入模型 schema
+    def __init__(
+        self,
+        loader: SkillLoader,
+        *,
+        workspace_trusted: bool = False,
+    ) -> None:
         self._loader = loader
-        skills = loader.list_all_skills()
+        self._workspace_trusted = workspace_trusted
+        skills = loader.list_for_execution(workspace_trusted=workspace_trusted)
+        self._expected_digests = {skill.name: skill.digest for skill in skills}
         names = [skill.name for skill in sorted(skills, key=lambda item: item.name)]
         descriptions = "; ".join(
             f"{skill.name}: {' '.join(skill.description.split())}"
@@ -55,8 +62,22 @@ class SkillTool(BaseTool):
     # 加载选中 skill 的完整正文并替换参数占位符
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         parsed = SkillParams.model_validate(params)
+        expected_digest = self._expected_digests.get(parsed.name)
+        if expected_digest is None:
+            return ToolResult(
+                content=(
+                    f"Unknown skill or unavailable in this trust context: {parsed.name}"
+                ),
+                is_error=True,
+                error_type="runtime_error",
+            )
         try:
-            skill = self._loader.resolve(parsed.name)
+            skill = self._loader.resolve(
+                parsed.name,
+                require_trusted=True,
+                workspace_trusted=self._workspace_trusted,
+                expected_digest=expected_digest,
+            )
         except SkillError as exc:
             return ToolResult(
                 content=str(exc),
@@ -69,7 +90,13 @@ class SkillTool(BaseTool):
                 is_error=True,
                 error_type="runtime_error",
             )
-        instructions = self._loader.render_prompt(skill, parsed.arguments)
+        instructions = self._loader.render_prompt(
+            skill,
+            parsed.arguments,
+            require_trusted=True,
+            workspace_trusted=self._workspace_trusted,
+            expected_digest=expected_digest,
+        )
         allowed = ", ".join(skill.allowed_tools) if skill.allowed_tools else "all available"
         return ToolResult(
             content=(

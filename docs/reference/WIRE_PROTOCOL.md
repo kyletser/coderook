@@ -354,6 +354,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `session_id` | `string` | yes |
 | `objective` | `string` | yes |
 | `token_budget` | `integer | null` | no |
+| `auto_continue` | `boolean` | no |
+| `max_auto_turns` | `integer` | no |
+| `max_wall_seconds` | `integer` | no |
 | `constraints` | `array` | no |
 | `completion_criteria` | `array` | no |
 | `start` | `boolean` | no |
@@ -390,6 +393,25 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Token Budget"
+    },
+    "auto_continue": {
+      "default": true,
+      "title": "Auto Continue",
+      "type": "boolean"
+    },
+    "max_auto_turns": {
+      "default": 3,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Max Auto Turns",
+      "type": "integer"
+    },
+    "max_wall_seconds": {
+      "default": 1800,
+      "maximum": 86400,
+      "minimum": 1,
+      "title": "Max Wall Seconds",
+      "type": "integer"
     },
     "constraints": {
       "items": {
@@ -432,6 +454,45 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 ```json
 {
   "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
     "CompletionEvidence": {
       "additionalProperties": false,
       "properties": {
@@ -450,6 +511,13 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Summary",
           "type": "string"
         },
+        "covered_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Covered Criteria",
+          "type": "array"
+        },
         "recorded_at": {
           "title": "Recorded At",
           "type": "string"
@@ -467,7 +535,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "default": 2,
+          "const": 4,
+          "default": 4,
           "title": "Schema Version",
           "type": "integer"
         },
@@ -524,11 +593,69 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Tokens Used",
           "type": "integer"
         },
+        "token_reservations": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Token Reservations",
+          "type": "object"
+        },
         "elapsed_ms": {
           "default": 0,
           "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
+        },
+        "auto_continue": {
+          "default": false,
+          "title": "Auto Continue",
+          "type": "boolean"
+        },
+        "max_auto_turns": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Auto Turns",
+          "type": "integer"
+        },
+        "auto_turns_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "default": 1800,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "auto_window_started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Window Started At"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_reason": {
+          "default": "",
+          "title": "Paused Reason",
+          "type": "string"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
         },
         "constraints": {
           "items": {
@@ -641,7 +768,64 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "GoalTimelineEntry",
       "type": "object"
     },
-    "JsonValue": {}
+    "JsonValue": {},
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
   },
   "properties": {
     "goal": {
@@ -710,6 +894,45 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 ```json
 {
   "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
     "CompletionEvidence": {
       "additionalProperties": false,
       "properties": {
@@ -728,6 +951,13 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Summary",
           "type": "string"
         },
+        "covered_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Covered Criteria",
+          "type": "array"
+        },
         "recorded_at": {
           "title": "Recorded At",
           "type": "string"
@@ -745,7 +975,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "default": 2,
+          "const": 4,
+          "default": 4,
           "title": "Schema Version",
           "type": "integer"
         },
@@ -802,11 +1033,69 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Tokens Used",
           "type": "integer"
         },
+        "token_reservations": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Token Reservations",
+          "type": "object"
+        },
         "elapsed_ms": {
           "default": 0,
           "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
+        },
+        "auto_continue": {
+          "default": false,
+          "title": "Auto Continue",
+          "type": "boolean"
+        },
+        "max_auto_turns": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Auto Turns",
+          "type": "integer"
+        },
+        "auto_turns_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "default": 1800,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "auto_window_started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Window Started At"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_reason": {
+          "default": "",
+          "title": "Paused Reason",
+          "type": "string"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
         },
         "constraints": {
           "items": {
@@ -919,7 +1208,64 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "GoalTimelineEntry",
       "type": "object"
     },
-    "JsonValue": {}
+    "JsonValue": {},
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
   },
   "properties": {
     "goal": {
@@ -1003,6 +1349,45 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 ```json
 {
   "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
     "CompletionEvidence": {
       "additionalProperties": false,
       "properties": {
@@ -1021,6 +1406,13 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Summary",
           "type": "string"
         },
+        "covered_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Covered Criteria",
+          "type": "array"
+        },
         "recorded_at": {
           "title": "Recorded At",
           "type": "string"
@@ -1038,7 +1430,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "default": 2,
+          "const": 4,
+          "default": 4,
           "title": "Schema Version",
           "type": "integer"
         },
@@ -1095,11 +1488,69 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Tokens Used",
           "type": "integer"
         },
+        "token_reservations": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Token Reservations",
+          "type": "object"
+        },
         "elapsed_ms": {
           "default": 0,
           "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
+        },
+        "auto_continue": {
+          "default": false,
+          "title": "Auto Continue",
+          "type": "boolean"
+        },
+        "max_auto_turns": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Auto Turns",
+          "type": "integer"
+        },
+        "auto_turns_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "default": 1800,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "auto_window_started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Window Started At"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_reason": {
+          "default": "",
+          "title": "Paused Reason",
+          "type": "string"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
         },
         "constraints": {
           "items": {
@@ -1212,7 +1663,64 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "GoalTimelineEntry",
       "type": "object"
     },
-    "JsonValue": {}
+    "JsonValue": {},
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
   },
   "properties": {
     "goals": {
@@ -1387,16 +1895,128 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
-### GoalActionResult
+### GoalCompleteCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `type` | `string` | no |
+| `summary` | `string` | no |
+
+```json
+{
+  "properties": {
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "goal.complete",
+      "default": "goal.complete",
+      "title": "Type",
+      "type": "string"
+    },
+    "summary": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "title": "GoalCompleteCommand",
+  "type": "object"
+}
+```
+
+### GoalContinueDecisionCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `goal_id` | `string` | no |
+| `session_id` | `string` | no |
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "goal_id": {
+      "default": "",
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "goal.continue_decision",
+      "default": "goal.continue_decision",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "GoalContinueDecisionCommand",
+  "type": "object"
+}
+```
+
+### GoalContinueDecisionResult
 
 | Field | Type | Required |
 |---|---|---|
 | `goal` | `object` | yes |
-| `run_id` | `string | null` | no |
+| `decision` | `object` | yes |
 
 ```json
 {
   "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
     "CompletionEvidence": {
       "additionalProperties": false,
       "properties": {
@@ -1415,6 +2035,13 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Summary",
           "type": "string"
         },
+        "covered_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Covered Criteria",
+          "type": "array"
+        },
         "recorded_at": {
           "title": "Recorded At",
           "type": "string"
@@ -1428,11 +2055,111 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "CompletionEvidence",
       "type": "object"
     },
+    "GoalContinueDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "goal_id": {
+          "title": "Goal Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "should_continue": {
+          "title": "Should Continue",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "auto_turns_used": {
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "remaining_auto_turns": {
+          "minimum": 0,
+          "title": "Remaining Auto Turns",
+          "type": "integer"
+        },
+        "tokens_used": {
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "remaining_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remaining Tokens"
+        },
+        "wall_elapsed_seconds": {
+          "minimum": 0,
+          "title": "Wall Elapsed Seconds",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
+        },
+        "decided_at": {
+          "title": "Decided At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "session_id",
+        "should_continue",
+        "reason",
+        "auto_turns_used",
+        "remaining_auto_turns",
+        "tokens_used",
+        "wall_elapsed_seconds",
+        "max_wall_seconds",
+        "permission_ceiling",
+        "decided_at"
+      ],
+      "title": "GoalContinueDecision",
+      "type": "object"
+    },
     "GoalRecord": {
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "default": 2,
+          "const": 4,
+          "default": 4,
           "title": "Schema Version",
           "type": "integer"
         },
@@ -1489,11 +2216,69 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "title": "Tokens Used",
           "type": "integer"
         },
+        "token_reservations": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Token Reservations",
+          "type": "object"
+        },
         "elapsed_ms": {
           "default": 0,
           "minimum": 0,
           "title": "Elapsed Ms",
           "type": "integer"
+        },
+        "auto_continue": {
+          "default": false,
+          "title": "Auto Continue",
+          "type": "boolean"
+        },
+        "max_auto_turns": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Auto Turns",
+          "type": "integer"
+        },
+        "auto_turns_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "default": 1800,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "auto_window_started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Window Started At"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_reason": {
+          "default": "",
+          "title": "Paused Reason",
+          "type": "string"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
         },
         "constraints": {
           "items": {
@@ -1606,7 +2391,464 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "GoalTimelineEntry",
       "type": "object"
     },
-    "JsonValue": {}
+    "JsonValue": {},
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "goal": {
+      "$ref": "#/$defs/GoalRecord"
+    },
+    "decision": {
+      "$ref": "#/$defs/GoalContinueDecision"
+    }
+  },
+  "required": [
+    "goal",
+    "decision"
+  ],
+  "title": "GoalContinueDecisionResult",
+  "type": "object"
+}
+```
+
+### GoalActionResult
+
+| Field | Type | Required |
+|---|---|---|
+| `goal` | `object` | yes |
+| `run_id` | `string | null` | no |
+
+```json
+{
+  "$defs": {
+    "AuthorityProfile": {
+      "enum": [
+        "ask",
+        "auto_review",
+        "full_access"
+      ],
+      "title": "AuthorityProfile",
+      "type": "string"
+    },
+    "AuthoritySnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/RuntimeMode",
+          "default": "act"
+        },
+        "profile": {
+          "$ref": "#/$defs/AuthorityProfile",
+          "default": "ask"
+        },
+        "workspace_trust": {
+          "$ref": "#/$defs/WorkspaceTrust",
+          "default": "untrusted"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "allowed_actions": {
+          "items": {
+            "$ref": "#/$defs/ToolAction"
+          },
+          "title": "Allowed Actions",
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "title": "AuthoritySnapshot",
+      "type": "object"
+    },
+    "CompletionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "minLength": 1,
+          "title": "Reference",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "covered_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Covered Criteria",
+          "type": "array"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "recorded_at"
+      ],
+      "title": "CompletionEvidence",
+      "type": "object"
+    },
+    "GoalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 4,
+          "default": 4,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "minLength": 1,
+          "pattern": "^goal-[a-f0-9]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "default": "legacy",
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "objective": {
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "status": {
+          "default": "active",
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "completed",
+            "cleared"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "status_reason": {
+          "default": "",
+          "title": "Status Reason",
+          "type": "string"
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Budget"
+        },
+        "tokens_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tokens Used",
+          "type": "integer"
+        },
+        "token_reservations": {
+          "additionalProperties": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "title": "Token Reservations",
+          "type": "object"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "auto_continue": {
+          "default": false,
+          "title": "Auto Continue",
+          "type": "boolean"
+        },
+        "max_auto_turns": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Auto Turns",
+          "type": "integer"
+        },
+        "auto_turns_used": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Auto Turns Used",
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "default": 1800,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Wall Seconds",
+          "type": "integer"
+        },
+        "auto_window_started_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto Window Started At"
+        },
+        "permission_ceiling": {
+          "$ref": "#/$defs/AuthoritySnapshot"
+        },
+        "paused_reason": {
+          "default": "",
+          "title": "Paused Reason",
+          "type": "string"
+        },
+        "paused_needs_confirmation": {
+          "default": false,
+          "title": "Paused Needs Confirmation",
+          "type": "boolean"
+        },
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "completion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completion Criteria",
+          "type": "array"
+        },
+        "linked_task_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Linked Task Ids",
+          "type": "array"
+        },
+        "linked_run_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Linked Run Ids",
+          "type": "array"
+        },
+        "current_run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Run Id"
+        },
+        "completion_evidence": {
+          "items": {
+            "$ref": "#/$defs/CompletionEvidence"
+          },
+          "title": "Completion Evidence",
+          "type": "array"
+        },
+        "timeline": {
+          "items": {
+            "$ref": "#/$defs/GoalTimelineEntry"
+          },
+          "title": "Timeline",
+          "type": "array"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objective",
+        "created_at",
+        "updated_at"
+      ],
+      "title": "GoalRecord",
+      "type": "object"
+    },
+    "GoalTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "event": {
+          "minLength": 1,
+          "title": "Event",
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "seq",
+        "event",
+        "actor",
+        "at"
+      ],
+      "title": "GoalTimelineEntry",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "RuntimeMode": {
+      "enum": [
+        "plan",
+        "act",
+        "operate"
+      ],
+      "title": "RuntimeMode",
+      "type": "string"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
+    },
+    "ToolAction": {
+      "enum": [
+        "read",
+        "mutate",
+        "shell",
+        "external"
+      ],
+      "title": "ToolAction",
+      "type": "string"
+    },
+    "WorkspaceTrust": {
+      "enum": [
+        "untrusted",
+        "trusted"
+      ],
+      "title": "WorkspaceTrust",
+      "type": "string"
+    }
   },
   "properties": {
     "goal": {
@@ -1763,6 +3005,107 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### PlanRespondCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `decision` | `string` | yes |
+| `revision` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "plan.respond",
+      "default": "plan.respond",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "approve",
+        "revise",
+        "cancel"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "revision": {
+      "default": "",
+      "maxLength": 10000,
+      "title": "Revision",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "run_id",
+    "decision"
+  ],
+  "title": "PlanRespondCommand",
+  "type": "object"
+}
+```
+
+### PlanRespondResult
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `decision` | `string` | yes |
+| `status` | `string` | no |
+
+```json
+{
+  "properties": {
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "approve",
+        "revise",
+        "cancel"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "status": {
+      "const": "resolved",
+      "default": "resolved",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "run_id",
+    "decision"
+  ],
+  "title": "PlanRespondResult",
+  "type": "object"
+}
+```
+
 ### EventSubscribeCommand
 
 | Field | Type | Required |
@@ -1913,6 +3256,90 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 }
 ```
 
+### EventUnsubscribeCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `subscription_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "event.unsubscribe",
+      "default": "event.unsubscribe",
+      "title": "Type",
+      "type": "string"
+    },
+    "subscription_id": {
+      "minLength": 1,
+      "title": "Subscription Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subscription_id"
+  ],
+  "title": "EventUnsubscribeCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-4",
+  "method": "event.unsubscribe",
+  "params": {
+    "subscription_id": "sub-abc123"
+  }
+}
+```
+
+### EventUnsubscribeResult
+
+| Field | Type | Required |
+|---|---|---|
+| `subscription_id` | `string` | yes |
+| `removed` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "subscription_id": {
+      "title": "Subscription Id",
+      "type": "string"
+    },
+    "removed": {
+      "title": "Removed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "subscription_id",
+    "removed"
+  ],
+  "title": "EventUnsubscribeResult",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-4",
+  "result": {
+    "subscription_id": "sub-abc123",
+    "removed": true
+  }
+}
+```
+
 ### EventReplayCommand
 
 | Field | Type | Required |
@@ -2028,8 +3455,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -2162,8 +3589,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -2291,8 +3718,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -2419,8 +3846,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -2551,8 +3978,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -2675,8 +4102,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -3053,8 +4480,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -3363,8 +4790,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -3677,8 +5104,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -3995,8 +5422,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -4136,8 +5563,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "type": "string"
         },
         "schema_version": {
+          "const": 1,
           "default": 1,
-          "minimum": 1,
           "title": "Schema Version",
           "type": "integer"
         }
@@ -4195,12 +5622,46 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `version` | `string` | yes |
+| `api_version` | `string` | no |
 | `runtime_modes` | `array` | yes |
 | `features` | `array` | yes |
+| `feature_flags` | `object` | no |
+| `labs_enabled` | `boolean` | no |
+| `sandbox` | `object` | no |
+| `runtime_event_schema_version` | `integer` | no |
+| `stream_json_schema_versions` | `array` | no |
 
 ```json
 {
   "$defs": {
+    "RuntimeFeatureFlags": {
+      "additionalProperties": false,
+      "properties": {
+        "stable": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Stable",
+          "type": "object"
+        },
+        "labs": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Labs",
+          "type": "object"
+        },
+        "internal": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "title": "Internal",
+          "type": "object"
+        }
+      },
+      "title": "RuntimeFeatureFlags",
+      "type": "object"
+    },
     "RuntimeMode": {
       "enum": [
         "plan",
@@ -4209,11 +5670,84 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "title": "RuntimeMode",
       "type": "string"
+    },
+    "RuntimeSandboxStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "capability": {
+          "$ref": "#/$defs/SandboxCapability"
+        },
+        "state": {
+          "enum": [
+            "enforcement_available",
+            "degraded"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "windows_forced_sandbox": {
+          "enum": [
+            "available",
+            "unavailable",
+            "not_applicable"
+          ],
+          "title": "Windows Forced Sandbox",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "capability",
+        "state",
+        "windows_forced_sandbox"
+      ],
+      "title": "RuntimeSandboxStatus",
+      "type": "object"
+    },
+    "SandboxCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "none",
+            "windows_none",
+            "linux_bwrap",
+            "macos_seatbelt"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "available",
+        "kind",
+        "reason"
+      ],
+      "title": "SandboxCapability",
+      "type": "object"
     }
   },
+  "additionalProperties": false,
   "properties": {
     "version": {
       "title": "Version",
+      "type": "string"
+    },
+    "api_version": {
+      "default": "v1",
+      "title": "Api Version",
       "type": "string"
     },
     "runtime_modes": {
@@ -4228,6 +5762,29 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "type": "string"
       },
       "title": "Features",
+      "type": "array"
+    },
+    "feature_flags": {
+      "$ref": "#/$defs/RuntimeFeatureFlags"
+    },
+    "labs_enabled": {
+      "default": false,
+      "title": "Labs Enabled",
+      "type": "boolean"
+    },
+    "sandbox": {
+      "$ref": "#/$defs/RuntimeSandboxStatus"
+    },
+    "runtime_event_schema_version": {
+      "default": 1,
+      "title": "Runtime Event Schema Version",
+      "type": "integer"
+    },
+    "stream_json_schema_versions": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Stream Json Schema Versions",
       "type": "array"
     }
   },
@@ -5848,7 +7405,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
-| `session_id` | `string` | no |
+| `session_id` | `string` | yes |
 | `worker_id` | `string` | no |
 | `root_goal_id` | `string` | no |
 | `limit` | `integer` | no |
@@ -5863,7 +7420,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "type": "string"
     },
     "session_id": {
-      "default": "",
+      "minLength": 1,
       "title": "Session Id",
       "type": "string"
     },
@@ -5885,6 +7442,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "type": "integer"
     }
   },
+  "required": [
+    "session_id"
+  ],
   "title": "WorkerListCommand",
   "type": "object"
 }
@@ -5909,6 +7469,755 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     }
   },
   "title": "WorkerListResult",
+  "type": "object"
+}
+```
+
+### WorkerStartCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `description` | `string` | yes |
+| `prompt` | `string` | yes |
+| `profile` | `string` | no |
+| `route_id` | `string` | no |
+| `model` | `string` | no |
+| `read_only` | `boolean` | no |
+| `exact_files` | `array` | no |
+| `write_roots` | `array` | no |
+| `coordination_contract` | `string` | no |
+| `acceptance` | `array` | no |
+| `token_budget` | `integer | null` | no |
+| `wall_time_s` | `integer` | no |
+| `max_attempts` | `integer` | no |
+| `retry_backoff_s` | `number` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.start",
+      "default": "worker.start",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "description": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "prompt": {
+      "maxLength": 100000,
+      "minLength": 1,
+      "title": "Prompt",
+      "type": "string"
+    },
+    "profile": {
+      "default": "",
+      "maxLength": 64,
+      "title": "Profile",
+      "type": "string"
+    },
+    "route_id": {
+      "default": "",
+      "maxLength": 256,
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "default": "",
+      "maxLength": 256,
+      "title": "Model",
+      "type": "string"
+    },
+    "read_only": {
+      "default": true,
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "exact_files": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200,
+      "title": "Exact Files",
+      "type": "array"
+    },
+    "write_roots": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Write Roots",
+      "type": "array"
+    },
+    "coordination_contract": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Coordination Contract",
+      "type": "string"
+    },
+    "acceptance": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Acceptance",
+      "type": "array"
+    },
+    "token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Token Budget"
+    },
+    "wall_time_s": {
+      "default": 900,
+      "maximum": 86400,
+      "minimum": 1,
+      "title": "Wall Time S",
+      "type": "integer"
+    },
+    "max_attempts": {
+      "default": 3,
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Max Attempts",
+      "type": "integer"
+    },
+    "retry_backoff_s": {
+      "default": 1.0,
+      "maximum": 300,
+      "minimum": 0,
+      "title": "Retry Backoff S",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session_id",
+    "description",
+    "prompt"
+  ],
+  "title": "WorkerStartCommand",
+  "type": "object"
+}
+```
+
+### WorkerStartResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `status` | `string` | yes |
+| `route_id` | `string` | yes |
+| `model` | `string` | yes |
+| `attempt` | `integer` | yes |
+| `worktree` | `string` | no |
+| `read_only` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "route_id": {
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "attempt": {
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "worktree": {
+      "default": "",
+      "title": "Worktree",
+      "type": "string"
+    },
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "worker_id",
+    "session_id",
+    "status",
+    "route_id",
+    "model",
+    "attempt",
+    "read_only"
+  ],
+  "title": "WorkerStartResult",
+  "type": "object"
+}
+```
+
+### WorkerStatusCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.status",
+      "default": "worker.status",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id"
+  ],
+  "title": "WorkerStatusCommand",
+  "type": "object"
+}
+```
+
+### WorkerStatusResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker` | `object` | yes |
+
+```json
+{
+  "properties": {
+    "worker": {
+      "additionalProperties": true,
+      "title": "Worker",
+      "type": "object"
+    }
+  },
+  "required": [
+    "worker"
+  ],
+  "title": "WorkerStatusResult",
+  "type": "object"
+}
+```
+
+### WorkerRetryCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.retry",
+      "default": "worker.retry",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id"
+  ],
+  "title": "WorkerRetryCommand",
+  "type": "object"
+}
+```
+
+### WorkerRetryResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `status` | `string` | yes |
+| `route_id` | `string` | yes |
+| `model` | `string` | yes |
+| `attempt` | `integer` | yes |
+| `worktree` | `string` | no |
+| `read_only` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "route_id": {
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "attempt": {
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "worktree": {
+      "default": "",
+      "title": "Worktree",
+      "type": "string"
+    },
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "worker_id",
+    "session_id",
+    "status",
+    "route_id",
+    "model",
+    "attempt",
+    "read_only"
+  ],
+  "title": "WorkerRetryResult",
+  "type": "object"
+}
+```
+
+### WorkerEventsCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+| `after_cursor` | `integer` | no |
+| `limit` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.events",
+      "default": "worker.events",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "after_cursor": {
+      "default": 0,
+      "minimum": 0,
+      "title": "After Cursor",
+      "type": "integer"
+    },
+    "limit": {
+      "default": 20,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id"
+  ],
+  "title": "WorkerEventsCommand",
+  "type": "object"
+}
+```
+
+### WorkerEventsResult
+
+| Field | Type | Required |
+|---|---|---|
+| `events` | `array` | no |
+
+```json
+{
+  "properties": {
+    "events": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Events",
+      "type": "array"
+    }
+  },
+  "title": "WorkerEventsResult",
+  "type": "object"
+}
+```
+
+### WorkerFollowupCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+| `message` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.followup",
+      "default": "worker.followup",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "message": {
+      "maxLength": 8000,
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id",
+    "message"
+  ],
+  "title": "WorkerFollowupCommand",
+  "type": "object"
+}
+```
+
+### WorkerFollowupResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `status` | `string` | yes |
+| `event_cursor` | `integer` | yes |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "event_cursor": {
+      "minimum": 0,
+      "title": "Event Cursor",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "worker_id",
+    "status",
+    "event_cursor"
+  ],
+  "title": "WorkerFollowupResult",
+  "type": "object"
+}
+```
+
+### WorkerReviewCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+| `approved` | `boolean` | yes |
+| `confirmed` | `boolean` | no |
+| `expected_digest` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.review",
+      "default": "worker.review",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "approved": {
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "confirmed": {
+      "default": false,
+      "title": "Confirmed",
+      "type": "boolean"
+    },
+    "expected_digest": {
+      "default": "",
+      "title": "Expected Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id",
+    "approved"
+  ],
+  "title": "WorkerReviewCommand",
+  "type": "object"
+}
+```
+
+### WorkerReviewResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `handoff_status` | `string` | yes |
+| `approved` | `boolean` | yes |
+| `applied` | `boolean` | no |
+| `state_digest` | `string` | no |
+| `preview_only` | `boolean` | no |
+| `changed_files` | `array` | no |
+| `diff` | `string` | no |
+| `diff_truncated` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "handoff_status": {
+      "title": "Handoff Status",
+      "type": "string"
+    },
+    "approved": {
+      "title": "Approved",
+      "type": "boolean"
+    },
+    "applied": {
+      "const": false,
+      "default": false,
+      "title": "Applied",
+      "type": "boolean"
+    },
+    "state_digest": {
+      "default": "",
+      "title": "State Digest",
+      "type": "string"
+    },
+    "preview_only": {
+      "default": false,
+      "title": "Preview Only",
+      "type": "boolean"
+    },
+    "changed_files": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Files",
+      "type": "array"
+    },
+    "diff": {
+      "default": "",
+      "title": "Diff",
+      "type": "string"
+    },
+    "diff_truncated": {
+      "default": false,
+      "title": "Diff Truncated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "worker_id",
+    "handoff_status",
+    "approved"
+  ],
+  "title": "WorkerReviewResult",
+  "type": "object"
+}
+```
+
+### WorkerApplyCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `worker_id` | `string` | yes |
+| `expected_digest` | `string` | yes |
+| `confirmed` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "worker.apply",
+      "default": "worker.apply",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "worker_id": {
+      "minLength": 1,
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "expected_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Expected Digest",
+      "type": "string"
+    },
+    "confirmed": {
+      "default": false,
+      "title": "Confirmed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "session_id",
+    "worker_id",
+    "expected_digest"
+  ],
+  "title": "WorkerApplyCommand",
+  "type": "object"
+}
+```
+
+### WorkerApplyResult
+
+| Field | Type | Required |
+|---|---|---|
+| `worker_id` | `string` | yes |
+| `handoff_status` | `string` | no |
+| `changed_files` | `array` | no |
+| `state_digest` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "worker_id": {
+      "title": "Worker Id",
+      "type": "string"
+    },
+    "handoff_status": {
+      "const": "applied",
+      "default": "applied",
+      "title": "Handoff Status",
+      "type": "string"
+    },
+    "changed_files": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Files",
+      "type": "array"
+    },
+    "state_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "State Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "worker_id",
+    "state_digest"
+  ],
+  "title": "WorkerApplyResult",
   "type": "object"
 }
 ```
@@ -6235,6 +8544,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `session_id` | `string` | yes |
 | `checkpoint_id` | `string` | yes |
 | `run_id` | `string | null` | no |
+| `expected_digest` | `string` | yes |
+| `confirmed` | `boolean` | no |
 
 ```json
 {
@@ -6264,11 +8575,23 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Run Id"
+    },
+    "expected_digest": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Expected Digest",
+      "type": "string"
+    },
+    "confirmed": {
+      "default": false,
+      "title": "Confirmed",
+      "type": "boolean"
     }
   },
   "required": [
     "session_id",
-    "checkpoint_id"
+    "checkpoint_id",
+    "expected_digest"
   ],
   "title": "SessionRewindCommand",
   "type": "object"
@@ -6351,6 +8674,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `run_count` | `integer` | yes |
 | `last_run_id` | `string | null` | no |
 | `usage` | `object` | no |
+| `session_usage` | `object` | no |
 | `working_set` | `array` | no |
 | `memory_count` | `integer` | no |
 | `compaction` | `object | null` | no |
@@ -6387,6 +8711,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "usage": {
       "additionalProperties": true,
       "title": "Usage",
+      "type": "object"
+    },
+    "session_usage": {
+      "additionalProperties": true,
+      "title": "Session Usage",
       "type": "object"
     },
     "working_set": {
@@ -7006,6 +9335,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `hook_id` | `string` | yes |
+| `session_id` | `string` | no |
 
 ```json
 {
@@ -7019,6 +9349,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "hook_id": {
       "minLength": 1,
       "title": "Hook Id",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
       "type": "string"
     }
   },
@@ -7081,6 +9416,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
+| `include_expired` | `boolean` | no |
 
 ```json
 {
@@ -7090,6 +9426,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "default": "memory.list",
       "title": "Type",
       "type": "string"
+    },
+    "include_expired": {
+      "default": true,
+      "title": "Include Expired",
+      "type": "boolean"
     }
   },
   "title": "MemoryListCommand",
@@ -7102,6 +9443,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `memories` | `array` | no |
+| `settings` | `object` | no |
 
 ```json
 {
@@ -7143,6 +9485,28 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "updated_at": {
           "title": "Updated At",
           "type": "string"
+        },
+        "pinned": {
+          "default": false,
+          "title": "Pinned",
+          "type": "boolean"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "expired": {
+          "default": false,
+          "title": "Expired",
+          "type": "boolean"
         }
       },
       "required": [
@@ -7158,6 +9522,21 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "title": "MemoryInfo",
       "type": "object"
+    },
+    "MemorySettingsInfo": {
+      "properties": {
+        "auto_save": {
+          "default": "prompt",
+          "enum": [
+            "prompt",
+            "off"
+          ],
+          "title": "Auto Save",
+          "type": "string"
+        }
+      },
+      "title": "MemorySettingsInfo",
+      "type": "object"
     }
   },
   "properties": {
@@ -7167,6 +9546,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       },
       "title": "Memories",
       "type": "array"
+    },
+    "settings": {
+      "$ref": "#/$defs/MemorySettingsInfo"
     }
   },
   "title": "MemoryListResult",
@@ -7187,6 +9569,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `source_run_id` | `string` | yes |
 | `created_at` | `string` | yes |
 | `updated_at` | `string` | yes |
+| `pinned` | `boolean` | no |
+| `expires_at` | `string | null` | no |
+| `expired` | `boolean` | no |
 
 ```json
 {
@@ -7226,6 +9611,28 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "updated_at": {
       "title": "Updated At",
       "type": "string"
+    },
+    "pinned": {
+      "default": false,
+      "title": "Pinned",
+      "type": "boolean"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "expired": {
+      "default": false,
+      "title": "Expired",
+      "type": "boolean"
     }
   },
   "required": [
@@ -7307,6 +9714,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
+| `session_id` | `string` | yes |
 | `job_id` | `string` | no |
 
 ```json
@@ -7318,12 +9726,20 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "Type",
       "type": "string"
     },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
     "job_id": {
       "default": "",
       "title": "Job Id",
       "type": "string"
     }
   },
+  "required": [
+    "session_id"
+  ],
   "title": "BackgroundGetCommand",
   "type": "object"
 }
@@ -7381,6 +9797,33 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "additionalProperties": true,
           "title": "Process Usage",
           "type": "object"
+        },
+        "output_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Bytes",
+          "type": "integer"
+        },
+        "output_truncated": {
+          "default": false,
+          "title": "Output Truncated",
+          "type": "boolean"
+        },
+        "output_artifact": {
+          "default": "",
+          "title": "Output Artifact",
+          "type": "string"
+        },
+        "output_artifact_size": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Artifact Size",
+          "type": "integer"
+        },
+        "output_artifact_error": {
+          "default": "",
+          "title": "Output Artifact Error",
+          "type": "string"
         }
       },
       "required": [
@@ -7425,6 +9868,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `created_at` | `string` | yes |
 | `finished_at` | `string` | no |
 | `process_usage` | `object` | no |
+| `output_bytes` | `integer` | no |
+| `output_truncated` | `boolean` | no |
+| `output_artifact` | `string` | no |
+| `output_artifact_size` | `integer` | no |
+| `output_artifact_error` | `string` | no |
 
 ```json
 {
@@ -7470,6 +9918,33 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "additionalProperties": true,
       "title": "Process Usage",
       "type": "object"
+    },
+    "output_bytes": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Output Bytes",
+      "type": "integer"
+    },
+    "output_truncated": {
+      "default": false,
+      "title": "Output Truncated",
+      "type": "boolean"
+    },
+    "output_artifact": {
+      "default": "",
+      "title": "Output Artifact",
+      "type": "string"
+    },
+    "output_artifact_size": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Output Artifact Size",
+      "type": "integer"
+    },
+    "output_artifact_error": {
+      "default": "",
+      "title": "Output Artifact Error",
+      "type": "string"
     }
   },
   "required": [
@@ -7492,6 +9967,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
+| `session_id` | `string` | yes |
 | `job_id` | `string` | yes |
 
 ```json
@@ -7503,6 +9979,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "Type",
       "type": "string"
     },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
     "job_id": {
       "minLength": 1,
       "title": "Job Id",
@@ -7510,6 +9991,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     }
   },
   "required": [
+    "session_id",
     "job_id"
   ],
   "title": "BackgroundCancelCommand",
@@ -7550,6 +10032,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
+| `session_id` | `string` | yes |
 | `worker_id` | `string` | yes |
 
 ```json
@@ -7561,6 +10044,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "title": "Type",
       "type": "string"
     },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
     "worker_id": {
       "minLength": 1,
       "title": "Worker Id",
@@ -7568,6 +10056,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     }
   },
   "required": [
+    "session_id",
     "worker_id"
   ],
   "title": "WorkerCancelCommand",
@@ -7865,6 +10354,134 @@ Events sent over the IPC socket (daemon -> client).
 }
 ```
 
+### GoalContinueDecisionEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `goal_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `should_continue` | `boolean` | yes |
+| `reason` | `string` | yes |
+| `auto_turns_used` | `integer` | yes |
+| `remaining_auto_turns` | `integer` | yes |
+| `tokens_used` | `integer` | yes |
+| `token_budget` | `integer | null` | no |
+| `remaining_tokens` | `integer | null` | no |
+| `wall_elapsed_seconds` | `integer` | yes |
+| `max_wall_seconds` | `integer` | yes |
+| `paused_needs_confirmation` | `boolean` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "goal.continue_decision",
+      "default": "goal.continue_decision",
+      "title": "Type",
+      "type": "string"
+    },
+    "goal_id": {
+      "title": "Goal Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "should_continue": {
+      "title": "Should Continue",
+      "type": "boolean"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "auto_turns_used": {
+      "minimum": 0,
+      "title": "Auto Turns Used",
+      "type": "integer"
+    },
+    "remaining_auto_turns": {
+      "minimum": 0,
+      "title": "Remaining Auto Turns",
+      "type": "integer"
+    },
+    "tokens_used": {
+      "minimum": 0,
+      "title": "Tokens Used",
+      "type": "integer"
+    },
+    "token_budget": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Token Budget"
+    },
+    "remaining_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Remaining Tokens"
+    },
+    "wall_elapsed_seconds": {
+      "minimum": 0,
+      "title": "Wall Elapsed Seconds",
+      "type": "integer"
+    },
+    "max_wall_seconds": {
+      "minimum": 1,
+      "title": "Max Wall Seconds",
+      "type": "integer"
+    },
+    "paused_needs_confirmation": {
+      "title": "Paused Needs Confirmation",
+      "type": "boolean"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "session_id",
+    "run_id",
+    "should_continue",
+    "reason",
+    "auto_turns_used",
+    "remaining_auto_turns",
+    "tokens_used",
+    "wall_elapsed_seconds",
+    "max_wall_seconds",
+    "paused_needs_confirmation",
+    "ts"
+  ],
+  "title": "GoalContinueDecisionEvent",
+  "type": "object"
+}
+```
+
 ## Run Events
 
 Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscribed clients.
@@ -7930,10 +10547,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `status` | `string` | yes |
 | `reason` | `string | null` | no |
 | `steps` | `integer` | yes |
+| `outcome` | `string | null` | no |
+| `failure_category` | `string | null` | no |
+| `changes` | `array | null` | no |
+| `verification` | `array | null` | no |
+| `result_summary` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
 {
+  "$defs": {
+    "JsonValue": {}
+  },
   "properties": {
     "type": {
       "const": "run.finished",
@@ -7964,6 +10589,95 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "steps": {
       "title": "Steps",
       "type": "integer"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "completed",
+            "tool_use",
+            "length",
+            "incomplete",
+            "content_filtered",
+            "failed",
+            "cancelled",
+            "transport_error"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome"
+    },
+    "failure_category": {
+      "anyOf": [
+        {
+          "enum": [
+            "configuration",
+            "credential",
+            "network",
+            "model",
+            "tool",
+            "index",
+            "sandbox",
+            "runtime",
+            "permission",
+            "verification",
+            "user_cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Category"
+    },
+    "changes": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Changes"
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Verification"
+    },
+    "result_summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Summary"
     },
     "ts": {
       "title": "Ts",
@@ -9551,6 +12265,64 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "request": "\u89c4\u5212 README \u91cd\u6784",
   "plan": "1. Inspect\n2. Edit\n3. Test",
   "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### PlanResolvedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `decision` | `string` | yes |
+| `revision` | `string` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "plan.resolved",
+      "default": "plan.resolved",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "approve",
+        "revise",
+        "cancel"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "revision": {
+      "default": "",
+      "title": "Revision",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "run_id",
+    "decision",
+    "ts"
+  ],
+  "title": "PlanResolvedEvent",
+  "type": "object"
 }
 ```
 

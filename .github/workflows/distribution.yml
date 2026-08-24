@@ -2,6 +2,12 @@ name: Distribution gate
 
 on:
   workflow_call:
+    inputs:
+      target:
+        description: Run the full distribution gate or one focused job
+        required: false
+        default: all
+        type: string
   workflow_dispatch:
     inputs:
       target:
@@ -13,7 +19,7 @@ on:
           - all
           - wheel
           - container
-          - windows-portable
+          - portable
           - vscode
 
 permissions:
@@ -22,7 +28,7 @@ permissions:
 jobs:
   wheel:
     name: Clean wheel smoke / ${{ matrix.os }}
-    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'wheel'
+    if: inputs.target == 'all' || inputs.target == 'wheel'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -47,7 +53,7 @@ jobs:
 
   container:
     name: Docker clean-image smoke
-    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'container'
+    if: inputs.target == 'all' || inputs.target == 'container'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -61,11 +67,30 @@ jobs:
           coderook:candidate
           python /tmp/coderook-smoke.py
 
-  windows-portable:
-    name: Windows portable smoke
-    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'windows-portable'
-    runs-on: windows-latest
-    timeout-minutes: 30
+  portable:
+    name: Self-contained ${{ matrix.target }} smoke
+    if: inputs.target == 'all' || inputs.target == 'portable'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x86_64
+            archive: coderook-windows-x86_64.zip
+          - os: ubuntu-latest
+            target: linux-x86_64
+            archive: coderook-linux-x86_64.tar.gz
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            archive: coderook-linux-arm64.tar.gz
+          - os: macos-13
+            target: macos-x86_64
+            archive: coderook-macos-x86_64.tar.gz
+          - os: macos-14
+            target: macos-arm64
+            archive: coderook-macos-arm64.tar.gz
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -73,24 +98,37 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv python install 3.12
-      - shell: pwsh
-        run: ./scripts/build_windows_portable.ps1
-      - shell: pwsh
-        run: ./dist/coderook-windows-portable/portable-coderook.cmd --version
-      - name: Portable zero-credential Core, ping and TUI smoke
+      - name: Build controlled CPython runtime package
+        run: uv run python scripts/build_portable.py --target ${{ matrix.target }}
+      - name: Portable version smoke / Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./dist/coderook-${{ matrix.target }}/coderook.cmd --version
+      - name: Portable version smoke / POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./dist/coderook-${{ matrix.target }}/coderook --version
+      - name: Portable zero-credential Core, ping and TUI smoke / Windows
+        if: runner.os == 'Windows'
         shell: pwsh
         run: >-
-          ./dist/coderook-windows-portable/runtime/python.exe
+          ./dist/coderook-${{ matrix.target }}/runtime/python.exe
+          ./scripts/smoke_installed_runtime.py
+      - name: Portable zero-credential Core, ping and TUI smoke / POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          ./dist/coderook-${{ matrix.target }}/runtime/bin/python3.12
           ./scripts/smoke_installed_runtime.py
       - uses: actions/upload-artifact@v6
         with:
-          name: coderook-windows-portable
-          path: dist/coderook-windows-portable.zip
+          name: coderook-portable-${{ matrix.target }}
+          path: dist/${{ matrix.archive }}
           if-no-files-found: error
 
   vscode:
     name: VS Code VSIX and Extension Host smoke
-    if: github.event_name == 'workflow_call' || inputs.target == 'all' || inputs.target == 'vscode'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'vscode'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -10,6 +10,8 @@ from typing import Any
 
 from rich.markup import escape
 
+from code_rook.tui.product import tr
+
 # 各面板共用的状态徽标映射
 _STATUS_MARKERS = {
     "connected": "[green]●[/green]",
@@ -39,16 +41,23 @@ def _format_bytes(value: int) -> str:
 
 
 # 渲染 artifact 清单、引用状态与 GC 候选摘要
-def render_artifacts(payload: dict[str, Any]) -> str:
+def render_artifacts(payload: dict[str, Any], *, locale: str = "zh-CN") -> str:
     artifacts = payload.get("artifacts", [])
     if not isinstance(artifacts, list):
         artifacts = []
     total = int(payload.get("total_bytes", 0))
     reclaimable = int(payload.get("reclaimable_bytes", 0))
     lines = [
-        "[bold cyan]Artifacts[/bold cyan]",
-        f"[dim]{len(artifacts)} item(s) · {_format_bytes(total)} total · "
-        f"{_format_bytes(reclaimable)} reclaimable[/dim]",
+        f"[bold cyan]{tr('manage.artifacts.title', locale)}[/bold cyan]",
+        "[dim]"
+        + tr(
+            "manage.artifacts.summary",
+            locale,
+            count=len(artifacts),
+            total=_format_bytes(total),
+            reclaimable=_format_bytes(reclaimable),
+        )
+        + "[/dim]",
     ]
     for item in artifacts[:30]:
         if not isinstance(item, dict):
@@ -57,18 +66,26 @@ def render_artifacts(payload: dict[str, Any]) -> str:
         size = _format_bytes(int(item.get("size", 0)))
         referenced = bool(item.get("referenced", False))
         candidate = bool(item.get("gc_candidate", False))
-        marker = "[green]kept[/green]" if referenced else (
-            "[yellow]candidate[/yellow]" if candidate else "[dim]recent[/dim]"
+        marker = (
+            f"[green]{tr('manage.artifacts.kept', locale)}[/green]"
+            if referenced
+            else (
+                f"[yellow]{tr('manage.artifacts.candidate', locale)}[/yellow]"
+                if candidate
+                else f"[dim]{tr('manage.artifacts.recent', locale)}[/dim]"
+            )
         )
         lines.append(f"  {marker}  [cyan]{sha}[/cyan]  [dim]{size}[/dim]")
     if len(artifacts) > 30:
-        lines.append(f"[dim]⋯ {len(artifacts) - 30} more item(s)[/dim]")
-    lines.append("[dim]使用 /artifacts gc [days] 预览，追加 --yes 确认删除。[/dim]")
+        lines.append(
+            f"[dim]⋯ {tr('manage.artifacts.more', locale, count=len(artifacts) - 30)}[/dim]"
+        )
+    lines.append(f"[dim]{tr('manage.artifacts.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 
 # 渲染 Artifact GC 预览或已确认删除结果
-def render_artifact_gc(payload: dict[str, Any]) -> str:
+def render_artifact_gc(payload: dict[str, Any], *, locale: str = "zh-CN") -> str:
     dry_run = bool(payload.get("dry_run", True))
     candidates = payload.get("candidates", [])
     removed = payload.get("removed", [])
@@ -76,23 +93,38 @@ def render_artifact_gc(payload: dict[str, Any]) -> str:
     removed_count = len(removed) if isinstance(removed, list) else 0
     reclaimable = _format_bytes(int(payload.get("reclaimable_bytes", 0)))
     if dry_run:
+        summary = tr(
+            "manage.gc.summary",
+            locale,
+            count=candidate_count,
+            reclaimable=reclaimable,
+        )
         return (
-            f"[bold cyan]Artifact GC preview[/bold cyan]  [dim]{candidate_count} item(s), "
-            f"{reclaimable}[/dim]\n"
-            "[yellow]未删除任何文件；确认请输入 /artifacts gc --yes[/yellow]"
+            f"[bold cyan]{tr('manage.gc.preview', locale)}[/bold cyan]  "
+            f"[dim]{summary}[/dim]\n"
+            f"[yellow]{tr('manage.gc.no_delete', locale)}[/yellow]"
         )
     receipt = escape(str(payload.get("receipt_path", "")))
+    summary = tr(
+        "manage.gc.summary",
+        locale,
+        count=removed_count,
+        reclaimable=reclaimable,
+    )
     return (
-        f"[green]Artifact GC completed[/green]  [dim]{removed_count} item(s), "
-        f"{reclaimable}[/dim]\n[dim]receipt: {receipt}[/dim]"
+        f"[green]{tr('manage.gc.completed', locale)}[/green]  "
+        f"[dim]{summary}[/dim]\n"
+        f"[dim]{tr('manage.gc.receipt', locale, path=receipt)}[/dim]"
     )
 
 
 # 将 MCP server 列表渲染为名称/传输/状态/工具数的紧凑清单
-def render_mcp_servers(servers: list[dict[str, Any]]) -> str:
+def render_mcp_servers(
+    servers: list[dict[str, Any]], *, locale: str = "zh-CN"
+) -> str:
     if not servers:
-        return "[dim]当前没有配置 MCP server。[/dim]"
-    lines = ["[bold cyan]MCP servers[/bold cyan]"]
+        return f"[dim]{tr('manage.mcp.empty', locale)}[/dim]"
+    lines = [f"[bold cyan]{tr('manage.mcp.title', locale)}[/bold cyan]"]
     for server in servers:
         name = escape(str(server.get("name", "")))
         transport = escape(str(server.get("transport", "")))
@@ -101,17 +133,17 @@ def render_mcp_servers(servers: list[dict[str, Any]]) -> str:
         tool_count = int(server.get("tool_count", 0))
         lines.append(
             f"{marker} {name}  [dim]{transport} · {status} · "
-            f"{tool_count} tool(s)[/dim]"
+            f"{tr('manage.mcp.tools', locale, count=tool_count)}[/dim]"
         )
         error = str(server.get("error", "")).strip()
         if error:
             lines.append(f"    [red]{escape(_preview(error, 160))}[/red]")
-    lines.append("[dim]使用 /mcp <name> 展开工具清单。[/dim]")
+    lines.append(f"[dim]{tr('manage.mcp.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 
 # 展开单个 MCP server 的工具清单，展示名称与描述
-def render_mcp_tools(server: dict[str, Any]) -> str:
+def render_mcp_tools(server: dict[str, Any], *, locale: str = "zh-CN") -> str:
     name = escape(str(server.get("name", "")))
     status = str(server.get("status", ""))
     lines = [
@@ -119,7 +151,7 @@ def render_mcp_tools(server: dict[str, Any]) -> str:
     ]
     tools = server.get("tools", [])
     if not isinstance(tools, list) or not tools:
-        lines.append("[dim]该 server 未发现工具。[/dim]")
+        lines.append(f"[dim]{tr('manage.mcp.no_tools', locale)}[/dim]")
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -131,16 +163,16 @@ def render_mcp_tools(server: dict[str, Any]) -> str:
 
 
 # 将 hook 配置表与最近执行记录渲染为结构化面板
-def render_hooks(payload: dict[str, Any]) -> str:
+def render_hooks(payload: dict[str, Any], *, locale: str = "zh-CN") -> str:
     configs = payload.get("configs", [])
     audit = payload.get("audit_events", [])
     if not isinstance(configs, list):
         configs = []
     if not isinstance(audit, list):
         audit = []
-    lines: list[str] = ["[bold cyan]Hooks[/bold cyan]"]
+    lines: list[str] = [f"[bold cyan]{tr('manage.hooks.title', locale)}[/bold cyan]"]
     if not configs:
-        lines.append("[dim]当前没有配置 hook。[/dim]")
+        lines.append(f"[dim]{tr('manage.hooks.empty', locale)}[/dim]")
     for config in configs:
         if not isinstance(config, dict):
             continue
@@ -156,7 +188,7 @@ def render_hooks(payload: dict[str, Any]) -> str:
         if isinstance(command, list) and command:
             lines.append(f"      [dim]$ {escape(' '.join(map(str, command)))}[/dim]")
     if audit:
-        lines.append("[bold cyan]Recent executions[/bold cyan]")
+        lines.append(f"[bold cyan]{tr('manage.hooks.recent', locale)}[/bold cyan]")
         for record in audit:
             if not isinstance(record, dict):
                 continue
@@ -171,33 +203,51 @@ def render_hooks(payload: dict[str, Any]) -> str:
                 f"  {marker} {hook_id}  [dim]{escape(status)} · {elapsed}ms · {ts}[/dim]"
                 f"{reason_part}"
             )
-    lines.append("[dim]使用 /hooks rerun <id> --yes 手动重跑。[/dim]")
+    lines.append(f"[dim]{tr('manage.hooks.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 
-# 将项目记忆条目列表渲染为带类型徽标与来源的清单
-def render_memory(memories: list[dict[str, Any]]) -> str:
+# 将项目记忆条目和自动保存策略渲染为可操作清单
+def render_memory(
+    memories: list[dict[str, Any]],
+    settings: dict[str, Any] | None = None,
+    *,
+    locale: str = "zh-CN",
+) -> str:
+    auto_save = str((settings or {}).get("auto_save", "prompt"))
+    lines = [
+        f"[bold cyan]{tr('manage.memory.title', locale)}[/bold cyan]",
+        f"[dim]{tr('manage.memory.auto', locale, mode=escape(auto_save))}[/dim]",
+    ]
     if not memories:
-        return "[dim]当前项目没有记忆条目。[/dim]"
-    lines = ["[bold cyan]Project memory[/bold cyan]"]
+        lines.append(f"[dim]{tr('manage.memory.empty', locale)}[/dim]")
+        return "\n".join(lines)
     for memory in memories:
         memory_id = escape(str(memory.get("id", "")))
         name = escape(str(memory.get("name", "")))
         mem_type = str(memory.get("type", ""))
+        pinned = "[yellow]★[/yellow] " if memory.get("pinned") is True else ""
+        expired = (
+            f" [red]{tr('manage.memory.expired', locale)}[/red]"
+            if memory.get("expired") is True
+            else ""
+        )
         description = _preview(str(memory.get("description", "")), 120)
         desc_part = f"  [dim]{escape(description)}[/dim]" if description else ""
         lines.append(
-            f"  [{mem_type}] {name}  [dim]{memory_id}[/dim]{desc_part}"
+            f"  {pinned}[{mem_type}] {name}  [dim]{memory_id}[/dim]{expired}{desc_part}"
         )
-    lines.append("[dim]使用 /memory delete <id> --yes 删除。[/dim]")
+    lines.append(f"[dim]{tr('manage.memory.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 
 # 将后台 shell 任务列表渲染为任务中心视图
-def render_jobs(background_jobs: list[dict[str, Any]]) -> str:
+def render_jobs(
+    background_jobs: list[dict[str, Any]], *, locale: str = "zh-CN"
+) -> str:
     if not background_jobs:
-        return "[dim]当前没有后台任务。[/dim]"
-    lines = ["[bold cyan]Background jobs[/bold cyan]"]
+        return f"[dim]{tr('manage.jobs.empty', locale)}[/dim]"
+    lines = [f"[bold cyan]{tr('manage.jobs.title', locale)}[/bold cyan]"]
     for job in background_jobs:
         job_id = escape(str(job.get("id", "")))
         status = str(job.get("status", ""))
@@ -211,35 +261,38 @@ def render_jobs(background_jobs: list[dict[str, Any]]) -> str:
         preview = _preview(output, 200)
         if preview:
             lines.append(f"      [dim]{escape(preview)}[/dim]")
-    lines.append(
-        "[dim]使用 /jobs show <id> 查看增量输出，/jobs cancel <id> --yes 取消。[/dim]"
-    )
+    lines.append(f"[dim]{tr('manage.jobs.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 
 # 渲染单个后台任务的全部增量输出与终态
-def render_job_output(jobs: list[dict[str, Any]]) -> str:
+def render_job_output(jobs: list[dict[str, Any]], *, locale: str = "zh-CN") -> str:
     if not jobs:
-        return "[dim]未找到该任务。[/dim]"
+        return f"[dim]{tr('manage.jobs.missing', locale)}[/dim]"
     job = jobs[0]
     job_id = escape(str(job.get("id", "")))
     status = str(job.get("status", ""))
     command = escape(str(job.get("command", "")))
     output = str(job.get("output", ""))
     lines = [
-        f"[bold cyan]Job {job_id}[/bold cyan]  [dim]{escape(status)}[/dim]",
+        f"[bold cyan]{tr('manage.jobs.item_title', locale, id=job_id)}[/bold cyan]  "
+        f"[dim]{escape(status)}[/dim]",
         f"[dim]$ {command}[/dim]",
         "",
-        escape(output) if output else "[dim][no output][/dim]",
+        escape(output)
+        if output
+        else f"[dim]{tr('manage.jobs.no_output', locale)}[/dim]",
     ]
     return "\n".join(lines)
 
 
 # 并行子代理/Worker 结果的统一汇总视图，折叠为一行一结果
-def render_workers_summary(workers: list[dict[str, Any]]) -> str:
+def render_workers_summary(
+    workers: list[dict[str, Any]], *, locale: str = "zh-CN"
+) -> str:
     if not workers:
-        return "[dim]没有并行子代理。[/dim]"
-    lines = ["[bold cyan]Subagents / workers[/bold cyan]"]
+        return f"[dim]{tr('manage.workers.empty', locale)}[/dim]"
+    lines = [f"[bold cyan]{tr('manage.workers.title', locale)}[/bold cyan]"]
     for worker in workers:
         worker_id = escape(str(worker.get("worker_id", "")))
         status = str(worker.get("status", ""))
@@ -252,7 +305,7 @@ def render_workers_summary(workers: list[dict[str, Any]]) -> str:
         summary = _preview(str(worker.get("summary", "")), 160).replace("\n", " ")
         if summary:
             lines.append(f"      [dim]{escape(summary)}[/dim]")
-    lines.append("[dim]使用 /jobs cancel <worker_id> --yes 取消子代理。[/dim]")
+    lines.append(f"[dim]{tr('manage.workers.hint', locale)}[/dim]")
     return "\n".join(lines)
 
 

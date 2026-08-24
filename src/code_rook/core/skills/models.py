@@ -1,27 +1,28 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 SkillScope = Literal["builtin", "user", "project", "legacy"]
 SkillTrust = Literal["builtin", "trusted", "untrusted"]
 SkillIntegrity = Literal["verified", "mismatch", "unmanaged"]
+SkillToolName = Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class SkillManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: int = 2
+    schema_version: Literal[2] = 2
     name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    description: str = ""
-    allowed_tools: tuple[str, ...] = ()
+    description: str = Field(default="", max_length=2_048)
+    allowed_tools: tuple[SkillToolName, ...] = ()
 
 
 class SkillInstallMetadata(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: int = 2
+    schema_version: Literal[2] = 2
     source: str = Field(min_length=1)
     installed_at: str = Field(min_length=1)
     trust: SkillTrust
@@ -29,13 +30,13 @@ class SkillInstallMetadata(BaseModel):
 
 
 class Skill(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     manifest: SkillManifest
-    system_prompt_template: str
+    system_prompt_template: str = Field(max_length=512 * 1_024)
     digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     expected_digest: str = ""
-    source: str
+    source: str = Field(max_length=4_096)
     installed_at: str
     trust: SkillTrust
     scope: SkillScope

@@ -53,6 +53,27 @@ def test_factory_keeps_anthropic_native_provider(
     assert isinstance(result, AnthropicProvider)
 
 
+# 功能：验证旧 Provider 工厂可直接使用显式 env 文件的隐藏凭据覆盖
+# 设计：不修改 os.environ 且不替换解析函数，创建真实兼容 Provider 以覆盖部署启动路径
+def test_factory_consumes_explicit_env_credential_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEPLOYMENT_LLM_KEY", raising=False)
+    config = LlmConfig(
+        provider="deepseek",
+        default_model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com/chat/completions",
+        api_key_env="DEPLOYMENT_LLM_KEY",
+        credential_overlay={"DEPLOYMENT_LLM_KEY": "explicit-file-secret"},
+    )
+
+    result = factory_module.create_llm_provider(config)
+
+    assert isinstance(result, OpenAICompatibleProvider)
+    assert result._api_key == "explicit-file-secret"
+    assert "explicit-file-secret" not in repr(config)
+
+
 # 功能：验证 route factory 仅按 wire_format 选适配器，不读取模型名前缀
 # 设计：给 Claude 名称配置 openai_chat、给 GPT 名称配置 anthropic_messages，断言协议仍服从 route
 def test_route_factory_does_not_infer_wire_format_from_model_name() -> None:

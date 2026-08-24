@@ -1,16 +1,41 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from code_rook.core.processes import ProcessSupervisor, _decode_shell_output
+from code_rook.core.tools.builtin import bash as bash_module
 from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
 
 # ── bash ──────────────────────────────────────────────────────────────────────
+
+
+# 判断 POSIX PID 是否仍可运行，并在 Linux 上把已终止僵尸视为完成回收
+def _posix_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat_path = Path("/proc") / str(pid) / "stat"
+    if stat_path.is_file():
+        try:
+            raw = stat_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        close_paren = raw.rfind(")")
+        if close_paren >= 0 and raw[close_paren + 2 :].split()[0] == "Z":
+            return False
+    return True
+
 
 # 功能：验证成功命令的 stdout 出现在 ToolResult.content 中，is_error 为 False
 # 设计：用 echo 命令避免外部依赖，直接比较输出内容，无需 mock
@@ -27,14 +52,32 @@ async def test_bash_success_stdout() -> None:
 async def test_bash_reports_process_usage() -> None:
     supervisor = ProcessSupervisor()
 
-    result = await BashTool(process_supervisor=supervisor).invoke(
-        {"command": "echo usage"}
-    )
+    result = await BashTool(process_supervisor=supervisor).invoke({"command": "echo usage"})
 
     assert result.process_usage is not None
     assert int(result.process_usage["process_count"]) >= 1
     assert int(result.process_usage["wall_time_ms"]) >= 0
     assert supervisor.snapshot() == ()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups only")
+# 功能：验证 isolated shell 不会把 leader 退出后仍运行的后台任务遗留给 daemon
+# 设计：执行典型 sh 后台 sleep 并回显 PID，要求工具成功返回且返回前该 PID 已被进程组回收
+async def test_bash_isolated_reaps_background_descendant() -> None:
+    result = await BashTool().invoke(
+        {"command": "sh -c 'sleep 30 & echo $!'", "timeout": 5}
+    )
+
+    assert not result.is_error
+    child_pid = int(result.content.strip().splitlines()[0])
+    child_exists = True
+    for _ in range(100):
+        if not _posix_pid_running(child_pid):
+            child_exists = False
+            break
+        await asyncio.sleep(0.02)
+
+    assert child_exists is False
 
 
 # 功能：验证非零退出码时 is_error=True 且 content 包含退出码标注
@@ -54,6 +97,45 @@ async def test_bash_timeout() -> None:
     result = await BashTool().invoke({"command": command, "timeout": 1})
     assert result.is_error
     assert result.error_type == "timeout"
+
+
+# 功能：验证一次性 Bash 的同一超时预算同时覆盖输出读取和进程退出等待
+# 设计：模拟 stdout 已 EOF 但进程仍迟迟不退出，断言 deadline 到达后终止进程树而非等待成功
+@pytest.mark.asyncio
+async def test_bash_timeout_covers_wait_after_stdout_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminated: list[object] = []
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"")),
+        wait=AsyncMock(return_value=0),
+        returncode=None,
+    )
+
+    # 返回可精确控制 EOF 与退出时序的伪进程
+    async def _spawn(*_args: object, **_kwargs: object) -> object:
+        asyncio.get_running_loop().call_later(
+            1.2,
+            setattr,
+            process,
+            "returncode",
+            0,
+        )
+        return process
+
+    # 记录超时路径是否确实请求终止完整进程树
+    async def _terminate(target: object) -> None:
+        terminated.append(target)
+
+    monkeypatch.setattr(bash_module, "spawn_sandboxed_shell", _spawn)
+    monkeypatch.setattr(bash_module, "terminate_process_tree", _terminate)
+
+    result = await BashTool().invoke({"command": "ignored", "timeout": 1})
+
+    assert result.is_error is True
+    assert result.error_type == "timeout"
+    assert terminated == [process]
 
 
 # 功能：验证 stderr 被合并到 stdout 输出中
@@ -86,6 +168,7 @@ def test_bash_decodes_windows_oem_output() -> None:
 
 # ── write_file ────────────────────────────────────────────────────────────────
 
+
 # 功能：验证 write_file 写入文件后内容可以被读取，返回字节数
 # 设计：写入临时目录，断言文件存在且内容一致；用 tmp_path fixture 自动清理
 @pytest.mark.asyncio
@@ -95,7 +178,10 @@ async def test_write_file_creates_and_returns_size(tmp_path: Path) -> None:
         {"path": str(target), "content": "hello world"}
     )
     assert not result.is_error
-    assert "11" in result.content  # "hello world" = 11 bytes
+    payload = json.loads(result.content)
+    assert payload["bytes_written"] == 11
+    assert payload["additions"] == 1
+    assert payload["deletions"] == 0
     assert target.read_text() == "hello world"
 
 
@@ -120,6 +206,7 @@ async def test_write_file_rejects_traversal() -> None:
 
 
 # ── list_dir ──────────────────────────────────────────────────────────────────
+
 
 # 功能：验证 list_dir 输出包含目录中的文件名
 # 设计：在 tmp_path 创建已知结构，断言文件名出现在 content 中；不约束格式细节
@@ -165,3 +252,26 @@ async def test_list_dir_missing_path_raises(tmp_path: Path) -> None:
 async def test_list_dir_rejects_traversal() -> None:
     with pytest.raises(PermissionError):
         await ListDirTool().invoke({"path": "../"})
+
+
+# 功能：验证 list_dir 展示但不跟随指向工作区外目录的符号链接
+# 设计：外部目录放置唯一秘密文件，经目录链接挂入工作区后断言名称可见而秘密内容不可枚举
+@pytest.mark.asyncio
+async def test_list_dir_does_not_follow_external_directory_symlink(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "outside-secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "external-link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is unavailable on this platform")
+
+    result = await ListDirTool(workspace_root=workspace).invoke({"path": ".", "max_depth": 4})
+
+    assert "external-link@ [outside workspace]" in result.content
+    assert "outside-secret.txt" not in result.content

@@ -11,7 +11,8 @@ from code_rook.core.authority import (
     RuntimeMode,
     WorkspaceTrust,
 )
-from code_rook.core.goal.models import GoalRecord, GoalStatus
+from code_rook.core.compatibility import RuntimeCapabilitiesSnapshot
+from code_rook.core.goal.models import GoalContinueDecision, GoalRecord, GoalStatus
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
     ThreadRecord,
@@ -82,6 +83,9 @@ class GoalCreateCommand(BaseModel):
     session_id: str = Field(min_length=1)
     objective: str = Field(min_length=1, max_length=100_000)
     token_budget: int | None = Field(default=None, ge=1)
+    auto_continue: bool = True
+    max_auto_turns: int = Field(default=3, ge=1, le=100)
+    max_wall_seconds: int = Field(default=1800, ge=1, le=86_400)
     constraints: list[str] = Field(default_factory=list, max_length=100)
     completion_criteria: list[str] = Field(default_factory=list, max_length=100)
     start: bool = True
@@ -164,9 +168,18 @@ class GoalCompleteCommand(_GoalSelectorCommand):
     summary: str = Field(default="", max_length=4000)
 
 
+class GoalContinueDecisionCommand(_GoalSelectorCommand):
+    type: Literal["goal.continue_decision"] = "goal.continue_decision"
+
+
 class GoalActionResult(BaseModel):
     goal: GoalRecord
     run_id: str | None = None
+
+
+class GoalContinueDecisionResult(BaseModel):
+    goal: GoalRecord
+    decision: GoalContinueDecision
 
 
 class RunCancelCommand(BaseModel):
@@ -191,6 +204,28 @@ class RunSteerResult(BaseModel):
     queued: Literal[True] = True
 
 
+class PlanRespondCommand(BaseModel):
+    type: Literal["plan.respond"] = "plan.respond"
+    session_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    decision: Literal["approve", "revise", "cancel"]
+    revision: str = Field(default="", max_length=10_000)
+
+    @model_validator(mode="after")
+    # 只允许修改决定携带修订说明，避免其他决定混入无效状态
+    def _validate_revision(self) -> PlanRespondCommand:
+        if self.decision != "revise" and self.revision.strip():
+            raise ValueError("revision is only valid for a revise decision")
+        return self
+
+
+class PlanRespondResult(BaseModel):
+    session_id: str
+    run_id: str
+    decision: Literal["approve", "revise", "cancel"]
+    status: Literal["resolved"] = "resolved"
+
+
 class EventSubscribeCommand(BaseModel):
     type: Literal["event.subscribe"] = "event.subscribe"
     topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
@@ -213,6 +248,16 @@ class EventSubscribeResult(BaseModel):
     subscription_id: str
     replayed_count: int = 0
     last_seq: int | None = None
+
+
+class EventUnsubscribeCommand(BaseModel):
+    type: Literal["event.unsubscribe"] = "event.unsubscribe"
+    subscription_id: str = Field(min_length=1)
+
+
+class EventUnsubscribeResult(BaseModel):
+    subscription_id: str
+    removed: bool
 
 
 class EventReplayCommand(BaseModel):
@@ -337,10 +382,8 @@ class RuntimeCapabilitiesCommand(BaseModel):
     type: Literal["runtime.capabilities"] = "runtime.capabilities"
 
 
-class RuntimeCapabilitiesResult(BaseModel):
-    version: str
-    runtime_modes: list[RuntimeMode]
-    features: list[str]
+class RuntimeCapabilitiesResult(RuntimeCapabilitiesSnapshot):
+    pass
 
 
 class SessionCreateCommand(BaseModel):
@@ -534,7 +577,7 @@ class SessionTasksResult(BaseModel):
 
 class WorkerListCommand(BaseModel):
     type: Literal["worker.list"] = "worker.list"
-    session_id: str = ""
+    session_id: str = Field(min_length=1)
     worker_id: str = ""
     root_goal_id: str = ""
     limit: int = Field(default=50, ge=1, le=200)
@@ -542,6 +585,117 @@ class WorkerListCommand(BaseModel):
 
 class WorkerListResult(BaseModel):
     workers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkerStartCommand(BaseModel):
+    type: Literal["worker.start"] = "worker.start"
+    session_id: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=500)
+    prompt: str = Field(min_length=1, max_length=100_000)
+    profile: str = Field(default="", max_length=64)
+    route_id: str = Field(default="", max_length=256)
+    model: str = Field(default="", max_length=256)
+    read_only: bool = True
+    exact_files: list[str] = Field(default_factory=list, max_length=200)
+    write_roots: list[str] = Field(default_factory=list, max_length=100)
+    coordination_contract: str = Field(default="", max_length=2_000)
+    acceptance: list[str] = Field(default_factory=list, max_length=100)
+    token_budget: int | None = Field(default=None, ge=1)
+    wall_time_s: int = Field(default=900, ge=1, le=86_400)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    retry_backoff_s: float = Field(default=1.0, ge=0, le=300)
+
+
+class WorkerStartResult(BaseModel):
+    worker_id: str
+    session_id: str
+    status: str
+    route_id: str
+    model: str
+    attempt: int = Field(ge=1)
+    worktree: str = ""
+    read_only: bool
+
+
+class WorkerStatusCommand(BaseModel):
+    type: Literal["worker.status"] = "worker.status"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+
+
+class WorkerStatusResult(BaseModel):
+    worker: dict[str, Any]
+
+
+class WorkerRetryCommand(BaseModel):
+    type: Literal["worker.retry"] = "worker.retry"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+
+
+class WorkerRetryResult(WorkerStartResult):
+    pass
+
+
+class WorkerEventsCommand(BaseModel):
+    type: Literal["worker.events"] = "worker.events"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    after_cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class WorkerEventsResult(BaseModel):
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkerFollowupCommand(BaseModel):
+    type: Literal["worker.followup"] = "worker.followup"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=8_000)
+
+
+class WorkerFollowupResult(BaseModel):
+    worker_id: str
+    status: str
+    event_cursor: int = Field(ge=0)
+
+
+class WorkerReviewCommand(BaseModel):
+    type: Literal["worker.review"] = "worker.review"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    approved: bool
+    confirmed: bool = False
+    expected_digest: str = ""
+
+
+class WorkerReviewResult(BaseModel):
+    worker_id: str
+    handoff_status: str
+    approved: bool
+    applied: Literal[False] = False
+    state_digest: str = ""
+    preview_only: bool = False
+    changed_files: list[str] = Field(default_factory=list)
+    diff: str = ""
+    diff_truncated: bool = False
+
+
+class WorkerApplyCommand(BaseModel):
+    type: Literal["worker.apply"] = "worker.apply"
+    session_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmed: bool = False
+
+
+class WorkerApplyResult(BaseModel):
+    worker_id: str
+    handoff_status: Literal["applied"] = "applied"
+    changed_files: list[str] = Field(default_factory=list)
+    state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class WorkflowStartCommand(BaseModel):
@@ -583,6 +737,33 @@ class WorkspaceDiffResult(BaseModel):
     payload: dict[str, Any]
 
 
+class WorkspaceStageCommand(BaseModel):
+    type: Literal["workspace.stage"] = "workspace.stage"
+    session_id: str = Field(min_length=1)
+    paths: list[str] = Field(min_length=1, max_length=200)
+    expected_digest: str = Field(min_length=64, max_length=64)
+    confirmed: bool = False
+
+
+class WorkspaceStageResult(BaseModel):
+    payload: dict[str, Any]
+
+
+class WorkspaceCommitCommand(BaseModel):
+    type: Literal["workspace.commit"] = "workspace.commit"
+    session_id: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=200)
+    expected_digest: str = Field(min_length=64, max_length=64)
+    confirmed: bool = False
+
+
+class WorkspaceCommitResult(BaseModel):
+    commit: str
+    subject: str
+    files: list[str] = Field(default_factory=list)
+    hooks_skipped: bool = True
+
+
 class SessionCheckpointsCommand(BaseModel):
     type: Literal["session.checkpoints"] = "session.checkpoints"
     session_id: str
@@ -599,6 +780,24 @@ class SessionRewindCommand(BaseModel):
     session_id: str
     checkpoint_id: str
     run_id: str | None = None
+    expected_digest: str = Field(min_length=64, max_length=64)
+    confirmed: bool = False
+
+
+class SessionRewindPreviewCommand(BaseModel):
+    type: Literal["session.rewind_preview"] = "session.rewind_preview"
+    session_id: str
+    checkpoint_id: str
+    run_id: str | None = None
+
+
+class SessionRewindPreviewResult(BaseModel):
+    checkpoint_id: str
+    paths: list[str] = Field(default_factory=list)
+    restorable: list[str] = Field(default_factory=list)
+    already_restored: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    state_digest: str = Field(min_length=64, max_length=64)
 
 
 class SessionRewindResult(BaseModel):
@@ -618,6 +817,7 @@ class SessionContextResult(BaseModel):
     run_count: int
     last_run_id: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
+    session_usage: dict[str, Any] = Field(default_factory=dict)
     working_set: list[str] = Field(default_factory=list)
     memory_count: int = Field(default=0, ge=0)
     compaction: dict[str, Any] | None = None
@@ -691,6 +891,7 @@ class HooksListResult(BaseModel):
 class HookRerunCommand(BaseModel):
     type: Literal["hooks.rerun"] = "hooks.rerun"
     hook_id: str = Field(min_length=1)
+    session_id: str = ""
 
 
 class HookRerunResult(BaseModel):
@@ -703,6 +904,7 @@ class HookRerunResult(BaseModel):
 
 class MemoryListCommand(BaseModel):
     type: Literal["memory.list"] = "memory.list"
+    include_expired: bool = True
 
 
 class MemoryInfo(BaseModel):
@@ -715,10 +917,75 @@ class MemoryInfo(BaseModel):
     source_run_id: str
     created_at: str
     updated_at: str
+    pinned: bool = False
+    expires_at: str | None = None
+    expired: bool = False
+
+
+class MemorySettingsInfo(BaseModel):
+    auto_save: Literal["prompt", "off"] = "prompt"
 
 
 class MemoryListResult(BaseModel):
     memories: list[MemoryInfo] = Field(default_factory=list)
+    settings: MemorySettingsInfo = Field(default_factory=MemorySettingsInfo)
+
+
+class MemoryAddCommand(BaseModel):
+    type: Literal["memory.add"] = "memory.add"
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1_000)
+    memory_type: Literal["user", "feedback", "project", "reference"] = "project"
+    body: str = Field(min_length=1, max_length=100_000)
+    source_session_id: str = ""
+
+
+class MemoryEditCommand(BaseModel):
+    type: Literal["memory.edit"] = "memory.edit"
+    memory_id: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1_000)
+    memory_type: Literal["user", "feedback", "project", "reference"] | None = None
+    body: str | None = Field(default=None, min_length=1, max_length=100_000)
+
+    @model_validator(mode="after")
+    # 拒绝没有任何修改字段的 memory.edit 请求
+    def require_change(self) -> Self:
+        if all(
+            value is None
+            for value in (self.name, self.description, self.memory_type, self.body)
+        ):
+            raise ValueError("memory.edit requires at least one changed field")
+        return self
+
+
+class MemoryPinCommand(BaseModel):
+    type: Literal["memory.pin"] = "memory.pin"
+    memory_id: str = Field(min_length=1)
+    pinned: bool = True
+
+
+class MemoryExpireCommand(BaseModel):
+    type: Literal["memory.expire"] = "memory.expire"
+    memory_id: str = Field(min_length=1)
+    expires_at: str | None = None
+
+
+class MemoryMutationResult(BaseModel):
+    memory: MemoryInfo
+
+
+class MemorySettingsGetCommand(BaseModel):
+    type: Literal["memory.settings.get"] = "memory.settings.get"
+
+
+class MemorySettingsSetCommand(BaseModel):
+    type: Literal["memory.settings.set"] = "memory.settings.set"
+    auto_save: Literal["prompt", "off"]
+
+
+class MemorySettingsResult(BaseModel):
+    settings: MemorySettingsInfo
 
 
 class MemoryDeleteCommand(BaseModel):
@@ -733,6 +1000,7 @@ class MemoryDeleteResult(BaseModel):
 
 class BackgroundGetCommand(BaseModel):
     type: Literal["background.get"] = "background.get"
+    session_id: str = Field(min_length=1)
     job_id: str = ""
 
 
@@ -747,6 +1015,11 @@ class BackgroundJobInfo(BaseModel):
     created_at: str
     finished_at: str = ""
     process_usage: dict[str, Any] = Field(default_factory=dict)
+    output_bytes: int = Field(default=0, ge=0)
+    output_truncated: bool = False
+    output_artifact: str = ""
+    output_artifact_size: int = Field(default=0, ge=0)
+    output_artifact_error: str = ""
 
 
 class BackgroundGetResult(BaseModel):
@@ -755,6 +1028,7 @@ class BackgroundGetResult(BaseModel):
 
 class BackgroundCancelCommand(BaseModel):
     type: Literal["background.cancel"] = "background.cancel"
+    session_id: str = Field(min_length=1)
     job_id: str = Field(min_length=1)
 
 
@@ -765,6 +1039,7 @@ class BackgroundCancelResult(BaseModel):
 
 class WorkerCancelCommand(BaseModel):
     type: Literal["worker.cancel"] = "worker.cancel"
+    session_id: str = Field(min_length=1)
     worker_id: str = Field(min_length=1)
 
 
@@ -812,9 +1087,12 @@ Command = Annotated[
     | GoalResumeCommand
     | GoalClearCommand
     | GoalCompleteCommand
+    | GoalContinueDecisionCommand
     | RunCancelCommand
     | RunSteerCommand
+    | PlanRespondCommand
     | EventSubscribeCommand
+    | EventUnsubscribeCommand
     | EventReplayCommand
     | ThreadCreateCommand
     | ThreadListCommand
@@ -844,12 +1122,22 @@ Command = Annotated[
     | UserQuestionRespondCommand
     | SessionCompactCommand
     | SessionTasksCommand
+    | WorkerStartCommand
+    | WorkerStatusCommand
+    | WorkerRetryCommand
     | WorkerListCommand
+    | WorkerEventsCommand
+    | WorkerFollowupCommand
+    | WorkerReviewCommand
+    | WorkerApplyCommand
     | WorkflowStartCommand
     | WorkflowListCommand
     | WorkflowGetCommand
     | WorkspaceDiffCommand
+    | WorkspaceStageCommand
+    | WorkspaceCommitCommand
     | SessionCheckpointsCommand
+    | SessionRewindPreviewCommand
     | SessionRewindCommand
     | SessionContextCommand
     | TurnInspectCommand
@@ -857,7 +1145,13 @@ Command = Annotated[
     | HooksListCommand
     | HookRerunCommand
     | MemoryListCommand
+    | MemoryAddCommand
+    | MemoryEditCommand
+    | MemoryPinCommand
+    | MemoryExpireCommand
     | MemoryDeleteCommand
+    | MemorySettingsGetCommand
+    | MemorySettingsSetCommand
     | BackgroundGetCommand
     | BackgroundCancelCommand
     | WorkerCancelCommand

@@ -13,7 +13,13 @@ from code_rook.core.bus.events import (
     LlmUsageEvent,
 )
 from code_rook.core.events.bus import EventBus
-from code_rook.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
+from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.types import (
+    LlmResponse,
+    ToolCallBlock,
+    UsageStats,
+    completion_status_from_reason,
+)
 
 _DEFAULT_CONTEXT_WINDOW = 1_050_000
 
@@ -152,6 +158,22 @@ def _parse_output(
     return "".join(text_parts), calls, "\n".join(reasoning_parts)
 
 
+# 判断 Responses output 是否含函数调用，避免不完整参数进入 JSON 解析和执行链
+def _output_has_tool_calls(output: object) -> bool:
+    return isinstance(output, list) and any(
+        isinstance(item, dict) and item.get("type") == "function_call" for item in output
+    )
+
+
+# 移除非完成响应中的潜在半截函数调用，仅保留可安全展示的文本和推理
+def _visible_output_only(output: object) -> object:
+    if not isinstance(output, list):
+        return output
+    return [
+        item for item in output if not isinstance(item, dict) or item.get("type") != "function_call"
+    ]
+
+
 class OpenAIResponsesProvider:
     # 初始化 Responses API 端点、模型、凭据和可注入 HTTP client
     def __init__(
@@ -160,6 +182,7 @@ class OpenAIResponsesProvider:
         *,
         base_url: str,
         api_key: str,
+        api_key_required: bool = True,
         context_window: int | None = None,
         thinking: str = "off",
         temperature: float | None = None,
@@ -167,6 +190,8 @@ class OpenAIResponsesProvider:
     ) -> None:
         self._model = model
         self._base_url = base_url
+        if api_key_required and not api_key:
+            raise SystemExit("API key not set")
         self._api_key = api_key
         self._context_window = context_window or _DEFAULT_CONTEXT_WINDOW
         self._thinking = thinking
@@ -200,7 +225,7 @@ class OpenAIResponsesProvider:
             "model": resolved_model,
             "input": _to_responses_input(messages),
             "instructions": system or "",
-            "max_output_tokens": 8192,
+            "max_output_tokens": clamp_output_token_limit(8192),
             "store": False,
             "stream": True,
         }
@@ -212,20 +237,43 @@ class OpenAIResponsesProvider:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 data, streamed = await self._post(client, payload, headers, bus, run_id)
         else:
             data, streamed = await self._post(self._client, payload, headers, bus, run_id)
-        text, tool_calls, reasoning = _parse_output(data.get("output"))
+        output = data.get("output")
+        status_value = data.get("status")
+        if isinstance(status_value, str) and status_value.strip():
+            status_present = True
+            raw_status = status_value.strip()
+        else:
+            status_present = False
+            raw_status = "transport_error"
+        incomplete_details = data.get("incomplete_details")
+        incomplete_reason = (
+            str(incomplete_details.get("reason") or "")
+            if isinstance(incomplete_details, dict)
+            else ""
+        )
+        completion_status = completion_status_from_reason(
+            raw_status,
+            has_tool_calls=_output_has_tool_calls(output),
+            incomplete_reason=incomplete_reason,
+        )
+        parsed_output = (
+            output
+            if completion_status in {"completed", "tool_use"}
+            else _visible_output_only(output)
+        )
+        text, tool_calls, reasoning = _parse_output(parsed_output)
+        if completion_status == "completed" and tool_calls:
+            completion_status = "tool_use"
         if reasoning:
-            await bus.publish(
-                LlmReasoningEvent(run_id=run_id, content=reasoning, ts=_now())
-            )
+            await bus.publish(LlmReasoningEvent(run_id=run_id, content=reasoning, ts=_now()))
         if text and not tool_calls and not streamed:
             await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
         usage = data.get("usage", {})
@@ -249,12 +297,22 @@ class OpenAIResponsesProvider:
             )
         )
         return LlmResponse(
-            stop_reason="tool_use" if tool_calls else "end_turn",
+            stop_reason=(
+                "tool_use"
+                if completion_status == "tool_use"
+                else "end_turn"
+                if completion_status == "completed"
+                else "max_tokens"
+                if completion_status == "length"
+                else completion_status
+            ),
             tool_calls=tool_calls,
             text=text,
-            thinking_blocks=(
-                [{"type": "thinking", "thinking": reasoning}] if reasoning else []
+            completion_status=completion_status,
+            completion_reason=(
+                incomplete_reason or (raw_status if status_present else "missing_response_status")
             ),
+            thinking_blocks=([{"type": "thinking", "thinking": reasoning}] if reasoning else []),
             usage=UsageStats(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -322,9 +380,7 @@ class OpenAIResponsesProvider:
                 delta = event.get("delta")
                 if isinstance(delta, str) and delta:
                     text_parts.append(delta)
-                    await bus.publish(
-                        LlmTokenEvent(run_id=run_id, token=delta, ts=_now())
-                    )
+                    await bus.publish(LlmTokenEvent(run_id=run_id, token=delta, ts=_now()))
             elif event_type == "response.reasoning_summary_text.delta":
                 delta = event.get("delta")
                 if isinstance(delta, str) and delta:
@@ -340,18 +396,19 @@ class OpenAIResponsesProvider:
                     slot["name"] = str(item.get("name") or "")
             elif event_type == "response.function_call_arguments.delta":
                 key = str(event.get("item_id") or event.get("output_index") or "")
-                slot = calls.setdefault(
-                    key, {"call_id": "", "name": "", "arguments": ""}
-                )
+                slot = calls.setdefault(key, {"call_id": "", "name": "", "arguments": ""})
                 delta = event.get("delta")
                 if isinstance(delta, str):
                     slot["arguments"] += delta
-            elif event_type == "response.completed":
+            elif event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+                "response.cancelled",
+            }:
                 full = event.get("response")
                 if isinstance(full, dict):
                     completed = full
-            elif event_type == "response.failed":
-                raise RuntimeError("OpenAI Responses request failed")
         if completed is not None:
             return completed, True
         output: list[dict[str, Any]] = []
@@ -368,18 +425,18 @@ class OpenAIResponsesProvider:
             output.append(
                 {
                     "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "".join(text_parts)}
-                    ],
+                    "content": [{"type": "output_text", "text": "".join(text_parts)}],
                 }
             )
         if reasoning_parts:
             output.append(
                 {
                     "type": "reasoning",
-                    "summary": [
-                        {"type": "summary_text", "text": "".join(reasoning_parts)}
-                    ],
+                    "summary": [{"type": "summary_text", "text": "".join(reasoning_parts)}],
                 }
             )
-        return {"output": output, "usage": {}}, True
+        return {
+            "status": "transport_error",
+            "output": output,
+            "usage": {},
+        }, True

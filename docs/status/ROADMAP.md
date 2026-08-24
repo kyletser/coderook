@@ -1,30 +1,49 @@
 # CodeRook Roadmap
 
-Roadmap 只记录尚未完成的结果，不保存已结束阶段的实施流水账。项目当前仍处于 Alpha；精确发布结论见
-[发布评分卡](RELEASE_SCORECARD.md)。
+Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据缺口见
+[功能架构](../reference/FUNCTIONAL_ARCHITECTURE.md)和[发布评分卡](RELEASE_SCORECARD.md)。项目仍是
+`0.1.0` Alpha，不能把代码路径、workflow 或测试 fixture 写成公开发行成绩。
 
-## Now：形成真实效果证据
+## Now：形成候选 commit
+
+- 完成最终 P0/P1 清零审计，重点复核显式 credential overlay、跨 session 事件/审批、Worker handoff、
+  Goal 预算、审计降级和进程树取消。
+- 在最终合并工作树从头连续运行完整本地门禁，并让单个 `Required Ubuntu gate` 对同一候选 commit
+  稳定通过；不恢复 cron/nightly 或三平台 push matrix。
+- 运行 80×24、100×30、140×40 三种尺寸与中英文产品矩阵，覆盖 onboarding、Provider、权限、结果卡、
+  Change Center、rewind、session 切换、Goal、Worker 与附件；修复后重新跑完整矩阵。
+- 对升级备份、坏 Goal/Task/Session 隔离和 `doctor runtime --repair` 做一次真实旧状态目录恢复演练；
+  repair 只处理可证明安全的投影，不猜测损坏记录。
+
+## Next：补齐外部发布证据
 
 - 使用有效凭据运行固定 50 任务候选集，公开总体、多文件、只读 pass@1、成本、耗时和失败分类。
-- 对两种 wire format 各重复两次，保留四份原始报告和聚合结果，不挑选最好一次。
+- 对两个不同 wire format 各重复两次，保留四份原始报告与聚合结果，不挑最好一次。
 - 用官方 harness 产出 Aider Polyglot 固定切片和 SWE-bench 小规模判分 artifact。
+- 手动运行同一候选 commit 的三平台安全负例、100 次强杀恢复、MCP 和五平台分发矩阵。
+- 验证 PyPI Trusted Publishing、GitHub Release、GHCR、SBOM、checksum、provenance 与签名；外部
+  Homebrew tap/Scoop bucket 真正发布前，继续只把生成文件称为 Release asset。
+- 在两个真实 tag 之间完成升级、备份恢复与回滚验收。
+- 完成 10 名新用户首次成功测试，达到至少 8 名在 10 分钟内无需指导完成有效任务。
 
-## Next：完成首次公开发行
+## 首发素材
 
-- 重新启用 GitHub Actions 后验证当前提交，而不是继续引用旧 workflow 运行结果。
-- 为 `main` 启用与仓库合同一致的 ruleset/branch protection。
-- 发布首个 Git tag、GitHub Release、PyPI 包和 GHCR 镜像，并验证 SBOM、checksum、provenance 与签名。
-- 在两个真实发布版本之间运行升级、备份恢复和回滚测试。
-- 决定是否单独发布 VS Code Marketplace 扩展。
+- 录制脱敏真实任务的 20 秒 GitHub GIF：理解、计划、修改、验证、结果卡、Change Center 与 rewind。
+- 录制 daemon 强杀后恢复 Goal，以及 Worker worktree 审查后显式 apply 的可复现演示。
+- 准备真实 Bug 修复、长 Goal 恢复和多 Agent Worktree 三个案例；benchmark 未产出前不展示占位数字。
+- GitHub README 只放真实安装入口、已知限制和可复现证据；小红书明确写出 Windows 无强制 sandbox。
 
-## Later：需要平台研究的能力
+## Later
 
-- Windows 文件系统与网络的强制沙箱后端。
-- 不扩大权限的按域名出站白名单。
-- 跨真实 Python/TypeScript 项目的诊断 P95 基线，以及更多语言诊断。
+- Windows 文件系统与网络强制 sandbox 后端。
+- 不扩大权限的按域名 Shell 出站白名单。
+- 桌面端；VS Code Marketplace 是否发布单独决策，不阻塞 v1。
+- 更多语言 Diagnostics 与大型 monorepo 的跨真实项目 P95 基线。
+- Labs Fleet/Workflow、MCP Resources/Prompts 与 Hooks 的稳定化，仅在安全与恢复合同成熟后考虑。
 
 ## 非目标
 
-- 托管式多租户 Agent SaaS 或云端密钥托管。
-- 未经人工审查自动合并、自动发布模型生成的代码。
-- 宣称所有模型代理、MCP server、Skill 或 Hook 都安全兼容。
+- 托管式多租户 Agent SaaS、模型代付或云端密钥托管。
+- 默认遥测。
+- 未经人工审查自动 merge、自动 push 或自动发布模型生成代码。
+- 宣称任意模型、MCP server、Skill 或 Hook 天然安全兼容。

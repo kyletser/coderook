@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,9 +18,19 @@ from textual.message import Message
 from textual.widgets import Input, Label, Static, TextArea
 
 from code_rook.core.llm.provider_presets import ProviderPreset
+from code_rook.tui.product import tr
 
 _INPUT_HISTORY_LIMIT = 500
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_HISTORY_DISABLED_VALUES = {"0", "false", "no", "off", "disabled"}
+_SENSITIVE_HISTORY_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token|secret|password)\b\s*[:=]\s*\S+"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}"),
+)
 
 
 # 将纯文件路径粘贴识别为本地图片，普通文本返回 None
@@ -31,15 +44,92 @@ def _pasted_image_path(text: str) -> Path | None:
     return path.resolve()
 
 
-# 返回用户级输入历史文件路径
-def _input_history_path() -> Path:
-    return Path.home() / ".coderook" / "tui-history.jsonl"
+# 为工作区路径生成不可碰撞且不暴露完整路径的历史分区键
+def _workspace_history_key(workspace: Path | None = None) -> str:
+    root = (workspace or Path.cwd()).resolve()
+    digest = hashlib.sha256(str(root).casefold().encode("utf-8")).hexdigest()[:16]
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", root.name).strip("-.") or "workspace"
+    return f"{label[:32]}-{digest}"
 
 
-# 从磁盘加载最近的输入历史，坏行静默跳过
-def _load_input_history(limit: int = _INPUT_HISTORY_LIMIT) -> list[str]:
+# 返回按工作区分区、但不会污染仓库的用户级输入历史路径
+def _input_history_path(
+    workspace: Path | None = None,
+    *,
+    state_root: Path | None = None,
+) -> Path:
+    base = state_root or Path.home() / ".coderook" / "tui"
+    return base / "history" / f"{_workspace_history_key(workspace)}.jsonl"
+
+
+# 返回当前工作区分区的 TUI 本地偏好文件路径
+def _input_history_settings_path(
+    workspace: Path | None = None,
+    *,
+    state_root: Path | None = None,
+) -> Path:
+    base = state_root or Path.home() / ".coderook" / "tui"
+    return base / "settings" / f"{_workspace_history_key(workspace)}.json"
+
+
+# 判断文本是否可能包含密钥，命中时整条输入不进入历史
+def _is_sensitive_history(text: str) -> bool:
+    return any(pattern.search(text) is not None for pattern in _SENSITIVE_HISTORY_PATTERNS)
+
+
+# 读取工作区历史开关，环境变量拥有最高优先级
+def _input_history_enabled(workspace: Path | None = None) -> bool:
+    override = os.environ.get("CODEROOK_TUI_HISTORY")
+    if override is not None:
+        return override.strip().casefold() not in _HISTORY_DISABLED_VALUES
     try:
-        lines = _input_history_path().read_text(encoding="utf-8").splitlines()[-limit:]
+        payload = json.loads(_input_history_settings_path(workspace).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return bool(payload.get("history_enabled", True)) if isinstance(payload, dict) else True
+
+
+# 持久化当前工作区的历史开关，不触碰已有历史内容
+def _set_input_history_enabled(enabled: bool, workspace: Path | None = None) -> None:
+    path = _input_history_settings_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"history_enabled": enabled}, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+# 清空当前工作区的持久输入历史
+def _clear_input_history(
+    workspace: Path | None = None,
+    *,
+    state_root: Path | None = None,
+) -> None:
+    try:
+        _input_history_path(workspace, state_root=state_root).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# 从磁盘加载最近的工作区输入历史，坏行与敏感旧记录静默跳过
+def _load_input_history(
+    limit: int = _INPUT_HISTORY_LIMIT,
+    *,
+    path: Path | None = None,
+    enabled: bool = True,
+) -> list[str]:
+    if not enabled:
+        return []
+    history_path = path if path is not None else _input_history_path()
+    try:
+        lines = history_path.read_text(encoding="utf-8").splitlines()[-limit:]
     except OSError:
         return []
     history: list[str] = []
@@ -50,20 +140,29 @@ def _load_input_history(limit: int = _INPUT_HISTORY_LIMIT) -> list[str]:
             continue
         if isinstance(item, dict):
             text = str(item.get("text", ""))
-            if text:
+            if text and not _is_sensitive_history(text):
                 history.append(text)
     return history
 
 
-# 将一条输入追加到历史文件，写入失败时静默跳过
-def _save_input_history_entry(text: str) -> None:
-    if not text.strip():
+# 将一条非敏感输入追加到指定工作区历史，写入失败时静默跳过
+def _save_input_history_entry(
+    text: str,
+    *,
+    path: Path | None = None,
+    enabled: bool = True,
+) -> None:
+    if not enabled or not text.strip() or _is_sensitive_history(text):
         return
-    path = _input_history_path()
+    history_path = path if path is not None else _input_history_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        with history_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+        try:
+            history_path.chmod(0o600)
+        except OSError:
+            pass
     except OSError:
         pass
 
@@ -104,15 +203,16 @@ class ConfigApiKeyPrompt(Static):
             super().__init__()
 
     # 初始化指定 Provider 的密钥输入面板
-    def __init__(self, provider: ProviderPreset) -> None:
+    def __init__(self, provider: ProviderPreset, *, locale: str = "zh-CN") -> None:
         super().__init__()
         self.provider = provider
+        self._locale = locale
 
     # 组合说明、密码输入框和错误提示
     def compose(self) -> ComposeResult:
         yield Label(
             f"[bold]{escape(self.provider.name)}[/bold]\n"
-            "[dim]输入 API Key 后按 Enter，CodeRook 将探测该账号的可用模型。[/dim]"
+            f"[dim]{tr('input.config.intro', self._locale)}[/dim]"
         )
         yield Input(placeholder="API Key", password=True, id="config-api-key")
         yield Label("", classes="config-error", id="config-key-error")
@@ -120,18 +220,24 @@ class ConfigApiKeyPrompt(Static):
     # 挂载时设置步骤提示并聚焦密码输入框
     def on_mount(self) -> None:
         self.border_title = " API Key "
-        self.border_subtitle = " Enter discover models   Esc back "
+        self.border_subtitle = f" {tr('input.config.hint', self._locale)} "
         self.query_one("#config-api-key", Input).focus()
+
+    # 切换配置面板语言并重组说明和快捷提示
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        self.border_subtitle = f" {tr('input.config.hint', self._locale)} "
+        self.refresh(recompose=True)
 
     # 校验密钥非空后发布提交消息
     def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         api_key = event.value.strip()
         if not api_key:
-            self.show_error("API Key 不能为空。")
+            self.show_error(tr("input.config.empty", self._locale))
             return
         event.input.disabled = True
-        self.border_subtitle = " discovering available models... "
+        self.border_subtitle = f" {tr('input.config.discovering', self._locale)} "
         self.post_message(self.Submitted(self, api_key))
 
     # 显示探测错误并允许用户重新输入
@@ -140,7 +246,7 @@ class ConfigApiKeyPrompt(Static):
         key_input = self.query_one("#config-api-key", Input)
         key_input.disabled = False
         key_input.focus()
-        self.border_subtitle = " Enter retry   Esc back "
+        self.border_subtitle = f" {tr('input.config.retry', self._locale)} "
 
     # 捕获 Esc 并返回 Provider 选择页
     def on_key(self, event: events.Key) -> None:
@@ -210,11 +316,18 @@ class SlashCompleteWidget(Static):
             super().__init__()
 
     # 初始化，接收全量 CompletionItem 列表
-    def __init__(self, items: list[CompletionItem]) -> None:
+    def __init__(self, items: list[CompletionItem], *, locale: str = "en-US") -> None:
         super().__init__("")
         self._all_items = list(items)
         self._filtered: list[CompletionItem] = list(items)
         self._cursor = 0
+        self._locale = locale
+
+    # 切换补全控件语言并立即重绘静态导航文案
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self._redraw()
 
     # 根据查询字符串对 name 与 description 做模糊匹配筛选，重置光标并重新渲染
     def set_query(self, query: str) -> None:
@@ -266,7 +379,7 @@ class SlashCompleteWidget(Static):
     # 渲染筛选后的命令列表并高亮当前光标项，底部固定一行显示当前选中项的 usage
     def _redraw(self) -> None:
         if not self._filtered:
-            self.update("[dim]  no matching commands[/dim]")
+            self.update(f"[dim]  {tr('completion.no_match', self._locale)}[/dim]")
             return
         lines: list[str] = []
         for i, item in enumerate(self._filtered):
@@ -278,11 +391,16 @@ class SlashCompleteWidget(Static):
         selected = self._filtered[self._cursor]
         # 无 usage 时回退显示该条说明，保证底部信息始终有内容
         if selected.usage:
-            usage_part = f"usage: /{selected.name} {selected.usage}"
+            usage_part = tr(
+                "completion.usage",
+                self._locale,
+                name=selected.name,
+                usage=selected.usage,
+            )
         else:
             usage_part = selected.description
         lines.append(f"[dim]{usage_part}[/dim]")
-        lines.append("[dim]  ↑↓ navigate   tab complete   enter run/complete   esc dismiss[/dim]")
+        lines.append(f"[dim]  {tr('completion.hint', self._locale)}[/dim]")
         self.update("\n".join(lines))
 
 
@@ -338,24 +456,60 @@ class ChatTextArea(TextArea):
         self._history: list[str] = []
         self._history_index: int | None = None
         self._history_draft: str = ""
+        self._history_path = _input_history_path()
+        self._history_enabled = True
 
     # 设置可回溯的输入历史列表并重置回溯状态
-    def set_history(self, history: list[str]) -> None:
+    def set_history(
+        self,
+        history: list[str],
+        *,
+        path: Path | None = None,
+        enabled: bool = True,
+    ) -> None:
         self._history = list(history)
         self._history_index = None
         self._history_draft = ""
+        if path is not None:
+            self._history_path = path
+        self._history_enabled = enabled
 
-    # 记录一条提交输入：连续去重后写入用户级历史文件
+    # 开关当前输入框的历史记录，关闭时仍保留已有磁盘内容
+    def set_history_enabled(self, enabled: bool) -> None:
+        self._history_enabled = enabled
+        self._history_index = None
+        self._history_draft = ""
+
+    # 清空内存与磁盘历史并复位导航位置
+    def clear_history(self) -> None:
+        self._history = []
+        self._history_index = None
+        self._history_draft = ""
+        try:
+            self._history_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # 记录一条提交输入：敏感内容不入内存或磁盘，其余内容连续去重
     def record_history(self, text: str) -> None:
         cleaned = text.strip()
-        if not cleaned or (self._history and self._history[-1] == cleaned):
+        if (
+            not self._history_enabled
+            or not cleaned
+            or _is_sensitive_history(cleaned)
+            or (self._history and self._history[-1] == cleaned)
+        ):
             return
         self._history.append(cleaned)
         if len(self._history) > _INPUT_HISTORY_LIMIT:
             self._history = self._history[-_INPUT_HISTORY_LIMIT:]
         self._history_index = None
         self._history_draft = ""
-        _save_input_history_entry(cleaned)
+        _save_input_history_entry(
+            cleaned,
+            path=self._history_path,
+            enabled=self._history_enabled,
+        )
 
     # 拦截纯图片路径粘贴并交由 App 落入 ArtifactStore，普通文本沿用 TextArea 行为
     async def _on_paste(self, event: events.Paste) -> None:
@@ -415,11 +569,7 @@ class ChatTextArea(TextArea):
             event.stop()
             event.prevent_default()
             query = self.text[1:] if self.text.startswith("/") else ""
-            if (
-                popup is not None
-                and popup.has_selection()
-                and not popup.has_exact_match(query)
-            ):
+            if popup is not None and popup.has_selection() and not popup.has_exact_match(query):
                 popup.select_current()
                 return
             if self.text.strip():
@@ -452,11 +602,7 @@ class ChatTextArea(TextArea):
                 event.prevent_default()
                 self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
-        if (
-            key == "up"
-            and popup is None
-            and (not self.text or self._history_index is not None)
-        ):
+        if key == "up" and popup is None and (not self.text or self._history_index is not None):
             event.stop()
             event.prevent_default()
             self._history_up()

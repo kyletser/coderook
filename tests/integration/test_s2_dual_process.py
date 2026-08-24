@@ -109,6 +109,22 @@ async def test_goal_control_plane_roundtrip_without_model(
         assert cleared["goal"]["status"] == "cleared"
         empty = await send("goal.get", {"session_id": session_id})
         assert empty["goal"] is None
+        automatic = await send(
+            "goal.create",
+            {
+                "session_id": session_id,
+                "objective": "bounded automatic goal",
+                "auto_continue": True,
+                "completion_criteria": ["evidence verified"],
+                "start": False,
+            },
+        )
+        decision = await send(
+            "goal.continue_decision",
+            {"goal_id": automatic["goal"]["id"]},
+        )
+        assert decision["decision"]["should_continue"] is True
+        assert decision["decision"]["remaining_auto_turns"] == 3
     finally:
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)

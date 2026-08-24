@@ -41,6 +41,7 @@ class _FakeApp:
         self._model = ""
         self._plan_review_pending = False
         self._plan_session_id: str | None = None
+        self._plan_run_id: str | None = None
         self._plan_request = ""
         self._pending_question_id: str | None = None
         self._answering_question = False
@@ -48,6 +49,7 @@ class _FakeApp:
         self._mounted_selects: list[PermissionSelect] = []
         self._mounted_count = 0
         self._maybe_autotitled = False
+        self._ready_restores = 0
 
     def _append(self, widget: Any) -> None:
         self._appended.append(widget)
@@ -65,6 +67,17 @@ class _FakeApp:
     def _clear_user_question(self) -> None:
         self._pending_question_id = None
         self._answering_question = False
+
+    # 清除测试 App 当前匹配的计划审阅状态
+    def _clear_plan_review(self) -> None:
+        self._plan_review_pending = False
+        self._plan_session_id = None
+        self._plan_run_id = None
+        self._plan_request = ""
+
+    # 记录计划解决事件触发了输入框恢复
+    def _restore_ready_prompt(self) -> None:
+        self._ready_restores += 1
 
     def _prompt(self) -> None:
         return None
@@ -126,6 +139,7 @@ def test_llm_token_accumulates_into_same_block() -> None:
 # 设计：检查 _append 收集到的 Static 控件文本包含 tool_name，验证 stage/tail 渲染文案
 def test_agent_stuck_logs_tool_name() -> None:
     app = _new_app()
+    app._locale = "en-US"
 
     render_event(
         app,
@@ -173,6 +187,42 @@ def test_plan_updated_renders_plan_lines() -> None:
     assert "重构渲染层" in joined
     assert "[>] 拆分事件分支" in joined
     assert "[x] 抽取 render.py" in joined
+
+
+# 功能：验证当前会话匹配 run 的 live plan.resolved 会立即清除审阅面板状态
+# 设计：直接投递 durable 解决事件并记录 prompt 恢复，另用不匹配 run 证明不会误清新计划
+def test_plan_resolved_clears_only_matching_review() -> None:
+    app = _new_app()
+    app._session_id = "sess-plan"
+    app._plan_session_id = "sess-plan"
+    app._plan_run_id = "run-new"
+    app._plan_review_pending = True
+
+    render_event(
+        app,
+        {
+            "type": "plan.resolved",
+            "session_id": "sess-plan",
+            "run_id": "run-old",
+            "decision": "cancel",
+        },
+    )
+    assert app._plan_review_pending
+
+    render_event(
+        app,
+        {
+            "type": "plan.resolved",
+            "session_id": "sess-plan",
+            "run_id": "run-new",
+            "decision": "approve",
+        },
+    )
+
+    assert not app._plan_review_pending
+    assert app._plan_run_id is None
+    assert app._ready_restores == 1
+    assert app._header_state == "ready"
 
 
 # 功能：验证 repository context 与 working set 以路径和预算摘要展示而非原始 JSON
@@ -276,6 +326,7 @@ def test_user_question_asks_and_switches_header() -> None:
 # 设计：用非 success 状态触发 else 分支，断言 x 标记文本与 steps 计数、步骤索引被清空
 def test_run_finished_failure_renders_result_and_cleans_steps() -> None:
     app = _new_app()
+    app._locale = "en-US"
     app._current_steps = {"run-1": 3}
     app._tool_step_groups = {("run-1", 3): _FakeStepGroup()}
 
@@ -403,6 +454,36 @@ def test_context_compacted_logs_summary() -> None:
 
     texts = [_render_text(w) for w in app._appended if isinstance(w, Static)]
     assert any("Context compacted" in t for t in texts)
+
+
+# 功能：验证 Goal 继续决策展示轮次、预算、墙钟与需要确认的恢复入口
+# 设计：直接渲染暂停决策事件并断言审计字段和 `/goal resume` 同时出现在一张状态卡中
+def test_goal_continue_decision_renders_bounded_status() -> None:
+    app = _new_app()
+
+    render_event(
+        app,
+        {
+            "type": "goal.continue_decision",
+            "should_continue": False,
+            "reason": "max_auto_turns_reached",
+            "auto_turns_used": 3,
+            "remaining_auto_turns": 0,
+            "tokens_used": 900,
+            "token_budget": 1000,
+            "wall_elapsed_seconds": 120,
+            "max_wall_seconds": 1800,
+            "paused_needs_confirmation": True,
+        },
+    )
+
+    texts = [_render_text(widget) for widget in app._appended if isinstance(widget, Static)]
+    rendered = "\n".join(texts)
+    assert "Goal 已暂停" in rendered
+    assert "auto=3/3" in rendered
+    assert "tokens=900/1000" in rendered
+    assert "wall=120s/1800s" in rendered
+    assert "/goal resume" in rendered
 
 
 # 功能：验证 permission.requested 登记审批卡并向假 App 挂载选择控件

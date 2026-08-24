@@ -425,20 +425,24 @@ async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
         return httpx.Response(
             200,
             json={
-                "choices": [{
-                    "message": {
-                        "reasoning_content": "I should inspect the workspace first.",
-                        "content": "我先检查工作区。",
-                        "tool_calls": [{
-                            "id": "call-2",
-                            "type": "function",
-                            "function": {
-                                "name": "list_dir",
-                                "arguments": "{}",
-                            },
-                        }],
-                    },
-                }],
+                "choices": [
+                    {
+                        "message": {
+                            "reasoning_content": "I should inspect the workspace first.",
+                            "content": "我先检查工作区。",
+                            "tool_calls": [
+                                {
+                                    "id": "call-2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "list_dir",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 8},
             },
         )
@@ -459,11 +463,13 @@ async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
         },
         {
             "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "call-1",
-                "content": "README.md",
-            }],
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "content": "README.md",
+                }
+            ],
         },
     ]
     events: list[BaseModel] = []
@@ -484,11 +490,13 @@ async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
         )
         result = await provider.chat(
             messages=messages,
-            tool_schemas=[{
-                "name": "list_dir",
-                "description": "List files",
-                "input_schema": {"type": "object"},
-            }],
+            tool_schemas=[
+                {
+                    "name": "list_dir",
+                    "description": "List files",
+                    "input_schema": {"type": "object"},
+                }
+            ],
             bus=bus,
             run_id="r-deepseek",
         )
@@ -503,10 +511,12 @@ async def test_deepseek_reasoning_is_separate_and_preserved() -> None:
     assert len(reasoning_events) == 1
     assert reasoning_events[0].content == "I should inspect the workspace first."  # type: ignore[attr-defined]
     assert not [event for event in events if event.type == "llm.token"]  # type: ignore[attr-defined]
-    assert result.thinking_blocks == [{
-        "type": "thinking",
-        "thinking": "I should inspect the workspace first.",
-    }]
+    assert result.thinking_blocks == [
+        {
+            "type": "thinking",
+            "thinking": "I should inspect the workspace first.",
+        }
+    ]
 
 
 # 功能：验证 OpenAI-compatible 的日志和异常都不会包含响应正文或 API key
@@ -545,18 +555,22 @@ async def test_openai_compatible_rejects_partial_tool_arguments() -> None:
             200,
             request=request,
             json={
-                "choices": [{
-                    "message": {
-                        "tool_calls": [{
-                            "id": "call-partial",
-                            "type": "function",
-                            "function": {
-                                "name": "read_file",
-                                "arguments": '{"path":',
-                            },
-                        }],
-                    },
-                }],
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "call-partial",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
                 "usage": {},
             },
         )
@@ -573,6 +587,98 @@ async def test_openai_compatible_rejects_partial_tool_arguments() -> None:
             await provider.chat([], [], EventBus(), "run-partial")
 
     assert '{"path":' not in str(captured.value)
+
+
+# 功能：验证 OpenAI Chat 的 length 响应不会解析或执行被截断的工具参数
+# 设计：返回 finish_reason=length 与半截 JSON，断言统一状态为 length 且工具列表为空
+async def test_openai_compatible_length_discards_partial_tool_arguments() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "partial",
+                            "tool_calls": [
+                                {
+                                    "id": "call-partial",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path":',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-length")
+
+    assert result.completion_status == "length"
+    assert result.stop_reason == "max_tokens"
+    assert result.tool_calls == []
+
+
+# 功能：验证 OpenAI Chat SSE 在没有 DONE 或 finish_reason 时分类为 transport_error
+# 设计：只发送一个正文增量后直接 EOF，保留诊断文本但禁止误报 completed
+async def test_openai_compatible_early_eof_is_transport_error() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-eof")
+
+    assert result.text == "partial"
+    assert result.completion_status == "transport_error"
+    assert result.stop_reason == "transport_error"
+
+
+# 功能：验证 Anthropic max_tokens 使用统一 length 语义且不会执行工具块
+# 设计：构造截断终态并附带工具块，断言 Provider 丢弃调用并返回可续写状态
+async def test_anthropic_max_tokens_is_length_and_discards_tools() -> None:
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "partial"
+    tool_block.name = "read_file"
+    tool_block.input = {"path": "README.md"}
+    provider, _ = _make_provider(
+        texts=["partial"],
+        stop_reason="max_tokens",
+        content=[tool_block],
+    )
+
+    result, _events = await _chat(provider)
+
+    assert result.completion_status == "length"
+    assert result.stop_reason == "max_tokens"
+    assert result.tool_calls == []
 
 
 # 功能：SSE 流式响应被增量解析，正文逐块发布 token 事件并正确合并工具调用分片
@@ -595,6 +701,8 @@ async def test_openai_compatible_streams_sse_chunks() -> None:
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
         '"function":{"arguments":"\\"hi\\"}"}}]}}],'
         '"usage":{"prompt_tokens":7,"completion_tokens":3}}',
+        "",
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
         "",
         "data: [DONE]",
         "",
@@ -625,11 +733,7 @@ async def test_openai_compatible_streams_sse_chunks() -> None:
         )
         response = await provider.chat([], [], bus, "run-sse")
 
-    tokens = [
-        event.token
-        for event in events
-        if type(event).__name__ == "LlmTokenEvent"
-    ]
+    tokens = [event.token for event in events if type(event).__name__ == "LlmTokenEvent"]
     assert tokens == ["Hel", "lo"]
     assert response.text == "Hello"
     assert response.tool_calls[0].name == "echo"
@@ -638,3 +742,67 @@ async def test_openai_compatible_streams_sse_chunks() -> None:
     assert response.usage is not None
     assert response.usage.input_tokens == 7
     assert response.usage.output_tokens == 3
+
+
+# 功能：验证 Chat SSE 只有 DONE 而缺少 finish_reason 时不会接受完整工具调用
+# 设计：发送合法工具参数后直接 DONE，断言传输终止标记不能替代模型语义终态
+async def test_openai_compatible_done_without_finish_reason_is_transport_error() -> None:
+    body = "\n".join(
+        [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+            '"function":{"name":"bash","arguments":"{\\"command\\":\\"echo unsafe\\"}"}}]}}]}',
+            "",
+            "data: [DONE]",
+            "",
+        ]
+    )
+
+    # 返回仅含传输终止标记而没有模型终态的流
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=body.encode("utf-8"),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-done-only")
+
+    assert result.completion_status == "transport_error"
+    assert result.tool_calls == []
+
+
+# 功能：验证 Chat SSE 只有 finish_reason 而缺少 DONE 时仍视为传输提前 EOF
+# 设计：模型先报告 stop 后连接直接关闭，断言语义终态不能替代协议传输终止标记
+async def test_openai_compatible_finish_reason_without_done_is_transport_error() -> None:
+    # 返回仅含模型终态而没有传输终止标记的流
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"partial"},'
+            b'"finish_reason":"stop"}]}\n\n',
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://api.example.test/chat/completions",
+            api_key_env="TEST_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-finish-only")
+
+    assert result.text == "partial"
+    assert result.completion_status == "transport_error"
+    assert result.tool_calls == []

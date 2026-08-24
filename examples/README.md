@@ -68,8 +68,8 @@ Skill 正文会进入模型上下文，因此即使来源于本地也应先审�
 
 ## 5. 阻止敏感文件写入的 Hook
 
-该项目级 Hook 在 `File` 写入发生前检查目标，阻止 `.env`、私钥和常见凭据文件。复制示例后再授予
-工作区信任；未受信任项目中的 project hook 会被跳过并写入审计事件。
+Hooks v2 属于默认关闭的 Labs。该项目级 Hook 在 `File` 写入发生前检查目标，阻止 `.env`、私钥和常见
+凭据文件。复制示例后再授予工作区信任；未受信任项目中的 project hook 会被跳过并写入审计事件。
 
 ```bash
 mkdir -p .coderook/hooks
@@ -79,7 +79,14 @@ uv run python .coderook/hooks/guard_sensitive_files.py --self-test
 ```
 
 审查 `.coderook/hooks.example.toml` 后，把其中 `[[hooks]]` 块合并进现有
-`.coderook/hooks.toml`（不要覆盖已有配置）。在 TUI 中执行 `/trust grant` 后重启 Core，再用
-`/hooks` 查看加载与执行审计。示例采用 blocking +
+`.coderook/hooks.toml`（不要覆盖已有配置）。显式启用 Labs 并启动新的 Core：
+
+```bash
+CODEROOK_LABS=1 uv run coderook
+```
+
+PowerShell 先运行 `$env:CODEROOK_LABS = "1"`。在 TUI 中执行 `/trust grant` 后再次重启 Core，再用
+`/hooks` 查看加载与执行审计。没有 `CODEROOK_LABS=1` 时 Core 不读取用户或项目 Hook 配置，命令面板也
+隐藏 `/hooks`。示例采用 blocking +
 fail-closed：进程失败或超时会拒绝对应工具调用。Hook 是本机子进程执行边界，必须固定命令、限制输出、
 避免联网，并把 stdin 当作已脱敏但仍然敏感的任务元数据。

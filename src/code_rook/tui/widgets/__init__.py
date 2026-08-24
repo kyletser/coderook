@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from code_rook.tui.product import tr
+
 
 # 截断长文本并附加省略号
 def _preview(s: str, n: int) -> str:
@@ -20,35 +22,67 @@ def _params_str(params: dict[str, Any]) -> str:
     return json.dumps(params, ensure_ascii=False, indent=2)
 
 
-# 工具在各状态下使用的动作文案对（未完成 / 完成）
-_TOOL_ACTIONS: dict[str, tuple[str, str]] = {
-    "apply_patch": ("正在应用补丁", "已应用补丁"),
-    "background_cancel": ("正在停止后台任务", "已停止后台任务"),
-    "background_list": ("正在查看后台任务", "已查看后台任务"),
-    "background_run": ("正在启动后台命令", "已启动后台命令"),
-    "background_status": ("正在检查后台任务", "已检查后台任务"),
-    "bash": ("正在执行命令", "已执行命令"),
-    "checkpoint_list": ("正在加载恢复点", "已加载恢复点"),
-    "checkpoint_rewind": ("正在恢复检查点", "已恢复检查点"),
-    "edit_file": ("正在修改", "已修改"),
-    "git_diff": ("正在检查工作区改动", "已检查工作区改动"),
-    "glob": ("正在搜索", "已搜索"),
-    "grep": ("正在搜索", "已搜索"),
-    "list_dir": ("正在查看目录", "已查看目录"),
-    "memory_forget": ("正在删除项目记忆", "已删除项目记忆"),
-    "memory_save": ("正在保存项目记忆", "已保存项目记忆"),
-    "memory_search": ("正在搜索项目记忆", "已搜索项目记忆"),
-    "note_save": ("正在保存笔记", "已保存笔记"),
-    "read_file": ("正在读取", "已读取"),
-    "read_image": ("正在读取图片", "已读取图片"),
-    "spawn_agent": ("正在启动子代理", "已启动子代理"),
-    "task_claim": ("正在认领任务", "已认领任务"),
-    "task_create": ("正在创建任务", "已创建任务"),
-    "task_list": ("正在加载任务", "已加载任务"),
-    "task_update": ("正在更新任务", "已更新任务"),
-    "web_fetch": ("正在抓取网页", "已抓取网页"),
-    "web_search": ("正在搜索网页", "已搜索网页"),
-    "write_file": ("正在写入", "已写入"),
+# 工具名到集中式动作文案键的映射
+_TOOL_ACTION_KEYS: dict[str, str] = {
+    "apply_patch": "patch",
+    "background_cancel": "background_cancel",
+    "background_list": "background_list",
+    "background_run": "background_run",
+    "background_status": "background_status",
+    "bash": "command",
+    "checkpoint_list": "checkpoint_list",
+    "checkpoint_rewind": "checkpoint_rewind",
+    "edit_file": "edit",
+    "git_diff": "workspace_diff",
+    "glob": "search",
+    "grep": "search",
+    "list_dir": "list",
+    "memory_forget": "memory_forget",
+    "memory_save": "memory_save",
+    "memory_search": "memory_search",
+    "note_save": "note_save",
+    "read_file": "read",
+    "read_image": "read_image",
+    "spawn_agent": "spawn_agent",
+    "task_claim": "task_claim",
+    "task_create": "task_create",
+    "task_list": "task_list",
+    "task_update": "task_update",
+    "web_fetch": "web_fetch",
+    "web_search": "web_search",
+    "write_file": "write",
+}
+
+_FILE_ACTION_KEYS = {
+    "read": "read",
+    "list": "list",
+    "search_name": "search_name",
+    "search_content": "search_content",
+    "write": "write",
+    "edit": "edit",
+    "patch": "patch",
+}
+_GIT_ACTION_KEYS = {
+    "status": "git_status",
+    "diff": "git_diff",
+    "log": "git_log",
+    "show": "git_show",
+    "blame": "git_blame",
+}
+_RUN_ACTION_KEYS = {"tests": "run_tests", "verifiers": "run_verifiers"}
+_BASH_ACTION_KEYS = {
+    "run": "command",
+    "wait": "background_wait",
+    "interact": "background_interact",
+    "cancel": "background_cancel",
+}
+_AGENT_ACTION_KEYS = {
+    "start": "worker_start",
+    "status": "worker_status",
+    "peek": "worker_peek",
+    "wait": "worker_wait",
+    "cancel": "worker_cancel",
+    "followup": "worker_followup",
 }
 
 
@@ -82,7 +116,12 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
 
 
 # 把工具参数转换成接近自然语言的紧凑目标文本
-def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
+def _tool_target(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    locale: str = "zh-CN",
+) -> str:
     if tool_name == "File":
         action = str(params.get("action", ""))
         if action in {"search_name", "search_content"}:
@@ -90,7 +129,7 @@ def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
             path = str(params.get("path", "."))
             return _preview(f"{pattern} in {path}" if pattern else path, 110)
         if action == "patch":
-            return "workspace patch"
+            return tr("tool.target.workspace_patch", locale)
         return _preview(str(params.get("path", ".")), 110)
     if tool_name == "Git":
         action = str(params.get("action", ""))
@@ -104,21 +143,33 @@ def _tool_target(tool_name: str, params: dict[str, Any]) -> str:
     if tool_name == "Run":
         action = str(params.get("action", ""))
         if action == "tests":
-            return _preview(str(params.get("command", "tests")), 110)
+            return _preview(
+                str(params.get("command", tr("tool.target.tests", locale))),
+                110,
+            )
         commands = params.get("commands", [])
         if isinstance(commands, list):
-            return f"{len(commands)} verification gates"
-        return "verification gates"
+            return tr("tool.target.verification_count", locale, count=len(commands))
+        return tr("tool.target.verification", locale)
     if tool_name == "agent":
         action = str(params.get("action", "status"))
         if action == "start":
-            return _preview(str(params.get("description", "worker")), 110)
-        return _preview(str(params.get("worker_id", "workers")), 110)
+            return _preview(
+                str(params.get("description", tr("tool.target.worker", locale))),
+                110,
+            )
+        return _preview(
+            str(params.get("worker_id", tr("tool.target.workers", locale))),
+            110,
+        )
     if tool_name == "Bash":
         action = str(params.get("action", "run"))
         if action == "run":
             return _preview(str(params.get("command", "")), 110)
-        return _preview(str(params.get("job_id", "background job")), 110)
+        return _preview(
+            str(params.get("job_id", tr("tool.target.background_job", locale))),
+            110,
+        )
     if tool_name == "bash":
         return _preview(str(params.get("command", "")), 110)
     if tool_name in {"read_file", "edit_file", "write_file", "list_dir", "read_image"}:
@@ -152,70 +203,27 @@ def _tool_action_text(
     params: dict[str, Any],
     *,
     finished: bool,
+    locale: str = "zh-CN",
 ) -> str:
     if tool_name == "File":
-        action = str(params.get("action", ""))
-        file_actions = {
-            "read": ("正在读取", "已读取"),
-            "list": ("正在查看目录", "已查看目录"),
-            "search_name": ("正在按名称搜索", "已完成名称搜索"),
-            "search_content": ("正在搜索内容", "已完成内容搜索"),
-            "write": ("正在写入", "已写入"),
-            "edit": ("正在修改", "已修改"),
-            "patch": ("正在应用补丁", "已应用补丁"),
-        }
-        actions = file_actions.get(action, ("正在操作文件", "已完成文件操作"))
-        label = actions[1 if finished else 0]
-        return f"{label} {_tool_target(tool_name, params)}".rstrip()
-    if tool_name == "Git":
-        action = str(params.get("action", ""))
-        git_actions = {
-            "status": ("正在检查 Git 状态", "已检查 Git 状态"),
-            "diff": ("正在检查 Git 改动", "已检查 Git 改动"),
-            "log": ("正在读取提交记录", "已读取提交记录"),
-            "show": ("正在查看提交", "已查看提交"),
-            "blame": ("正在追溯代码行", "已追溯代码行"),
-        }
-        actions = git_actions.get(action, ("正在读取 Git", "已读取 Git"))
-        label = actions[1 if finished else 0]
-        return f"{label} {_tool_target(tool_name, params)}".rstrip()
-    if tool_name == "Run":
-        action = str(params.get("action", ""))
-        run_actions = {
-            "tests": ("正在运行测试", "已运行测试"),
-            "verifiers": ("正在运行验证", "已运行验证"),
-        }
-        actions = run_actions.get(action, ("正在运行检查", "已运行检查"))
-        label = actions[1 if finished else 0]
-        return f"{label} {_tool_target(tool_name, params)}".rstrip()
-    if tool_name == "Bash":
-        action = str(params.get("action", "run"))
-        bash_actions = {
-            "run": ("正在执行命令", "已执行命令"),
-            "wait": ("正在等待后台任务", "已检查后台任务"),
-            "interact": ("正在发送后台输入", "已发送后台输入"),
-            "cancel": ("正在停止后台任务", "已停止后台任务"),
-        }
-        actions = bash_actions.get(action, ("正在操作命令", "已完成命令操作"))
-        label = actions[1 if finished else 0]
-        return f"{label} {_tool_target(tool_name, params)}".rstrip()
-    if tool_name == "agent":
-        action = str(params.get("action", "status"))
-        agent_actions = {
-            "start": ("正在启动 Worker", "已启动 Worker"),
-            "status": ("正在检查 Worker", "已检查 Worker"),
-            "peek": ("正在查看 Worker 进度", "已查看 Worker 进度"),
-            "wait": ("正在等待 Worker", "已等待 Worker"),
-            "cancel": ("正在停止 Worker", "已停止 Worker"),
-            "followup": ("正在发送 Worker 指令", "已发送 Worker 指令"),
-        }
-        actions = agent_actions.get(action, ("正在操作 Worker", "已完成 Worker 操作"))
-        label = actions[1 if finished else 0]
-        return f"{label} {_tool_target(tool_name, params)}".rstrip()
-    actions = _TOOL_ACTIONS.get(
-        tool_name,
-        (f"正在执行 {tool_name}", f"已完成 {tool_name}"),
-    )
-    action = actions[1 if finished else 0]
-    target = _tool_target(tool_name, params)
-    return f"{action} {target}".rstrip()
+        action_key = _FILE_ACTION_KEYS.get(str(params.get("action", "")), "file")
+    elif tool_name == "Git":
+        action_key = _GIT_ACTION_KEYS.get(str(params.get("action", "")), "git")
+    elif tool_name == "Run":
+        action_key = _RUN_ACTION_KEYS.get(str(params.get("action", "")), "run")
+    elif tool_name == "Bash":
+        action_key = _BASH_ACTION_KEYS.get(
+            str(params.get("action", "run")),
+            "command_operation",
+        )
+    elif tool_name == "agent":
+        action_key = _AGENT_ACTION_KEYS.get(
+            str(params.get("action", "status")),
+            "worker_operation",
+        )
+    else:
+        action_key = _TOOL_ACTION_KEYS.get(tool_name, "generic")
+    state = "finished" if finished else "running"
+    label = tr(f"tool.action.{action_key}.{state}", locale, tool=tool_name)
+    target = _tool_target(tool_name, params, locale=locale)
+    return f"{label} {target}".rstrip()

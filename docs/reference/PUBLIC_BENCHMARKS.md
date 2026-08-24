@@ -10,7 +10,7 @@
 | 50 任务内建集 | CodeRook runner、verifier、预算、报告和失败分类契约 | 离线契约已实现；真实模型候选待跑 |
 | Aider Polyglot | 六语言 Exercism 任务上的端到端 pass@1 | loader/runner/容器入口已实现；固定真实切片待跑 |
 | SWE-bench Lite/Verified | 真实仓库 issue 的标准 patch 与官方 Docker 判分 | prediction 导出已实现；官方 harness smoke 待跑 |
-| 基线/候选比较 | 任务、类别、失败聚类、成本与耗时回归 | 已实现，可作为 CI/nightly 门禁 |
+| 基线/候选比较 | 任务、类别、失败聚类、成本与耗时回归 | 已实现；只在手动 benchmark/release 证据流程运行 |
 
 “当前状态”必须与发布评分卡一致。公开数字至少绑定 CodeRook commit、数据集 commit、
 route/model/wire format、温度、预算、有效样本数、超时/格式错误、成本和原始报告。
@@ -41,11 +41,15 @@ JSON 的 `task_contracts` 保存每项预算、允许工具、task/fixture hash�
 task/fixture/budget/candidate 指纹。比较器默认要求这些合同与基线一致；只有明确使用
 `--allow-contract-change` 才能生成非同题比较，且不应据此宣传效果提升。
 
-`benchmark-release.yml` 的四个矩阵 job 使用 `--report-only` 保存原始结果，不要求单次 100% 才产报告；
+手动触发的 `benchmark-release.yml` 用四个矩阵 job（两种 wire format 各重复两次）配合
+`--report-only` 保存原始结果，不要求单次 100% 才产报告；
 唯一 aggregate job 随后要求两个不同 wire format、每组两次、相同 commit/task/fixture/budget，并按评分卡
 门禁总体 ≥80%、多文件 ≥75%、只读解释 ≥90%、安全负例 100%，同时限制两次 pass@1 差值 ≤10%。
 聚合 JSON/Markdown 会列出每组均值/极值、成本/耗时和重复间不稳定任务；aggregate job 的退出码才是
 release benchmark 的最终结论。
+
+日常 `ci.yml` 不调用真实模型，也没有 cron/nightly benchmark。workflow 定义、secret 占位或离线
+fixture 都不等于四份真实报告已经产生；当前缺口以发布评分卡为准。
 
 四份原始报告下载后，workflow 会先按 `retrieval`、`editing`、`verification`、`permission`、
 `budget`、`model_error` 六个效果域生成优化队列；没有失败时队列为空，不能凭空创建“优化成果”：

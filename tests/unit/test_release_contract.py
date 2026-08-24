@@ -14,6 +14,46 @@ from scripts.generate_release_manifest import generate_release_manifest
 _ROOT = Path(__file__).resolve().parents[2]
 
 
+# 写出只包含发行合同所需文件的最小候选仓库夹具
+def _write_release_fixture(root: Path, tag: str, readiness: str) -> None:
+    semver = tag.removeprefix("v")
+    python_version = python_version_for_tag(tag)
+    (root / "src" / "code_rook").mkdir(parents=True)
+    (root / "editors" / "vscode").mkdir(parents=True)
+    (root / "docs" / "reference").mkdir(parents=True)
+    (root / "docs" / "status").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "CodeRook"\nversion = "{python_version}"\n',
+        encoding="utf-8",
+    )
+    (root / "src" / "code_rook" / "__init__.py").write_text(
+        f'__version__ = "{python_version}"\n',
+        encoding="utf-8",
+    )
+    (root / "editors" / "vscode" / "package.json").write_text(
+        json.dumps({"version": semver}),
+        encoding="utf-8",
+    )
+    (root / "CHANGELOG.md").write_text(
+        f"## [{semver}] - 2026-08-24\n\n"
+        f"[Unreleased]: https://github.com/example/coderook/compare/{tag}...HEAD\n"
+        f"[{semver}]: https://github.com/example/coderook/releases/tag/{tag}\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "reference" / "COMPATIBILITY.md").write_text(
+        "HTTP API: `v1`\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "reference" / "WIRE_PROTOCOL.md").write_text(
+        "# Wire protocol\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "status" / "RELEASE_SCORECARD.md").write_text(
+        f"候选状态：**{readiness}**\n",
+        encoding="utf-8",
+    )
+
+
 # 功能：验证稳定版与 SemVer 预发行 tag 映射到正确 PEP 440 包版本
 # 设计：覆盖 alpha/beta/rc 和非法裸 beta，固定 Python 与 VSIX 使用不同规范时的唯一转换规则
 def test_release_tag_maps_to_python_version() -> None:
@@ -37,6 +77,36 @@ def test_unpublished_current_version_is_not_a_valid_release_contract() -> None:
 def test_release_contract_requires_scorecard_go_for_tag_publish() -> None:
     with pytest.raises(ValueError, match="requires GO"):
         validate_release_contract("v0.1.0", _ROOT, require_go=True)
+
+
+# 功能：验证 beta/rc 可在评分卡明确 NO-GO 时发布供真实用户验证
+# 设计：构造版本完全一致的 beta 候选，隔离版本错误并只检验分级 readiness 语义
+def test_channel_readiness_allows_explicit_no_go_prerelease(tmp_path: Path) -> None:
+    tag = "v0.9.0-beta.1"
+    _write_release_fixture(tmp_path, tag, "NO-GO")
+
+    manifest = validate_release_contract(
+        tag,
+        tmp_path,
+        require_channel_readiness=True,
+    )
+
+    assert manifest["prerelease"] is True
+    assert manifest["release_readiness"] == "NO-GO"
+
+
+# 功能：验证稳定 tag 在评分卡 NO-GO 时仍然严格阻断
+# 设计：复用完整最小仓库并只把 tag 改为稳定版，证明分级门禁不会削弱 v1 发布原则
+def test_channel_readiness_requires_go_for_stable_tag(tmp_path: Path) -> None:
+    tag = "v1.0.0"
+    _write_release_fixture(tmp_path, tag, "NO-GO")
+
+    with pytest.raises(ValueError, match="stable tag release requires GO"):
+        validate_release_contract(
+            tag,
+            tmp_path,
+            require_channel_readiness=True,
+        )
 
 
 # 功能：验证发行 manifest、SHA256SUMS、类型与排除签名包的确定性行为
@@ -79,8 +149,9 @@ def test_release_workflow_contains_supply_chain_gates() -> None:
 
     assert "workflow_call:" in distribution
     assert "push:\n    tags:" not in distribution
-    assert "--require-go" in release
-    assert "needs: [distribution-gate, validate, container]" in release
+    assert "--require-channel-readiness" in release
+    assert "target: all" in release
+    assert "needs: [distribution-gate, validate, container, pypi]" in release
     assert "id-token: write" in release
     assert "actions/attest@v4" in release
     assert "subject-checksums: release/SHA256SUMS" in release

@@ -36,8 +36,8 @@ _BUILTIN_PRICING: dict[str, ModelPricing] = {
     "gpt-5.6": ModelPricing(1.25, 10.0),
     "gpt-5.6-mini": ModelPricing(0.25, 2.0),
     "gpt-5.5": ModelPricing(1.25, 10.0),
-    "deepseek-v4": ModelPricing(0.27, 1.1),
-    "deepseek-chat": ModelPricing(0.27, 1.1),
+    "deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0028),
+    "deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.003625),
 }
 
 
@@ -143,12 +143,13 @@ def estimate_cost(
     return cost
 
 
-# 估算缓存读相对全价输入的节省额
+# 估算缓存读相对全价输入的实际节省额
 def cache_read_savings(
     pricing: ModelPricing,
     cache_read_tokens: int,
 ) -> float:
-    return cache_read_tokens * pricing.input_per_m / 1_000_000
+    discount = max(0.0, pricing.input_per_m - pricing.cache_read_per_m)
+    return cache_read_tokens * discount / 1_000_000
 
 
 # 把美元金额格式化为紧凑展示字符串

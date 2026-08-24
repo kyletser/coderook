@@ -111,6 +111,26 @@ async def test_unsubscribe_stops_delivery() -> None:
     writer.write.assert_not_called()  # type: ignore[attr-defined]
 
 
+# 功能：验证按 subscription_id 取消时只能移除当前 writer 自己的订阅
+# 设计：两个 writer 共享多个同 topic 订阅，先用外部 writer 越权取消再由 owner 取消，按最终写入次数证明其他订阅未受影响
+async def test_unsubscribe_by_id_enforces_writer_ownership() -> None:
+    broadcaster = IpcEventBroadcaster()
+    owner = _make_writer()
+    other = _make_writer()
+    removed_id = broadcaster.subscribe(owner, topics=["run.*"])
+    broadcaster.subscribe(owner, topics=["run.*"])
+    broadcaster.subscribe(other, topics=["run.*"])
+
+    assert broadcaster.unsubscribe(other, removed_id) is False
+    assert broadcaster.unsubscribe(owner, removed_id) is True
+    assert broadcaster.unsubscribe(owner, removed_id) is False
+
+    await broadcaster.handle(_run_started())
+
+    assert owner.write.call_count == 1  # type: ignore[attr-defined]
+    assert other.write.call_count == 1  # type: ignore[attr-defined]
+
+
 # 功能：验证写入失败（ConnectionResetError）后订阅自动移除，下次 handle 不再尝试写入
 # 设计：drain() 抛出 ConnectionResetError 触发死连接清理；断言第二次 handle 时 write 未被调用；
 #       第一次 write 在 drain 前已执行，call_count==1 是预期行为而非被测点
@@ -230,3 +250,33 @@ async def test_runtime_replay_buffers_and_deduplicates_live_events() -> None:
     assert pending == 1
     assert last_seq == 2
     assert pushed == [1, 2]
+
+
+# 功能：验证 runtime 回放发送失败只撤销失败订阅，不清空同 writer 的全局订阅
+# 设计：同一 writer 同时持有 global 与 replay 订阅，让 replay drain 失败后恢复 writer，再发布 global 事件确认仍可接收
+async def test_runtime_replay_failure_preserves_other_writer_subscriptions() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer(drain_raises=ConnectionResetError())
+    broadcaster.subscribe(writer, topics=["run.*"], scope="global")
+    replay_id = broadcaster.subscribe(
+        writer,
+        topics=["turn.*"],
+        scope="thread:thread-1",
+        replaying_runtime=True,
+    )
+    historical = RuntimeEventRecord(
+        thread_id="thread-1",
+        turn_id="turn-1",
+        seq=1,
+        type="turn.started",
+        payload={},
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    replayed = await broadcaster.replay_runtime_batch(replay_id, [historical])
+    writer.write.reset_mock()  # type: ignore[attr-defined]
+    writer.drain = AsyncMock()
+    await broadcaster.handle(_run_started())
+
+    assert replayed == 0
+    writer.write.assert_called_once()  # type: ignore[attr-defined]

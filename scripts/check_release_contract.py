@@ -75,6 +75,7 @@ def validate_release_contract(
     root: Path = _ROOT,
     *,
     require_go: bool = False,
+    require_channel_readiness: bool = False,
 ) -> dict[str, Any]:
     python_version = python_version_for_tag(tag)
     semver = tag.removeprefix("v")
@@ -109,6 +110,17 @@ def validate_release_contract(
     readiness = scorecard_match.group(1) if scorecard_match is not None else "UNKNOWN"
     if require_go and readiness != "GO":
         issues.append(f"release scorecard is {readiness}; a tag release requires GO")
+    prerelease = "-" in semver
+    if require_channel_readiness:
+        if not prerelease and readiness != "GO":
+            issues.append(
+                f"release scorecard is {readiness}; a stable tag release requires GO"
+            )
+        elif prerelease and readiness not in {"GO", "NO-GO"}:
+            issues.append(
+                "release scorecard has no recognized candidate status; "
+                "a prerelease requires an explicit GO or NO-GO"
+            )
     if issues:
         raise ValueError("release contract failed:\n- " + "\n- ".join(issues))
     return {
@@ -116,7 +128,7 @@ def validate_release_contract(
         "tag": tag,
         "version": semver,
         "python_version": python_version,
-        "prerelease": "-" in semver,
+        "prerelease": prerelease,
         "commit": _git_commit(root),
         "release_readiness": readiness,
         "protocols": {
@@ -134,11 +146,16 @@ def main() -> int:
     parser.add_argument("--tag", default=os.environ.get("GITHUB_REF_NAME", ""))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-go", action="store_true")
+    parser.add_argument("--require-channel-readiness", action="store_true")
     args = parser.parse_args()
     if not args.tag:
         raise SystemExit("--tag or GITHUB_REF_NAME is required")
     try:
-        manifest = validate_release_contract(args.tag, require_go=args.require_go)
+        manifest = validate_release_contract(
+            args.tag,
+            require_go=args.require_go,
+            require_channel_readiness=args.require_channel_readiness,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if args.output is not None:

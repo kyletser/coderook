@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -10,12 +11,12 @@ from pydantic import JsonValue
 from code_rook.core.authority import SandboxCapability, ToolAction
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.migrations import (
-    CURRENT_SCHEMA_VERSION,
     connect_database,
     migrate_database,
     open_database,
 )
 from code_rook.core.runtime.models import (
+    RUNTIME_RECORD_SCHEMA_VERSION,
     RuntimeEventRecord,
     SessionFacadeRecord,
     ThreadRecord,
@@ -52,9 +53,14 @@ _TURN_TRANSITIONS = {
     TurnStatus.FAILED: set(),
     TurnStatus.INTERRUPTED: set(),
 }
+logger = logging.getLogger(__name__)
 
 
 class RuntimeStoreError(RuntimeError):
+    pass
+
+
+class UnsupportedRuntimeRecordSchemaError(RuntimeStoreError):
     pass
 
 
@@ -80,6 +86,19 @@ class ToolCallNotFoundError(RuntimeStoreError):
 
 class IncompleteToolCallError(RuntimeStoreError):
     pass
+
+
+# 校验持久化行版本恰为当前版本并单独标识未来 schema
+def _require_current_record_schema(value: object, record_kind: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeStoreError(f"invalid {record_kind} record schema version")
+    if value > RUNTIME_RECORD_SCHEMA_VERSION:
+        raise UnsupportedRuntimeRecordSchemaError(
+            f"{record_kind} record schema {value} is newer than supported "
+            f"{RUNTIME_RECORD_SCHEMA_VERSION}"
+        )
+    if value != RUNTIME_RECORD_SCHEMA_VERSION:
+        raise RuntimeStoreError(f"invalid {record_kind} record schema version: {value}")
 
 
 # 将 JSON 值编码为稳定的紧凑文本
@@ -119,6 +138,7 @@ def _load_datetime(value: str) -> datetime:
 
 # 将数据库行还原为 ThreadRecord
 def _thread_from_row(row: sqlite3.Row) -> ThreadRecord:
+    _require_current_record_schema(row["schema_version"], "thread")
     return ThreadRecord(
         id=row["id"],
         title=row["title"],
@@ -133,6 +153,7 @@ def _thread_from_row(row: sqlite3.Row) -> ThreadRecord:
 
 # 将数据库行还原为 TurnRecord
 def _turn_from_row(row: sqlite3.Row) -> TurnRecord:
+    _require_current_record_schema(row["schema_version"], "turn")
     return TurnRecord(
         id=row["id"],
         thread_id=row["thread_id"],
@@ -161,6 +182,7 @@ def _turn_from_row(row: sqlite3.Row) -> TurnRecord:
 
 # 将数据库行还原为 TurnItemRecord
 def _item_from_row(row: sqlite3.Row) -> TurnItemRecord:
+    _require_current_record_schema(row["schema_version"], "turn item")
     return TurnItemRecord(
         id=row["id"],
         turn_id=row["turn_id"],
@@ -174,6 +196,7 @@ def _item_from_row(row: sqlite3.Row) -> TurnItemRecord:
 
 # 将数据库行还原为 RuntimeEventRecord
 def _event_from_row(row: sqlite3.Row) -> RuntimeEventRecord:
+    _require_current_record_schema(row["schema_version"], "runtime event")
     return RuntimeEventRecord(
         thread_id=row["thread_id"],
         turn_id=row["turn_id"],
@@ -187,9 +210,10 @@ def _event_from_row(row: sqlite3.Row) -> RuntimeEventRecord:
 
 class RuntimeStore:
     # 初始化并迁移 runtime SQLite 数据库
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, migrate: bool = True) -> None:
         self.path = path
-        migrate_database(path)
+        if migrate:
+            migrate_database(path)
 
     # 返回当前 runtime schema 版本
     def schema_version(self) -> int:
@@ -228,6 +252,12 @@ class RuntimeStore:
     # 新增或覆盖 thread 投影并确保事件计数器存在
     def upsert_thread(self, record: ThreadRecord) -> None:
         with connect_database(self.path) as connection:
+            existing = connection.execute(
+                "SELECT schema_version FROM runtime_threads WHERE id = ?",
+                (record.id,),
+            ).fetchone()
+            if existing is not None:
+                _require_current_record_schema(existing["schema_version"], "thread")
             connection.execute(
                 """
                 INSERT INTO runtime_threads (
@@ -279,11 +309,20 @@ class RuntimeStore:
             rows = connection.execute(
                 "SELECT * FROM runtime_threads ORDER BY updated_at DESC, id"
             ).fetchall()
-        return [_thread_from_row(row) for row in rows]
+        records: list[ThreadRecord] = []
+        for row in rows:
+            try:
+                records.append(_thread_from_row(row))
+            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                logger.error(
+                    "skipping invalid runtime thread record; run `coderook doctor runtime`"
+                )
+        return records
 
     # 删除 thread 并级联清理 turn、item、event 与 facade
     def delete_thread(self, thread_id: str) -> None:
         with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
             cursor = connection.execute(
                 "DELETE FROM runtime_threads WHERE id = ?",
                 (thread_id,),
@@ -295,16 +334,33 @@ class RuntimeStore:
     def upsert_session_facade(self, record: SessionFacadeRecord) -> None:
         try:
             with connect_database(self.path) as connection:
+                self._require_thread_schema(connection, record.thread_id)
+                existing = connection.execute(
+                    "SELECT schema_version FROM runtime_session_facades "
+                    "WHERE thread_id = ?",
+                    (record.thread_id,),
+                ).fetchone()
+                if existing is not None:
+                    _require_current_record_schema(
+                        existing["schema_version"],
+                        "session facade",
+                    )
                 connection.execute(
                     """
                     INSERT INTO runtime_session_facades (
-                        thread_id, mode, parent_thread_id
-                    ) VALUES (?, ?, ?)
+                        thread_id, mode, parent_thread_id, schema_version
+                    ) VALUES (?, ?, ?, ?)
                     ON CONFLICT(thread_id) DO UPDATE SET
                         mode = excluded.mode,
-                        parent_thread_id = excluded.parent_thread_id
+                        parent_thread_id = excluded.parent_thread_id,
+                        schema_version = excluded.schema_version
                     """,
-                    (record.thread_id, record.mode, record.parent_thread_id),
+                    (
+                        record.thread_id,
+                        record.mode,
+                        record.parent_thread_id,
+                        record.schema_version,
+                    ),
                 )
         except sqlite3.IntegrityError as exc:
             raise RecordNotFoundError(f"thread not found: {record.thread_id}") from exc
@@ -318,16 +374,19 @@ class RuntimeStore:
             ).fetchone()
         if row is None:
             raise RecordNotFoundError(f"session facade not found: {thread_id}")
+        _require_current_record_schema(row["schema_version"], "session facade")
         return SessionFacadeRecord(
             thread_id=row["thread_id"],
             mode=row["mode"],
             parent_thread_id=row["parent_thread_id"],
+            schema_version=row["schema_version"],
         )
 
     # 创建属于现有 thread 的 turn
     def create_turn(self, record: TurnRecord) -> None:
         try:
             with connect_database(self.path) as connection:
+                self._require_thread_schema(connection, record.thread_id)
                 connection.execute(
                     """
                     INSERT INTO runtime_turns (
@@ -388,7 +447,15 @@ class RuntimeStore:
                 """,
                 (thread_id,),
             ).fetchall()
-        return [_turn_from_row(row) for row in rows]
+        records: list[TurnRecord] = []
+        for row in rows:
+            try:
+                records.append(_turn_from_row(row))
+            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                logger.error(
+                    "skipping invalid runtime turn record; run `coderook doctor runtime`"
+                )
+        return records
 
     # 在单一事务中写入 item、可选状态变化与对应事件
     def record_item_and_event(
@@ -409,6 +476,8 @@ class RuntimeStore:
             ).fetchone()
             if turn_row is None:
                 raise RecordNotFoundError(f"turn not found: {item.turn_id}")
+            _require_current_record_schema(turn_row["schema_version"], "turn")
+            self._require_turn_item_schemas(connection, item.turn_id)
             current_status = TurnStatus(turn_row["status"])
             if current_status in _TERMINAL_TURN_STATUSES:
                 raise InvalidTurnTransitionError(
@@ -506,6 +575,8 @@ class RuntimeStore:
             ).fetchone()
             if turn_row is None:
                 raise RecordNotFoundError(f"turn not found: {turn_id}")
+            _require_current_record_schema(turn_row["schema_version"], "turn")
+            self._require_turn_item_schemas(connection, turn_id)
             current_status = TurnStatus(turn_row["status"])
             if current_status in _TERMINAL_TURN_STATUSES:
                 raise InvalidTurnTransitionError(
@@ -610,6 +681,8 @@ class RuntimeStore:
     # 返回 thread 当前已提交的最大事件序号
     def latest_event_seq(self, thread_id: str) -> int:
         with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
+            self._require_thread_event_schemas(connection, thread_id)
             row = connection.execute(
                 "SELECT next_seq FROM runtime_event_counters WHERE thread_id = ?",
                 (thread_id,),
@@ -637,6 +710,12 @@ class RuntimeStore:
                 """,
                 (current_boot_id,),
             ).fetchall()
+            for row in rows:
+                _require_current_record_schema(row["schema_version"], "turn")
+                self._require_thread_schema(connection, str(row["thread_id"]))
+                self._require_turn_item_schemas(connection, str(row["id"]))
+            for thread_id in sorted({str(row["thread_id"]) for row in rows}):
+                self._repair_recovery_counter(connection, thread_id)
             for row in rows:
                 turn_id = str(row["id"])
                 for tool_call_id in self._unmatched_tool_call_ids(connection, turn_id):
@@ -689,6 +768,38 @@ class RuntimeStore:
         finally:
             connection.close()
 
+    # 仅在事件序列完整时补齐恢复流程所需 counter，拒绝掩盖真实事件 gap
+    def _repair_recovery_counter(
+        self,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> None:
+        self._require_thread_event_schemas(connection, thread_id)
+        sequence = connection.execute(
+            """
+            SELECT COUNT(*) AS event_count, MIN(seq) AS min_seq, MAX(seq) AS max_seq
+            FROM runtime_events
+            WHERE thread_id = ?
+            """,
+            (thread_id,),
+        ).fetchone()
+        event_count = int(sequence["event_count"])
+        minimum = int(sequence["min_seq"]) if sequence["min_seq"] is not None else None
+        maximum = int(sequence["max_seq"]) if sequence["max_seq"] is not None else 0
+        if event_count and (minimum != 1 or maximum != event_count):
+            raise RuntimeStoreError(
+                "runtime event sequence is not contiguous; run coderook doctor runtime"
+            )
+        expected_next = maximum + 1
+        connection.execute(
+            """
+            INSERT INTO runtime_event_counters (thread_id, next_seq)
+            VALUES (?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET next_seq = excluded.next_seq
+            """,
+            (thread_id, expected_next),
+        )
+
     # 在单一事务中更新 turn 用量并写入对应事件
     def update_usage_and_event(
         self,
@@ -708,6 +819,7 @@ class RuntimeStore:
             ).fetchone()
             if turn_row is None:
                 raise RecordNotFoundError(f"turn not found: {turn_id}")
+            _require_current_record_schema(turn_row["schema_version"], "turn")
             connection.execute(
                 "UPDATE runtime_turns SET usage_json = ?, updated_at = ? WHERE id = ?",
                 (_dump_json(usage), _dump_datetime(event_ts), turn_id),
@@ -737,6 +849,48 @@ class RuntimeStore:
             ).fetchone()
         return row is not None
 
+    # 要求目标 thread 存在且逐行 schema 为当前版本
+    def _require_thread_schema(
+        self,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT schema_version FROM runtime_threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError(f"thread not found: {thread_id}")
+        _require_current_record_schema(row["schema_version"], "thread")
+
+    # 拒绝在含未来或损坏 item schema 的 turn 上继续推导或写入
+    def _require_turn_item_schemas(
+        self,
+        connection: sqlite3.Connection,
+        turn_id: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT schema_version FROM runtime_turn_items "
+            "WHERE turn_id = ? AND schema_version != ? LIMIT 1",
+            (turn_id, RUNTIME_RECORD_SCHEMA_VERSION),
+        ).fetchone()
+        if row is not None:
+            _require_current_record_schema(row["schema_version"], "turn item")
+
+    # 拒绝在含未来或损坏事件 schema 的 thread 上继续分配序号
+    def _require_thread_event_schemas(
+        self,
+        connection: sqlite3.Connection,
+        thread_id: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT schema_version FROM runtime_events "
+            "WHERE thread_id = ? AND schema_version != ? LIMIT 1",
+            (thread_id, RUNTIME_RECORD_SCHEMA_VERSION),
+        ).fetchone()
+        if row is not None:
+            _require_current_record_schema(row["schema_version"], "runtime event")
+
     # 校验 turn 状态变化符合显式状态机
     def _validate_transition(self, current: TurnStatus, target: TurnStatus) -> None:
         if target == current:
@@ -756,21 +910,23 @@ class RuntimeStore:
             return
         call_row = connection.execute(
             """
-            SELECT 1 FROM runtime_turn_items
+            SELECT schema_version FROM runtime_turn_items
             WHERE turn_id = ? AND kind = 'tool_call' AND tool_call_id = ?
             """,
             (item.turn_id, item.tool_call_id),
         ).fetchone()
         if call_row is None:
             raise ToolCallNotFoundError(f"tool call not found: {item.tool_call_id}")
+        _require_current_record_schema(call_row["schema_version"], "turn item")
         result_row = connection.execute(
             """
-            SELECT 1 FROM runtime_turn_items
+            SELECT schema_version FROM runtime_turn_items
             WHERE turn_id = ? AND kind = 'tool_result' AND tool_call_id = ?
             """,
             (item.turn_id, item.tool_call_id),
         ).fetchone()
         if result_row is not None:
+            _require_current_record_schema(result_row["schema_version"], "turn item")
             raise DuplicateTerminalResultError(
                 f"terminal result already exists: {item.tool_call_id}"
             )
@@ -781,6 +937,7 @@ class RuntimeStore:
         connection: sqlite3.Connection,
         turn_id: str,
     ) -> list[str]:
+        self._require_turn_item_schemas(connection, turn_id)
         rows = connection.execute(
             """
             SELECT calls.tool_call_id
@@ -846,18 +1003,26 @@ class RuntimeStore:
         ts: datetime,
     ) -> RuntimeEventRecord:
         counter = connection.execute(
-            "SELECT next_seq FROM runtime_event_counters WHERE thread_id = ?",
+            """
+            SELECT counters.next_seq, threads.schema_version AS thread_schema_version
+            FROM runtime_event_counters AS counters
+            JOIN runtime_threads AS threads ON threads.id = counters.thread_id
+            WHERE counters.thread_id = ?
+            """,
             (thread_id,),
         ).fetchone()
         if counter is None:
             raise RecordNotFoundError(f"thread not found: {thread_id}")
+        _require_current_record_schema(counter["thread_schema_version"], "thread")
+        self._require_thread_event_schemas(connection, thread_id)
         if turn_id is not None:
             turn_row = connection.execute(
-                "SELECT thread_id FROM runtime_turns WHERE id = ?",
+                "SELECT thread_id, schema_version FROM runtime_turns WHERE id = ?",
                 (turn_id,),
             ).fetchone()
             if turn_row is None:
                 raise RecordNotFoundError(f"turn not found: {turn_id}")
+            _require_current_record_schema(turn_row["schema_version"], "turn")
             if turn_row["thread_id"] != thread_id:
                 raise RuntimeStoreError(
                     f"turn {turn_id} does not belong to thread {thread_id}"
@@ -874,7 +1039,6 @@ class RuntimeStore:
             type=event_type,
             payload=payload,
             ts=ts,
-            schema_version=CURRENT_SCHEMA_VERSION,
         )
         connection.execute(
             """

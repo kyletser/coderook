@@ -10,7 +10,11 @@ from pathlib import Path
 from pathspec import PathSpec
 from pathspec.gitignore import GitIgnoreSpec
 
-from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
+from code_rook.core.processes import (
+    ProcessSupervisor,
+    sanitized_shell_environment,
+    terminate_process_tree,
+)
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 
 DEFAULT_EXCLUDES: tuple[str, ...] = (
@@ -126,6 +130,7 @@ async def start_process(
         executable,
         *args,
         cwd=cwd,
+        env=sanitized_shell_environment(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

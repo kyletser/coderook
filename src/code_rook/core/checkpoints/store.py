@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -50,6 +51,16 @@ class RewindOutcome:
     checkpoint_id: str
     restored: list[str]
     already_restored: list[str]
+
+
+@dataclass(frozen=True)
+class RewindPreview:
+    checkpoint_id: str
+    paths: list[str]
+    restorable: list[str]
+    already_restored: list[str]
+    conflicts: list[str]
+    state_digest: str
 
 
 @dataclass(frozen=True)
@@ -150,8 +161,78 @@ class CheckpointStore:
         checkpoints.sort(key=lambda item: item.created_at, reverse=True)
         return checkpoints
 
-    def rewind(self, checkpoint_id: str | None = None) -> RewindOutcome:
+    # 只读取 checkpoint 与当前文件状态，返回恢复范围、冲突和可重验摘要
+    def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPreview:
         selected_id = checkpoint_id or self._latest_ready_id()
+        manifest = self._load_manifest(selected_id)
+        entries = _manifest_files(manifest)
+        restorable: list[str] = []
+        already_restored: list[str] = []
+        conflicts: list[str] = []
+        state_rows: list[dict[str, object]] = []
+        for entry in entries:
+            relative = str(entry["path"])
+            try:
+                path = self._boundary.resolve(relative)
+            except PermissionError as exc:
+                raise CheckpointError(
+                    "manifest_invalid",
+                    f"checkpoint path is outside the workspace: {relative}",
+                ) from exc
+            current = _read_state(path)
+            before = _entry_state(entry, "before")
+            after = _entry_state(entry, "after")
+            if _same_state(current, before):
+                already_restored.append(relative)
+                disposition = "already_restored"
+            elif _same_state(current, after):
+                restorable.append(relative)
+                disposition = "restorable"
+            else:
+                conflicts.append(relative)
+                disposition = "conflict"
+            state_rows.append(
+                {
+                    "path": relative,
+                    "exists": current.exists,
+                    "digest": current.digest,
+                    "disposition": disposition,
+                }
+            )
+        material = json.dumps(
+            {
+                "checkpoint_id": selected_id,
+                "manifest": manifest,
+                "current": state_rows,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return RewindPreview(
+            checkpoint_id=selected_id,
+            paths=[str(entry["path"]) for entry in entries],
+            restorable=restorable,
+            already_restored=already_restored,
+            conflicts=conflicts,
+            state_digest=hashlib.sha256(material).hexdigest(),
+        )
+
+    # 重验可选预览摘要后执行恢复，审查后发生任何文件变化都会失败关闭
+    def rewind(
+        self,
+        checkpoint_id: str | None = None,
+        *,
+        expected_digest: str | None = None,
+    ) -> RewindOutcome:
+        selected_id = checkpoint_id or self._latest_ready_id()
+        preview = self.preview_rewind(selected_id)
+        if expected_digest is not None and preview.state_digest != expected_digest:
+            raise CheckpointError(
+                "rewind_preview_stale",
+                "checkpoint or workspace changed after rewind preview",
+                conflicts=preview.paths,
+            )
         manifest = self._load_manifest(selected_id)
         entries = _manifest_files(manifest)
         conflicts: list[str] = []

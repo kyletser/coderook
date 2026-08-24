@@ -30,8 +30,8 @@ def test_plan_sandbox_degrades_without_backend() -> None:
     assert "no bwrap" in plan.reason
 
 
-# 功能：bwrap 可用时生成整机只读 + 工作区可写的包装 argv
-# 设计：仅做结构断言（bwrap 前缀 + --ro-bind / /），Windows 上不实际运行 bwrap
+# 功能：bwrap 可用时只挂载最小系统运行时、临时目录和可写工作区
+# 设计：做结构断言并明确排除整机根目录绑定，Windows 上不实际运行 bwrap
 def test_plan_sandbox_bwrap_workspace_write() -> None:
     cap = SandboxCapability(available=True, kind="linux_bwrap", reason="bwrap ok")
     plan = plan_sandbox(cap, SandboxTier.WORKSPACE_WRITE, "/proj")
@@ -41,15 +41,20 @@ def test_plan_sandbox_bwrap_workspace_write() -> None:
     assert plan.wrapper[:3] == ["bwrap", "--die-with-parent", "--new-session"]
     assert "--bind" in plan.wrapper
     assert plan.wrapper[0] == "bwrap"
+    root_bind = ["--ro-bind", "/", "/"]
+    assert all(
+        plan.wrapper[index:index + 3] != root_bind
+        for index in range(len(plan.wrapper) - 2)
+    )
 
 
-# 功能：read_only 档位下 bwrap 用 --ro-bind 工作区且不带可写 bind
-# 设计：断言 readonly 包装不含 --bind/--tmpfs，防止越权写
+# 功能：read_only 档位下 bwrap 只给工作区只读权限并保留隔离的临时目录
+# 设计：断言工作区不含可写 bind，tmpfs 仅作为私有临时区而非宿主写权限
 def test_plan_sandbox_bwrap_read_only_no_write_bind() -> None:
     cap = SandboxCapability(available=True, kind="linux_bwrap", reason="bwrap ok")
     plan = plan_sandbox(cap, SandboxTier.READ_ONLY, "/proj")
     assert plan.degraded is False
-    assert "--tmpfs" not in plan.wrapper
+    assert "--tmpfs" in plan.wrapper
     assert "--bind" not in plan.wrapper
     assert "--ro-bind" in plan.wrapper
 
@@ -90,10 +95,26 @@ def test_tier_for_auto_review_rejects_unsupported_available_backend() -> None:
 # 功能：build_bwrap_argv 独立构造同名包装参数
 # 设计：直接验证 argv 的只读覆盖与可写绑定，避免依赖 plan_sandbox 的状态
 def test_build_bwrap_argv_structure() -> None:
-    assert build_bwrap_argv("/proj", writable=False)[0] == "bwrap"
+    readonly = build_bwrap_argv("/proj", writable=False)
+    assert readonly[0] == "bwrap"
+    assert ["--ro-bind", "/etc", "/etc"] not in [
+        readonly[index : index + 3] for index in range(len(readonly) - 2)
+    ]
     writable = build_bwrap_argv("/proj", writable=True)
     assert "--tmpfs" in writable
     assert "/tmp" in writable
+
+
+# 功能：验证 Seatbelt 不会为 shell 暴露整个系统 /Library 或 /private/etc
+# 设计：直接检查生成 profile 的允许规则，仅保留系统运行时所需的精确文件和证书目录
+def test_seatbelt_profile_avoids_broad_sensitive_system_reads() -> None:
+    capability = SandboxCapability(available=True, kind="macos_seatbelt", reason="ok")
+    plan = plan_sandbox(capability, SandboxTier.READ_ONLY, "/proj")
+    profile = plan.wrapper[2]
+
+    assert '(subpath "/Library")' not in profile
+    assert '(subpath "/private/etc")' not in profile
+    assert '(literal "/private/etc/hosts")' in profile
 
 
 # 功能：真实沙箱计划把 shell 命令改写成 包装器 + sh -c，命令被整体引用防止注入

@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from code_rook.core.lsp.diagnostics import DiagnosticsReport, parse_pyright_diagnostics
-from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
+from code_rook.core.processes import (
+    ProcessSupervisor,
+    sanitized_shell_environment,
+    terminate_process_tree,
+)
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 
 _DEFAULT_TIMEOUT_S = 5.0
@@ -52,6 +56,7 @@ async def _run_bounded_command(
             executable,
             *args,
             cwd=cwd,
+            env=sanitized_shell_environment(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             **platform_options,  # type: ignore[arg-type]
@@ -75,9 +80,7 @@ async def _run_bounded_command(
                     await terminate_process_tree(process)
                 return _CommandOutput(
                     returncode=process.returncode or -1,
-                    stdout=bytes(output[:max_output_bytes]).decode(
-                        "utf-8", errors="replace"
-                    ),
+                    stdout=bytes(output[:max_output_bytes]).decode("utf-8", errors="replace"),
                     truncated=True,
                 )
         returncode = await process.wait()
@@ -115,9 +118,7 @@ class PythonDiagnosticsClient:
         if max_output_bytes < 1:
             raise ValueError("max_output_bytes must be positive")
         self._boundary = boundary
-        self._executable = executable or shutil.which("basedpyright") or shutil.which(
-            "pyright"
-        )
+        self._executable = executable or shutil.which("basedpyright") or shutil.which("pyright")
         self._timeout_s = timeout_s
         self._max_output_bytes = max_output_bytes
         self._process_supervisor = process_supervisor
@@ -168,10 +169,7 @@ class PythonDiagnosticsClient:
                 status="truncated",
                 tool=self.tool_name,
                 truncated=True,
-                error=(
-                    "diagnostics output exceeded "
-                    f"{self._max_output_bytes} bytes"
-                ),
+                error=(f"diagnostics output exceeded {self._max_output_bytes} bytes"),
             )
         try:
             payload = json.loads(output.stdout)
@@ -191,6 +189,14 @@ class PythonDiagnosticsClient:
             payload,
             self._boundary,
         )
+        if output.returncode not in {0, 1} or (output.returncode != 0 and not diagnostics):
+            return DiagnosticsReport(
+                status="failed",
+                tool=self.tool_name,
+                diagnostics=diagnostics,
+                truncated=truncated,
+                error=("Python Diagnostics exited non-zero without a complete diagnostic result"),
+            )
         return DiagnosticsReport(
             status="ok",
             tool=self.tool_name,

@@ -180,6 +180,48 @@ async def test_project_hook_requires_trusted_workspace(tmp_path: Path) -> None:
     assert manager.audit_events()[-1].status == "skipped_untrusted"
 
 
+# 功能：验证手动 rerun 不能绕过 project hook 的工作区信任检查
+# 设计：未信任 session 的命令若执行会落 marker，断言审计为 skipped 且文件不存在
+async def test_project_hook_rerun_requires_trusted_workspace(tmp_path: Path) -> None:
+    marker = tmp_path / "rerun.txt"
+    config = _config(
+        (sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"),
+        scope="project",
+    )
+    manager = HookManager(
+        [config],
+        workspace=tmp_path,
+        project_trust_provider=lambda session_id: session_id == "trusted-session",
+    )
+
+    audit = await manager.rerun("test-hook", session_id="untrusted-session")
+
+    assert audit is not None
+    assert audit.status == "skipped_untrusted"
+    assert not marker.exists()
+
+
+# 功能：验证受信任 session 仍可手动重跑 project hook
+# 设计：trust provider 只允许固定 session，成功 rerun 后检查完成审计和 marker 副作用
+async def test_project_hook_rerun_allows_trusted_workspace(tmp_path: Path) -> None:
+    marker = tmp_path / "trusted-rerun.txt"
+    config = _config(
+        (sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"),
+        scope="project",
+    )
+    manager = HookManager(
+        [config],
+        workspace=tmp_path,
+        project_trust_provider=lambda session_id: session_id == "trusted-session",
+    )
+
+    audit = await manager.rerun("test-hook", session_id="trusted-session")
+
+    assert audit is not None
+    assert audit.status == "completed"
+    assert marker.exists()
+
+
 # 返回指定 PID 是否仍存在，供跨平台进程树终止断言
 def _process_exists(pid: int) -> bool:
     if os.name == "nt":

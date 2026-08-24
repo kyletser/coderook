@@ -25,6 +25,7 @@ from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import OutputPolicy, ToolCaller, ToolCatalogError
 
 if TYPE_CHECKING:
+    from code_rook.core.authority import AuthoritySnapshot
     from code_rook.core.hooks import HookManager
     from code_rook.core.permissions.manager import PermissionManager
 
@@ -85,7 +86,7 @@ def _summary_result(
     )
 
 
-# 对 soft 到 hard 输出返回摘要，只有超过 hard limit 才写入 artifact
+# 超过 soft limit 时先保存完整 Artifact 再摘要；无法保存则保留原文而不制造不可恢复摘要
 async def _apply_output_policy(
     result: ToolResult,
     policy: OutputPolicy,
@@ -95,36 +96,18 @@ async def _apply_output_policy(
     if size <= policy.soft_limit:
         return result
     preview_limit = min(policy.soft_limit, max(1, policy.hard_limit // 2))
-    if size <= policy.hard_limit:
-        return _summary_result(
-            result,
-            size=size,
-            preview_limit=preview_limit,
-            hard_limit=policy.hard_limit,
-        )
-    if artifact_store is not None and policy.spill_to_artifact:
-        try:
-            reference = await artifact_store.put(result.content)
-            return _summary_result(
-                result,
-                size=size,
-                preview_limit=preview_limit,
-                hard_limit=policy.hard_limit,
-                artifact=reference.model_dump(),
-            )
-        except (ArtifactError, OSError) as exc:
-            return _summary_result(
-                result,
-                size=size,
-                preview_limit=preview_limit,
-                hard_limit=policy.hard_limit,
-                artifact_error=str(exc),
-            )
+    if artifact_store is None or not policy.spill_to_artifact:
+        return result
+    try:
+        reference = await artifact_store.put(result.content)
+    except (ArtifactError, OSError):
+        return result
     return _summary_result(
         result,
         size=size,
         preview_limit=preview_limit,
         hard_limit=policy.hard_limit,
+        artifact=reference.model_dump(),
     )
 
 
@@ -174,6 +157,7 @@ async def invoke_tool(
     hooks: HookManager | None = None,
     caller: ToolCaller | str = ToolCaller.MODEL,
     artifact_store: ArtifactStore | None = None,
+    authority_snapshot: AuthoritySnapshot | None = None,
 ) -> ToolResult:
     t0 = time.monotonic()
 
@@ -281,8 +265,8 @@ async def invoke_tool(
             params=dict(tool_call.input),
             session_id=session_id,
             event_emitter=_emit_permission,
-            action=resolved_call.action.authority_action(),
-            approval_requirement=resolved_call.effective_approval_requirement,
+            resolved_call=resolved_call,
+            authority_override=authority_snapshot,
         )
         response_metadata = permission_manager.take_response_metadata(tool_call.id)
         if allowed:

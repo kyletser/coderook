@@ -8,7 +8,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from code_rook.core.processes import ProcessSupervisor, terminate_process_tree
+from code_rook.core.processes import (
+    ProcessSupervisor,
+    sanitized_shell_environment,
+    terminate_process_tree,
+)
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.tools.builtin.git_diff import GitDiffTool
 from code_rook.core.tools.registry import ToolRegistry
@@ -130,6 +134,7 @@ class GitTool(BaseTool):
                 description=self._diff.description,
                 input_schema=self._diff.input_schema,
                 capabilities=capabilities,
+                permission_policy_aliases=("git_diff",),
                 approval_requirement=ApprovalRequirement.NEVER,
                 parallel_policy=ParallelPolicy.SAFE,
             ),
@@ -238,16 +243,25 @@ class GitTool(BaseTool):
     async def _run(self, args: list[str]) -> _GitOutput:
         if self._git is None:
             return _GitOutput("", "git executable was not found on PATH", 127, False)
-        environment = {
-            **os.environ,
-            "GIT_OPTIONAL_LOCKS": "0",
-            "GIT_PAGER": "cat",
-            "GIT_TERMINAL_PROMPT": "0",
-        }
+        environment = sanitized_shell_environment()
+        environment.update(
+            {
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_PAGER": "cat",
+                "GIT_TERMINAL_PROMPT": "0",
+            }
+        )
+        command = (
+            self._git,
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            *args,
+        )
         if self._process_supervisor is not None:
             process = await self._process_supervisor.start_exec(
-                self._git,
-                *args,
+                *command,
                 label="git-read",
                 cwd=self._boundary.root,
                 env=environment,
@@ -256,8 +270,7 @@ class GitTool(BaseTool):
             )
         else:
             process = await asyncio.create_subprocess_exec(
-                self._git,
-                *args,
+                *command,
                 cwd=self._boundary.root,
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,

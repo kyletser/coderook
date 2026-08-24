@@ -73,6 +73,24 @@ async def test_emit_is_nonblocking(tmp_path: Path) -> None:
     assert len(path.read_text(encoding="utf-8").splitlines()) == 10
 
 
+# 功能：验证 TraceWriter 满载时保持固定队列上限并显式报告丢弃和降级
+# 设计：在启动 drain 前向容量一队列投递两条，稳定触发 QueueFull 而不依赖调度时序
+def test_queue_is_bounded_and_reports_degraded_status(tmp_path: Path) -> None:
+    writer = TraceWriter(tmp_path / "trace.jsonl", queue_size=1)
+
+    accepted = writer.emit(_record())
+    dropped = writer.emit(_record())
+    status = writer.status()
+
+    assert accepted
+    assert not dropped
+    assert status.degraded
+    assert status.queue_size == 1
+    assert status.queue_capacity == 1
+    assert status.dropped_records == 1
+    assert "queue is full" in status.last_error
+
+
 # 功能：验证 TraceWriter 自动创建不存在的父目录
 # 设计：指定一个深层嵌套路径，start() 后 emit 能正常写入
 @pytest.mark.asyncio
@@ -272,3 +290,7 @@ async def test_rotation_failure_propagates_without_stop_deadlock(tmp_path: Path)
 
     with pytest.raises(OSError, match="disk failure"):
         await asyncio.wait_for(writer.stop(), timeout=1)
+
+    status = writer.status()
+    assert status.degraded
+    assert "disk failure" in status.last_error

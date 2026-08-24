@@ -54,3 +54,21 @@ def test_release_without_acquire_is_noop(tmp_path: Path) -> None:
     lock.acquire()
     lock.acquire()
     lock.release()
+
+
+# 功能：验证锁文件符号链接不能把 PID 内容写入状态根之外
+# 设计：将 core.lock 指向外部哨兵后调用真实 acquire，断言失败且哨兵字节不变
+def test_acquire_refuses_symlinked_lock_path(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("sentinel", encoding="utf-8")
+    try:
+        os.symlink(outside, state / "core.lock")
+    except OSError:
+        pytest.skip("file symlinks are unavailable on this host")
+
+    with pytest.raises(DaemonLockError, match="symbolic link"):
+        DaemonLock(state / "core.lock").acquire()
+
+    assert outside.read_text(encoding="utf-8") == "sentinel"

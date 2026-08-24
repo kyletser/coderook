@@ -21,6 +21,62 @@ def _thread() -> ThreadRecord:
     )
 
 
+# 返回旧版 daemon 不含 changes 字段的稳定 Receipt payload
+def _old_receipt_payload() -> dict[str, object]:
+    return {
+        "turn_id": "turn-old",
+        "thread_id": "thread-sdk",
+        "route": None,
+        "authority": {
+            "mode": "act",
+            "profile": "ask",
+            "workspace_trust": "untrusted",
+            "sandbox": {
+                "available": False,
+                "kind": "none",
+                "reason": "not detected",
+            },
+            "sandbox_plan": {
+                "backend": "none",
+                "tier": "none",
+                "workspace": "/workspace",
+                "network": False,
+                "allowed_domains": [],
+                "domain_policy_enforced": False,
+                "writable_roots": [],
+                "enforced": False,
+                "degraded_reason": "not detected",
+                "policy_version": 1,
+            },
+            "allowed_actions": ["read"],
+        },
+        "started_at": "2026-08-18T00:00:00Z",
+        "finished_at": "2026-08-18T00:00:01Z",
+        "status": "completed",
+        "usage": {},
+        "cost": "unknown",
+        "tool_call_count": 0,
+        "approvals": {"requested": 0, "granted": 0, "denied": 0},
+        "process_usage": {
+            "record_count": 0,
+            "complete_records": 0,
+            "total_process_wall_ms": 0,
+            "user_cpu_ms": 0,
+            "system_cpu_ms": 0,
+            "peak_memory_bytes": 0,
+            "process_count": 0,
+        },
+        "files_changed": [],
+        "checkpoints": [],
+        "artifacts": [],
+        "workers": [],
+        "verification": [],
+        "context_selection": [],
+        "error_classification": None,
+        "unavailable": ["route"],
+    }
+
+
 # 功能：验证同步 SDK 自动发送 Bearer token 并解析 thread 模型
 # 设计：用 MockTransport 检查请求头/路径，再返回真实模型 JSON，避免依赖运行中 daemon
 def test_sync_sdk_lists_threads_with_bearer_auth() -> None:
@@ -132,6 +188,70 @@ def test_sync_sdk_exposes_capabilities_and_usage() -> None:
     assert capabilities["api_version"] == "v1"
     assert capabilities["stream_json_schema_versions"] == [1]
     assert usage["tokens"] == {"input_tokens": 7}
+
+
+# 功能：验证新 SDK 能读取未包含 changes 的旧 daemon Receipt
+# 设计：用固定 schema 1 payload 而非当前 builder 生成值，防止测试与新字段同步演进而失去回归能力
+async def test_async_sdk_accepts_old_receipt_without_changes() -> None:
+    # 返回不含 changes 的旧版 Receipt 响应
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/turns/turn-old/receipt"
+        return httpx.Response(200, json=_old_receipt_payload())
+
+    async with AsyncCodeRookClient(
+        "http://127.0.0.1:7438",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        receipt = await client.get_receipt("turn-old")
+
+    assert receipt.changes == []
+    assert receipt.unavailable == ["route"]
+
+
+# 功能：验证公共 SDK 忽略 schema 1 响应的未知增量字段并保留新 unavailable 标记
+# 设计：在 thread 和 Receipt 多层同时注入 future 字段，确认兼容性是递归的而非仅过滤顶层
+def test_sync_sdk_tolerates_future_additive_response_fields() -> None:
+    thread_payload = _thread().model_dump(mode="json")
+    thread_payload["future_thread_summary"] = {"version": 2}
+    receipt_payload = _old_receipt_payload()
+    receipt_payload["future_result_summary"] = {"status": "verified"}
+    receipt_payload["changes"] = [
+        {
+            "path": "src/main.py",
+            "additions": 1,
+            "deletions": 0,
+            "future_hunks": 1,
+        }
+    ]
+    unavailable = receipt_payload["unavailable"]
+    assert isinstance(unavailable, list)
+    unavailable.append("future_evidence_kind")
+    authority = receipt_payload["authority"]
+    assert isinstance(authority, dict)
+    authority["future_permission_ceiling"] = "ask"
+    sandbox = authority["sandbox"]
+    assert isinstance(sandbox, dict)
+    sandbox["future_probe_digest"] = "digest"
+
+    # 按路径返回带未知增量字段的公共响应
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/threads":
+            return httpx.Response(200, json=[thread_payload])
+        assert request.url.path == "/v1/turns/turn-old/receipt"
+        return httpx.Response(200, json=receipt_payload)
+
+    with CodeRookClient(
+        "http://127.0.0.1:7438",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        threads = client.list_threads()
+        receipt = client.get_receipt("turn-old")
+
+    assert threads == [_thread()]
+    assert receipt.changes[0].path == "src/main.py"
+    assert "future_evidence_kind" in receipt.unavailable
 
 
 # 功能：验证异步 SSE 从 Last-Event-ID 游标读取且忽略重复序号

@@ -50,7 +50,7 @@ class ToolCatalog:
         actions = spec.visible_actions(mode)
         if not actions or not spec.model_visible:
             return None
-        is_family = any(action.name != "invoke" for action in spec.actions)
+        is_family = spec.is_action_family
         action_schemas = [action for action in actions if action.input_schema is not None]
         if is_family and len(action_schemas) == len(actions):
             variants: list[dict[str, object]] = []

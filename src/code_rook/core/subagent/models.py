@@ -46,7 +46,7 @@ class WriteClaim(BaseModel):
 class WorkerRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: int = 3
+    schema_version: int = 5
     id: str = Field(min_length=1)
     parent_turn_id: str = Field(min_length=1)
     parent_worker_id: str = ""
@@ -56,7 +56,9 @@ class WorkerRecord(BaseModel):
     prompt: str = Field(min_length=1)
     role: str = "general-purpose"
     profile: str = ""
+    profile_digest: str = Field(default="", pattern=r"^(?:|sha256:[a-f0-9]{64})$")
     route: str = ""
+    route_digest: str = Field(default="", pattern=r"^(?:|[a-f0-9]{64})$")
     model: str = ""
     reasoning: str = ""
     status: WorkerStatus = WorkerStatus.QUEUED
@@ -67,6 +69,7 @@ class WorkerRecord(BaseModel):
     workspace: str = Field(min_length=1)
     worktree: str = ""
     branch: str = ""
+    base_commit: str = ""
     merge_owner: str = ""
     merge_reviewer: str = ""
     authority_ceiling: AuthoritySnapshot = Field(default_factory=AuthoritySnapshot)
@@ -79,6 +82,12 @@ class WorkerRecord(BaseModel):
     boot_id: str = Field(min_length=1)
     token_budget: int | None = Field(default=None, ge=1)
     token_usage: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cache_read_input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    cost_status: str = "unpriced"
     attempt: int = Field(default=1, ge=1)
     max_attempts: int = Field(default=3, ge=1, le=10)
     retry_backoff_s: float = Field(default=1.0, ge=0)
@@ -90,7 +99,14 @@ class WorkerRecord(BaseModel):
     blockers: list[str] = Field(default_factory=list)
     event_cursor: int = Field(default=0, ge=0)
     artifact_handles: list[str] = Field(default_factory=list)
+    handoff_status: str = "read_only"
+    changed_files: list[str] = Field(default_factory=list)
+    diff_stat: str = ""
+    diff_preview: str = ""
+    diff_truncated: bool = False
+    verification_status: str = "not_reported"
     approved: bool | None = None
+    review_digest: str = ""
     receipt: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: str
     updated_at: str

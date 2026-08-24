@@ -31,19 +31,25 @@ class DiagnosticsReport(BaseModel):
     truncated: bool = False
     error: str = ""
 
+    @property
+    # 明确报告诊断基础设施是否真实成功，非 ok 状态不得被解释为无错误
+    def infrastructure_ok(self) -> bool:
+        return self.status == "ok"
+
     # 将错误诊断渲染为下一模型 step 使用的有界 transient context
     def render_context(self) -> str:
-        if not self.diagnostics:
+        if not self.diagnostics and self.infrastructure_ok:
             return ""
-        title = f"## Transient Diagnostics ({self.tool})" if self.tool else (
-            "## Transient Diagnostics"
+        title = (
+            f"## Transient Diagnostics ({self.tool})" if self.tool else ("## Transient Diagnostics")
         )
         lines = [title]
+        if not self.infrastructure_ok:
+            detail = self.error or "diagnostics were not executed successfully"
+            lines.append(f"- Infrastructure status `{self.status}`: {detail}")
         for item in self.diagnostics:
             rule = f" [{item.rule}]" if item.rule else ""
-            lines.append(
-                f"- {item.path}:{item.line}:{item.column}{rule} {item.message}"
-            )
+            lines.append(f"- {item.path}:{item.line}:{item.column}{rule} {item.message}")
         if self.truncated:
             lines.append("- Additional diagnostics were omitted by the configured limit.")
         return "\n".join(lines)

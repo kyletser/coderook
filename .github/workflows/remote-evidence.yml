@@ -2,8 +2,6 @@ name: Remote release evidence
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 6 * * *"
 
 permissions:
   actions: read

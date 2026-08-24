@@ -10,6 +10,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from code_rook.core.llm.provider_presets import ProviderPreset
+from code_rook.tui.product import tr
 from code_rook.tui.widgets import _preview
 
 
@@ -44,11 +45,18 @@ class SessionPicker(Static):
             self.picker = picker
             super().__init__()
 
-    def __init__(self, sessions: list[dict[str, Any]], current_session_id: str | None) -> None:
+    def __init__(
+        self,
+        sessions: list[dict[str, Any]],
+        current_session_id: str | None,
+        *,
+        locale: str = "zh-CN",
+    ) -> None:
         super().__init__("")
         self._sessions = sessions
         self._current_session_id = current_session_id
         self._filter = ""
+        self._locale = locale
         self._cursor = next(
             (
                 index
@@ -59,8 +67,8 @@ class SessionPicker(Static):
         )
 
     def on_mount(self) -> None:
-        self.border_title = " Sessions "
-        self.border_subtitle = " 输入即过滤   ↑↓ move   Enter open   Esc close "
+        self.border_title = f" {tr('selector.sessions.title', self._locale)} "
+        self.border_subtitle = f" {tr('selector.sessions.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
 
@@ -79,20 +87,34 @@ class SessionPicker(Static):
 
     def _render_ui(self) -> str:
         if not self._sessions:
-            return "[dim]没有保存的 chat 会话。[/dim]"
+            return f"[dim]{tr('selector.sessions.empty', self._locale)}[/dim]"
         filtered = self._filtered_sessions()
         self._cursor = min(self._cursor, max(0, len(filtered) - 1))
         lines: list[str] = []
         if self._filter:
-            lines.append(
-                f"[dim]过滤：{escape(self._filter)}"
-                f"  命中 {len(filtered)}/{len(self._sessions)}[/dim]"
+            summary = tr(
+                "selector.sessions.filter",
+                self._locale,
+                query=escape(self._filter),
+                matched=len(filtered),
+                total=len(self._sessions),
             )
+            lines.append(f"[dim]{summary}[/dim]")
         for index, session in enumerate(filtered):
             session_id = escape(str(session.get("session_id", "")))
-            title = escape(_preview(str(session.get("title", "")) or "Untitled", 38))
+            title = escape(
+                _preview(
+                    str(session.get("title", ""))
+                    or tr("selector.sessions.untitled", self._locale),
+                    38,
+                )
+            )
             status = escape(str(session.get("status", "")))
-            current = "  [cyan]current[/cyan]" if session_id == self._current_session_id else ""
+            current = (
+                f"  [cyan]{tr('common.current', self._locale)}[/cyan]"
+                if session_id == self._current_session_id
+                else ""
+            )
             if index == self._cursor:
                 lines.append(
                     f"[bold #72c7d4]❯[/bold #72c7d4] [bold white]{title}[/bold white]"
@@ -104,8 +126,14 @@ class SessionPicker(Static):
                     f"  [#c6cad0]{title}[/#c6cad0]  [dim]{status}  {session_id}[/dim]{current}"
                 )
         if not filtered:
-            lines.append("[dim]没有匹配的会话，退格修改过滤词[/dim]")
+            lines.append(f"[dim]{tr('selector.sessions.no_match', self._locale)}[/dim]")
         return "\n".join(lines)
+
+    # 切换会话选择器语言并保留过滤词与光标
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.on_mount()
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "backspace":
@@ -175,34 +203,76 @@ class ModelPicker(Static):
             self.picker = picker
             super().__init__()
 
-    # 初始化模型列表并将光标定位到活动模型
-    def __init__(self, models: list[str], active_model: str) -> None:
+    # 初始化模型列表、route 能力标签并将光标定位到活动模型
+    def __init__(
+        self,
+        models: list[str],
+        active_model: str,
+        capabilities: tuple[str, ...] = (),
+        *,
+        locale: str = "en-US",
+    ) -> None:
         super().__init__("")
         self._models = models
         self._active_model = active_model
+        self._capabilities = capabilities
+        self._filter = ""
+        self._locale = locale
         self._cursor = models.index(active_model) if active_model in models else 0
 
     # 挂载时设置标题、操作提示和键盘焦点
     def on_mount(self) -> None:
-        self.border_title = " Models "
-        self.border_subtitle = " ↑↓ move   Enter switch   Esc close "
+        self.border_title = f" {tr('selector.models.title', self._locale)} "
+        self.border_subtitle = f" {tr('selector.models.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
+
+    # 按模型 ID 子串执行不区分大小写的即时搜索
+    def _filtered_models(self) -> list[str]:
+        query = self._filter.strip().casefold()
+        if not query:
+            return self._models
+        return [model for model in self._models if query in model.casefold()]
 
     # 渲染模型列表并标记当前活动模型
     def _render_ui(self) -> str:
         if not self._models:
-            return "[dim]No configured models. Use /model add <model-id>.[/dim]"
-        window_size = 8
-        start = max(0, min(self._cursor - window_size // 2, len(self._models) - window_size))
-        end = min(len(self._models), start + window_size)
+            return f"[dim]{tr('selector.models.empty', self._locale)}[/dim]"
+        models = self._filtered_models()
+        self._cursor = min(self._cursor, max(0, len(models) - 1))
         lines: list[str] = []
+        if self._capabilities:
+            labels = " · ".join(escape(label) for label in self._capabilities)
+            lines.append(
+                f"[dim]{tr('selector.models.capabilities', self._locale, labels=labels)}[/dim]"
+            )
+        if self._filter:
+            summary = tr(
+                "selector.models.search",
+                self._locale,
+                query=escape(self._filter),
+                matched=len(models),
+                total=len(self._models),
+            )
+            lines.append(f"[dim]{summary}[/dim]")
+        if not models:
+            lines.append(f"[dim]{tr('selector.models.no_match', self._locale)}[/dim]")
+            return "\n".join(lines)
+        window_size = 8
+        start = max(0, min(self._cursor - window_size // 2, len(models) - window_size))
+        end = min(len(models), start + window_size)
         if start > 0:
-            lines.append(f"[dim]  ↑ {start} more[/dim]")
+            lines.append(
+                f"[dim]  ↑ {tr('common.more', self._locale, count=start)}[/dim]"
+            )
         for index in range(start, end):
-            model = self._models[index]
+            model = models[index]
             safe_model = escape(model)
-            current = "  [cyan]current[/cyan]" if model == self._active_model else ""
+            current = (
+                f"  [cyan]{tr('common.current', self._locale)}[/cyan]"
+                if model == self._active_model
+                else ""
+            )
             if index == self._cursor:
                 lines.append(
                     f"[bold #72c7d4]❯[/bold #72c7d4] "
@@ -210,24 +280,50 @@ class ModelPicker(Static):
                 )
             else:
                 lines.append(f"  [#c6cad0]{safe_model}[/#c6cad0]{current}")
-        if end < len(self._models):
-            lines.append(f"[dim]  ↓ {len(self._models) - end} more[/dim]")
-        lines.append("[dim]Add a custom option with /model add <model-id>[/dim]")
+        if end < len(models):
+            lines.append(
+                f"[dim]  ↓ {tr('common.more', self._locale, count=len(models) - end)}[/dim]"
+            )
+        lines.append(f"[dim]{tr('selector.models.custom', self._locale)}[/dim]")
         return "\n".join(lines)
+
+    # 切换模型选择器语言并保留搜索词与能力标签
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.on_mount()
 
     # 处理上下移动、确认选择和关闭快捷键
     def on_key(self, event: events.Key) -> None:
-        if event.key in ("up", "k") and self._models:
+        if event.key == "backspace":
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._models)
+            self._filter = self._filter[:-1]
+            self._cursor = 0
             self.update(self._render_ui())
-        elif event.key in ("down", "j") and self._models:
+            return
+        if (
+            event.character
+            and len(event.character) == 1
+            and event.is_printable
+            and event.key not in ("up", "down", "enter", "escape", "tab")
+        ):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._models)
+            self._filter += event.character
+            self._cursor = 0
             self.update(self._render_ui())
-        elif event.key == "enter" and self._models:
+            return
+        models = self._filtered_models()
+        if event.key == "up" and models:
             event.stop()
-            self.post_message(self.Selected(self, self._models[self._cursor]))
+            self._cursor = (self._cursor - 1) % len(models)
+            self.update(self._render_ui())
+        elif event.key == "down" and models:
+            event.stop()
+            self._cursor = (self._cursor + 1) % len(models)
+            self.update(self._render_ui())
+        elif event.key == "enter" and models:
+            event.stop()
+            self.post_message(self.Selected(self, models[self._cursor]))
         elif event.key == "escape":
             event.stop()
             self.post_message(self.Dismissed(self))
@@ -266,10 +362,17 @@ class ProviderPicker(Static):
             super().__init__()
 
     # 初始化内置 Provider 列表并定位当前配置
-    def __init__(self, providers: tuple[ProviderPreset, ...], current: str) -> None:
+    def __init__(
+        self,
+        providers: tuple[ProviderPreset, ...],
+        current: str,
+        *,
+        locale: str = "zh-CN",
+    ) -> None:
         super().__init__("")
         self._providers = providers
         self._current = current
+        self._locale = locale
         self._cursor = next(
             (
                 index
@@ -281,8 +384,8 @@ class ProviderPicker(Static):
 
     # 挂载时设置标题和键盘焦点
     def on_mount(self) -> None:
-        self.border_title = " API Provider "
-        self.border_subtitle = " ↑↓ move   Enter continue   Esc close "
+        self.border_title = f" {tr('selector.provider.title', self._locale)} "
+        self.border_subtitle = f" {tr('selector.provider.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
 
@@ -290,7 +393,11 @@ class ProviderPicker(Static):
     def _render_ui(self) -> str:
         lines: list[str] = []
         for index, provider in enumerate(self._providers):
-            current = "  [cyan]current[/cyan]" if provider.id == self._current else ""
+            current = (
+                f"  [cyan]{tr('common.current', self._locale)}[/cyan]"
+                if provider.id == self._current
+                else ""
+            )
             name = escape(provider.name)
             description = escape(provider.description)
             if index == self._cursor:
@@ -303,6 +410,12 @@ class ProviderPicker(Static):
                     f"  [#c6cad0]{name}[/#c6cad0]  [dim]{description}[/dim]{current}"
                 )
         return "\n".join(lines)
+
+    # 切换 Provider 选择器语言并立即刷新静态提示
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.on_mount()
 
     # 处理上下移动、确认 Provider 和关闭快捷键
     def on_key(self, event: events.Key) -> None:

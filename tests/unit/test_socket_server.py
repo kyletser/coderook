@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from code_rook.core.bus.envelope import AUTH_FAILED, AUTH_REQUIRED
-from code_rook.core.transport.socket_server import SocketServer
+from code_rook.core.transport.socket_server import SocketServer, get_connection_writer
 
 
 def _free_port() -> int:
@@ -38,6 +38,76 @@ async def test_broadcaster_unsubscribe_called_on_disconnect() -> None:
 
         await asyncio.wait_for(unsubscribed.wait(), timeout=2.0)
     finally:
+        await server.stop()
+
+
+# 功能：验证断线清理完成后才结束的命令不能遗留该 writer 新建的订阅
+# 设计：让 handler 等到客户端 EOF 和首次 cleanup 后再注册订阅，依靠任务完成回调触发第二次清理并用事件精确对账竞态
+async def test_late_command_subscription_is_removed_after_disconnect() -> None:
+    handler_started = asyncio.Event()
+    allow_registration = asyncio.Event()
+    initial_cleanup = asyncio.Event()
+    late_subscription_removed = asyncio.Event()
+
+    class MockBroadcaster:
+        # 初始化 writer 活动集与首次清理计数
+        def __init__(self) -> None:
+            self.active: set[object] = set()
+            self.cleanup_calls = 0
+
+        # 在 handler 后半段登记当前连接 writer
+        def subscribe(self, writer: object) -> None:
+            self.active.add(writer)
+
+        # 区分 EOF 首次清理与任务完成后的迟到订阅清理
+        def unsubscribe(self, writer: object) -> bool:
+            self.cleanup_calls += 1
+            was_active = writer in self.active
+            self.active.discard(writer)
+            if self.cleanup_calls == 1:
+                initial_cleanup.set()
+            if was_active:
+                late_subscription_removed.set()
+            return was_active
+
+    broadcaster = MockBroadcaster()
+
+    # 等客户端断开后才模拟 event.subscribe handler 注册订阅
+    async def delayed_subscribe(_params: dict[str, Any]) -> dict[str, bool]:
+        handler_started.set()
+        await allow_registration.wait()
+        broadcaster.subscribe(get_connection_writer())
+        return {"subscribed": True}
+
+    port = _free_port()
+    server = SocketServer(
+        "127.0.0.1",
+        port,
+        broadcaster=broadcaster,  # type: ignore[arg-type]
+    )
+    server.register("event.delayed_subscribe", delayed_subscribe)
+    await server.start()
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        request = {
+            "jsonrpc": "2.0",
+            "id": "late-subscribe",
+            "method": "event.delayed_subscribe",
+            "params": {},
+        }
+        writer.write(json.dumps(request).encode() + b"\n")
+        await writer.drain()
+        await asyncio.wait_for(handler_started.wait(), timeout=2.0)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.wait_for(initial_cleanup.wait(), timeout=2.0)
+
+        allow_registration.set()
+        await asyncio.wait_for(late_subscription_removed.wait(), timeout=2.0)
+
+        assert broadcaster.active == set()
+    finally:
+        allow_registration.set()
         await server.stop()
 
 

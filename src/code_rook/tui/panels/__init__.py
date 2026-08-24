@@ -1,3 +1,13 @@
+from code_rook.tui.panels.changes import (
+    ChangeCenterOverlay,
+    ChangeCenterPanel,
+    ChangeCenterSnapshot,
+    ChangedFile,
+    ChangeHunk,
+    VerificationEntry,
+    build_change_snapshot,
+    parse_unified_diff,
+)
 from code_rook.tui.panels.manage import (
     render_artifact_gc,
     render_artifacts,
@@ -16,6 +26,14 @@ from code_rook.tui.panels.workflow import (
 )
 
 __all__ = [
+    "ChangeCenterPanel",
+    "ChangeCenterOverlay",
+    "ChangeCenterSnapshot",
+    "ChangeHunk",
+    "ChangedFile",
+    "VerificationEntry",
+    "build_change_snapshot",
+    "parse_unified_diff",
     "render_artifact_gc",
     "render_artifacts",
     "render_turn_inspector",

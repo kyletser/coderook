@@ -43,14 +43,17 @@ def test_degraded_sandbox_report_is_machine_readable(
     }
 
 
-# 功能：验证 CI 为三个平台上传各自的沙箱 JSON artifact
-# 设计：锁定 runner.os 文件名和 always 上传合同，防止安全门禁退化为仅控制台 PASS 文本
-def test_ci_uploads_platform_sandbox_evidence() -> None:
+# 功能：验证仅手动触发的安全矩阵为三个平台上传沙箱 JSON artifact
+# 设计：锁定 workflow_dispatch、runner.os 文件名和 always 上传合同，避免增加日常 CI 邮件
+def test_manual_security_workflow_uploads_platform_sandbox_evidence() -> None:
     root = Path(__file__).resolve().parents[2]
-    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
+    workflow = (root / ".github" / "workflows" / "security.yml").read_text(
         encoding="utf-8"
     )
 
+    assert "workflow_dispatch:" in workflow
+    assert "push:" not in workflow
+    assert "os: [ubuntu-latest, macos-latest, windows-latest]" in workflow
     assert "--output reports/sandbox-boundary-${{ runner.os }}.json" in workflow
     assert "name: sandbox-boundary-${{ runner.os }}" in workflow
     assert "if: always()" in workflow

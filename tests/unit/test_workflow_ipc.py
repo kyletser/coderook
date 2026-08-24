@@ -57,6 +57,7 @@ async def test_workflow_ipc_handlers_share_durable_graph(tmp_path: Path) -> None
     )
     fleet = LocalFleet(WorkflowLedger(tmp_path / "workflow.db"), scheduler)
     app = CoreApp()
+    app._labs_enabled = True
     app._fleet = fleet
 
     started = await app._workflow_start_handler(
@@ -91,6 +92,7 @@ async def test_workflow_get_rejects_unknown_id(tmp_path: Path) -> None:
         ),
     )
     app = CoreApp()
+    app._labs_enabled = True
     app._fleet = fleet
 
     with pytest.raises(HandlerError, match="workflow not found"):

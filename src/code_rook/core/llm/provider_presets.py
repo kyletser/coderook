@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,8 +19,34 @@ class ProviderPreset:
     models_url: str
     api_key_env: str
     preferred_models: tuple[str, ...]
+    provider_kind: str = "openai-compatible"
+    wire_format: str = "openai_chat"
+    credential_required: bool = True
     anthropic_api: bool = False
     model_params: tuple[tuple[str, str], ...] = ()
+    supports_prompt_cache: bool = False
+    supports_tools: bool = True
+    supports_parallel_tools: bool = False
+    supports_images: bool = False
+    local_probe: bool = False
+    aliases: tuple[str, ...] = ()
+
+    @property
+    # 返回创建 route 时使用的首选默认模型
+    def default_model(self) -> str:
+        return self.preferred_models[0]
+
+
+@dataclass(frozen=True)
+class LocalProviderProbeResult:
+    provider_id: str
+    reachable: bool
+    host: str
+    port: int
+    reason: str
+
+
+LocalPortConnector = Callable[[str, int, float], Awaitable[bool]]
 
 
 PROVIDER_PRESETS = (
@@ -37,16 +67,24 @@ PROVIDER_PRESETS = (
         models_url="https://api.openai.com/v1/models",
         api_key_env="OPENAI_API_KEY",
         preferred_models=("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
+        provider_kind="openai",
+        supports_parallel_tools=True,
+        supports_images=True,
     ),
     ProviderPreset(
         id="anthropic",
         name="Anthropic",
         description="Claude 官方 API",
-        chat_url="",
+        chat_url="https://api.anthropic.com",
         models_url="https://api.anthropic.com/v1/models",
         api_key_env="ANTHROPIC_API_KEY",
         preferred_models=("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"),
+        provider_kind="anthropic",
+        wire_format="anthropic_messages",
         anthropic_api=True,
+        supports_prompt_cache=True,
+        supports_parallel_tools=True,
+        supports_images=True,
     ),
     ProviderPreset(
         id="siliconflow",
@@ -62,9 +100,65 @@ PROVIDER_PRESETS = (
         ),
         model_params=(("type", "text"), ("sub_type", "chat")),
     ),
+    ProviderPreset(
+        id="gemini",
+        name="Google Gemini",
+        description="Gemini OpenAI-compatible API",
+        chat_url=("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+        models_url="https://generativelanguage.googleapis.com/v1beta/openai/models",
+        api_key_env="GEMINI_API_KEY",
+        preferred_models=("gemini-3.7-flash", "gemini-3.1-pro-preview"),
+        supports_images=True,
+    ),
+    ProviderPreset(
+        id="moonshot",
+        name="Kimi / Moonshot",
+        description="Kimi Open Platform OpenAI-compatible API",
+        chat_url="https://api.moonshot.ai/v1/chat/completions",
+        models_url="https://api.moonshot.ai/v1/models",
+        api_key_env="MOONSHOT_API_KEY",
+        preferred_models=("kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-fast"),
+        supports_images=True,
+        aliases=("kimi",),
+    ),
+    ProviderPreset(
+        id="openrouter",
+        name="OpenRouter",
+        description="OpenRouter unified OpenAI-compatible API",
+        chat_url="https://openrouter.ai/api/v1/chat/completions",
+        models_url="https://openrouter.ai/api/v1/models",
+        api_key_env="OPENROUTER_API_KEY",
+        preferred_models=("openrouter/auto", "openrouter/free"),
+        supports_images=True,
+    ),
+    ProviderPreset(
+        id="ollama",
+        name="Ollama",
+        description="Local Ollama OpenAI-compatible API",
+        chat_url="http://127.0.0.1:11434/v1/chat/completions",
+        models_url="http://127.0.0.1:11434/v1/models",
+        api_key_env="",
+        preferred_models=("qwen3-coder",),
+        credential_required=False,
+        local_probe=True,
+    ),
+    ProviderPreset(
+        id="lm-studio",
+        name="LM Studio",
+        description="Local LM Studio OpenAI-compatible API",
+        chat_url="http://127.0.0.1:1234/v1/chat/completions",
+        models_url="http://127.0.0.1:1234/v1/models",
+        api_key_env="",
+        preferred_models=("local-model",),
+        credential_required=False,
+        local_probe=True,
+        aliases=("lm_studio",),
+    ),
 )
 
-_PRESET_BY_ID = {preset.id: preset for preset in PROVIDER_PRESETS}
+_PRESET_BY_ID = {
+    alias: preset for preset in PROVIDER_PRESETS for alias in (preset.id, *preset.aliases)
+}
 _OPENAI_EXCLUDED_PARTS = (
     "audio",
     "embedding",
@@ -78,10 +172,11 @@ _OPENAI_EXCLUDED_PARTS = (
 )
 
 
-# 按稳定标识返回内置 Provider 配置
+# 按稳定标识或兼容别名返回统一 Provider 配置
 def get_provider_preset(provider: str) -> ProviderPreset:
+    normalized = provider.strip().lower().replace("_", "-")
     try:
-        return _PRESET_BY_ID[provider]
+        return _PRESET_BY_ID[normalized]
     except KeyError as exc:
         raise ValueError(f"Unsupported built-in provider: {provider}") from exc
 
@@ -92,9 +187,8 @@ def _supports_chat(provider: str, model: str) -> bool:
     if provider == "anthropic":
         return lowered.startswith("claude-")
     if provider == "openai":
-        return (
-            lowered.startswith(("gpt-", "o1", "o3", "o4"))
-            and not any(part in lowered for part in _OPENAI_EXCLUDED_PARTS)
+        return lowered.startswith(("gpt-", "o1", "o3", "o4")) and not any(
+            part in lowered for part in _OPENAI_EXCLUDED_PARTS
         )
     return True
 
@@ -118,17 +212,19 @@ def _parse_models(preset: ProviderPreset, payload: Any) -> list[str]:
     return models
 
 
-# 使用用户 API Key 查询该账号当前可用的聊天模型
+# 使用用户 API Key 或本地免密端点查询当前可用的聊天模型
 async def discover_models(
     preset: ProviderPreset,
-    api_key: str,
+    api_key: str = "",
     *,
     client: httpx.AsyncClient | None = None,
 ) -> list[str]:
     key = api_key.strip()
-    if not key:
+    if preset.credential_required and not key:
         raise ValueError("API key cannot be empty")
-    headers = {"Authorization": f"Bearer {key}"}
+    headers: dict[str, str] = {}
+    if key:
+        headers = {"Authorization": f"Bearer {key}"}
     if preset.anthropic_api:
         headers = {
             "x-api-key": key,
@@ -157,3 +253,48 @@ async def discover_models(
     except httpx.HTTPError as exc:
         raise ValueError(f"Cannot connect to {preset.name}: {exc}") from exc
     return _parse_models(preset, response.json())
+
+
+# 通过短连接探测本地端口并立即关闭，不发送模型请求或密钥
+async def _connect_local_port(host: str, port: int, timeout_s: float) -> bool:
+    writer: asyncio.StreamWriter | None = None
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=timeout_s,
+        )
+        return True
+    except (OSError, TimeoutError):
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+
+
+# 对允许探测的 loopback Provider 执行可注入的轻量端口检查
+async def probe_local_provider(
+    provider: str | ProviderPreset,
+    *,
+    endpoint: str | None = None,
+    connector: LocalPortConnector | None = None,
+    timeout_s: float = 0.5,
+) -> LocalProviderProbeResult:
+    preset = get_provider_preset(provider) if isinstance(provider, str) else provider
+    parsed = urlsplit(endpoint or preset.chat_url)
+    host = parsed.hostname or ""
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.endswith(".localhost")
+    if not preset.local_probe or not loopback:
+        raise ValueError(f"provider does not expose a local probe: {preset.id}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    reachable = await (connector or _connect_local_port)(host, port, timeout_s)
+    return LocalProviderProbeResult(
+        provider_id=preset.id,
+        reachable=reachable,
+        host=host,
+        port=port,
+        reason="local endpoint is reachable" if reachable else "local endpoint is unreachable",
+    )

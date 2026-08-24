@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from code_rook.core.audit import AuditHealth
 from code_rook.core.bus.events import RunFinishedEvent, RunStartedEvent
 from code_rook.core.events.bus import EventBus
 from code_rook.core.events.writer import EventWriter
@@ -138,3 +139,20 @@ async def test_event_writer_oserror_is_logged(
             await writer.handle(event)
 
     assert any("failed to write" in r.message for r in caplog.records)
+
+
+# 功能：验证运行事件账本写入失败会把共享审计状态切换为 degraded
+# 设计：关闭真实文件句柄制造确定性写失败，兼顾原日志契约和后续写工具失败关闭信号
+async def test_event_writer_failure_degrades_audit_health(tmp_path: Path) -> None:
+    health = AuditHealth()
+    path = tmp_path / "events.jsonl"
+    event = RunStartedEvent(run_id="r1", goal="g", ts="2026-05-11T00:00:00Z")
+
+    async with EventWriter(path, audit_health=health) as writer:
+        assert writer._file is not None
+        writer._file.close()
+        await writer.handle(event)
+
+    assert health.degraded is True
+    assert health.incident is not None
+    assert health.incident.source == "event_ledger"

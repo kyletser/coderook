@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.sandbox.planner import SandboxPlan
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
@@ -53,12 +54,14 @@ class BackgroundStartTool(BaseTool):
         run_id: str,
         sandbox_plan: SandboxPlan | None = None,
         cwd: Path | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._registry = registry
         self._session_id = session_id
         self._run_id = run_id
         self._sandbox_plan = sandbox_plan
         self._cwd = cwd
+        self._artifact_store = artifact_store
 
     # 启动后台 shell 命令并返回 job_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -72,6 +75,7 @@ class BackgroundStartTool(BaseTool):
             self._run_id,
             self._sandbox_plan,
             self._cwd,
+            self._artifact_store,
         )
         return ToolResult(
             content=(
@@ -97,17 +101,22 @@ class BackgroundResultTool(BaseTool):
         "required": ["job_id"],
     }
 
-    # 绑定 daemon 级任务表
-    def __init__(self, registry: BackgroundJobRegistry) -> None:
+    # 绑定 daemon 级任务表和当前 session 所有权
+    def __init__(self, registry: BackgroundJobRegistry, session_id: str) -> None:
         self._registry = registry
+        self._session_id = session_id
 
     # 查询任务状态和完整输出
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         request = BackgroundResultParams.model_validate(params)
         job = (
-            await self._registry.wait(request.job_id, request.timeout)
+            await self._registry.wait(
+                request.job_id,
+                request.timeout,
+                session_id=self._session_id,
+            )
             if request.wait
-            else self._registry.get(request.job_id)
+            else self._registry.get_for_session(request.job_id, self._session_id)
         )
         if job is None:
             return ToolResult(
@@ -137,9 +146,10 @@ class BackgroundInteractTool(BaseTool):
         "required": ["job_id"],
     }
 
-    # 绑定 daemon 级任务表
-    def __init__(self, registry: BackgroundJobRegistry) -> None:
+    # 绑定 daemon 级任务表和当前 session 所有权
+    def __init__(self, registry: BackgroundJobRegistry, session_id: str) -> None:
         self._registry = registry
+        self._session_id = session_id
 
     # 向仍在运行的后台任务写入输入并按需关闭 stdin
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -148,6 +158,7 @@ class BackgroundInteractTool(BaseTool):
             request.job_id,
             request.stdin,
             close_stdin=request.close_stdin,
+            session_id=self._session_id,
         ):
             return ToolResult(
                 content=f"background job is not interactive: {request.job_id}",
@@ -194,14 +205,15 @@ class BackgroundCancelTool(BaseTool):
         "required": ["job_id"],
     }
 
-    # 绑定 daemon 级任务表
-    def __init__(self, registry: BackgroundJobRegistry) -> None:
+    # 绑定 daemon 级任务表和当前 session 所有权
+    def __init__(self, registry: BackgroundJobRegistry, session_id: str) -> None:
         self._registry = registry
+        self._session_id = session_id
 
     # 取消仍在运行的任务
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         job_id = BackgroundJobParams.model_validate(params).job_id
-        if not await self._registry.cancel(job_id):
+        if not await self._registry.cancel(job_id, session_id=self._session_id):
             return ToolResult(
                 content=f"background job is not running: {job_id}",
                 is_error=True,

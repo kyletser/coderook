@@ -12,6 +12,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from code_rook.core.authority import AuthorityProfile, RuntimeMode
+from code_rook.tui.product import tr
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +54,19 @@ class PermissionSelect(Static):
     }
     """
 
-    _CHOICES: tuple[tuple[str, str, str, str], ...] = (
-        ("allow_once", "Allow once", "1", "this request only"),
-        ("always_allow", "Always allow", "2", "remember for future sessions"),
-        ("deny_once", "Deny", "3", "skip this request"),
-        ("always_deny", "Always deny", "4", "remember for future sessions"),
+    _CHOICES: tuple[tuple[str, str, str, str], ...] = tuple(
+        (
+            decision,
+            tr(f"permission.choice.{decision}", "en-US"),
+            key,
+            tr(f"permission.choice.{detail}", "en-US"),
+        )
+        for decision, key, detail in (
+            ("allow_once", "1", "once_detail"),
+            ("always_allow", "2", "remember_allow"),
+            ("deny_once", "3", "deny_detail"),
+            ("always_deny", "4", "remember_deny"),
+        )
     )
     _KEY_MAP: dict[str, str] = {
         "y": "allow_once",  "1": "allow_once",
@@ -93,12 +102,15 @@ class PermissionSelect(Static):
         tool_name: str,
         param_preview: str,
         params: dict[str, Any] | None = None,
+        *,
+        locale: str = "en-US",
     ) -> None:
         super().__init__("")
         self._tool_use_id = tool_use_id
         self._tool_name = tool_name
         self._param_preview = param_preview
         self._params = params or {}
+        self._locale = locale
         self._cursor = 0
         context = self._params.get("_approval_context")
         context_dict = context if isinstance(context, dict) else {}
@@ -115,14 +127,51 @@ class PermissionSelect(Static):
         self._hunk_mode = bool(self._patch_hunks)
         # 仅 bash 追加"始终允许此命令模式"选项；其余工具保持原样
         self._choices = (
-            self._CHOICES
+            self._localized_choices()
             + (
-                ("always_allow_pattern", "Always allow pattern", "5",
-                 "remember this command prefix, see W3.2"),
+                (
+                    "always_allow_pattern",
+                    tr("permission.choice.always_allow_pattern", self._locale),
+                    "5",
+                    tr("permission.choice.pattern_detail", self._locale),
+                ),
             )
             if tool_name == "bash"
-            else self._CHOICES
+            else self._localized_choices()
         )
+
+    # 返回当前语言下的审批决策列表
+    def _localized_choices(self) -> tuple[tuple[str, str, str, str], ...]:
+        return tuple(
+            (
+                decision,
+                tr(f"permission.choice.{decision}", self._locale),
+                key,
+                tr(f"permission.choice.{detail}", self._locale),
+            )
+            for decision, key, detail in (
+                ("allow_once", "1", "once_detail"),
+                ("always_allow", "2", "remember_allow"),
+                ("deny_once", "3", "deny_detail"),
+                ("always_deny", "4", "remember_deny"),
+            )
+        )
+
+    # 切换审批面板语言并保留光标和 hunk 选择
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        self._choices = self._localized_choices()
+        if self._tool_name == "bash":
+            self._choices += (
+                (
+                    "always_allow_pattern",
+                    tr("permission.choice.always_allow_pattern", locale),
+                    "5",
+                    tr("permission.choice.pattern_detail", locale),
+                ),
+            )
+        if self.is_attached:
+            self.update(self._render_ui())
 
     # 从审批上下文展平文件级 hunk，并补齐显示所需的路径和动作
     def _collect_patch_hunks(self) -> list[dict[str, Any]]:
@@ -183,29 +232,40 @@ class PermissionSelect(Static):
     def _request_context(self) -> tuple[str, str]:
         """Return a concise label and the exact security-relevant value."""
         if self._tool_name == "bash" and "command" in self._params:
-            return "COMMAND", str(self._params["command"])
+            return tr("permission.context.command", self._locale), str(
+                self._params["command"]
+            )
         if self._tool_name in {"write_file", "edit_file", "read_file"}:
-            return "TARGET", str(self._params.get("path", self._param_preview))
+            return tr("permission.context.target", self._locale), str(
+                self._params.get("path", self._param_preview)
+            )
         if self._tool_name == "checkpoint_rewind":
-            return "CHECKPOINT", str(
+            return tr("permission.context.checkpoint", self._locale), str(
                 self._params.get("checkpoint_id", self._param_preview)
             )
         if self._tool_name in {"agent", "spawn_agent"}:
             value = self._params.get("description", self._params.get("goal"))
-            return "TASK", str(value if value is not None else self._param_preview)
-        return "REQUEST", self._param_preview or "No additional details"
+            return tr("permission.context.task", self._locale), str(
+                value if value is not None else self._param_preview
+            )
+        return (
+            tr("permission.context.request", self._locale),
+            self._param_preview or tr("permission.no_details", self._locale),
+        )
 
     def _action_label(self) -> str:
-        labels = {
-            "bash": "run a shell command",
-            "write_file": "write a file",
-            "edit_file": "edit a file",
-            "apply_patch": "apply workspace changes",
-            "checkpoint_rewind": "rewind workspace changes",
-            "agent": "manage a durable worker",
-            "spawn_agent": "start a subagent",
-        }
-        return labels.get(self._tool_name, f"use {self._tool_name}")
+        key = f"permission.action.{self._tool_name}"
+        if self._tool_name in {
+            "bash",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "checkpoint_rewind",
+            "agent",
+            "spawn_agent",
+        }:
+            return tr(key, self._locale)
+        return tr("permission.action.other", self._locale, tool=self._tool_name)
 
     # 依据编辑类工具参数生成嵌卡 diff 预览；无可呈现内容时返回空串
     def _diff_preview(self) -> str:
@@ -234,8 +294,9 @@ class PermissionSelect(Static):
         context_label, context_value = self._request_context()
         lines = [
             "[bold #e7b95e]![/bold #e7b95e]  "
-            "[bold white]Approval required[/bold white]",
-            f"[dim]CodeRook wants to {escape(self._action_label())}[/dim]  "
+            f"[bold white]{tr('permission.title', self._locale)}[/bold white]",
+            f"[dim]{tr('permission.wants', self._locale, action=escape(self._action_label()))}"
+            "[/dim]  "
             f"[#9aa4b2]{tool_name}[/#9aa4b2]",
             "",
             f"[bold #7d8794]{context_label}[/bold #7d8794]",
@@ -246,7 +307,9 @@ class PermissionSelect(Static):
             )
         diff = self._diff_preview()
         if self._patch_hunks:
-            lines.extend(("", "[bold #7d8794]HUNKS[/bold #7d8794]"))
+            lines.extend(
+                ("", f"[bold #7d8794]{tr('permission.hunks', self._locale)}[/bold #7d8794]")
+            )
             for index, hunk in enumerate(self._patch_hunks[:30]):
                 hunk_id = str(hunk.get("id", ""))
                 checked = "x" if hunk_id in self._selected_hunks else " "
@@ -255,16 +318,20 @@ class PermissionSelect(Static):
                 source_start = int(hunk.get("source_start", 0))
                 additions = int(hunk.get("additions", 0))
                 removals = int(hunk.get("removals", 0))
-                locked = " [dim](all-or-nothing)[/dim]" if not hunk.get(
-                    "selectable", True
-                ) else ""
+                locked = (
+                    f" [dim]({tr('permission.all_or_nothing', self._locale)})[/dim]"
+                    if not hunk.get("selectable", True)
+                    else ""
+                )
                 lines.append(
                     f"[bold #79c7d3]{cursor}[/bold #79c7d3] [{checked}] "
                     f"[#c7cdd5]{path}:{source_start}[/#c7cdd5] "
                     f"[green]+{additions}[/green]/[red]-{removals}[/red]{locked}"
                 )
             if len(self._patch_hunks) > 30:
-                lines.append("[dim]⋯ additional hunks are selected but not shown[/dim]")
+                lines.append(
+                    f"[dim]⋯ {tr('permission.more_hunks', self._locale)}[/dim]"
+                )
         if diff:
             diff_lines = self._safe_lines(diff)
             lines.append("")
@@ -272,8 +339,12 @@ class PermissionSelect(Static):
             for diff_line in diff_lines[:50]:
                 lines.append(f"[#56606d]·[/#56606d] {escape(diff_line)}")
             if len(diff_lines) > 50:
-                lines.append("[dim]⋯ diff truncated, approve/deny to continue[/dim]")
-        lines.extend(("", "[bold white]Allow this action?[/bold white]"))
+                lines.append(
+                    f"[dim]⋯ {tr('permission.diff_truncated', self._locale)}[/dim]"
+                )
+        lines.extend(
+            ("", f"[bold white]{tr('permission.allow_question', self._locale)}[/bold white]")
+        )
         for i, (_, label, key_hint, description) in enumerate(self._choices):
             if i == self._cursor:
                 lines.append(
@@ -287,9 +358,9 @@ class PermissionSelect(Static):
                     f"[#c7cdd5]{label}[/#c7cdd5]  "
                     f"[#6f7884]{description}[/#6f7884]"
                 )
-        hint = "↑↓ navigate   Enter select   Esc deny"
+        hint = tr("permission.hint", self._locale)
         if self._patch_hunks:
-            hint = "Tab hunks/actions   Space toggle hunk   " + hint
+            hint = tr("permission.hunk_hint", self._locale, base=hint)
         lines.extend(("", f"[#68717d]{hint}[/#68717d]"))
         return "\n".join(lines)
 
@@ -366,12 +437,15 @@ class PermissionBlock(Static):
     """日志里的权限审批摘要"""
 
     _LABEL_MAP: dict[str, str] = {
-        "allow_once": "allowed once",
-        "always_allow": "always allowed",
-        "always_allow_pattern": "always allowed (pattern)",
-        "deny_once": "denied",
-        "always_deny": "always denied",
-        "timeout": "timed out",
+        decision: tr(f"permission.decision.{decision}", "en-US")
+        for decision in (
+            "allow_once",
+            "always_allow",
+            "always_allow_pattern",
+            "deny_once",
+            "always_deny",
+            "timeout",
+        )
     }
     LABEL_MAP = _LABEL_MAP
 
@@ -383,18 +457,32 @@ class PermissionBlock(Static):
             super().__init__()
 
     # 初始化审批块，记录工具 ID、名称和参数预览
-    def __init__(self, tool_use_id: str, tool_name: str, param_preview: str) -> None:
+    def __init__(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        param_preview: str,
+        *,
+        locale: str = "en-US",
+    ) -> None:
         self._tool_use_id = tool_use_id
         self._tool_name = tool_name
         self._param_preview = param_preview
+        self._locale = locale
         self._resolved = False
         super().__init__(self._pending_text(), classes="log-line permission-pending")
+
+    # 切换审批摘要语言并在未决状态下立即刷新
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if not self._resolved:
+            self.update(self._pending_text())
 
     def _pending_text(self) -> str:
         tool_name = escape(self._tool_name)
         preview = f"  [dim]{escape(self._param_preview)}[/dim]" if self._param_preview else ""
         return (
-            f"[bold yellow]! approval required[/bold yellow]  "
+            f"[bold yellow]! {tr('permission.pending', self._locale)}[/bold yellow]  "
             f"[bold]{tool_name}[/bold]{preview}"
         )
 
@@ -405,8 +493,12 @@ class PermissionBlock(Static):
         self._resolved = True
         self.remove_class("permission-pending")
         allowed = decision in ("allow_once", "always_allow", "always_allow_pattern")
-        icon = "[bold green]allowed[/bold green]" if allowed else "[bold red]denied[/bold red]"
-        label = self._LABEL_MAP.get(decision, decision)
+        icon = (
+            f"[bold green]{tr('permission.allowed', self._locale)}[/bold green]"
+            if allowed
+            else f"[bold red]{tr('permission.denied', self._locale)}[/bold red]"
+        )
+        label = tr(f"permission.decision.{decision}", self._locale)
         tool_name = escape(self._tool_name)
         preview = f"  [dim]{escape(self._param_preview)}[/dim]" if self._param_preview else ""
         self.update(
@@ -415,26 +507,24 @@ class PermissionBlock(Static):
         self.post_message(self.Resolved(self, decision))
 
 
-_PERMISSION_PRESETS = (
-    (
-        "ask",
-        AuthorityProfile.ASK,
-        "询问后修改",
-        "文件修改、命令和外部操作按策略确认",
-    ),
-    (
-        "accept_edits",
-        AuthorityProfile.AUTO_REVIEW,
-        "自动接受修改",
-        "工作区文件修改自动执行，命令和外部操作仍确认",
-    ),
-    (
-        "full_access",
-        AuthorityProfile.FULL_ACCESS,
-        "全自动执行",
-        "本机命令、修改和外部操作自动批准，Plan Mode 与工具边界仍生效",
-    ),
-)
+# 返回当前语言下的权限模式定义
+def permission_presets(locale: str) -> tuple[tuple[str, AuthorityProfile, str, str], ...]:
+    return tuple(
+        (
+            preset,
+            profile,
+            tr(f"permission_mode.{preset}", locale),
+            tr(f"permission_mode.{preset}_detail", locale),
+        )
+        for preset, profile in (
+            ("ask", AuthorityProfile.ASK),
+            ("accept_edits", AuthorityProfile.AUTO_REVIEW),
+            ("full_access", AuthorityProfile.FULL_ACCESS),
+        )
+    )
+
+
+_PERMISSION_PRESETS = permission_presets("zh-CN")
 
 _MODE_CYCLE = (RuntimeMode.ACT, RuntimeMode.OPERATE, RuntimeMode.PLAN)
 
@@ -470,34 +560,49 @@ class PermissionModePicker(Static):
             super().__init__()
 
     # 初始化权限模式选择器并定位当前模式
-    def __init__(self, current: str) -> None:
+    def __init__(self, current: str, *, locale: str | None = None) -> None:
         super().__init__("")
         names = [item[0] for item in _PERMISSION_PRESETS]
         self._current = current
         self._cursor = names.index(current) if current in names else 0
+        self._locale = locale or "zh-CN"
+        self._legacy_current = locale is None
 
     # 挂载后显示三种权限姿态并取得焦点
     def on_mount(self) -> None:
-        self.border_title = " Permissions "
-        self.border_subtitle = " ↑↓ move   Enter select   Esc close "
+        self.border_title = f" {tr('permission_mode.title', self._locale)} "
+        self.border_subtitle = f" {tr('permission_mode.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
 
     # 渲染当前权限模式及其安全边界
     def _render_ui(self) -> str:
-        lines = ["[bold]选择后续消息使用的权限模式[/bold]"]
+        lines = [f"[bold]{tr('permission_mode.question', self._locale)}[/bold]"]
         for index, (preset, _profile, label, detail) in enumerate(
-            _PERMISSION_PRESETS
+            permission_presets(self._locale)
         ):
             marker = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
-            current = "  [cyan]current[/cyan]" if preset == self._current else ""
+            current = (
+                "  [cyan]current[/cyan]"
+                if self._legacy_current and preset == self._current
+                else f"  [cyan]{tr('common.current', self._locale)}[/cyan]"
+                if preset == self._current
+                else ""
+            )
             style = "bold white" if index == self._cursor else "#c6cad0"
             lines.append(
                 f"{marker} [{style}]{escape(label)}[/{style}]"
                 f"  [dim]{escape(detail)}[/dim]{current}"
             )
-        lines.append("[dim]也可用 Shift+Tab 在三种权限姿态间循环[/dim]")
+        lines.append(f"[dim]{tr('permission_mode.cycle_hint', self._locale)}[/dim]")
         return "\n".join(lines)
+
+    # 切换权限模式选择器语言并立即刷新
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        self._legacy_current = False
+        if self.is_attached:
+            self.on_mount()
 
     # 处理权限模式的键盘导航、选择和关闭
     def on_key(self, event: events.Key) -> None:

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.agents.loader import AgentProfileLoader
+from code_rook.core.agents.loader import (
+    AgentProfileError,
+    AgentProfileIntegrityError,
+    AgentProfileLoader,
+    AgentProfileTrustError,
+)
 
 
 # 功能：内建 planner 角色配置应能被 AgentProfileLoader 加载
@@ -126,3 +131,180 @@ def test_list_all_profiles_uses_project_root_and_override(tmp_path: Path) -> Non
 
     assert {"planner", "executor", "reviewer"} <= set(by_name)
     assert by_name["planner"].description == "project planner"
+
+
+# 功能：验证 Agent Profile 使用严格 schema 拒绝错误类型和未知字段
+# 设计：构造 allowed_tools 字符串及额外键，直接解析并检查错误包含 profile 路径
+@pytest.mark.parametrize(
+    "agent_body",
+    [
+        'description = "bad"\nallowed_tools = "read_file"',
+        'description = "bad"\nunknown_capability = true',
+        'description = "bad"\nrestrict = "write_all"',
+    ],
+)
+def test_profile_schema_rejects_invalid_documents(
+    tmp_path: Path,
+    agent_body: str,
+) -> None:
+    path = tmp_path / "invalid.toml"
+    path.write_text(f"[agent]\n{agent_body}\n", encoding="utf-8")
+
+    with pytest.raises(AgentProfileError, match="invalid agent profile"):
+        AgentProfileLoader(tmp_path)._parse(path, "invalid")
+
+
+# 功能：验证 profile 名不能通过路径片段逃逸固定 agents 目录
+# 设计：向项目根放置可读 TOML 后用 ../ 名称加载，断言加载器在文件访问前拒绝
+def test_profile_name_rejects_path_traversal(tmp_path: Path) -> None:
+    (tmp_path / "escape.toml").write_text(
+        '[agent]\ndescription = "escape"\n',
+        encoding="utf-8",
+    )
+
+    assert AgentProfileLoader(tmp_path).load("../../escape") is None
+
+
+# 功能：验证项目 profile 暴露内容 digest、来源和未信任 provenance
+# 设计：加载项目目录中的有效 TOML，断言 digest 格式稳定且 scope/trust 不冒充 builtin
+def test_project_profile_records_digest_and_trust(tmp_path: Path) -> None:
+    agents = tmp_path / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    path = agents / "local.toml"
+    path.write_text(
+        '[agent]\ndescription = "local"\nsystem_prompt = "review"\n',
+        encoding="utf-8",
+    )
+
+    profile = AgentProfileLoader(tmp_path).load("local")
+
+    assert profile is not None
+    assert profile.scope == "project"
+    assert profile.trust == "untrusted"
+    assert profile.integrity == "unmanaged"
+    assert profile.digest.startswith("sha256:")
+    assert profile.source == str(path.resolve())
+
+
+# 功能：未信任 workspace 的项目 Profile 名称和描述不能进入模型可执行目录
+# 设计：放置同名恶意覆盖与唯一 profile，验证 builtin 回退、唯一项隐藏及直接执行拒绝
+def test_execution_catalog_hides_untrusted_project_profiles(tmp_path: Path) -> None:
+    agents = tmp_path / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "planner.toml").write_text(
+        '[agent]\ndescription = "SECRET PLANNER"\nsystem_prompt = "secret"\n',
+        encoding="utf-8",
+    )
+    (agents / "secret-worker.toml").write_text(
+        '[agent]\ndescription = "SECRET DESCRIPTION"\nsystem_prompt = "secret"\n',
+        encoding="utf-8",
+    )
+    loader = AgentProfileLoader(tmp_path)
+
+    catalog = loader.list_for_execution(workspace_trusted=False)
+    by_name = {profile.name: profile for profile in catalog}
+
+    assert by_name["planner"].scope == "builtin"
+    assert by_name["planner"].description != "SECRET PLANNER"
+    assert "secret-worker" not in by_name
+    with pytest.raises(AgentProfileTrustError, match="not trusted"):
+        loader.load_for_execution("secret-worker", workspace_trusted=False)
+
+
+# 功能：可信 workspace 可以发现严格合法的项目 Profile
+# 设计：以唯一名称写入完整 TOML，通过执行目录与严格加载两个入口确认 source 和 digest 一致
+def test_execution_catalog_allows_project_profile_in_trusted_workspace(
+    tmp_path: Path,
+) -> None:
+    agents = tmp_path / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    path = agents / "local-reviewer.toml"
+    path.write_text(
+        '[agent]\ndescription = "Local reviewer"\nsystem_prompt = "Review safely"\n'
+        'restrict = "read_only"\n',
+        encoding="utf-8",
+    )
+    loader = AgentProfileLoader(tmp_path)
+
+    catalog = loader.list_for_execution(workspace_trusted=True)
+    frozen = next(profile for profile in catalog if profile.name == "local-reviewer")
+    loaded = loader.load_for_execution(
+        "local-reviewer",
+        workspace_trusted=True,
+        expected_digest=frozen.digest,
+    )
+
+    assert loaded is not None
+    assert loaded.source == str(path.resolve())
+    assert loaded.digest == frozen.digest
+
+
+# 功能：项目 Profile 在发现后被修改时必须按冻结 digest 拒绝执行
+# 设计：先从可信目录冻结 digest，再改写 system_prompt 并用 expected_digest 严格重载
+def test_profile_digest_change_after_discovery_fails_closed(tmp_path: Path) -> None:
+    agents = tmp_path / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    path = agents / "local.toml"
+    path.write_text(
+        '[agent]\ndescription = "Local"\nsystem_prompt = "before"\n',
+        encoding="utf-8",
+    )
+    loader = AgentProfileLoader(tmp_path)
+    frozen = loader.load_for_execution("local", workspace_trusted=True)
+    assert frozen is not None
+    path.write_text(
+        '[agent]\ndescription = "Local"\nsystem_prompt = "after"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentProfileIntegrityError, match="digest changed"):
+        loader.load_for_execution(
+            "local",
+            workspace_trusted=True,
+            expected_digest=frozen.digest,
+        )
+
+
+# 功能：可信 workspace 中 schema 非法的项目 Profile 也不能进入执行目录
+# 设计：写入未知字段并同时检查 list_for_execution 隔离与严格 load 的可诊断错误
+def test_execution_catalog_rejects_invalid_project_profile(tmp_path: Path) -> None:
+    agents = tmp_path / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "invalid.toml").write_text(
+        '[agent]\ndescription = "secret"\nunknown_capability = true\n',
+        encoding="utf-8",
+    )
+    loader = AgentProfileLoader(tmp_path)
+
+    assert "invalid" not in {
+        profile.name
+        for profile in loader.list_for_execution(workspace_trusted=True)
+    }
+    with pytest.raises(AgentProfileError, match="invalid agent profile"):
+        loader.load_for_execution("invalid", workspace_trusted=True)
+
+
+# 功能：可信 workspace 也不能通过项目 Profile 符号链接读取仓库外配置
+# 设计：把 agents 下的候选链接到外部 TOML，平台支持时同时验证目录过滤和严格加载拒绝
+def test_execution_catalog_rejects_symlinked_project_profile(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.toml"
+    outside.write_text(
+        '[agent]\ndescription = "external secret"\nsystem_prompt = "external"\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "repo"
+    agents = root / ".coderook" / "agents"
+    agents.mkdir(parents=True)
+    linked = agents / "linked.toml"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("platform does not permit creating symbolic links")
+    loader = AgentProfileLoader(root)
+
+    assert "linked" not in {
+        profile.name
+        for profile in loader.list_for_execution(workspace_trusted=True)
+    }
+    with pytest.raises(AgentProfileError, match="symbolic link"):
+        loader.load_for_execution("linked", workspace_trusted=True)

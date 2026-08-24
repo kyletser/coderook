@@ -53,8 +53,8 @@ def build_system_report(config: CodeRookConfig) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     try:
         runtime: dict[str, Any] = RuntimeReconciler(
-            RuntimeStore(state_root / "runtime.db"),
-            SessionStore(state_root / "sessions"),
+            RuntimeStore(state_root / "runtime.db", migrate=False),
+            SessionStore(state_root / "sessions", initialize=False),
             workspace=Path.cwd(),
             journal_path=state_root / "runtime-repair.jsonl",
         ).inspect().model_dump(mode="json")
@@ -115,7 +115,7 @@ def cmd_system_doctor(config: CodeRookConfig, *, as_json: bool = False) -> None:
     print(f"disk free: {disk['free_percent']}%")
     runtime = report["runtime"]
     assert isinstance(runtime, dict)
-    print(f"runtime healthy: {not bool(runtime.get('issues'))}")
+    print(f"runtime healthy: {bool(runtime.get('healthy'))}")
 
 
 # 经显式确认生成默认脱敏的诊断 ZIP，不包含会话正文、凭据文件或原始 trace
@@ -155,7 +155,9 @@ async def diagnose_route(
     doctor: ProviderDoctor | None = None,
 ) -> ProviderDoctorResult:
     routes = route_store or RouteStore()
-    credentials = credential_store or CredentialStore()
+    credentials = credential_store or CredentialStore(
+        env_overlay=config.llm.credential_overlay
+    )
     registry = RouteRegistry(
         config.llm,
         route_store=routes,
@@ -180,19 +182,23 @@ def cmd_doctor(
         print(f"route:      {result.route_id}")
         print(f"status:     {result.status}")
         print(f"category:   {result.category}")
+        print(f"readiness:  {result.readiness}")
+        print(f"basic:      {result.basic.status}")
         print(f"credential: {result.credential_source}")
         if result.http_status is not None:
             print(f"http:       {result.http_status}")
         print(f"message:    {result.message}")
+        for name, check in sorted(result.capabilities.items()):
+            print(f"capability: {name}={check.status}")
     return 0 if result.status == "ok" else 1
 
 
 # 检查或幂等修复 runtime 投影一致性，并支持稳定 JSON 输出
-def cmd_runtime_doctor(*, repair: bool = False, as_json: bool = False) -> None:
+def cmd_runtime_doctor(*, repair: bool = False, as_json: bool = False) -> int:
     state_root = Path("~/.coderook").expanduser()
     reconciler = RuntimeReconciler(
-        RuntimeStore(state_root / "runtime.db"),
-        SessionStore(state_root / "sessions"),
+        RuntimeStore(state_root / "runtime.db", migrate=False),
+        SessionStore(state_root / "sessions", initialize=False),
         workspace=Path.cwd(),
         journal_path=state_root / "runtime-repair.jsonl",
     )
@@ -201,15 +207,22 @@ def cmd_runtime_doctor(*, repair: bool = False, as_json: bool = False) -> None:
     )
     if as_json:
         print(report.model_dump_json(indent=2))
-        return
-    print(f"runtime schema: {report.runtime_schema_version}")
-    print(
-        f"sessions={report.session_count} threads={report.thread_count} "
-        f"turns={report.turn_count} issues={len(report.issues)}"
-    )
-    for issue in report.issues:
-        target = issue.turn_id or issue.thread_id or "runtime"
-        repairable = " repairable" if issue.repairable else ""
-        print(f"[{issue.severity}] {issue.code} {target}{repairable}: {issue.detail}")
-    if report.repaired:
-        print(f"repaired: {', '.join(report.repaired)}")
+    else:
+        print(f"runtime schema: {report.runtime_schema_version}")
+        print(
+            f"migration backup={report.backup_status} "
+            f"provider_catalog={report.provider_catalog_status} "
+            f"credentials={report.credential_store_status} "
+            f"routes={report.route_catalog_status}"
+        )
+        print(
+            f"sessions={report.session_count} threads={report.thread_count} "
+            f"turns={report.turn_count} issues={len(report.issues)}"
+        )
+        for issue in report.issues:
+            target = issue.turn_id or issue.thread_id or "runtime"
+            repairable = " repairable" if issue.repairable else ""
+            print(f"[{issue.severity}] {issue.code} {target}{repairable}: {issue.detail}")
+        if report.repaired:
+            print(f"repaired: {', '.join(report.repaired)}")
+    return 0 if report.healthy else 1

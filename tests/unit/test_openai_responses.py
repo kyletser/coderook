@@ -20,6 +20,7 @@ async def test_responses_provider_roundtrips_function_call() -> None:
             200,
             request=request,
             json={
+                "status": "completed",
                 "output": [
                     {
                         "type": "function_call",
@@ -85,6 +86,7 @@ async def test_responses_provider_preserves_tool_result_pairing() -> None:
             200,
             request=request,
             json={
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",
@@ -169,6 +171,7 @@ async def test_responses_provider_redacts_http_error_body() -> None:
 async def test_responses_provider_streams_sse_events() -> None:
     completed_payload = json.dumps(
         {
+            "status": "completed",
             "output": [
                 {
                     "type": "message",
@@ -219,12 +222,116 @@ async def test_responses_provider_streams_sse_events() -> None:
         result = await provider.chat([], [], bus, "run-sse")
 
     tokens = [
-        getattr(event, "token")
-        for event in events
-        if type(event).__name__ == "LlmTokenEvent"
+        getattr(event, "token") for event in events if type(event).__name__ == "LlmTokenEvent"
     ]
     assert tokens == ["He", "y"]
     assert result.text == "Hey"
     assert result.thinking_blocks == [{"type": "thinking", "thinking": "plan"}]
     assert result.usage is not None
     assert result.usage.input_tokens == 5
+
+
+# 功能：验证 Responses incomplete/max_output_tokens 不会解析半截函数参数或误报成功
+# 设计：返回可见正文和非法 function_call，断言只保留正文且统一映射为 length
+async def test_responses_incomplete_length_discards_partial_function_call() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "partial"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "partial-call",
+                        "name": "read_file",
+                        "arguments": '{"path":',
+                    },
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAIResponsesProvider(
+            "gpt-test",
+            base_url="https://api.example/v1/responses",
+            api_key="secret-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-incomplete")
+
+    assert result.text == "partial"
+    assert result.completion_status == "length"
+    assert result.stop_reason == "max_tokens"
+    assert result.tool_calls == []
+
+
+# 功能：验证 Responses SSE 缺少任何终止事件时分类为 transport_error
+# 设计：流只含文本 delta 后 EOF，断言部分文本可诊断但不能成为 completed 结果
+async def test_responses_sse_early_eof_is_transport_error() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=b'data: {"type":"response.output_text.delta","delta":"part"}\n\n',
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAIResponsesProvider(
+            "gpt-test",
+            base_url="https://api.example/v1/responses",
+            api_key="secret-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-eof")
+
+    assert result.text == "part"
+    assert result.completion_status == "transport_error"
+    assert result.stop_reason == "transport_error"
+
+
+# 功能：验证 Responses 响应缺少显式 status 时严格失败关闭并丢弃函数调用
+# 设计：返回语法完整的危险工具调用但省略 status，断言可见正文保留且调用绝不进入执行链
+async def test_responses_missing_status_discards_function_call() -> None:
+    # 返回故意省略 status 但含有效函数调用的响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "untrusted"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-missing-status",
+                        "name": "bash",
+                        "arguments": '{"command":"echo unsafe"}',
+                    },
+                ],
+                "usage": {},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAIResponsesProvider(
+            "gpt-test",
+            base_url="https://api.example/v1/responses",
+            api_key="secret-key",
+            client=client,
+        )
+        result = await provider.chat([], [], EventBus(), "run-missing-status")
+
+    assert result.text == "untrusted"
+    assert result.completion_status == "transport_error"
+    assert result.completion_reason == "missing_response_status"
+    assert result.tool_calls == []

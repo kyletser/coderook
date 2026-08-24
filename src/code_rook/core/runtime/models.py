@@ -16,6 +16,8 @@ from code_rook.core.authority.models import (
 )
 from code_rook.core.llm.routes import RouteReceipt
 
+RUNTIME_RECORD_SCHEMA_VERSION = 1
+
 
 class ThreadStatus(StrEnum):
     IDLE = "idle"
@@ -57,7 +59,7 @@ class ThreadRecord(BaseModel):
     default_route_id: str | None = None
     created_at: datetime
     updated_at: datetime
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: Literal[1] = 1
 
 
 class TurnRecord(BaseModel):
@@ -83,7 +85,7 @@ class TurnRecord(BaseModel):
     boot_id: str | None = None
     created_at: datetime
     updated_at: datetime
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: Literal[1] = 1
 
     @property
     # 返回 turn 启动时冻结的有效 authority 快照
@@ -106,7 +108,7 @@ class TurnItemRecord(BaseModel):
     payload: dict[str, JsonValue] = Field(default_factory=dict)
     tool_call_id: str | None = None
     created_at: datetime
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: Literal[1] = 1
 
     @model_validator(mode="after")
     # 校验工具调用与工具结果都携带稳定的调用标识
@@ -128,7 +130,7 @@ class RuntimeEventRecord(BaseModel):
     type: str = Field(min_length=1)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
     ts: datetime
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: Literal[1] = 1
 
 
 class SessionFacadeRecord(BaseModel):
@@ -137,3 +139,4 @@ class SessionFacadeRecord(BaseModel):
     thread_id: str = Field(min_length=1)
     mode: Literal["one_shot", "chat"]
     parent_thread_id: str | None = None
+    schema_version: Literal[1] = 1

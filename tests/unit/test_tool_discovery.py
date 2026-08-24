@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -8,11 +9,13 @@ import pytest
 from pydantic import BaseModel
 
 from code_rook.core.artifacts import ArtifactStore
+from code_rook.core.authority import ToolAction
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.mcp.client import McpClient, McpToolDef
 from code_rook.core.mcp.tool import McpTool
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
+from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.discovery import ToolSearchTool
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
@@ -48,7 +51,7 @@ class _MediumTool(BaseTool):
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         return ToolResult("large-output-" * 3_000)
 
-    # 使用小型测试边界证明 soft 到 hard 之间只摘要而不落 artifact
+    # 使用小型测试边界证明任何摘要都附带可继续读取的 artifact
     def build_spec(self) -> ToolSpec:
         return super().build_spec().model_copy(
             update={
@@ -58,6 +61,25 @@ class _MediumTool(BaseTool):
                     spill_to_artifact=True,
                 )
             }
+        )
+
+
+# 功能：子运行的 authority ceiling 同时裁剪工具 schema 与直接调用目录
+# 设计：只允许 READ 后注册读工具和 Shell，断言模型不可见 Shell 且内部解析也失败
+def test_registry_authority_ceiling_filters_catalog_and_execution() -> None:
+    registry = ToolRegistry(
+        allowed_authority_actions=frozenset({ToolAction.READ})
+    )
+    registry.register(_MediumTool())
+    registry.register(BashTool())
+
+    assert [schema["name"] for schema in registry.tool_schemas()] == ["medium"]
+    assert registry.get("bash") is None
+    with pytest.raises(ToolCatalogError, match="unknown tool"):
+        registry.resolve_call(
+            "bash",
+            {"command": "echo must-not-run"},
+            caller=ToolCaller.INTERNAL,
         )
 
 
@@ -130,9 +152,9 @@ async def test_tool_search_respects_model_visible_limit() -> None:
     assert len(registry.tool_schemas()) == registry.model_tool_limit == 2
 
 
-# 功能：验证 soft 到 hard 之间只返回 typed summary，不提前创建 artifact
-# 设计：使用自定义窄边界工具，经统一入口执行后检查摘要结构和空 artifact 目录
-async def test_medium_tool_output_returns_summary_without_artifact(tmp_path: Path) -> None:
+# 功能：验证 soft 到 hard 之间的 typed summary 也必须附带完整 Artifact
+# 设计：使用自定义窄边界工具，恢复 artifact 原文以证明摘要没有造成不可逆数据丢失
+async def test_medium_tool_output_summary_has_recoverable_artifact(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(_MediumTool())
     store = ArtifactStore(tmp_path / ".coderook" / "artifacts")
@@ -145,11 +167,41 @@ async def test_medium_tool_output_returns_summary_without_artifact(tmp_path: Pat
         artifact_store=store,
     )
     payload = json.loads(result.content)
+    reference = payload["artifact"]
+    restored = await store.read(reference["sha256"], limit=50_000)
 
     assert payload["kind"] == "tool_output_summary"
     assert payload["truncated"] is True
-    assert "artifact" not in payload
-    assert not (tmp_path / ".coderook" / "artifacts").exists()
+    assert reference["handle"] == f"artifact:{reference['sha256']}"
+    assert restored.content == "large-output-" * 3_000
+
+
+# 功能：验证前台 Bash 的 10MB 无换行输出分块读取并完整转存可分页 Artifact
+# 设计：让当前 Python 写固定字节流，经统一 invocation 恢复全量，覆盖 communicate OOM 回归
+async def test_large_bash_output_is_bounded_and_recoverable(tmp_path: Path) -> None:
+    size = 10 * 1024 * 1024
+    command = (
+        f'"{sys.executable}" -c "import sys;'
+        f"sys.stdout.buffer.write(b'x'*{size})\""
+    )
+    registry = ToolRegistry()
+    registry.register(BashTool(tmp_path))
+    store = ArtifactStore(tmp_path / ".coderook" / "artifacts")
+
+    result = await invoke_tool(
+        registry,
+        ToolCallBlock(id="bash-large-1", name="bash", input={"command": command}),
+        EventBus(),
+        "run-bash-large",
+        artifact_store=store,
+    )
+    payload = json.loads(result.content)
+    reference = payload["artifact"]
+    restored = await store.read_bytes(reference["sha256"], max_bytes=size + 1)
+
+    assert payload["kind"] == "tool_output_summary"
+    assert reference["size"] == size
+    assert restored == b"x" * size
 
 
 # 功能：验证超大 MCP 输出不直接进入 prompt/event，而是保存为可校验 artifact

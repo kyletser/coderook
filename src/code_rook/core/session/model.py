@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 SessionStatus = Literal["active", "waiting_for_input", "interrupted", "closed"]
 SessionMode = Literal["one_shot", "chat"]
 SESSION_SCHEMA_VERSION = 2
+SESSION_ID_PATTERN = re.compile(r"^sess-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+class UnsupportedSessionSchemaError(ValueError):
+    pass
 
 
 @dataclass
@@ -38,26 +44,57 @@ class Session:
     # 从 meta.json 的 dict 还原 Session 对象
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Session:
-        schema_version = int(data.get("schema_version", 0))
+        raw_version = data.get("schema_version", 1)
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            raise ValueError("invalid session schema version")
+        schema_version = raw_version
         if schema_version > SESSION_SCHEMA_VERSION:
-            raise ValueError(
+            raise UnsupportedSessionSchemaError(
                 "session schema "
                 f"{schema_version} is newer than supported {SESSION_SCHEMA_VERSION}"
             )
-        if schema_version < 0:
+        if schema_version < 1:
             raise ValueError(f"invalid session schema version: {schema_version}")
+        session_id = data.get("id")
+        mode = data.get("mode")
+        status = data.get("status")
+        title = data.get("title", "")
+        created_at = data.get("created_at")
+        updated_at = data.get("updated_at")
+        run_ids = data.get("run_ids", [])
+        parent_session_id = data.get("parent_session_id")
+        workspace = data.get("workspace", "")
+        if not isinstance(session_id, str) or SESSION_ID_PATTERN.fullmatch(session_id) is None:
+            raise ValueError("invalid session id")
+        if mode not in {"one_shot", "chat"}:
+            raise ValueError("invalid session mode")
+        if status not in {"active", "waiting_for_input", "interrupted", "closed"}:
+            raise ValueError("invalid session status")
+        if not isinstance(title, str):
+            raise ValueError("invalid session title")
+        if not isinstance(created_at, str) or not created_at:
+            raise ValueError("invalid session created_at")
+        if not isinstance(updated_at, str) or not updated_at:
+            raise ValueError("invalid session updated_at")
+        if not isinstance(run_ids, list) or not all(
+            isinstance(run_id, str) and run_id for run_id in run_ids
+        ):
+            raise ValueError("invalid session run_ids")
+        if parent_session_id is not None and (
+            not isinstance(parent_session_id, str)
+            or SESSION_ID_PATTERN.fullmatch(parent_session_id) is None
+        ):
+            raise ValueError("invalid parent session id")
+        if not isinstance(workspace, str):
+            raise ValueError("invalid session workspace")
         return cls(
-            id=str(data["id"]),
-            mode=data["mode"],
-            status=data["status"],
-            title=str(data.get("title", "")),
-            created_at=str(data["created_at"]),
-            updated_at=str(data["updated_at"]),
-            run_ids=[str(x) for x in data.get("run_ids", [])],
-            parent_session_id=(
-                str(data["parent_session_id"])
-                if data.get("parent_session_id") is not None
-                else None
-            ),
-            workspace=str(data.get("workspace", "")),
+            id=session_id,
+            mode=mode,
+            status=status,
+            title=title,
+            created_at=created_at,
+            updated_at=updated_at,
+            run_ids=list(run_ids),
+            parent_session_id=parent_session_id,
+            workspace=workspace,
         )

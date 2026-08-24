@@ -165,6 +165,11 @@ def test_receipt_builds_from_durable_records_only() -> None:
     assert receipt.tool_call_count == 1
     assert receipt.approvals.model_dump() == {"requested": 1, "granted": 1, "denied": 0}
     assert receipt.files_changed == ["src/main.py"]
+    assert receipt.changes[0].model_dump() == {
+        "path": "src/main.py",
+        "additions": None,
+        "deletions": None,
+    }
     assert {item["checkpoint_id"] for item in receipt.checkpoints} == {"cp-1", "cp-output"}
     assert {item["uri"] for item in receipt.artifacts} == {
         "artifact://report",
@@ -183,7 +188,7 @@ def test_receipt_builds_from_durable_records_only() -> None:
         "peak_memory_bytes": 4096,
         "process_count": 2,
     }
-    assert receipt.unavailable == ["cost"]
+    assert receipt.unavailable == ["cost", "change_line_stats"]
 
 
 # 功能：Receipt 从默认 File action-family 准确识别写入路径且忽略只读调用
@@ -240,6 +245,134 @@ def test_receipt_tracks_mutating_file_family_actions_only() -> None:
     receipt = build_turn_receipt(turn, items, [])
 
     assert receipt.files_changed == ["src/changed.py"]
+    assert receipt.changes[0].path == "src/changed.py"
+
+
+# 功能：Receipt 只把成功文件工具的结构化结果计入逐文件增删行证据
+# 设计：串联 write 与 patch 两种结果格式并聚合同一路径，覆盖 deletions/removals 字段兼容
+def test_receipt_aggregates_successful_change_line_stats() -> None:
+    turn = TurnRecord(
+        id="turn-stats",
+        thread_id="thread-stats",
+        status=TurnStatus.COMPLETED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    items = [
+        TurnItemRecord(
+            id="call-write",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="write-1",
+            payload={"tool_name": "write_file", "params": {"path": "src/main.py"}},
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-write",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="write-1",
+            payload={
+                "tool_name": "write_file",
+                "output": (
+                    '{"path":"src/main.py","additions":3,"deletions":1}'
+                ),
+            },
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="call-patch",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="patch-1",
+            payload={"tool_name": "apply_patch", "params": {"patch": "..."}},
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-patch",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="patch-1",
+            payload={
+                "tool_name": "apply_patch",
+                "output": (
+                    '{"files":[{"path":"src/main.py","additions":2,'
+                    '"removals":4}]}'
+                ),
+            },
+            created_at=_now(),
+        ),
+    ]
+
+    receipt = build_turn_receipt(turn, items, [])
+
+    assert receipt.files_changed == ["src/main.py"]
+    assert receipt.changes[0].model_dump() == {
+        "path": "src/main.py",
+        "additions": 5,
+        "deletions": 5,
+    }
+    assert "change_line_stats" not in receipt.unavailable
+
+
+# 功能：失败写调用和 apply_patch dry-run 不得伪装成已发生的工作区修改
+# 设计：失败结果使用真实 error_class 形态，dry-run 即使返回 output 也必须被调用参数排除
+def test_receipt_excludes_failed_and_dry_run_mutations() -> None:
+    turn = TurnRecord(
+        id="turn-no-change",
+        thread_id="thread-no-change",
+        status=TurnStatus.FAILED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    items = [
+        TurnItemRecord(
+            id="call-failed",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="failed-1",
+            payload={"tool_name": "write_file", "params": {"path": "bad.py"}},
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-failed",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="failed-1",
+            payload={"tool_name": "write_file", "error_class": "runtime_error"},
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="call-dry",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_CALL,
+            tool_call_id="dry-1",
+            payload={
+                "tool_name": "apply_patch",
+                "params": {"patch": "...", "dry_run": True},
+            },
+            created_at=_now(),
+        ),
+        TurnItemRecord(
+            id="result-dry",
+            turn_id=turn.id,
+            kind=TurnItemKind.TOOL_RESULT,
+            tool_call_id="dry-1",
+            payload={
+                "tool_name": "apply_patch",
+                "output": (
+                    '{"files":[{"path":"preview.py","additions":1,'
+                    '"removals":0}],"dry_run":true}'
+                ),
+            },
+            created_at=_now(),
+        ),
+    ]
+
+    receipt = build_turn_receipt(turn, items, [])
+
+    assert receipt.files_changed == []
+    assert receipt.changes == []
 
 
 # 功能：验证缺少可选事实时 receipt 明确报告 unavailable 而不伪造空值含义
@@ -261,9 +394,45 @@ def test_receipt_marks_unavailable_facts_explicitly() -> None:
         "usage",
         "cost",
         "files_changed",
+        "changes",
         "checkpoints",
         "artifacts",
         "workers",
         "verification",
         "context_selection",
     }
+
+
+# 功能：验证 TurnReceipt 从 durable run.finished 保留结构化终止语义和安全失败分类
+# 设计：让 Turn 状态只能表达 failed，而事件提供 incomplete，断言离线收据仍可恢复精确原因
+def test_receipt_preserves_structured_run_outcome() -> None:
+    now = _now()
+    turn = TurnRecord(
+        id="turn-incomplete",
+        thread_id="thread-incomplete",
+        status=TurnStatus.FAILED,
+        created_at=now,
+        updated_at=now,
+    )
+    events = [
+        RuntimeEventRecord(
+            thread_id=turn.thread_id,
+            turn_id=turn.id,
+            seq=1,
+            type="run.finished",
+            payload={
+                "status": "failed",
+                "outcome": "incomplete",
+                "failure_category": "model",
+                "result_summary": "generation stopped before completion",
+            },
+            ts=now,
+        )
+    ]
+
+    receipt = build_turn_receipt(turn, [], events)
+
+    assert receipt.outcome == "incomplete"
+    assert receipt.failure_category == "model"
+    assert receipt.error_classification == "model"
+    assert receipt.result_summary == "generation stopped before completion"

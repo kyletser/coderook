@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -124,19 +124,56 @@ def _apply_v2(connection: sqlite3.Connection) -> None:
     )
 
 
-# 为 turn 增加冻结的 trust、sandbox 与 action scope
+# 返回指定表当前的列名集合，供可重入迁移判断部分完成状态
+def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+# 仅在列不存在时执行固定迁移 SQL，使崩溃后的同版本重试保持幂等
+def _add_column_if_missing(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    if column in _column_names(connection, table):
+        return
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+# 为 turn 幂等增加冻结的 trust、sandbox 与 action scope
 def _apply_v3(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        ALTER TABLE runtime_turns
-            ADD COLUMN workspace_trust TEXT NOT NULL DEFAULT 'untrusted';
-        ALTER TABLE runtime_turns
-            ADD COLUMN sandbox_json TEXT NOT NULL
-            DEFAULT '{"available":false,"kind":"none","reason":"legacy turn"}';
-        ALTER TABLE runtime_turns
-            ADD COLUMN allowed_actions_json TEXT NOT NULL
-            DEFAULT '["read","mutate","shell","external"]';
-        """
+    _add_column_if_missing(
+        connection,
+        "runtime_turns",
+        "workspace_trust",
+        "TEXT NOT NULL DEFAULT 'untrusted'",
+    )
+    _add_column_if_missing(
+        connection,
+        "runtime_turns",
+        "sandbox_json",
+        "TEXT NOT NULL DEFAULT "
+        "'{\"available\":false,\"kind\":\"none\",\"reason\":\"legacy turn\"}'",
+    )
+    _add_column_if_missing(
+        connection,
+        "runtime_turns",
+        "allowed_actions_json",
+        "TEXT NOT NULL DEFAULT '[\"read\",\"mutate\",\"shell\",\"external\"]'",
+    )
+
+
+# 为 session facade 幂等增加逐行 schema 版本以阻断未来记录被旧版覆盖
+def _apply_v4(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection,
+        "runtime_session_facades",
+        "schema_version",
+        "INTEGER NOT NULL DEFAULT 1",
     )
 
 
@@ -161,3 +198,7 @@ def migrate_database(path: Path) -> None:
         if version == 2:
             _apply_v3(connection)
             connection.execute("PRAGMA user_version = 3")
+            version = 3
+        if version == 3:
+            _apply_v4(connection)
+            connection.execute("PRAGMA user_version = 4")

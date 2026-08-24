@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 7437
@@ -52,6 +53,8 @@ class LlmConfig:
     router_cost_fallback: str = ""
     base_url: str = ""
     api_key_env: str = "ANTHROPIC_API_KEY"
+    # 仅保存用户显式 --env-file 的进程内凭据覆盖，不写回全局环境或日志
+    credential_overlay: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -119,21 +122,53 @@ class CodeRookConfig:
     mcp: McpConfig = field(default_factory=McpConfig)
 
 
-# 构建并返回运行时配置：默认值 → 全局 TOML → 项目本地 TOML → .env → 系统环境变量（后者优先级最高）
-def get_config() -> CodeRookConfig:
+# 读取用户显式指定的 env 文件，但禁止其间接选择 TOML 配置路径
+def _load_explicit_env_file(env_file: str | Path | None) -> dict[str, str]:
+    if env_file is None:
+        return {}
+    path = Path(env_file).expanduser()
+    if not path.is_file():
+        raise SystemExit(f"Config error: env file does not exist: {path}")
+    values = dotenv_values(path, interpolate=False)
+    if "CODEROOK_CONFIG" in values:
+        raise SystemExit(
+            "Config error: CODEROOK_CONFIG is only accepted from the process environment"
+        )
+    return {
+        key: value
+        for key, value in values.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+# 判断候选路径是否为当前工作区的标准项目配置，显式路径也不能绕过项目安全约束
+def _is_project_config_path(path: Path, project_path: Path) -> bool:
+    try:
+        return path.resolve(strict=False) == project_path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+# 构建运行时配置：默认值 → 全局 TOML → 项目 TOML → 显式 env 文件 → 用户进程环境
+def get_config(
+    *,
+    env_file: str | Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> CodeRookConfig:
     config = CodeRookConfig()
 
-    # .env 必须在读取 CODEROOK_CONFIG 之前加载，以便 .env 中的 CODEROOK_CONFIG 能影响 TOML 路径
-    load_dotenv(".env", override=False)
+    process_env = os.environ if environ is None else environ
+    file_env = _load_explicit_env_file(env_file)
 
     # 若显式指定 CODEROOK_CONFIG，只读该文件；否则按优先级叠加：全局 → 项目本地
-    explicit = os.environ.get("CODEROOK_CONFIG")
+    explicit = process_env.get("CODEROOK_CONFIG")
+    project_path = Path(".coderook/config.toml")
     if explicit:
         config_paths = [Path(explicit).expanduser()]
     else:
         config_paths = [
             Path(_DEFAULT_CONFIG_PATH).expanduser(),
-            Path(".coderook/config.toml"),
+            project_path,
         ]
 
     for config_path in config_paths:
@@ -143,24 +178,31 @@ def get_config() -> CodeRookConfig:
                     data = tomllib.load(f)
             except tomllib.TOMLDecodeError as e:
                 raise SystemExit(f"Config parse error ({config_path}): {e}") from e
-            if not explicit and config_path == Path(".coderook/config.toml"):
-                _reject_project_route_settings(data, config_path)
+            if _is_project_config_path(config_path, project_path):
+                _reject_project_sensitive_settings(data, config_path)
             _apply_toml(config, data)
 
-    _apply_env(config)
+    merged_env = dict(file_env)
+    merged_env.update(process_env)
+    _apply_env(config, merged_env)
+    config.llm.credential_overlay = dict(file_env)
     return config
 
 
-# 拒绝项目配置选择 provider、外部端点或凭据引用，防止仓库内容重定向密钥
-def _reject_project_route_settings(data: dict[str, Any], path: Path) -> None:
-    llm = data.get("llm")
-    if not isinstance(llm, dict):
-        return
-    forbidden = {"provider", "base_url", "api_key_env", "active_route_id"} & set(llm)
-    if forbidden:
-        names = ", ".join(sorted(forbidden))
+# 仅允许项目配置修改无外部副作用的行为参数，拒绝端点、进程、路径和凭据来源
+def _reject_project_sensitive_settings(data: dict[str, Any], path: Path) -> None:
+    allowed_sections = {"agent", "compaction", "logging"}
+    forbidden_sections = set(data) - allowed_sections
+    if forbidden_sections:
+        names = ", ".join(sorted(forbidden_sections))
         raise SystemExit(
-            f"Config error ({path}): project [llm] cannot set route security keys: {names}"
+            f"Config error ({path}): project config cannot set security-sensitive "
+            f"sections: {names}"
+        )
+    logging = data.get("logging")
+    if isinstance(logging, dict) and "file" in logging:
+        raise SystemExit(
+            f"Config error ({path}): project [logging] cannot set output file paths"
         )
 
 
@@ -493,32 +535,32 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             config.mcp.servers.append(s)
 
 
-# 用 CODEROOK_* 环境变量覆盖 config 中对应字段（若变量已设置）
-def _apply_env(config: CodeRookConfig) -> None:
-    host = os.environ.get("CODEROOK_HOST")
+# 用可信来源合并后的 CODEROOK_* 环境映射覆盖 config 中对应字段
+def _apply_env(config: CodeRookConfig, environ: Mapping[str, str]) -> None:
+    host = environ.get("CODEROOK_HOST")
     if host is not None:
         config.host = host
 
-    port_str = os.environ.get("CODEROOK_PORT")
+    port_str = environ.get("CODEROOK_PORT")
     if port_str is not None:
         try:
             config.port = int(port_str)
         except ValueError:
             raise SystemExit(f"Config error: CODEROOK_PORT must be an integer, got: {port_str!r}")
 
-    ipc_token_file = os.environ.get("CODEROOK_IPC_TOKEN_FILE")
+    ipc_token_file = environ.get("CODEROOK_IPC_TOKEN_FILE")
     if ipc_token_file is not None:
         if not ipc_token_file.strip():
             raise SystemExit("Config error: CODEROOK_IPC_TOKEN_FILE must not be empty")
         config.ipc_token_file = ipc_token_file
 
-    api_host = os.environ.get("CODEROOK_API_HOST")
+    api_host = environ.get("CODEROOK_API_HOST")
     if api_host is not None:
         if not api_host.strip():
             raise SystemExit("Config error: CODEROOK_API_HOST must not be empty")
         config.api.host = api_host
 
-    api_port = os.environ.get("CODEROOK_API_PORT")
+    api_port = environ.get("CODEROOK_API_PORT")
     if api_port is not None:
         try:
             config.api.port = int(api_port)
@@ -530,23 +572,32 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {api_port!r}"
             ) from None
 
-    api_token = os.environ.get("CODEROOK_API_TOKEN")
+    api_token = environ.get("CODEROOK_API_TOKEN")
     if api_token is not None:
-        config.api.token = api_token
+        if not api_token.strip():
+            config.api.token = ""
+        elif api_token != api_token.strip() or any(
+            character.isspace() for character in api_token
+        ):
+            raise SystemExit(
+                "Config error: CODEROOK_API_TOKEN must not contain whitespace"
+            )
+        else:
+            config.api.token = api_token
 
-    log_level = os.environ.get("CODEROOK_LOG_LEVEL")
+    log_level = environ.get("CODEROOK_LOG_LEVEL")
     if log_level is not None:
         config.logging.level = log_level
 
-    log_file = os.environ.get("CODEROOK_LOG_FILE")
+    log_file = environ.get("CODEROOK_LOG_FILE")
     if log_file is not None:
         config.logging.file = log_file
 
-    log_format = os.environ.get("CODEROOK_LOG_FORMAT")
+    log_format = environ.get("CODEROOK_LOG_FORMAT")
     if log_format is not None:
         config.logging.format = log_format
 
-    max_steps_str = os.environ.get("CODEROOK_MAX_STEPS")
+    max_steps_str = environ.get("CODEROOK_MAX_STEPS")
     if max_steps_str is not None:
         try:
             val = int(max_steps_str)
@@ -561,39 +612,39 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"Config error: CODEROOK_MAX_STEPS must be an integer, got: {max_steps_str!r}"
             )
 
-    default_model = os.environ.get("CODEROOK_LLM_DEFAULT_MODEL")
+    default_model = environ.get("CODEROOK_LLM_DEFAULT_MODEL")
     if default_model is not None:
         config.llm.default_model = default_model
 
-    llm_provider = os.environ.get("CODEROOK_LLM_PROVIDER")
+    llm_provider = environ.get("CODEROOK_LLM_PROVIDER")
     if llm_provider is not None:
         config.llm.provider = llm_provider
 
-    llm_base_url = os.environ.get("CODEROOK_LLM_BASE_URL")
+    llm_base_url = environ.get("CODEROOK_LLM_BASE_URL")
     if llm_base_url is not None:
         config.llm.base_url = llm_base_url
 
-    llm_api_key_env = os.environ.get("CODEROOK_LLM_API_KEY_ENV")
+    llm_api_key_env = environ.get("CODEROOK_LLM_API_KEY_ENV")
     if llm_api_key_env is not None:
         config.llm.api_key_env = llm_api_key_env
 
-    trace_enabled = os.environ.get("CODEROOK_TRACE_ENABLED")
+    trace_enabled = environ.get("CODEROOK_TRACE_ENABLED")
     if trace_enabled is not None:
         config.trace.enabled = trace_enabled.lower() not in ("0", "false", "no")
 
-    trace_file = os.environ.get("CODEROOK_TRACE_FILE")
+    trace_file = environ.get("CODEROOK_TRACE_FILE")
     if trace_file is not None:
         config.trace.file = trace_file
 
-    trace_payload = os.environ.get("CODEROOK_TRACE_INCLUDE_LLM_PAYLOAD")
+    trace_payload = environ.get("CODEROOK_TRACE_INCLUDE_LLM_PAYLOAD")
     if trace_payload is not None:
         config.trace.include_llm_payload = trace_payload.lower() not in ("0", "false", "no")
 
-    trace_event_payload = os.environ.get("CODEROOK_TRACE_INCLUDE_PAYLOAD")
+    trace_event_payload = environ.get("CODEROOK_TRACE_INCLUDE_PAYLOAD")
     if trace_event_payload is not None:
         config.trace.include_payload = trace_event_payload.lower() not in ("0", "false", "no")
 
-    trace_max_bytes = os.environ.get("CODEROOK_TRACE_MAX_BYTES")
+    trace_max_bytes = environ.get("CODEROOK_TRACE_MAX_BYTES")
     if trace_max_bytes is not None:
         try:
             config.trace.max_bytes = int(trace_max_bytes)
@@ -605,7 +656,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {trace_max_bytes!r}"
             ) from None
 
-    trace_backup_count = os.environ.get("CODEROOK_TRACE_BACKUP_COUNT")
+    trace_backup_count = environ.get("CODEROOK_TRACE_BACKUP_COUNT")
     if trace_backup_count is not None:
         try:
             config.trace.backup_count = int(trace_backup_count)
@@ -617,7 +668,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {trace_backup_count!r}"
             ) from None
 
-    perm_timeout = os.environ.get("CODEROOK_PERMISSION_TIMEOUT_S")
+    perm_timeout = environ.get("CODEROOK_PERMISSION_TIMEOUT_S")
     if perm_timeout is not None:
         try:
             perm_timeout_val = float(perm_timeout)
@@ -633,7 +684,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {perm_timeout!r}"
             )
 
-    compact_threshold = os.environ.get("CODEROOK_COMPACT_THRESHOLD")
+    compact_threshold = environ.get("CODEROOK_COMPACT_THRESHOLD")
     if compact_threshold is not None:
         try:
             compact_threshold_val = float(compact_threshold)
@@ -649,7 +700,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {compact_threshold!r}"
             )
 
-    compact_retain_ratio = os.environ.get("CODEROOK_COMPACT_RETAIN_RATIO")
+    compact_retain_ratio = environ.get("CODEROOK_COMPACT_RETAIN_RATIO")
     if compact_retain_ratio is not None:
         try:
             compact_retain_ratio_val = float(compact_retain_ratio)
@@ -665,7 +716,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {compact_retain_ratio!r}"
             )
 
-    compact_tool_limit = os.environ.get("CODEROOK_COMPACT_TOOL_LIMIT")
+    compact_tool_limit = environ.get("CODEROOK_COMPACT_TOOL_LIMIT")
     if compact_tool_limit is not None:
         try:
             compact_tool_limit_val = int(compact_tool_limit)
@@ -681,7 +732,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {compact_tool_limit!r}"
             )
 
-    compact_tool_keep = os.environ.get("CODEROOK_COMPACT_TOOL_KEEP")
+    compact_tool_keep = environ.get("CODEROOK_COMPACT_TOOL_KEEP")
     if compact_tool_keep is not None:
         try:
             compact_tool_keep_val = int(compact_tool_keep)
@@ -697,7 +748,7 @@ def _apply_env(config: CodeRookConfig) -> None:
                 f"got: {compact_tool_keep!r}"
             )
 
-    compact_tool_summary = os.environ.get("CODEROOK_COMPACT_TOOL_SUMMARY_THRESHOLD")
+    compact_tool_summary = environ.get("CODEROOK_COMPACT_TOOL_SUMMARY_THRESHOLD")
     if compact_tool_summary is not None:
         try:
             compact_tool_summary_val = int(compact_tool_summary)

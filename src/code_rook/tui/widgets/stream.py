@@ -12,6 +12,7 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
+from code_rook.tui.product import tr
 from code_rook.tui.widgets import _params_str, _tool_action_text
 
 
@@ -38,15 +39,19 @@ class LLMStreamBlock(Widget):
     """
 
     # 初始化为空文本块
-    def __init__(self) -> None:
+    def __init__(self, *, locale: str = "zh-CN") -> None:
         super().__init__()
         self._text = ""
         self._finalized = False
         self._kind = "working"
+        self._locale = locale
 
     # 根据流式与折叠状态生成思考区标题
     def _header(self) -> str:
-        state = "深度思考" if self._finalized else "思考中"
+        state = tr(
+            "stream.thought" if self._finalized else "stream.thinking",
+            self._locale,
+        )
         chevron = "›" if "collapsed" in self.classes else "⌄"
         return f"[#7f8996]◉[/#7f8996] [#8e98a5]{state}[/#8e98a5]  [dim]{chevron}[/dim]"
 
@@ -93,6 +98,12 @@ class LLMStreamBlock(Widget):
         if self.is_attached:
             self.refresh(recompose=True)
 
+    # 切换思考块语言并刷新标题
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.refresh(recompose=True)
+
     # 点击思考标题时折叠或展开正文，最终回答不参与折叠
     def on_click(self, event: events.Click) -> None:
         if "answer" in self.classes:
@@ -130,7 +141,13 @@ class ToolCallBlock(Widget):
     """
 
     # 初始化工具调用信息
-    def __init__(self, tool_name: str, params: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        *,
+        locale: str | None = None,
+    ) -> None:
         super().__init__()
         self._tool_name = tool_name
         self._params = params
@@ -139,6 +156,8 @@ class ToolCallBlock(Widget):
         self._elapsed_ms = 0
         self._is_error = False
         self._finished = False
+        self._locale = locale or "zh-CN"
+        self._legacy_detail = locale is None
 
     def compose(self) -> ComposeResult:
         yield Static(self._summary(), classes="summary")
@@ -149,14 +168,29 @@ class ToolCallBlock(Widget):
     def _summary(self) -> str:
         if self._is_error:
             icon = "[bold red]×[/bold red]"
-            attempted = _tool_action_text(self._tool_name, self._params, finished=False)
-            action = f"执行失败：{attempted}"
+            attempted = _tool_action_text(
+                self._tool_name,
+                self._params,
+                finished=False,
+                locale=self._locale,
+            )
+            action = tr("stream.failed_action", self._locale, action=attempted)
         elif self._finished:
             icon = "[green]✓[/green]"
-            action = _tool_action_text(self._tool_name, self._params, finished=True)
+            action = _tool_action_text(
+                self._tool_name,
+                self._params,
+                finished=True,
+                locale=self._locale,
+            )
         else:
             icon = "[bold cyan]◌[/bold cyan]"
-            action = _tool_action_text(self._tool_name, self._params, finished=False)
+            action = _tool_action_text(
+                self._tool_name,
+                self._params,
+                finished=False,
+                locale=self._locale,
+            )
         chevron = ""
         if self._finished:
             chevron = (
@@ -174,14 +208,34 @@ class ToolCallBlock(Widget):
             input_text = str(self._params.get("command", ""))
         else:
             input_text = self._params_full
-        result_label = "Error" if self._is_error else "Response"
-        status = "失败" if self._is_error else "成功"
+        result_label = (
+            ("Error" if self._is_error else "Response")
+            if self._legacy_detail
+            else tr(
+                "stream.error" if self._is_error else "stream.response",
+                self._locale,
+            )
+        )
+        status = tr(
+            "stream.failed" if self._is_error else "stream.success",
+            self._locale,
+        )
         parts = [
             f"{self._tool_name}\n{input_text}",
-            f"{result_label}\n{self._output.strip() or '(no output)'}",
+            f"{result_label}\n{self._output.strip() or tr('stream.no_output', self._locale)}",
             f"{'×' if self._is_error else '✓'} {status} · {self._elapsed_ms} ms",
         ]
         return "\n\n".join(parts)
+
+    # 切换工具调用块语言并刷新摘要和已展开详情
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        self._legacy_detail = False
+        if not self.children:
+            return
+        self.query_one(".summary", Static).update(self._summary())
+        if "expanded" in self.classes:
+            self.query_one(".detail-content", Static).update(self._detail_text())
 
     # 工具调用完成时先更新持久状态，再在已挂载时刷新可见控件
     def set_result(self, output: str, elapsed_ms: int, *, is_error: bool = False) -> None:
@@ -227,34 +281,36 @@ class ToolStepGroup(Widget):
     """
 
     # 初始化空步骤组并记录 step 编号
-    def __init__(self, step: int) -> None:
+    def __init__(self, step: int, *, locale: str = "zh-CN") -> None:
         super().__init__()
         self.step = step
         self._blocks: list[ToolCallBlock] = []
+        self._locale = locale
 
     # 按工具种类聚合同一步的自然动作摘要
     def _action_summary(self) -> str:
         names = [block._tool_name for block in self._blocks]
         labels: list[str] = []
         categories = (
-            ({"bash", "background_run"}, "运行了命令", "运行了 {count} 条命令"),
-            ({"read_file", "list_dir"}, "读取了文件", "读取了 {count} 个位置"),
-            ({"grep", "glob", "memory_search"}, "搜索了内容", "进行了 {count} 次搜索"),
-            ({"web_search", "web_fetch"}, "搜索了网页", "搜索了 {count} 次网页"),
-            ({"edit_file", "write_file", "apply_patch"}, "编辑了文件", "编辑了 {count} 个文件"),
+            ({"bash", "background_run"}, "run_command"),
+            ({"read_file", "list_dir"}, "read"),
+            ({"grep", "glob", "memory_search"}, "search"),
+            ({"web_search", "web_fetch"}, "web"),
+            ({"edit_file", "write_file", "apply_patch"}, "edit"),
         )
         categorized: set[str] = set()
-        for tool_names, singular, plural in categories:
+        for tool_names, category in categories:
             count = sum(name in tool_names for name in names)
             if count:
-                labels.append(singular if count == 1 else plural.format(count=count))
+                key = f"stream.{category}.{'one' if count == 1 else 'many'}"
+                labels.append(tr(key, self._locale, count=count))
                 categorized.update(name for name in names if name in tool_names)
         for name in names:
             if name not in categorized:
-                label = f"使用了 {name}"
+                label = tr("stream.used_tool", self._locale, name=name)
                 if label not in labels:
                     labels.append(label)
-        return " · ".join(labels) or "执行工具"
+        return " · ".join(labels) or tr("stream.tools", self._locale)
 
     # 根据聚合动作和折叠状态生成步骤标题
     def _header(self) -> str:
@@ -277,6 +333,14 @@ class ToolStepGroup(Widget):
             return
         self.query_one(".step-body", Vertical).mount(block)
         self.query_one(".step-header", Static).update(self._header())
+
+    # 切换步骤组及其工具块语言并立即刷新
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        for block in self._blocks:
+            block.set_locale(locale)
+        if self.children:
+            self.query_one(".step-header", Static).update(self._header())
 
     # 点击步骤标题时折叠或展开整个工具列表
     def on_click(self, event: events.Click) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+import json
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -15,6 +17,25 @@ from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.workspace import WorkspaceBoundary
 
 _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+
+
+# 比较写入前后的文本行，在返回内容截断或摘要前生成增删行证据
+def _line_change_counts(before: bytes | None, after: str) -> tuple[int, int]:
+    before_text = "" if before is None else before.decode("utf-8", errors="replace")
+    lines = difflib.unified_diff(
+        before_text.splitlines(keepends=True),
+        after.splitlines(keepends=True),
+        fromfile="before",
+        tofile="after",
+    )
+    additions = 0
+    deletions = 0
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return additions, deletions
 
 
 class WriteFileParams(BaseModel):
@@ -108,9 +129,19 @@ class WriteFileTool(BaseTool):
                 self._checkpoint_store.discard(checkpoint_id)
             raise
 
+        additions, deletions = _line_change_counts(original, content)
+        relative_path = path.relative_to(self._boundary.root).as_posix()
         return ToolResult(
-            content=(
-                f"wrote {len(encoded)} bytes to {path_str} "
-                f"(content_hash={content_hash(encoded)}, checkpoint_id={checkpoint_id})"
+            content=json.dumps(
+                {
+                    "path": relative_path,
+                    "bytes_written": len(encoded),
+                    "content_hash": content_hash(encoded),
+                    "checkpoint_id": checkpoint_id,
+                    "additions": additions,
+                    "deletions": deletions,
+                },
+                ensure_ascii=False,
+                indent=2,
             )
         )

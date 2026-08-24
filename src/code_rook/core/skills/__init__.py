@@ -2,6 +2,7 @@ from code_rook.core.skills.loader import (
     SkillError,
     SkillIntegrityError,
     SkillLoader,
+    SkillTrustError,
     digest_skill_path,
 )
 from code_rook.core.skills.manager import (
@@ -26,6 +27,7 @@ __all__ = [
     "SkillInstallPreview",
     "SkillIntegrityError",
     "SkillLoader",
+    "SkillTrustError",
     "SkillManager",
     "SkillManagerError",
     "SkillManifest",

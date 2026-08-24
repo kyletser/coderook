@@ -78,6 +78,25 @@ def test_checkpoint_conflict_aborts_every_restore(tmp_path: Path) -> None:
     assert second.read_bytes() == b"user changed\n"
 
 
+# 功能：验证 rewind 预览摘要绑定 checkpoint 与当前文件状态
+# 设计：预览后修改目标文件，再携带旧摘要执行恢复，断言任何内容都不会被覆盖
+def test_rewind_rejects_stale_preview_digest(tmp_path: Path) -> None:
+    target = tmp_path / "value.txt"
+    target.write_bytes(b"before\n")
+    mutation = FileMutation(target, b"before\n", b"after\n")
+    store = _store(tmp_path)
+    checkpoint_id = store.create([mutation], label="preview")
+    apply_file_transaction(tmp_path, [mutation])
+    preview = store.preview_rewind(checkpoint_id)
+    target.write_bytes(b"changed after preview\n")
+
+    with pytest.raises(CheckpointError) as error:
+        store.rewind(checkpoint_id, expected_digest=preview.state_digest)
+
+    assert error.value.code == "rewind_preview_stale"
+    assert target.read_bytes() == b"changed after preview\n"
+
+
 # 功能：验证只读打开不存在的 checkpoint 根目录不会产生文件系统副作用
 # 设计：使用 create=False 构造存储并立即列表，断言结果为空且根目录仍不存在
 def test_checkpoint_read_only_open_does_not_create_directories(tmp_path: Path) -> None:
@@ -148,7 +167,7 @@ async def test_write_new_file_checkpoint_rewind_removes_file(tmp_path: Path) -> 
     })
 
     assert not write_result.is_error
-    assert "checkpoint_id=" in write_result.content
+    assert _payload(write_result.content)["checkpoint_id"] == checkpoint_id
     assert not rewind_result.is_error
     assert not target.exists()
 

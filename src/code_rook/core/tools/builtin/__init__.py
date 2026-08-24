@@ -19,7 +19,10 @@ from code_rook.core.tools.builtin.goal_update import GoalUpdateTool
 from code_rook.core.tools.builtin.grep import GrepTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.memory import (
+    MemoryEditTool,
+    MemoryExpireTool,
     MemoryForgetTool,
+    MemoryPinTool,
     MemorySaveTool,
     MemorySearchTool,
 )
@@ -57,7 +60,10 @@ __all__ = [
     "GoalUpdateTool",
     "GrepTool",
     "ListDirTool",
+    "MemoryEditTool",
+    "MemoryExpireTool",
     "MemoryForgetTool",
+    "MemoryPinTool",
     "MemorySaveTool",
     "MemorySearchTool",
     "NoteSaveTool",

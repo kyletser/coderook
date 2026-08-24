@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,6 +13,7 @@ from pydantic import JsonValue
 
 from code_rook.core.authority import AuthoritySnapshot
 from code_rook.core.context import ExecutionContext
+from code_rook.core.llm.pricing import estimate_cost, resolve_pricing_quote
 from code_rook.core.subagent.models import (
     ACTIVE_WORKER_STATUSES,
     WorkerEvent,
@@ -62,6 +65,9 @@ class WorkerBudgetError(ValueError):
     pass
 
 
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 # 管理持久 WorkerRecord 与当前 daemon 内 asyncio 任务句柄
 class BackgroundTaskRegistry:
     # 初始化 Worker 控制面，并把上一 daemon 遗留的活跃 Worker 标记为 interrupted
@@ -106,11 +112,14 @@ class BackgroundTaskRegistry:
         parent_worker_id: str = "",
         role: str = "general-purpose",
         profile: str = "",
+        profile_digest: str = "",
         route: str = "",
+        route_digest: str = "",
         model: str = "",
         reasoning: str = "",
         worktree: str = "",
         branch: str = "",
+        base_commit: str = "",
         merge_owner: str = "",
         merge_reviewer: str = "",
         write_claim: WriteClaim | None = None,
@@ -124,6 +133,7 @@ class BackgroundTaskRegistry:
         retry_backoff_s: float = 1.0,
     ) -> WorkerRecord:
         now = _now()
+        effective_claim = write_claim or WriteClaim(read_only=True)
         return WorkerRecord(
             id=worker_id,
             parent_turn_id=parent_turn_id,
@@ -134,7 +144,9 @@ class BackgroundTaskRegistry:
             prompt=prompt,
             role=role,
             profile=profile,
+            profile_digest=profile_digest,
             route=route,
+            route_digest=route_digest,
             model=model,
             reasoning=reasoning,
             depth=depth,
@@ -143,10 +155,11 @@ class BackgroundTaskRegistry:
             workspace=workspace,
             worktree=worktree,
             branch=branch,
+            base_commit=base_commit,
             merge_owner=merge_owner,
             merge_reviewer=merge_reviewer,
             authority_ceiling=authority_ceiling,
-            write_claim=write_claim or WriteClaim(read_only=True),
+            write_claim=effective_claim,
             dependencies=list(dependencies or []),
             acceptance=list(acceptance or []),
             heartbeat_at=now,
@@ -156,6 +169,7 @@ class BackgroundTaskRegistry:
             token_budget=token_budget,
             max_attempts=max_attempts,
             retry_backoff_s=retry_backoff_s,
+            handoff_status=("read_only" if effective_claim.read_only else "pending_execution"),
             created_at=now,
             updated_at=now,
         )
@@ -245,6 +259,10 @@ class BackgroundTaskRegistry:
     def create(self, worker: WorkerRecord) -> WorkerRecord:
         if self.record(worker.id) is not None:
             raise WorkerConflictError(f"worker already exists: {worker.id}")
+        if not worker.write_claim.read_only and not worker.worktree:
+            raise WorkerConflictError(
+                "writing worker requires an isolated managed worktree"
+            )
         same_goal = [
             item
             for item in self.list_records()
@@ -357,6 +375,12 @@ class BackgroundTaskRegistry:
         artifact_handles: list[str] | None = None,
         approved: bool | None = None,
         receipt: dict[str, JsonValue] | None = None,
+        handoff_status: str | None = None,
+        changed_files: list[str] | None = None,
+        diff_stat: str | None = None,
+        diff_preview: str | None = None,
+        diff_truncated: bool | None = None,
+        verification_status: str | None = None,
     ) -> WorkerRecord:
         worker = self.record(worker_id)
         if worker is None:
@@ -387,8 +411,174 @@ class BackgroundTaskRegistry:
             worker.approved = approved
         if receipt is not None:
             worker.receipt = receipt
+        if handoff_status is not None:
+            worker.handoff_status = handoff_status
+        if changed_files is not None:
+            worker.changed_files = changed_files
+        if diff_stat is not None:
+            worker.diff_stat = diff_stat
+        if diff_preview is not None:
+            worker.diff_preview = diff_preview
+        if diff_truncated is not None:
+            worker.diff_truncated = diff_truncated
+        if verification_status is not None:
+            worker.verification_status = verification_status
         self._save(worker)
         return worker
+
+    # 返回不在 Worker 明确文件或目录 claim 内的路径，拒绝路径穿越和无边界协调声明
+    @staticmethod
+    def claim_violations(paths: list[str], claim: WriteClaim) -> list[str]:
+        if claim.read_only or not (claim.exact_files or claim.write_roots):
+            return list(paths)
+
+        # 将 Git 路径和声明统一为不含绝对路径、点段或父目录穿越的 POSIX 形式
+        def _normalized(value: str) -> str | None:
+            raw = value.replace("\\", "/").strip("/")
+            parts = tuple(part for part in raw.split("/") if part not in {"", "."})
+            if not raw or value.startswith(("/", "\\")) or ".." in parts:
+                return None
+            return "/".join(parts)
+
+        exact = {
+            normalized
+            for value in claim.exact_files
+            if (normalized := _normalized(value)) is not None
+        }
+        roots = {
+            normalized
+            for value in claim.write_roots
+            if (normalized := _normalized(value)) is not None
+        }
+        violations: list[str] = []
+        for value in paths:
+            normalized = _normalized(value)
+            if normalized is None or not (
+                normalized in exact
+                or any(
+                    normalized == root or normalized.startswith(root + "/")
+                    for root in roots
+                )
+            ):
+                violations.append(value)
+        return violations
+
+    # 记录绑定权威快照的人工审查结论但不执行任何合并
+    def review_handoff(
+        self,
+        worker_id: str,
+        *,
+        approved: bool,
+        review_digest: str = "",
+        changed_files: list[str] | None = None,
+        diff_truncated: bool | None = None,
+        diff_preview: str | None = None,
+    ) -> WorkerRecord:
+        worker = self.record(worker_id)
+        if worker is None:
+            raise WorkerStoreError(f"worker not found: {worker_id}")
+        if worker.write_claim.read_only:
+            raise ValueError("read-only worker has no code handoff to review")
+        if worker.status != WorkerStatus.COMPLETED:
+            raise ValueError("only a completed worker handoff can be reviewed")
+        if worker.handoff_status not in {
+            "pending_review",
+            "reviewed_not_applied",
+            "changes_rejected",
+        }:
+            raise ValueError(f"worker handoff is not reviewable: {worker.handoff_status}")
+        reviewed_files = list(
+            worker.changed_files if changed_files is None else changed_files
+        )
+        reviewed_truncated = (
+            worker.diff_truncated if diff_truncated is None else diff_truncated
+        )
+        violations = self.claim_violations(reviewed_files, worker.write_claim)
+        if approved and violations:
+            raise ValueError(
+                "worker handoff exceeds its write claim: " + ", ".join(violations)
+            )
+        if approved and reviewed_truncated:
+            raise ValueError("truncated worker inspection cannot be approved for apply")
+        if approved and not _DIGEST_RE.fullmatch(review_digest):
+            raise ValueError("approved worker review requires an authoritative digest")
+        worker.approved = approved
+        worker.handoff_status = "reviewed_not_applied" if approved else "changes_rejected"
+        worker.review_digest = review_digest if approved else ""
+        worker.changed_files = reviewed_files
+        worker.diff_truncated = reviewed_truncated
+        if diff_preview is not None:
+            worker.diff_preview = diff_preview
+        worker.updated_at = _now()
+        self._save(worker)
+        self.append_event(
+            worker_id,
+            "worker.handoff_reviewed",
+            "approved for a separate explicit apply" if approved else "changes rejected",
+        )
+        return worker
+
+    # 校验 Worker 当前记录满足安全应用所需的完成、验证、审查和路径约束
+    def require_applicable_handoff(
+        self,
+        worker_id: str,
+        *,
+        expected_digest: str,
+        changed_files: list[str] | None = None,
+        diff_truncated: bool | None = None,
+    ) -> WorkerRecord:
+        worker = self.record(worker_id)
+        if worker is None:
+            raise WorkerStoreError(f"worker not found: {worker_id}")
+        if worker.write_claim.read_only:
+            raise ValueError("read-only worker has no handoff to apply")
+        if worker.status != WorkerStatus.COMPLETED:
+            raise ValueError("only a completed worker handoff can be applied")
+        if worker.handoff_status != "reviewed_not_applied" or worker.approved is not True:
+            raise ValueError("worker handoff requires explicit approval before apply")
+        if worker.verification_status != "verified":
+            raise ValueError("worker handoff requires daemon-verified evidence before apply")
+        if worker.diff_truncated or bool(diff_truncated):
+            raise ValueError("truncated worker inspection cannot be applied")
+        if not hmac.compare_digest(worker.review_digest, expected_digest):
+            raise ValueError("worker apply digest does not match the approved review")
+        current_files = list(
+            worker.changed_files if changed_files is None else changed_files
+        )
+        if set(current_files) != set(worker.changed_files):
+            raise ValueError("worker changed files no longer match the approved review")
+        violations = self.claim_violations(current_files, worker.write_claim)
+        if violations:
+            raise ValueError(
+                "worker handoff exceeds its write claim: " + ", ".join(violations)
+            )
+        return worker
+
+    # 在应用成功后持久化 handoff 终态并追加可追溯 Worker 事件
+    def mark_handoff_applied(
+        self,
+        worker_id: str,
+        *,
+        state_digest: str,
+        changed_files: list[str],
+    ) -> WorkerRecord:
+        worker = self.require_applicable_handoff(
+            worker_id,
+            expected_digest=state_digest,
+            changed_files=changed_files,
+            diff_truncated=False,
+        )
+        worker.handoff_status = "applied"
+        worker.updated_at = _now()
+        self._save(worker)
+        self.append_event(
+            worker_id,
+            "worker.handoff_applied",
+            f"applied {len(changed_files)} reviewed files to the main workspace",
+        )
+        applied = self.record(worker_id)
+        assert applied is not None
+        return applied
 
     # 校验 backoff 和最大次数后将 interrupted/failed Worker 准备为下一 attempt
     def prepare_retry(
@@ -420,6 +610,16 @@ class BackgroundTaskRegistry:
         worker.started_at = ""
         worker.ended_at = ""
         worker.retry_after = ""
+        worker.approved = None
+        worker.review_digest = ""
+        worker.handoff_status = (
+            "read_only" if worker.write_claim.read_only else "pending_execution"
+        )
+        worker.changed_files = []
+        worker.diff_stat = ""
+        worker.diff_preview = ""
+        worker.diff_truncated = False
+        worker.verification_status = "not_reported"
         if authority_ceiling is not None:
             worker.authority_ceiling = authority_ceiling
         self._save(worker)
@@ -514,6 +714,54 @@ class BackgroundTaskRegistry:
                 if not live.task.done():
                     live.task.cancel()
         return True
+
+    # 累加细分 LLM usage 与可解释成本，再复用根预算硬上限
+    def add_llm_usage(
+        self,
+        worker_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_input_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+        model: str = "",
+    ) -> bool:
+        counts = (
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens,
+            cache_creation_input_tokens,
+        )
+        if any(value < 0 for value in counts):
+            raise WorkerBudgetError("worker LLM usage must be non-negative")
+        exhausted = self.add_token_usage(
+            worker_id,
+            input_tokens + output_tokens,
+        )
+        worker = self.record(worker_id)
+        if worker is None:
+            raise WorkerStoreError(f"worker not found: {worker_id}")
+        worker.input_tokens += input_tokens
+        worker.output_tokens += output_tokens
+        worker.cache_read_input_tokens += cache_read_input_tokens
+        worker.cache_creation_input_tokens += cache_creation_input_tokens
+        quote = resolve_pricing_quote(model or worker.model)
+        if quote is None or worker.cost_status == "unknown":
+            worker.estimated_cost_usd = None
+            worker.cost_status = "unknown"
+        else:
+            increment = estimate_cost(
+                quote.pricing,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_input_tokens,
+                cache_write_tokens=cache_creation_input_tokens,
+            )
+            worker.estimated_cost_usd = (worker.estimated_cost_usd or 0.0) + increment
+            worker.cost_status = "estimated"
+        worker.updated_at = _now()
+        self._save(worker)
+        return exhausted
 
     # 将上一 boot 或租约超时的活跃 Worker 恢复为 interrupted
     def recover_stale(self, *, now: datetime | None = None) -> list[WorkerRecord]:

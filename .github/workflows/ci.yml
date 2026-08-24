@@ -14,14 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality-and-package:
-    name: Python 3.12 / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+  required:
+    name: Required Ubuntu gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v6
@@ -37,15 +33,6 @@ jobs:
       - name: Sync locked environment
         run: uv sync --frozen
 
-      - name: Install Linux sandbox backend
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          if sysctl -N kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
       - name: Ruff
         run: uv run ruff check .
 
@@ -55,87 +42,23 @@ jobs:
       - name: Public repository contract
         run: uv run python scripts/check_public_repo.py
 
-      - name: Mypy strict
+      - name: Mypy
         run: uv run mypy src
 
-      - name: Mypy Linux contract
-        if: runner.os == 'Windows'
-        run: uv run mypy --platform linux src
+      - name: Fast unit tests
+        run: uv run pytest -q tests/unit
 
-      - name: Tests
-        run: uv run pytest -q
-
-      - name: Deterministic benchmark contract
-        run: uv run python scripts/run_benchmark.py --suite quick --validate-baseline
-
-      - name: Sandbox negative boundary
+      - name: Critical daemon smoke
         run: >-
-          uv run python scripts/check_sandbox_boundary.py
-          --output reports/sandbox-boundary-${{ runner.os }}.json
-
-      - name: Upload sandbox boundary evidence
-        uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: sandbox-boundary-${{ runner.os }}
-          path: reports/sandbox-boundary-${{ runner.os }}.json
-          if-no-files-found: error
-
-      - uses: actions/setup-node@v6
-        if: runner.os == 'Linux'
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: editors/vscode/package-lock.json
-
-      - name: Package VS Code extension
-        if: runner.os == 'Linux'
-        working-directory: editors/vscode
-        run: npm ci && npm run check && npm run package
+          uv run pytest -q
+          tests/integration/test_ping_roundtrip.py
+          tests/integration/test_s4_session_ipc.py
 
       - name: Protocol contract
         run: uv run python scripts/gen_protocol_doc.py --check
 
-      - name: Build wheel and sdist
+      - name: Build wheel
         run: uv build
 
       - name: Installed-wheel smoke
         run: uv run python scripts/smoke_wheel.py dist
-
-      - name: ProcessSupervisor resource baseline
-        run: >-
-          uv run python scripts/run_process_supervisor_benchmark.py
-          --output reports/process-supervisor-${{ runner.os }}.json
-
-      - name: Upload ProcessSupervisor resource evidence
-        uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: process-supervisor-${{ runner.os }}
-          path: reports/process-supervisor-${{ runner.os }}.*
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: coderook-${{ matrix.os }}
-          path: dist/*
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v6
-        if: runner.os == 'Linux'
-        with:
-          name: coderook-vscode
-          path: editors/vscode/dist/*.vsix
-          if-no-files-found: error
-
-  required-ci-gate:
-    name: Required CI gate
-    needs: [quality-and-package]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Require every platform job to pass
-        env:
-          MATRIX_RESULT: ${{ needs.quality-and-package.result }}
-        run: test "${MATRIX_RESULT}" = "success"

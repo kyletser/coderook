@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
@@ -49,6 +49,27 @@ async def compact(client: SocketClient, session_id: str) -> dict[str, Any]:
     )
 
 
+# 向 Core 持久提交当前计划的批准、修改或取消决定
+async def respond_plan(
+    client: SocketClient,
+    session_id: str,
+    run_id: str,
+    decision: Literal["approve", "revise", "cancel"],
+    *,
+    revision: str = "",
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "plan.respond",
+        {
+            "session_id": session_id,
+            "run_id": run_id,
+            "decision": decision,
+            "revision": revision,
+        },
+    )
+
+
 # 加载当前会话最近一次 run 的任务列表
 async def get_tasks(
     client: SocketClient, session_id: str
@@ -57,9 +78,149 @@ async def get_tasks(
     return list(result.get("tasks", []))
 
 
-# 加载全部持久 Worker / Fleet 状态列表
-async def get_workers(client: SocketClient) -> dict[str, Any]:
-    return await send(client, "worker.list", {"limit": 50})
+# 加载当前会话的全部持久 Worker 状态列表
+async def get_workers(
+    client: SocketClient,
+    session_id: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.list",
+        {"limit": 50, "session_id": session_id},
+    )
+
+
+# 通过 daemon-owned launcher 启动新的持久 Worker
+async def start_worker(
+    client: SocketClient,
+    session_id: str,
+    *,
+    description: str,
+    prompt: str,
+    profile: str = "",
+    route_id: str = "",
+    model: str = "",
+    read_only: bool = True,
+    exact_files: list[str] | None = None,
+    write_roots: list[str] | None = None,
+    token_budget: int | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "session_id": session_id,
+        "description": description,
+        "prompt": prompt,
+        "profile": profile,
+        "route_id": route_id,
+        "model": model,
+        "read_only": read_only,
+        "exact_files": list(exact_files or []),
+        "write_roots": list(write_roots or []),
+    }
+    if token_budget is not None:
+        params["token_budget"] = token_budget
+    return await send(client, "worker.start", params)
+
+
+# 查询严格绑定当前会话的单个 Worker 状态
+async def get_worker_status(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.status",
+        {"session_id": session_id, "worker_id": worker_id},
+    )
+
+
+# 按原 WorkerRecord 的冻结边界启动下一次 attempt
+async def retry_worker(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.retry",
+        {"session_id": session_id, "worker_id": worker_id},
+    )
+
+
+# 按持久游标读取单个 Worker 的有界进度事件
+async def get_worker_events(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+    *,
+    after_cursor: int = 0,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.events",
+        {
+            "session_id": session_id,
+            "worker_id": worker_id,
+            "after_cursor": after_cursor,
+            "limit": 50,
+        },
+    )
+
+
+# 向仍运行的 Worker 发送有界 followup 指令
+async def followup_worker(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+    message: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.followup",
+        {"session_id": session_id, "worker_id": worker_id, "message": message},
+    )
+
+
+# 人工审查 Worker handoff，但不触发 apply 或 merge
+async def review_worker(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+    *,
+    approved: bool,
+    confirmed: bool = False,
+    expected_digest: str = "",
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.review",
+        {
+            "session_id": session_id,
+            "worker_id": worker_id,
+            "approved": approved,
+            "confirmed": confirmed,
+            "expected_digest": expected_digest,
+        },
+    )
+
+
+# 应用已经人工批准且由 daemon 验证的 Worker handoff
+async def apply_worker(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+    expected_digest: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.apply",
+        {
+            "session_id": session_id,
+            "worker_id": worker_id,
+            "expected_digest": expected_digest,
+            "confirmed": True,
+        },
+    )
 
 
 # 按 id 加载单个 durable workflow 投影
@@ -100,6 +261,44 @@ async def get_diff(client: SocketClient) -> dict[str, Any]:
     )
 
 
+# 将用户显式选定的当前改动加入 Git index
+async def stage_changes(
+    client: SocketClient,
+    session_id: str,
+    paths: list[str],
+    expected_digest: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "workspace.stage",
+        {
+            "session_id": session_id,
+            "paths": paths,
+            "expected_digest": expected_digest,
+            "confirmed": True,
+        },
+    )
+
+
+# 从已 stage 改动创建本地 commit，服务端不会执行 hooks 或 push
+async def commit_changes(
+    client: SocketClient,
+    session_id: str,
+    message: str,
+    expected_digest: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "workspace.commit",
+        {
+            "session_id": session_id,
+            "message": message,
+            "expected_digest": expected_digest,
+            "confirmed": True,
+        },
+    )
+
+
 # 列出会话全部 checkpoint（是否可用交由调用方过滤）
 async def list_checkpoints(
     client: SocketClient, session_id: str
@@ -112,16 +311,35 @@ async def list_checkpoints(
     return list(result.get("checkpoints", []))
 
 
-# 将会话回滚到指定 checkpoint
-async def rewind(
+# 读取指定 checkpoint 的恢复范围和可重验摘要
+async def preview_rewind(
     client: SocketClient,
     session_id: str,
     checkpoint_id: str,
 ) -> dict[str, Any]:
     return await send(
         client,
-        "session.rewind",
+        "session.rewind_preview",
         {"session_id": session_id, "checkpoint_id": checkpoint_id},
+    )
+
+
+# 携带已审查摘要和显式确认将会话回滚到指定 checkpoint
+async def rewind(
+    client: SocketClient,
+    session_id: str,
+    checkpoint_id: str,
+    expected_digest: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "session.rewind",
+        {
+            "session_id": session_id,
+            "checkpoint_id": checkpoint_id,
+            "expected_digest": expected_digest,
+            "confirmed": True,
+        },
     )
 
 
@@ -197,27 +415,114 @@ async def list_memories(client: SocketClient) -> dict[str, Any]:
     return await send(client, "memory.list", {})
 
 
+# 手动新增一条项目记忆
+async def add_memory(
+    client: SocketClient,
+    *,
+    name: str,
+    body: str,
+    description: str = "",
+    memory_type: str = "project",
+    source_session_id: str = "",
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "memory.add",
+        {
+            "name": name,
+            "body": body,
+            "description": description,
+            "memory_type": memory_type,
+            "source_session_id": source_session_id,
+        },
+    )
+
+
+# 修改指定项目记忆的一个或多个字段
+async def edit_memory(
+    client: SocketClient,
+    memory_id: str,
+    **changes: object,
+) -> dict[str, Any]:
+    return await send(client, "memory.edit", {"memory_id": memory_id, **changes})
+
+
+# 固定或取消固定一条项目记忆
+async def pin_memory(
+    client: SocketClient,
+    memory_id: str,
+    *,
+    pinned: bool,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "memory.pin",
+        {"memory_id": memory_id, "pinned": pinned},
+    )
+
+
+# 设置或清除一条项目记忆的过期时间
+async def expire_memory(
+    client: SocketClient,
+    memory_id: str,
+    *,
+    expires_at: str | None,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "memory.expire",
+        {"memory_id": memory_id, "expires_at": expires_at},
+    )
+
+
 # 删除指定 id 的一条项目记忆
 async def delete_memory(client: SocketClient, memory_id: str) -> dict[str, Any]:
     return await send(client, "memory.delete", {"memory_id": memory_id})
 
 
+# 更新 Agent 自动保存记忆的策略
+async def set_memory_auto_save(
+    client: SocketClient,
+    mode: str,
+) -> dict[str, Any]:
+    return await send(client, "memory.settings.set", {"auto_save": mode})
+
+
 # 查询后台 shell 任务列表，或单个任务的全量输出
 async def get_background(
-    client: SocketClient, *, job_id: str = ""
+    client: SocketClient,
+    session_id: str,
+    *,
+    job_id: str = "",
 ) -> dict[str, Any]:
-    params: dict[str, Any] = {"job_id": job_id}
+    params: dict[str, Any] = {"session_id": session_id, "job_id": job_id}
     return await send(client, "background.get", params)
 
 
 # 取消指定后台 shell 任务
-async def cancel_background(client: SocketClient, job_id: str) -> dict[str, Any]:
-    return await send(client, "background.cancel", {"job_id": job_id})
+async def cancel_background(
+    client: SocketClient,
+    session_id: str,
+    job_id: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "background.cancel",
+        {"session_id": session_id, "job_id": job_id},
+    )
 
 
 # 取消指定持久 Worker/子代理任务
-async def cancel_worker(client: SocketClient, worker_id: str) -> dict[str, Any]:
-    return await send(client, "worker.cancel", {"worker_id": worker_id})
+async def cancel_worker(
+    client: SocketClient,
+    session_id: str,
+    worker_id: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "worker.cancel",
+        {"session_id": session_id, "worker_id": worker_id},
+    )
 
 
 # 列出 daemon ArtifactStore 的引用状态与可回收空间

@@ -46,6 +46,8 @@ async def test_edit_file_replaces_unique_text_and_returns_diff(tmp_path: Path) -
     assert "-    return 41" in data["diff"]
     assert "+    return 42" in data["diff"]
     assert data["diff_truncated"] is False
+    assert data["additions"] == 1
+    assert data["deletions"] == 1
 
 
 async def test_read_hash_can_be_passed_directly_to_edit(tmp_path: Path) -> None:

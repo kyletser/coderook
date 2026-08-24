@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from code_rook.core.authority import AuthoritySnapshot, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
-from code_rook.core.hooks import HookManager
+from code_rook.core.hooks import HookDecision, HookManager
 from code_rook.core.llm import factory as llm_factory
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.route_registry import RouteRegistry
@@ -21,6 +23,7 @@ from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.workspace import WorkspaceBoundary
+from code_rook.core.worktree import WorktreeManager
 
 
 def _make_provider(result_text: str = "child done") -> Any:
@@ -84,13 +87,16 @@ def _write_routed_profile(tmp_path: Path, route_id: str) -> None:
 # 设计：使用返回 end_turn 的 mock provider，验证 tool_result.content 包含 provider 返回的文字
 @pytest.mark.asyncio
 async def test_foreground_returns_result(tmp_path: Path) -> None:
-    tool, _, _ = _make_tool(tmp_path, _make_provider("analysis complete"))
+    tool, registry, _ = _make_tool(tmp_path, _make_provider("analysis complete"))
     result = await tool.invoke({
         "description": "分析代码",
         "prompt": "分析 src/ 目录",
     })
     assert not result.is_error
     assert "analysis complete" in result.content
+    records = registry.list_records()
+    assert len(records) == 1
+    assert records[0].status.value == "completed"
 
 
 # 功能：验证前台 worker 的 started/finished hooks 包围真实子 Agent 执行
@@ -117,6 +123,57 @@ async def test_worker_lifecycle_hooks_wrap_subagent(tmp_path: Path) -> None:
     assert seen[0][0] == "started"
     assert seen[1][0] == "success"
     assert seen[0][1] == seen[1][1]
+
+
+# 功能：启动 hook 阻断可写 Worker 时必须回滚自动 worktree 和临时分支
+# 设计：真实 Git 仓库中让 worker_started fail closed，随后检查受管目录与 coderook 分支均为空
+async def test_blocked_worker_start_cleans_automatic_worktree(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=CodeRook Test",
+            "-c",
+            "user.email=coderook@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        check=True,
+    )
+    hooks = HookManager()
+
+    # 在 worktree 已装配但 Worker 尚未持久化时阻断启动
+    async def block_start(_context: dict[str, object]) -> HookDecision:
+        return HookDecision(blocked=True, reason="test policy")
+
+    hooks.register("worker_started", block_start)
+    tool, registry, _ = _make_tool(tmp_path, hooks=hooks)
+
+    result = await tool.invoke(
+        {
+            "description": "blocked writer",
+            "prompt": "write a file",
+            "read_only": False,
+            "exact_files": ["safe.txt"],
+        }
+    )
+    branches = subprocess.run(
+        ["git", "-C", str(tmp_path), "branch", "--list", "coderook/*"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert result.is_error and result.error_type == "hook_denied"
+    assert registry.list_records() == []
+    assert await WorktreeManager(tmp_path).list() == []
+    assert branches.strip() == ""
 
 
 # 功能：后台模式应立即返回含 run_id 的消息，不阻塞等待子 agent
@@ -348,6 +405,7 @@ async def test_profile_route_pin_uses_configured_user_route(
         session_id="sess-test",
         workspace_boundary=WorkspaceBoundary(tmp_path),
         route_registry=route_registry,
+        authority_ceiling=AuthoritySnapshot(workspace_trust=WorkspaceTrust.TRUSTED),
     )
 
     result = await tool.invoke(
@@ -388,6 +446,7 @@ async def test_profile_route_pin_rejects_unknown_route(tmp_path: Path) -> None:
             route_store=RouteStore(tmp_path / "routes.json"),
             credential_store=CredentialStore(tmp_path / "credentials.json"),
         ),
+        authority_ceiling=AuthoritySnapshot(workspace_trust=WorkspaceTrust.TRUSTED),
     )
 
     result = await tool.invoke(

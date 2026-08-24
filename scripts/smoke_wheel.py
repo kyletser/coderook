@@ -92,6 +92,20 @@ def _first_run_environment(home: Path, site: Path) -> dict[str, str]:
     return env
 
 
+# 验证全新安装以非阻塞未配置状态启动且不会伪造 provider、model 或凭据
+def _assert_first_run_status(output: str) -> None:
+    required = (
+        "status:   unconfigured",
+        "provider: (none)",
+        "model:    (none)",
+        "endpoint: (none)",
+        "credential: missing",
+        "validation: not_run",
+    )
+    if any(item not in output for item in required):
+        raise RuntimeError(f"unexpected first-run config status: {output!r}")
+
+
 # 等待 wheel 中启动的 Core 开始监听或提前失败
 async def _wait_until_listening(port: int, process: subprocess.Popen[str]) -> None:
     deadline = time.monotonic() + _CORE_START_TIMEOUT_S
@@ -188,8 +202,7 @@ print(package)
             env=env,
             cwd=root,
         )
-        if "status:   incomplete" not in status.stdout or "api key:  (missing)" not in status.stdout:
-            raise RuntimeError(f"unexpected first-run config status: {status.stdout!r}")
+        _assert_first_run_status(status.stdout)
 
         process = subprocess.Popen(
             [

@@ -206,39 +206,26 @@ async def test_fleet_restart_resumes_without_repeating_completed_node(
     assert second_registry.record("workflow:fleet-resume:second").attempt == 2  # type: ignore[union-attr]
 
 
-# 功能：Fleet 在启动第二个本地进程前拒绝跨 workflow 的重叠 write claim
-# 设计：让首个 host 持续运行保持 active claim，再直接调度同文件写入并断言 fail closed
+# 功能：Fleet 写节点没有受管 worktree 时在启动本地进程前失败关闭
+# 设计：直接调度带文件 claim 的 Labs 节点，断言共享工作区不会因等待 host 而绕过隔离门禁
 @pytest.mark.asyncio
-async def test_fleet_parallel_write_claim_conflict_fails_before_host(
+async def test_fleet_write_claim_without_managed_worktree_fails_before_host(
     tmp_path: Path,
 ) -> None:
     host = _ControlledHost()
-    host.block = True
     scheduler, _ = _scheduler(tmp_path / "fleet.db", host, tmp_path, boot_id="boot-a")
     claim = {"read_only": False, "exact_files": ["release.toml"]}
-    first = WorkerStep(
-        id="first",
-        description="first",
-        prompt="first",
+    worker = WorkerStep(
+        id="writer",
+        description="writer",
+        prompt="writer",
         write_claim=claim,
     )
-    second = WorkerStep(
-        id="second",
-        description="second",
-        prompt="second",
-        write_claim=claim,
-    )
-    first_task = asyncio.create_task(
-        scheduler.run_worker("workflow-a", first, attempt=1)
-    )
-    await host.started.wait()
 
-    with pytest.raises(WorkerConflictError, match="write claim conflicts"):
-        await scheduler.run_worker("workflow-b", second, attempt=1)
-    host.release.set()
-    await first_task
+    with pytest.raises(WorkerConflictError, match="isolated managed worktree"):
+        await scheduler.run_worker("workflow-a", worker, attempt=1)
 
-    assert host.calls == ["first"]
+    assert host.calls == []
 
 
 # 功能：运行中的本地 Fleet Worker 按 lease 配置持续写入 heartbeat

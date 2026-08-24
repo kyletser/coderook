@@ -97,6 +97,8 @@ async def test_run_verdict_emits_durable_verification_event(
         "gate_count": 1,
         "passed": 0 if is_error else 1,
         "failed": 1 if is_error else 0,
+        "verification_eligible": True,
+        "verification_source": "manifest_declared",
         "gates": [
             {
                 "name": "unit",
@@ -136,8 +138,41 @@ async def test_run_verdict_emits_durable_verification_event(
     assert verification.gates == [  # type: ignore[attr-defined]
         {
             "name": "unit",
+            "command": "",
             "status": "failed" if is_error else "passed",
             "duration_ms": 12,
             "output_truncated": False,
+            "candidate_id": "",
+            "source": "",
+            "verification_eligible": False,
         }
     ]
+
+
+# 功能：验证缺少 daemon 候选资格的成功命令只能产生失败验证事件
+# 设计：让伪 Run 返回 exit-success 形状但不带资格标记，断言 loop fail closed 而非据此认证 Worker
+async def test_arbitrary_success_command_is_not_daemon_verification() -> None:
+    payload = {
+        "verdict": "pass",
+        "gate_count": 1,
+        "passed": 1,
+        "failed": 0,
+        "gates": [{"name": "ship-it", "command": "echo ok", "status": "passed"}],
+    }
+    registry = ToolRegistry()
+    registry.register(_VerificationTool(ToolResult(json.dumps(payload))))
+    bus = EventBus()
+    events: list[BaseModel] = []
+
+    # 收集 loop 发布的验证事件以断言成功 shell 结果没有升级为可信证据
+    async def _collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(_collect)
+    await AgentLoop(_RunProvider(), registry, bus).run(
+        ExecutionContext(run_id="untrusted-run", goal="verify", max_steps=3)
+    )  # type: ignore[arg-type]
+
+    failed = next(event for event in events if event.type == "verification.failed")  # type: ignore[attr-defined]
+    assert failed.failure_class == "untrusted_verification_command"  # type: ignore[attr-defined]
+    assert not any(event.type == "verification.completed" for event in events)  # type: ignore[attr-defined]

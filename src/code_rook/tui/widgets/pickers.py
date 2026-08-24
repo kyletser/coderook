@@ -9,6 +9,8 @@ from textual import events
 from textual.message import Message
 from textual.widgets import Static
 
+from code_rook.tui.product import tr
+
 
 class UserQuestionSelect(Static):
     can_focus = True
@@ -46,24 +48,34 @@ class UserQuestionSelect(Static):
         header: str,
         options: list[str],
         multi_select: bool,
+        *,
+        locale: str = "zh-CN",
     ) -> None:
         super().__init__("")
         self.question_id = question_id
         self._question = question
         self._header = header
         self._options = options
-        self._choices = [*options, "输入自定义答案"]
+        self._locale = locale
+        self._choices = [*options, tr("question.custom", locale)]
         self._multi_select = multi_select
         self._selected: set[int] = set()
         self._cursor = 0
+
+    # 切换问题选择器语言并保留已有选项与选择状态
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        self._choices[-1] = tr("question.custom", locale)
+        if self.is_attached:
+            self.on_mount()
 
     # 挂载后渲染问题和可选答案并取得焦点
     def on_mount(self) -> None:
         self.border_title = f" {self._header} "
         self.border_subtitle = (
-            " ↑↓ move   Space toggle   Enter confirm "
+            f" {tr('question.multi_hint', self._locale)} "
             if self._multi_select
-            else " ↑↓ move   Enter select "
+            else f" {tr('question.single_hint', self._locale)} "
         )
         self.update(self._render_ui())
         self.focus()
@@ -159,21 +171,33 @@ class CheckpointPicker(Static):
             super().__init__()
 
     # 初始化 checkpoint 选择器，仅接收可恢复状态的条目
-    def __init__(self, checkpoints: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        checkpoints: list[dict[str, Any]],
+        *,
+        locale: str = "zh-CN",
+    ) -> None:
         super().__init__("")
         self._checkpoints = checkpoints
         self._cursor = 0
+        self._locale = locale
+
+    # 切换恢复点选择器语言并立即刷新标题和正文
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.on_mount()
 
     # 挂载后渲染安全恢复点并取得焦点
     def on_mount(self) -> None:
-        self.border_title = " Rewind "
-        self.border_subtitle = " ↑↓ move   Enter restore   Esc close "
+        self.border_title = f" {tr('rewind.title', self._locale)} "
+        self.border_subtitle = f" {tr('rewind.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
 
     # 渲染 checkpoint 标签、文件和创建时间
     def _render_ui(self) -> str:
-        lines = ["[bold yellow]选择要恢复的 checkpoint[/bold yellow]"]
+        lines = [f"[bold yellow]{tr('rewind.choose', self._locale)}[/bold yellow]"]
         for index, checkpoint in enumerate(self._checkpoints):
             marker = "[bold #d8a65b]>[/bold #d8a65b]" if index == self._cursor else " "
             label = escape(str(checkpoint.get("label", "checkpoint")))
@@ -184,7 +208,7 @@ class CheckpointPicker(Static):
                 f"{marker} [{style}]{label}[/{style}]"
                 f"  [dim]{escape(paths)}  {created}[/dim]"
             )
-        lines.append("[dim]恢复会拒绝覆盖 checkpoint 之后再次修改的文件[/dim]")
+        lines.append(f"[dim]{tr('rewind.safety', self._locale)}[/dim]")
         return "\n".join(lines)
 
     # 处理 checkpoint 选择器的键盘导航和确认
@@ -212,11 +236,7 @@ class PlanReview(Static):
     """Keyboard-driven review prompt shown after a read-only planning run."""
 
     can_focus = True
-    _CHOICES = (
-        ("approve", "批准并实施", "退出 Plan Mode，按当前权限逐项执行"),
-        ("revise", "继续规划", "输入反馈后再次进行只读分析"),
-        ("cancel", "取消", "保留计划但不执行任何改动"),
-    )
+    _DECISIONS = ("approve", "revise", "cancel")
 
     DEFAULT_CSS = """
     PlanReview {
@@ -240,22 +260,40 @@ class PlanReview(Static):
             super().__init__()
 
     # 初始化计划审阅面板并默认选中批准
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, *, locale: str = "zh-CN") -> None:
         super().__init__("")
         self.run_id = run_id
         self._cursor = 0
+        self._locale = locale
+
+    # 切换计划审阅语言并立即刷新选项
+    def set_locale(self, locale: str) -> None:
+        self._locale = locale
+        if self.is_attached:
+            self.on_mount()
+
+    # 返回当前语言下的计划审阅选项
+    def _choices(self) -> tuple[tuple[str, str, str], ...]:
+        return tuple(
+            (
+                decision,
+                tr(f"plan_review.{decision}", self._locale),
+                tr(f"plan_review.{decision}_detail", self._locale),
+            )
+            for decision in self._DECISIONS
+        )
 
     # 挂载后渲染选项并取得键盘焦点
     def on_mount(self) -> None:
-        self.border_title = " Plan ready "
-        self.border_subtitle = " ↑↓ move   Enter select   Esc cancel "
+        self.border_title = f" {tr('plan_review.title', self._locale)} "
+        self.border_subtitle = f" {tr('plan_review.hint', self._locale)} "
         self.update(self._render_ui())
         self.focus()
 
     # 渲染批准、继续规划和取消三个明确分支
     def _render_ui(self) -> str:
-        lines = ["[bold]计划已完成，下一步？[/bold]"]
-        for index, (_decision, label, detail) in enumerate(self._CHOICES):
+        lines = [f"[bold]{tr('plan_review.question', self._locale)}[/bold]"]
+        for index, (_decision, label, detail) in enumerate(self._choices()):
             marker = "[bold #72c7d4]>[/bold #72c7d4]" if index == self._cursor else " "
             style = "bold white" if index == self._cursor else "#c6cad0"
             lines.append(
@@ -267,15 +305,15 @@ class PlanReview(Static):
     def on_key(self, event: events.Key) -> None:
         if event.key in ("up", "k"):
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._CHOICES)
+            self._cursor = (self._cursor - 1) % len(self._DECISIONS)
             self.update(self._render_ui())
         elif event.key in ("down", "j"):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._CHOICES)
+            self._cursor = (self._cursor + 1) % len(self._DECISIONS)
             self.update(self._render_ui())
         elif event.key == "enter":
             event.stop()
-            self.post_message(self.Decided(self, self._CHOICES[self._cursor][0]))
+            self.post_message(self.Decided(self, self._DECISIONS[self._cursor]))
         elif event.key == "escape":
             event.stop()
             self.post_message(self.Decided(self, "cancel"))

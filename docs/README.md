@@ -3,8 +3,14 @@
 本文档是公开文档的唯一索引。代码和生成协议优先于手写说明；发布资格只由
 [发布评分卡](status/RELEASE_SCORECARD.md)决定。
 
+项目主 README 使用英文；中文入口包括[快速开始](zh-CN/README.md)和
+[完整使用说明](guides/USER_GUIDE.md)。Capabilities 中的 `stable`、`labs`、`internal` 是功能稳定级别
+的权威来源。Labs 默认关闭且不出现在命令面板；只有在启动进程前显式设置
+`CODEROOK_LABS=1` 才启用，修改该值后必须重启 Core。
+
 ## 用户指南
 
+- [中文快速开始](zh-CN/README.md)：源码启动、配置模型和第一个任务闭环。
 - [使用说明](guides/USER_GUIDE.md)：安装、模型配置、TUI、CLI、权限和故障排查。
 - [升级、备份与回滚](guides/UPGRADING.md)：升级前检查、数据备份、迁移和回滚。
 - [可运行示例](../examples/README.md)：只读审查、受控修改、MCP、Skill 和 Hook。
@@ -24,7 +30,7 @@
 
 - [运行手册](operations/RUNBOOK.md)：Core 生命周期、配置、诊断和恢复。
 - [发行说明](operations/RELEASING.md)：版本合同、构建产物、SBOM、签名和验证。
-- [分支保护合同](operations/BRANCH_PROTECTION.md)：期望的 GitHub ruleset；当前远端状态见评分卡。
+- [分支保护合同](operations/BRANCH_PROTECTION.md)：期望的 GitHub ruleset 与远端 API 验证方法。
 
 ## 当前状态
 
@@ -34,6 +40,7 @@
 ## 维护规则
 
 - 用户行为变化时更新 `README.md` 和 `guides/USER_GUIDE.md`。
+- stable/Labs 级别、默认开关或实验功能恢复语义变化时，同步更新功能架构、兼容策略与评分卡。
 - HTTP/SSE、兼容策略或安全边界变化时更新对应 reference 文档。
 - 修改 `src/code_rook/core/bus/` 或协议生成器后运行
   `uv run python scripts/gen_protocol_doc.py`，不得手工编辑 `WIRE_PROTOCOL.md`。

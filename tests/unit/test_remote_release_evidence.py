@@ -45,8 +45,7 @@ def test_remote_release_evidence_requires_complete_external_proof() -> None:
                     "type": "required_status_checks",
                     "parameters": {
                         "required_status_checks": [
-                            {"context": "Required CI gate"},
-                            {"context": "Required security gate"},
+                            {"context": "Required Ubuntu gate"},
                         ]
                     },
                 },
@@ -152,7 +151,7 @@ def test_remote_release_evidence_rejects_stale_runs_and_other_branch_rules() -> 
 
 
 # 功能：验证远端证据 workflow 和通用 Actions 不再使用已触发 Node 20 警告的旧代际
-# 设计：扫描全部 workflow 的精确旧引用，同时锁定每日审计入口和 artifact 名，防止部分文件遗漏升级
+# 设计：扫描全部 workflow 的精确旧引用，同时锁定手动审计入口和 artifact 名，防止部分文件遗漏升级
 def test_workflows_use_node24_generation_actions_and_remote_audit() -> None:
     root = Path(__file__).resolve().parents[2]
     workflows = "\n".join(

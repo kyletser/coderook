@@ -137,6 +137,7 @@ class CodeRookBenchmarkExecutor:
                     run_id=run_id,
                     tool_whitelist=task.allowed_tools,
                     resolved_route=resolved_route,
+                    resolved_route_is_explicit=True,
                 ),
                 timeout=task.budgets.wall_time_s,
             )

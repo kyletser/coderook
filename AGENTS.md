@@ -86,7 +86,7 @@ Second interface on port 7438 for external integrations: hand-written HTTP/1.1 (
 
 ### Config (`src/code_rook/core/config.py`)
 
-Five-tier priority: **built-in defaults → `~/.coderook/config.toml` → `.coderook/config.toml` → `.env` → `CODEROOK_*` env vars**. `CODEROOK_CONFIG` forces a single TOML path. Config file is silently skipped if absent; unknown keys cause a hard exit. **Project-level TOML must not set route security keys** (`provider`, `base_url`, `api_key_env`, `active_route_id`) — the loader exits hard if it does.
+Five-tier priority: **built-in defaults → `~/.coderook/config.toml` → `.coderook/config.toml` → an explicitly selected `--env-file` → user-process `CODEROOK_*` env vars**. Repository `.env` files are never loaded automatically. `CODEROOK_CONFIG` forces a single TOML path only when supplied by the user process; an explicit env file cannot set it. Config files are silently skipped if absent; unknown keys cause a hard exit. **Project-level TOML must not set route security keys** (`provider`, `base_url`, `api_key_env`, `active_route_id`) — the loader exits hard if it does.
 
 Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps/max_step_continues), `[llm]` (legacy provider settings plus static/rule-based/cost-budget router controls), `[trace]`, `[permission]` (timeout_s), `[api]` (host/port), `[compaction]`, `[[mcp.servers]]`.
 
@@ -96,7 +96,7 @@ Sections: `[core]` (host/port/ipc_token_file), `[logging]`, `[agent]` (max_steps
 
 ### Core subsystems (`src/code_rook/core/`)
 
-- `loop.py` / `runner.py` / `context.py` / `interaction.py` — async Plan-Act-Observe agent loop, run assembly, system-prompt layering, interactive question/steer futures, max-step continuation, per-step route refresh, and one-shot multimodal image delivery
+- `loop.py` / `runner.py` / `context.py` / `interaction.py` — async Plan-Act-Observe agent loop, run assembly, system-prompt layering, interactive question/steer futures, max-step continuation, per-Turn frozen route/capability binding, and one-shot multimodal image delivery
 - `tools/` — capability model (`ToolSpec`), registry/catalog/discovery, invocation pipeline (validation → hooks → permission → execute → output policy), action families (`File`/`Git`/`Bash`/`Run` + control), WebFetch/WebSearch/read_image, and isolated or persistent shell sessions
 - `permissions/` + `authority/` + `sandbox/` — six-tier permission decision flow, authority matrix (mode × profile × trust × allowed actions), command-prefix allow rules, and real bwrap/Seatbelt wrapping on Linux/macOS; Windows currently degrades explicitly to approval-chain/workspace-boundary enforcement
 - `llm/` — explicit wire-format routes, credential store (keyring → file), Anthropic/OpenAI-compatible/OpenAI Responses providers, thinking budgets, model pricing/cost accounting, static/rule-based/cost-budget routing, and doctor

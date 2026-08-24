@@ -28,6 +28,7 @@ from code_rook.core.bus.events import (
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.goal import GoalBudgetError
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.lsp import WorkspaceDiagnosticsClient
@@ -47,6 +48,7 @@ from code_rook.core.working_set import WorkingSetSource
 
 if TYPE_CHECKING:
     from code_rook.core.artifacts import ArtifactStore
+    from code_rook.core.authority import AuthoritySnapshot
     from code_rook.core.compact.compactor import Compactor
     from code_rook.core.hooks import HookManager
     from code_rook.core.interaction import InteractionManager
@@ -55,6 +57,13 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+
+class RouteCapabilityError(RuntimeError):
+    # 创建冻结路由能力不匹配错误，阻止静默降级执行
+    def __init__(self, capability: str) -> None:
+        super().__init__(f"selected route does not support {capability}")
+        self.capability = capability
 
 _CONTEXT_ERROR_MARKERS = (
     "context_length_exceeded",
@@ -149,6 +158,11 @@ _MAX_TODO_DEFERS = 3
 _MAX_ASK_STEP_CONTINUES = 3
 _MAX_TRANSIENT_RETRIES = 2
 _MAX_NO_CONTENT_RETRIES = 2
+_LENGTH_CONTINUE_PROMPT = (
+    "The previous model response reached its output limit and is incomplete. "
+    "Continue exactly once from where it stopped. Do not execute or reconstruct any "
+    "partial tool call; emit a fresh complete tool call if one is still required."
+)
 _CONTENT_HASH_RE = re.compile(
     r"(?:content_hash[=:]\s*|\"(?:new_hash|content_hash)\"\s*:\s*\")([^\s,\")]+)"
 )
@@ -262,7 +276,11 @@ class AgentLoop:
         diagnostics_client: WorkspaceDiagnosticsClient | None = None,
         prefix_tracker: PrefixFingerprintTracker | None = None,
         escalate_plan_thinking: bool = False,
+        supports_tools: bool = True,
+        supports_parallel_tools: bool = True,
+        supports_images: bool = True,
         auto_step_continues: int = 0,
+        authority_snapshot: AuthoritySnapshot | None = None,
         # 可选的每步路由刷新回调：返回新 provider 表示需切换（loop 接管重建后的实例），
         # 返回 None 表示沿用当前 provider；用于 per-turn 模型切换（W2.4）
         route_refresher: Callable[[int], Awaitable[LLMProvider | None]] | None = None,
@@ -291,11 +309,16 @@ class AgentLoop:
         self._diagnostics_client = diagnostics_client
         self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
         self._escalate_plan_thinking = escalate_plan_thinking
+        self._supports_tools = supports_tools
+        self._supports_parallel_tools = supports_parallel_tools
+        self._supports_images = supports_images
         self._auto_step_continues = max(0, auto_step_continues)
+        self._authority_snapshot = authority_snapshot
         self._route_refresher = route_refresher
         self._step_continues_used = 0
         self._initial_max_steps: int | None = None
         self._reactive_compaction_attempted = False
+        self._length_continues_used = 0
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
         self._end_turn_defer_count: int = 0
@@ -315,6 +338,15 @@ class AgentLoop:
     # 判断 provider 是否返回了既无正文、推理也无工具调用的空响应
     @staticmethod
     def _is_no_content(response: LlmResponse) -> bool:
+        if response.completion_status in {
+            "length",
+            "incomplete",
+            "content_filtered",
+            "failed",
+            "cancelled",
+            "transport_error",
+        }:
+            return False
         return not (
             response.text.strip()
             or response.tool_calls
@@ -331,7 +363,7 @@ class AgentLoop:
         transient_retries = 0
         no_content_retries = 0
         system_prompt = self._render_system(context)
-        tool_schemas = self._registry.tool_schemas()
+        tool_schemas = self._registry.tool_schemas() if self._supports_tools else []
         await self._bus.publish(
             ContextBudgetEvent(
                 run_id=context.run_id,
@@ -349,7 +381,12 @@ class AgentLoop:
         )
         prefix = self._prefix_tracker.observe(
             system_prompt=context.stable_system_prompt(_BASE_SYSTEM_PROMPT),
-            tool_catalog=self._registry.canonical_catalog_json(),
+            tool_catalog=json.dumps(
+                tool_schemas,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
             stable_memory=context.stable_memory_text(),
         )
         await self._bus.publish(
@@ -433,6 +470,8 @@ class AgentLoop:
     def _flush_pending_images(self, context: ExecutionContext) -> int:
         if not context.pending_images:
             return 0
+        if not getattr(self, "_supports_images", True):
+            raise RouteCapabilityError("images")
         blocks = list(context.pending_images)
         context.pending_images = []
         context.messages.append({"role": "user", "content": blocks})
@@ -488,9 +527,19 @@ class AgentLoop:
                 "previous request; pixels omitted from history to save context]"
             )
 
-    # 归一化非标准 stop_reason：带工具调用统一为 tool_use（max_tokens 除外），
-    # 无工具调用的未知值（如兼容后端的 "stop"）统一为 end_turn，防止循环空转到 max_steps
+    # 按统一完成状态归一化兼容 stop_reason，旧 provider 继续使用原有容错规则
     def _normalize_stop_reason(self, response: LlmResponse) -> LlmResponse:
+        status = response.completion_status
+        if status is not None:
+            if status == "tool_use":
+                response.stop_reason = "tool_use"
+            elif status == "completed":
+                response.stop_reason = "end_turn"
+            elif status == "length":
+                response.stop_reason = "max_tokens"
+            else:
+                response.stop_reason = status
+            return response
         if response.tool_calls and response.stop_reason == "max_tokens":
             return response
         if response.tool_calls:
@@ -767,9 +816,15 @@ class AgentLoop:
                 gates.append(
                     {
                         "name": str(raw_gate.get("name", ""))[:80],
+                        "command": str(raw_gate.get("command", ""))[:1_000],
                         "status": str(raw_gate.get("status", "unknown"))[:20],
                         "duration_ms": max(0, int(raw_gate.get("duration_ms", 0))),
                         "output_truncated": bool(raw_gate.get("output_truncated", False)),
+                        "candidate_id": str(raw_gate.get("candidate_id", ""))[:64],
+                        "source": str(raw_gate.get("source", ""))[:500],
+                        "verification_eligible": bool(
+                            raw_gate.get("verification_eligible", False)
+                        ),
                     }
                 )
         gate_count = max(1, int(payload.get("gate_count", len(gates) or 1)))
@@ -792,6 +847,18 @@ class AgentLoop:
             "gates": gates,
             "ts": _now(),
         }
+        verification_eligible = (
+            payload.get("verification_eligible") is True
+            and payload.get("verification_source") == "manifest_declared"
+        )
+        if not verification_eligible:
+            await self._bus.publish(
+                VerificationFailedEvent(
+                    **{**common, "failed": max(1, failed)},
+                    failure_class="untrusted_verification_command",
+                )
+            )
+            return
         if result.is_error or failed > 0:
             await self._bus.publish(
                 VerificationFailedEvent(
@@ -821,6 +888,7 @@ class AgentLoop:
             session_id=self._session_id,
             hooks=self._hooks,
             artifact_store=self._artifact_store,
+            authority_snapshot=self._authority_snapshot,
         )
         await self._cancellation_checkpoint()
         if read_key is not None:
@@ -919,6 +987,16 @@ class AgentLoop:
         try:
             while i < n:
                 await self._cancellation_checkpoint()
+                if not self._supports_parallel_tools:
+                    tc = tool_calls[i]
+                    result = await self._invoke_one(tc, context)
+                    if await self._record_result(i, block_count, tc, result, context):
+                        self._fill_skipped_tool_results(
+                            tool_calls, i + 1, block_count, context
+                        )
+                        return
+                    i += 1
+                    continue
                 j = i
                 batch_claims: list[ResourceClaim] = []
                 # 收集从 i 开始连续的并行工具，构造一个批
@@ -1036,6 +1114,25 @@ class AgentLoop:
                 )
                 context.mark_failed(exc.reason)
                 break
+            except GoalBudgetError as exc:
+                log.warning(
+                    "Goal token budget stopped LLM call run_id=%s step=%d reason=%s",
+                    context.run_id,
+                    context.step,
+                    exc.reason,
+                )
+                context.mark_failed(exc.reason)
+                break
+            except RouteCapabilityError as exc:
+                log.warning(
+                    "Frozen route rejected unsupported capability run_id=%s step=%d "
+                    "capability=%s",
+                    context.run_id,
+                    context.step,
+                    exc.capability,
+                )
+                context.mark_failed("route_capability_error")
+                break
             except Exception as exc:
                 if (
                     self._is_context_error(exc)
@@ -1076,6 +1173,16 @@ class AgentLoop:
                 )
             )
 
+            if response.tool_calls and not self._supports_tools:
+                log.warning(
+                    "Frozen route returned tool calls despite tools being disabled "
+                    "run_id=%s step=%d",
+                    context.run_id,
+                    context.step,
+                )
+                context.mark_failed("route_capability_error")
+                break
+
             # [observe] append assistant content blocks to context
             # thinking blocks must come first and be preserved verbatim for extended thinking mode
             blocks: list[dict[str, object]] = list(response.thinking_blocks)
@@ -1114,6 +1221,30 @@ class AgentLoop:
                             block_index=result_index,
                             block_count=len(response.tool_calls),
                         )
+
+            if response.stop_reason == "max_tokens":
+                if self._length_continues_used == 0:
+                    self._length_continues_used += 1
+                    context.messages.append(
+                        {"role": "user", "content": _LENGTH_CONTINUE_PROMPT}
+                    )
+                    if self._transcript is not None:
+                        self._transcript.append_user(
+                            context.step,
+                            _LENGTH_CONTINUE_PROMPT,
+                        )
+                else:
+                    context.result = response.text or ""
+                    context.mark_failed("incomplete")
+            elif response.stop_reason in {
+                "incomplete",
+                "content_filtered",
+                "failed",
+                "cancelled",
+                "transport_error",
+            }:
+                context.result = response.text or ""
+                context.mark_failed(response.stop_reason)
 
             steering_received = self._inject_steering(context)
 

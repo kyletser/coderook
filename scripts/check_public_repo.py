@@ -31,7 +31,6 @@ _REQUIRED_FILES = (
     "docs/reference/MCP_COMPATIBILITY.md",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.json",
     "docs/evidence/mcp-official-sdk-2.0.0/mcp-official-interop.md",
-    "docs/images/coderook-tui.svg",
     "deploy/docker-compose.example.yml",
     "benchmarks/public/Dockerfile",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -47,8 +46,6 @@ _REQUIRED_FILES = (
     "examples/skills/focused-fix/SKILL.md",
     "examples/hooks/guard_sensitive_files.py",
     "examples/hooks/hooks.toml",
-    "scripts/capture_tui_demo.py",
-    "tests/unit/test_tui_demo.py",
     "scripts/check_release_contract.py",
     "scripts/generate_release_manifest.py",
     "scripts/run_mcp_official_interop.py",
@@ -99,11 +96,12 @@ _DOCS_ROOT_FILES = {"README.md"}
 _DOCS_ROOT_DIRECTORIES = {
     "evidence",
     "guides",
-    "images",
     "operations",
     "reference",
     "status",
+    "zh-CN",
 }
+_OPTIONAL_DOCS_ROOT_DIRECTORIES = {"images"}
 _ROOT_FILES = {
     ".dockerignore",
     ".env.example",
@@ -159,17 +157,19 @@ _README_REQUIRED_LINKS = (
 _REQUIRED_WORKFLOW_SNIPPETS = {
     ".github/workflows/ci.yml": (
         "branches: [main]",
-        "name: Required CI gate",
-        "needs: [quality-and-package]",
-        "if: always()",
-        "ProcessSupervisor resource baseline",
-        "process-supervisor-${{ runner.os }}",
+        "name: Required Ubuntu gate",
+        "Fast unit tests",
+        "Critical daemon smoke",
+        "Protocol contract",
+        "Installed-wheel smoke",
     ),
     ".github/workflows/security.yml": (
+        "workflow_dispatch:",
         "github.actor != 'dependabot[bot]'",
-        "vars.DEPENDENCY_REVIEW_ENABLED == 'true'",
+        "os: [ubuntu-latest, macos-latest, windows-latest]",
+        "gitleaks/gitleaks-action",
         "name: Required security gate",
-        "needs: [secret-scan, dependency-review, codeql]",
+        "needs: [sandbox-boundary, secret-scan, codeql]",
         "if: always()",
     ),
     ".github/dependabot.yml": (
@@ -203,8 +203,8 @@ _REQUIRED_WORKFLOW_SNIPPETS = {
         "crash-recovery-aggregate",
     ),
     "docs/operations/BRANCH_PROTECTION.md": (
-        "`Required CI gate`",
-        "`Required security gate`",
+        "`Required Ubuntu gate`",
+        "手动发布证据",
         "不能因为本文件",
     ),
     ".github/CODEOWNERS": ("* @kyletser",),
@@ -280,7 +280,9 @@ def find_docs_layout_issues(root: Path = _ROOT) -> list[str]:
     )
     issues.extend(
         f"unexpected docs category: {name}"
-        for name in sorted(directories - _DOCS_ROOT_DIRECTORIES)
+        for name in sorted(
+            directories - _DOCS_ROOT_DIRECTORIES - _OPTIONAL_DOCS_ROOT_DIRECTORIES
+        )
     )
     return issues
 

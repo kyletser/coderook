@@ -1,44 +1,18 @@
-# CodeRook Agent 使用说明书
+# CodeRook 使用说明
 
-**适用版本**：`0.1.0` Alpha
+**适用基线**：`0.1.0` Alpha（v1 改造工作树）
 
-**主要入口**：`uv run coderook`
+**主要入口**：`coderook`
 
-**运行方式**：本地 Core daemon + TUI/CLI 客户端
+**产品界面**：TUI；CLI 仅用于脚本、诊断和无人值守任务
 
-CodeRook 是一个本地 AI 编程 Agent。它可以读取和检索仓库、分析代码、规划修改、编辑文件、运行测试、
-查看 Git diff、调用子 Agent，并把会话、任务和执行证据保存在本机。TUI 是主要产品界面；CLI 用于
-脚本、诊断和无人值守运行。
+CodeRook 是本地优先的 Coding Agent。它可以理解仓库、规划与修改代码、运行验证、保留可恢复会话，
+并通过事件、Diff、Turn Receipt 和结果卡说明一次执行到底发生了什么。当前尚未发布 PyPI 或 GitHub
+Release；本文先以源码安装为准。发布状态只以[发布评分卡](../status/RELEASE_SCORECARD.md)为准。
 
-当前版本以源码方式提供，要求 Python 3.12、Git 和
-[`uv`](https://docs.astral.sh/uv/)。尚未发布到 PyPI，安装命令不要写成
-`pip install coderook`。
+## 1. 安装与首次启动
 
-## 五分钟开始使用
-
-首次使用按以下顺序操作：
-
-1. 克隆仓库并运行 `uv sync`。
-2. 执行 `uv run coderook` 进入 TUI。
-3. 输入 `/config`，选择 API 平台、填写密钥并选择模型。
-4. 输入 `/doctor`，确认活动模型 route 可用。
-5. 在可信项目中输入 `/trust grant`；不确定来源时保持 untrusted。
-6. 建议先使用 `/mode act` 和 `/permissions ask`。
-7. 直接用自然语言描述任务；完成后输入 `/diff` 审查改动。
-
-最小任务示例：
-
-```text
-先理解当前仓库，只读分析启动流程、核心模块和测试入口，不要修改文件。
-```
-
-```text
-修复当前失败的单元测试。先说明原因，再做最小修改，最后运行相关测试并汇报结果。
-```
-
-斜杠命令用于控制 Agent；普通任务不需要特殊语法。
-
-## 安装与启动
+需要 Python 3.12、Git 和 [`uv`](https://docs.astral.sh/uv/)：
 
 ```bash
 git clone https://github.com/kyletser/coderook.git
@@ -47,203 +21,401 @@ uv sync
 uv run coderook
 ```
 
-无参数 `coderook` 启动 TUI，并自动复用或启动本地 Core。没有可用模型配置时也会进入 TUI，
-不会强制打开配置向导；输入 `/config` 后再配置即可。
+无参数 `coderook` 会启动 TUI，并自动复用或启动当前工作区的 `coderook-core`。首次打开时不会强制
+配置 API：没有模型也可以查看帮助、历史会话和设置。界面会显示一张非阻塞 readiness 卡。
 
-TUI 会显示会话是新建、从历史恢复，还是断线后重新连接。由 CodeRook 管理的 Core 若在使用中意外退出，
-TUI 会尝试在后台重新启动并恢复同一 session；`--no-auto-core` 表示生命周期完全由用户管理，因此只重试连接，
-不会启动进程。
+首次提交普通任务前，TUI 会再次检查：
 
-使用 `uv run coderook --continue` 可恢复当前 workspace 最近会话；使用
-`uv run coderook --resume SESSION_ID` 可恢复指定会话。Core 与 session 都绑定 workspace：切换仓库时，
-空闲的受管 Core 会自动重启到当前目录；如果旧仓库仍有活动 run，CodeRook 会拒绝切换，避免串到错误仓库。
+- 是否存在活动 route；
+- 远端 route 的凭据能否解析；
+- Ollama/LM Studio 等本地 route 的 loopback 端口是否可达。
 
-Core 默认监听：
+检查不通过时，草稿保持在输入框中，也不会创建一个注定失败的 run。按卡片提示使用 `/config`、
+`/provider` 或 `/doctor` 修复后再提交。
 
-- `127.0.0.1:7437`：CLI/TUI 使用的 JSON-RPC/NDJSON IPC；
-- `127.0.0.1:7438`：外部集成使用的 HTTP/SSE Runtime API。
-
-手动管理 Core：
+默认裸启动会选择当前工作区最近的非空会话；没有历史才新建会话。也可以显式指定：
 
 ```bash
-uv run coderook core start
-uv run coderook core status
-uv run coderook core restart
-uv run coderook core stop
+uv run coderook --continue
+uv run coderook --resume SESSION_ID
+uv run coderook --new
 ```
 
-## 配置模型
+`--new` 或 TUI 内的 `/new` 都会显式创建新会话。
 
-最简单的方式是：
+Core 与 session 都绑定工作区。从另一个仓库启动时，空闲的受管 Core 可以有序切换；若旧工作区仍有
+活动 run，则拒绝切换，避免 Agent 在错误目录执行。`--no-auto-core` 禁止 TUI 启动或恢复 Core，适合
+手动排障。
+
+## 2. 配置 Provider 与模型
+
+### Provider Catalog
+
+TUI `/config` 与 CLI route 管理使用同一份 Provider Catalog：
+
+| 预设 | 凭据 | 协议/说明 |
+|---|---|---|
+| DeepSeek | `DEEPSEEK_API_KEY` | OpenAI Chat compatible |
+| OpenAI | `OPENAI_API_KEY` | OpenAI route，支持图片能力标记 |
+| Anthropic | `ANTHROPIC_API_KEY` | Anthropic Messages |
+| Gemini | `GEMINI_API_KEY` | Gemini OpenAI-compatible endpoint |
+| Kimi / Moonshot | `MOONSHOT_API_KEY` | OpenAI Chat compatible |
+| OpenRouter | `OPENROUTER_API_KEY` | OpenAI Chat compatible |
+| SiliconFlow | `SILICONFLOW_API_KEY` | OpenAI Chat compatible |
+| Ollama | 无 | 默认探测 `127.0.0.1:11434` |
+| LM Studio | 无 | 默认探测 `127.0.0.1:1234` |
+
+还可以创建自定义 `openai_chat`、`openai_responses` 或 `anthropic_messages` route。模型选择器允许使用
+Provider 返回的模型，也允许手工填写模型 ID；能力以 route 的明确字段为准，不根据模型名称猜测。
+
+### 配置方法
+
+TUI：
+
+```text
+/config
+/provider
+/model
+/doctor
+```
+
+CLI：
 
 ```bash
 uv run coderook configure
-```
-
-TUI 中的 `/config` 提供 DeepSeek、OpenAI、Anthropic 和硅基流动入口，并从对应模型接口读取当前
-账号可见的文本聊天模型。CLI route 管理支持 `anthropic`、`openai`、
-`openai-compatible`、`anthropic-compatible` 和 `opencode-zen` preset。
-
-```bash
 uv run coderook provider list
-uv run coderook provider add local --preset openai-compatible \
-  --base-url http://127.0.0.1:11434/v1/chat/completions \
-  --model local-model --set-key --activate
+uv run coderook provider add local --preset ollama --activate
 uv run coderook provider test local
 uv run coderook provider use local
-uv run coderook model list
+uv run coderook model list --route local
 uv run coderook config-status
 ```
 
-`provider add/edit` 默认先运行脱敏连接诊断，再提交 route 和凭据；只有明确使用
-`--skip-doctor` 才跳过探测。密钥优先保存在系统 keyring，没有可用后端时降级到
-`~/.coderook/credentials.json`，不会出现在 `provider list`、日志或诊断包正文中。
+新增、编辑或切换 route 默认先运行 ProviderDoctor，再原子提交 route、活动项和凭据。Doctor 使用最多
+3 个有界请求：必查真实流式响应和正常终止；route 声明支持工具、并行工具或图片时，相应能力也必须
+真实通过。声明不支持的能力显示 `unsupported`，`not_run` 或任何必需项失败都不能生成可提交收据。
+公开 CLI 不提供跳过 Doctor 的保存入口；`configure`、route 新增/编辑和 `provider use` 都必须先完成
+当前 route 声明能力对应的探针。探针失败时事务回滚，不会留下半写入的活动 route 或凭据引用。
 
-配置优先级从低到高为：内置默认值、`~/.coderook/config.toml`、项目
-`.coderook/config.toml`、`.env`、`CODEROOK_*` 环境变量。项目 TOML 不允许设置
-`provider`、`base_url`、`api_key_env` 或 `active_route_id` 等路由安全字段。
+密钥优先写入系统 keyring；不可用时降级到权限受限的 `~/.coderook/credentials.json`。列表、日志、
+readiness 与诊断结果只显示凭据来源和脱敏状态，不显示密钥正文。
+Doctor 收据只保存 route/model 摘要、时间和分项状态，不保存请求密钥、响应正文或工具参数。
+每条 Route 只解析自身明确的 `env:`、`keyring:`、`file:` 或 `none:` 引用，不会遍历其他凭据来源。
+`credentials.json` 当前文档版本为 2；v1 会在下一次受管写入时升级。未来版本、未知字段、损坏 JSON、
+符号链接或不安全父目录都会保留原证据并失败关闭。
 
-## TUI
+### 配置来源安全
+
+优先级从低到高为：
+
+```text
+内建默认值
+  → ~/.coderook/config.toml
+  → <workspace>/.coderook/config.toml
+  → 显式指定的 env 文件
+  → 当前用户进程环境变量
+```
+
+仓库根目录 `.env` **不再自动读取**。只有用户显式传入 `--env-file <path>`（或集成方显式调用
+配置加载 API 的 `env_file` 参数）时，指定文件才参与本次加载；TUI 自动启动的 Core 会收到同一个
+绝对路径。该文件不能设置 `CODEROOK_CONFIG`。例如：
+
+```powershell
+uv run coderook --env-file C:\secrets\coderook.env
+uv run coderook-core --env-file C:\secrets\coderook.env
+```
+
+显式文件以 `interpolate=false` 解析，`${NAME}` 不会再从宿主环境展开；读取只形成进程内 overlay，
+不修改 `os.environ`，也不通过 IPC 发送密钥。同名用户进程环境值优先，显式空值也会抑制文件值。
+TUI/CLI 的 readiness、Doctor、Provider 增删改查、Core route 和 WebSearch 共用这份 overlay。
+WebSearch endpoint 可以来自 overlay，但结构化搜索凭据固定使用受管的 `file:web-search` 引用；项目
+endpoint 或 overlay 不能指定任意环境变量名来读取其他用户秘密。
+
+为避免误连到使用另一组凭据的 daemon，带 `--env-file` 的 TUI 每次都会先停止当前工作区无活动任务的
+受管 Core，再用同一路径重启。Core 正在运行任务、不是 CodeRook 受管进程、停止后端口仍被占用，或
+组合使用 `--no-auto-core --env-file` 时都会 fail closed；当前没有把 env 文件身份持久化成 daemon
+配置指纹。
+
+项目
+`.coderook/config.toml` 永远不能设置 `provider`、`base_url`、`api_key_env` 或
+`active_route_id`，即使通过显式配置路径指向它也不能绕过限制。
+
+用户进程中显式设置的 `CODEROOK_*` 环境变量仍是最高优先级。不要在仓库文件中保存真实 key。
+
+## 3. 一次任务的完整闭环
+
+建议按以下顺序工作：
+
+1. **理解**：先让 Agent 读取相关代码、测试和约束。
+2. **规划**：复杂任务使用 `/plan <任务>`，在只读模式审查方案。
+3. **执行**：切换到 `act`，核对审批卡中的工具、路径和命令。
+4. **验证**：要求运行与风险相匹配的测试、静态检查或构建。
+5. **结果**：查看 run 结束后的结果卡，不用一段自然语言回答代替证据。
+6. **审查**：使用 `/changes`（`/diff` 为兼容别名）、`/review` 与 `/turn` 对照改动和持久收据。
+7. **恢复**：方向错误时使用 `/rewind` 预览并确认恢复点。
+
+Plan Turn 完成后会产生持久 `plan.ready` 审批，而不会自动进入写入模式。批准、要求修改或取消都通过
+typed `plan.respond` 发送；Core 只接受当前 session/run 的未决计划，并先持久化 `plan.resolved`，TUI 才
+清除审批卡。daemon/TUI 重启会从 Runtime 重建最终状态，已解决的旧计划不会复活；决定落盘前也不能在
+同一 session 创建新 Turn。只有批准分支会在 readiness 仍通过时启动新的 Act Turn。
+
+### 结果卡
+
+成功、失败和中断都会生成结果卡。TUI 优先读取持久 Turn Receipt；投影短暂未就绪时会有限重试，
+再回退到本次事件证据。卡片可以显示：
+
+- 状态、耗时和 step 数；
+- route、model 和可得的成本；
+- 修改文件或“证据不足”；
+- 验证通过/失败/不可用；
+- 未验证项与安全失败分类；
+- `/changes`、`/review`、`/rewind`、`/turn` 入口。
+
+“任务完成”不等于所有事项已经验证。缺少持久证据时，卡片必须显示 unavailable/unverified，而不是
+猜测成功。
+`run.finished.status` 是兼容旧客户端的粗粒度状态；结果卡优先使用可选 `outcome`。`tool_use`、
+`length` 和 `incomplete` 显示为“不完整”，`cancelled` 显示为“已中断”，`content_filtered` 和
+`transport_error` 分别显示，均不会并入成功。
+
+### Change Center
+
+`/changes` 打开可聚焦的全屏改动中心，`/diff` 保留为兼容别名。面板合并当前 `workspace.diff` 与
+最近一次 durable Turn Receipt：用 `j/k` 切换文件、`n/p` 切换 hunk，展示验证命令到路径的映射，
+并明确标出冲突、验证失败、缺少收据和 diff 截断；按 `Esc` 返回时间线。返回的 `state_digest` 是审查
+令牌，不是权限 token：它绑定 scope、规范化后的完整可见 payload、精确 symbolic HEAD/ref 与 commit、
+index、tracked worktree 和 untracked 内容。`/stage` 只接受 `scope=all` 的令牌；成功响应产生新的
+`scope=staged` 令牌，`/commit` 只接受该 staged 审查。分支/ref、index、worktree、未跟踪内容或可见
+payload 任一变化，都要求重新审查。stage 成功后 TUI 会强制打开最终 staged 视图，其中包含 index
+原来已有但本次未选择的内容；用户看完并退出该视图后，仍需单独执行 `/commit ... --yes`，不会把
+stage 的确认复用为 commit 确认。
+
+每个目标文件必须为 `review_complete=true`。未跟踪 UTF-8 文本展示完整新增补丁，未跟踪二进制展示
+长度和 SHA-256，且 100644/100755 mode 进入审查摘要；tracked 二进制或非 UTF-8 内容展示 old/new blob
+的长度和 SHA-256。子目录 workspace 与包含空格、Tab、引号、Unicode 或首尾空格的 Git 路径必须与
+`files[].path`、hunk 和 metadata 精确对应；无法安全归属就把 `review_complete` 降为 false。rename/copy、
+mode-only 与 opaque metadata 也保留在可导航的文件审查中。超过 200,000 字节总可见预算、证据不全、
+补丁截断、路径竞态或无法安全读取都会阻断写入。`/review [关注点]` 会在 Plan 模式提交只读审查任务，
+`/rewind` 通过两步确认恢复 checkpoint。
+
+`/stage <path...> --yes` 只把用户明确列出的词法路径和已审查内容加入 Git index；私有 index 必须保留
+未选择路径的 sparse/split、skip-worktree 与 assume-unchanged 语义，否则失败关闭。`/commit <主题>
+--yes` 只从全部可审查的 staged 内容创建本地 commit，并跳过仓库 hook 与签名程序，不会 push。子目录
+workspace 若存在边界外 staged 文件会阻断提交；Change Center 支持未出生/orphan 分支的首次提交，但
+detached HEAD 必须先切换到分支。两项写操作都要求同一 workspace 内没有任何活动 Turn、审计存储健康
+且 workspace 已信任；冲突、越界路径、ref/CAS 竞态和过期令牌均失败关闭，也不会绕过 typed `--yes`。
+POSIX 字面反斜杠路径不会被折叠成目录分隔符，但当前 stage 门禁会显式拒绝这类无法跨平台安全表示的
+名称。
+
+`/language zh-CN|en-US` 会把界面语言偏好保存在用户目录。稳定 TUI shell、命令、选择器、
+审批、管理面板、事件提示和结果卡使用集中式中英文文案，切换后已打开的控件会立即刷新。
+Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值、日志正文、模型/插件提供的动态文本不翻译。
+
+## 4. TUI 操作
 
 常用键位：
 
 | 输入 | 行为 |
 |---|---|
 | `Enter` | 发送消息 |
-| `Shift+Enter` | 插入换行 |
+| `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | 插入换行 |
 | `Tab` | 循环 plan/act/operate |
 | `Shift+Tab` | 循环权限姿态 |
-| `Ctrl+C` | 任务运行中请求取消；空闲时复制选区或上一条回复 |
-| `Ctrl+Q` | 退出 TUI |
+| `Ctrl+C` | 有选择时复制；否则按提示再次取消当前任务 |
+| `Ctrl+Shift+C` | 复制选择或上一条回复 |
+| `Ctrl+P` | 打开分类命令面板；常用项置顶，Labs 默认隐藏 |
+| `Ctrl+Q` | 退出 TUI；会话和 Core 状态不会被删除 |
 
-粘贴本地图片路径后，CodeRook 会验证格式和尺寸，把内容写入 ArtifactStore，并随下一条消息发送。
-永久 transcript 不保存图片 base64；当前不承诺直接读取所有终端的剪贴板位图。
+常用命令：
 
-### 推荐工作流程
-
-处理代码修改时建议使用以下闭环：
-
-1. **理解**：让 Agent 先读取相关代码、配置和测试，不要一开始就扩大修改范围。
-2. **规划**：复杂任务先输入 `/plan <任务>`，审查计划后再切换到 `act`。
-3. **执行**：在审批卡中核对工具、路径、命令和 diff；不确定时拒绝。
-4. **验证**：要求运行与改动风险相匹配的测试、静态检查或构建命令。
-5. **审查**：输入 `/diff` 查看最终改动，输入 `/turn` 查看 route、用量和执行收据。
-6. **恢复**：发现改动方向错误时使用 `/rewind` 选择安全恢复点。
-
-任务、运行中纠偏、Goal 创建或结构化问题回答如果未被 Core 确认接收，TUI 会恢复原输入；图片附件也会
-回到待发送队列。run 尚在启动、还没有可纠偏的 run ID 时，按 Enter 不会清空当前草稿。
-
-Agent 的最终回答应说明完成内容、修改文件、验证结果和未解决问题。回答中的“已完成”不能替代
-实际 diff、测试输出或外部发布证据。
-
-### 常见任务写法
-
-| 目标 | 推荐输入 |
+| 类别 | 命令 |
 |---|---|
-| 理解仓库 | `只读分析项目架构、启动流程、数据流和主要测试，不修改文件。` |
-| 修复缺陷 | `复现这个错误，定位根因，做最小修复并运行相关测试。` |
-| 实现功能 | `先检查现有模式和协议，给出简短计划，实施后补测试和用户文档。` |
-| 代码审查 | `审查当前 git diff，只报告可复现问题，给出文件位置、风险和验证方法。` |
-| 文档同步 | `以当前代码和命令帮助为准，删除过期描述并检查所有本地链接。` |
-| 安全检查 | `只读检查权限、路径边界、密钥处理和 fail-closed 行为，不执行高风险命令。` |
+| 帮助与输入 | `/help`、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]` |
+| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes` |
+| 模型 | `/config`、`/provider`、`/model`、`/doctor` |
+| 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
+| 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/cost` |
+| 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
+| Labs/高级 | `/workflow`、`/hooks` |
 
-不要只输入“优化一下”“全部修好”这类没有边界的要求。最好明确目标、允许修改的范围、必须保留的
-兼容行为和期望验证。
+输入历史按工作区保存，可关闭或清空。密钥样式的输入不会写入历史；这是模式脱敏，不是完备的 DLP。
+`/export [md|json]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
+`/export [md|json] --force --yes` 才允许覆盖。该命令不接受自定义输出路径。
+粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息一次性交付；composer
+上方附件条持续显示序号、尺寸和短 hash。发送前可用 `/attachments remove N` 或
+`/attachments clear` 管理附件；发送失败会恢复附件。永久 transcript 不保存图片 base64，且当前不保证
+读取所有终端的剪贴板位图。
 
-### 会话与模型
+### 会话隔离与重连
 
-| 命令 | 作用 |
+TUI 先创建或恢复 session，再订阅该 thread 的 durable 事件流。每个 session 保存最后确认的 `seq`；
+切换会话时使用 typed `event.unsubscribe` 只撤销当前连接拥有的旧 thread 订阅，重连后使用 `after_seq`
+回放缺失事件。订阅初始化或 replay 失败只清理本次新订阅，不影响同一连接的 daemon/global 通道。
+`runtime.event.payload` 由统一 reducer 处理，daemon 全局事件不会直接混入任务时间线。
+
+活动 Turn 仍持锁而使 `session.resume` 返回 busy 时，TUI 会从权威 thread 投影只读附着原 Turn，重新
+读取完整 transcript，再建立带 `after_seq` 的订阅。Reducer 对账 active run、未决审批、问题和计划；
+Goal 从独立的权威 Goal 投影恢复，session-scoped composer 从本地 workspace/session 快照恢复。已被后续
+durable 进度解决的旧控件不会复活。若视图准备或事件交付在激活中途失败，该 session 会进入
+`requires_replay` fence；更高 `seq` 不得越过缺口确认，重试从最后成功交付的游标补交。
+
+这套设计用于避免 session 间的 token、审批、busy、取消和结果状态污染；发布级 100 次双 session
+并发/断线矩阵尚未形成外部证据，因此不要把架构声明当成该门禁已通过。
+
+## 5. 权限与沙箱
+
+工作模式和权限姿态是独立维度：
+
+| 设置 | 行为 |
 |---|---|
-| `/help` | 显示键位和全部命令 |
-| `/new`、`/sessions` | 新建或切换会话 |
-| `/rename <标题>` | 重命名当前会话 |
-| `/fork [标题]` | 从当前上下文复制会话 |
-| `/export [md\|json]` | 导出当前会话 |
-| `/delete --yes` | 永久删除当前会话 |
-| `/provider [route]` | 查看或切换 Provider route |
-| `/model [模型 ID]` | 查看或切换模型 |
-| `/doctor` | 诊断活动 route |
-| `/config` | 配置平台、模型和密钥 |
-| `/compact` | 手动压缩上下文 |
-| `/copy` | 复制上一条回复 |
+| `plan` | 只读规划；结构化提问可用 |
+| `act` | 受控编辑与验证 |
+| `operate` | 更广操作面，仍经过权限管线 |
+| `ask` | 需要权限的动作逐次询问，默认推荐 |
+| `auto-review` | 自动接受支持审查的编辑；Shell 自动化仍取决于真实沙箱 |
+| `full-access` | 扩大自动执行范围，但不绕过危险命令、安全降级或审计失败关闭 |
 
-### 运行控制
+每个 Turn 启动时冻结 authority 快照；该 session 后续设置变化不能扩大正在执行的 Turn。审批决策、
+工具可见性和 Shell sandbox 计划读取这份有效快照。Goal 还保存创建时的 permission ceiling，后续
+轮次不能越过它。
 
-| 命令 | 作用 |
-|---|---|
-| `/plan [任务]` | 进入只读规划，或直接提交规划任务 |
-| `/goal <目标>` | 创建 session 级持久 Goal 并立即开始执行 |
-| `/goal`、`/goal status` | 查看当前未终结 Goal、run 数、预算和状态 |
-| `/goal list` | 查看当前 session 的 Goal 历史 |
-| `/goal pause`、`/goal resume` | 立即暂停当前 run，或恢复 Goal 并开始继续轮次 |
-| `/goal edit <新目标>` | 修改持久目标；运行中会把修改作为 steer 注入当前 run |
-| `/goal complete [验收说明]` | 用户确认目标已验收；记录最近 run 与说明作为完成证据 |
-| `/goal clear` | 清除当前 Goal 并取消关联 run；审计记录仍保留 |
-| `/mode plan\|act\|operate` | 查看或切换工作模式 |
-| `/permissions ask\|auto-review\|full-access` | 查看或切换权限姿态 |
-| `/trust status\|grant\|revoke` | 查看或修改工作区信任 |
-| `/sandbox` | 探测当前 OS 隔离能力 |
-| `/tasks` | 查看本次 run 的任务板 |
-| `/workers` | 查看 durable workers 和 fleet |
-| `/workflow [start <文件>]` | 查看或启动 workflow |
-| `/diff` | 查看工作区改动 |
-| `/rewind` | 从安全恢复点回滚文件 |
-| `/context`、`/cost`、`/turn [id]` | 查看上下文、成本和 turn 收据 |
+Linux bubblewrap 和 macOS Seatbelt 只有在真实执行探针成功后才视为可用。强制配置只暴露工作区、
+必要系统运行时和临时目录，Home 默认不可见。Windows 当前没有 OS 文件/网络沙箱：Shell/Run 每次
+都要明确审批并显示 “NO OS SANDBOX”；Job Object 只负责进程树回收，不等同于隔离。
 
-Goal 与普通消息不同：它保存在 `~/.coderook/goals/`，绑定创建它的 session，并在每轮系统上下文中
-重复注入。一次 run 正常结束只代表这一轮执行成功，Goal 仍保持 `active`，不会因为模型返回了一段答案就
-自动宣称完成。Agent 只有在目标及全部完成标准都已验证后，才能用 `update_goal` 工具提交测试、文件、
-commit 或报告等具体证据并进入 `completed`；用户也可以执行 `/goal complete [验收说明]` 显式确认。
-运行失败时 Goal 进入 `blocked` 并保留原因，可用 `/goal resume` 继续。daemon 在 run 中退出时，重启会
-把遗留 Goal 恢复为 `blocked`。Goal 不扩大当前 mode、权限、工作区信任或沙箱能力。
+Shell 环境采用白名单，并过滤常见 API key、云凭据、SSH 与 Git token 环境变量。按域名的 Shell
+出站白名单无法强制时 fail closed。
 
-`/goal pause`、`/goal edit`、`/goal complete` 和 `/goal clear` 可在 run 执行期间使用。token 预算可
-通过 typed IPC 的 `goal.create.token_budget` 设置；预算耗尽会暂停并取消关联 run。TUI 创建时以目标
-文本作为默认完成定义；需要独立完成标准的集成方可传入 `completion_criteria`。
+若 `events.jsonl` 或 Runtime 投影写入失败，Core 会发出脱敏 `audit.degraded` 事件并拒绝所有非 READ
+工具。只读诊断和导出仍可用；状态只能由显式修复流程清除，普通 run 不会静默恢复写权限。
 
-### 扩展与后台状态
+## 6. Goal v4（稳定 TUI 产品面）
 
-| 命令 | 作用 |
-|---|---|
-| `/skills list\|show\|install\|remove\|audit` | 管理 Skill |
-| `/<skill-name>` | 调用已安装 Skill |
-| `/mcp [server]` | 查看 MCP server 和工具 |
-| `/hooks [rerun <id> --yes]` | 查看或重跑 Hook |
-| `/memory [delete <id> --yes]` | 查看或删除项目记忆 |
-| `/jobs [show <id>\|cancel <id> --yes]` | 查看或取消后台任务 |
-| `/artifacts [gc [days] [--yes]]` | 查看产物或执行感知式清理 |
+`/goal` 管理 session 级持久目标：
 
-## 权限与沙箱
+```text
+/goal create [边界参数] -- <目标>
+/goal <目标>                         # 兼容简写，使用默认边界
+/goal status
+/goal list
+/goal pause
+/goal resume
+/goal edit <新目标>
+/goal complete [验收说明]
+/goal cancel --yes                  # 取消当前 Turn 并终结 Goal
+/goal clear --yes                   # cancel 的兼容别名
+```
 
-工作模式和权限姿态是两个独立维度：
+创建命令直接映射到 typed `goal.create`，支持以下参数：
 
-| 设置 | 适用场景 | 行为 |
-|---|---|---|
-| `plan` | 调研、方案设计、风险评估 | 只读规划 |
-| `act` | 日常修复和功能开发 | 允许受控修改 |
-| `operate` | 明确需要较广操作面的维护任务 | 允许更多操作，但仍经过权限管线 |
-| `ask` | 默认推荐 | 需要权限的动作逐次询问 |
-| `auto-review` | 已建立审查流程的可信项目 | 自动接受受支持的可审阅编辑 |
-| `full-access` | 用户明确监督的高权限任务 | 扩大自动执行范围，但不取消危险命令规则 |
+```text
+--auto-continue | --no-auto-continue
+--max-auto-turns 1..100
+--max-wall-seconds 1..86400
+--token-budget <正整数>
+--criterion "完成标准"              # 可重复
+--constraint "执行约束"             # 可重复
+```
 
-- 工作区来源不明确时不要执行 `/trust grant`。
-- 使用 `full-access` 前先确认任务目标、工作目录和 Git 状态。
-- Linux 在探测到 bubblewrap 时可使用强制包装；macOS 使用 Seatbelt。
-- Windows 当前没有文件系统/网络强制沙箱，相关 Shell 动作会明确降级到审批链。
-- 域名白名单在没有强制后端时拒绝执行，不会静默变成全网访问。
+例如，让 daemon 在本次自动窗口内总共最多运行两个 Turn（首轮加最多一次续轮）、总墙钟不超过十
+分钟且 token 不超过 12,000：
 
-MCP server、Skill、Hook、网页内容和模型输出都应视为不受信任输入。只安装已审查来源，不要在
-Prompt、项目 TOML、Issue 或 trace 中放入密钥。
+```text
+/goal create --max-auto-turns 2 --max-wall-seconds 600 --token-budget 12000 \
+  --criterion "tests pass" --criterion "docs aligned" -- 修复登录回归并完成验证
+```
 
-## CLI 与无人值守运行
+未知选项、重复的单值选项、非整数、越界值、空目标和未闭合引号都会在 TUI 本地拒绝，不会创建 Goal。
+目标文本若确实以 `--` 开头，必须先写位置分隔符 `--`。`/goal cancel` 与 `/goal clear` 都需要显式
+`--yes`；`pause` 保留目标并取消当前 Turn，`cancel` 则把目标终结为 `cleared`。
+
+`/goal status` 展示当前总轮次、已用/最大自动轮次、累计 token 与墙钟预算、已有验证证据、尚未覆盖的
+completion criteria、活动 run、暂停原因和 `paused_needs_confirmation`。`/goal list` 使用同一权威 Goal
+投影的折叠摘要。自动继续/暂停决策会作为可回放 `goal.continue_decision` 卡片进入当前 session 时间线，
+断线重连后仍可看到原决策。
+
+Goal schema v4 包含 `auto_continue`、默认 `max_auto_turns=3`（包含首轮）、默认
+`max_wall_seconds=1800`、硬 token budget、权限上限、暂停原因、timeline 与完成证据。一次 run 结束后
+daemon 会持久化继续/暂停决策，并发布 `goal.continue_decision`：预算耗尽、达到轮次/时长限制、权限越界、
+声明的 completion criteria 已全部被验证证据覆盖时会暂停等待验收；没有声明 criteria 时不会因此
+立即暂停，而是仍按默认三 Turn/1800 秒或调用方设置的更小边界继续。若显式设置
+`auto_continue=true` 且决策允许，SessionManager 会在当前 session 锁释放后自动创建下一 Turn；每个
+Turn 还会使用自动窗口的剩余墙钟作为硬 deadline，超时会取消 runner 与其进程树并进入确认暂停。
+只有明确的 transport 或 stream 超时使用最长 30 秒的有限退避，认证、配置、安全、验证失败以及未分类
+`llm_error` 都不会被自动绕过。
+
+只有引用 daemon 已记录 `verification.completed` 的 `update_goal`，或用户显式 `/goal complete`，才能进入
+completed；文件路径、commit 文本或模型自报“测试通过”都不算证据。预算 Goal 会在每次模型请求前收窄
+输出上限，真实 usage 达到上限或 provider 不返回 usage 时立即停止，禁止继续执行本次响应中的工具。自动 Goal
+在 daemon 重启后进入 `paused_needs_confirmation`，普通遗留 Goal 则按中断状态恢复；不会在用户不知情时
+自行恢复。
+
+新建 Goal 的 `goal.create`、GoalService 和 TUI `/goal <目标>` 默认开启 `auto_continue`，默认最多三个
+自动 Turn、1800 秒；调用方可显式关闭。为了避免把升级前的持久数据静默变成无人值守任务，
+`GoalRecord` 反序列化缺失该字段的旧记录时仍取 `false`。自动 Goal 重启后始终要求确认。该能力虽然
+端到端可调度且已具有 TUI 边界编辑、状态审查和显式恢复入口，真正的 `v1.0.0` 发布仍必须通过发布评分卡
+列出的外部真实模型、三平台恢复和安装门禁。
+
+## 7. 扩展与多 Agent 边界
+
+Runtime capability 继续把 fleet workers、declarative workflows、Hooks v2、MCP Resources/Prompts 和
+VS Code 原型标为 Labs。bounded Goal loop、基础子 Agent、Skills、MCP Tools、Memory、durable
+threads/turns、cursor replay、receipts、interrupt/steer、permission response 与 workspace diff 是稳定机器
+合同；稳定标签不替代发布评分卡的外部门禁。
+
+Labs 默认关闭，命令面板也会隐藏相应命令。仅在明确接受实验性恢复与权限风险时启用：
+
+```bash
+CODEROOK_LABS=1 uv run coderook
+```
+
+PowerShell 使用 `$env:CODEROOK_LABS = "1"` 后再启动。修改开关后必须重启 Core；关闭时 Core 不读取
+用户/项目 Hook 配置，不暴露或恢复 Workflow/Fleet 控制面。该开关不把 Labs 变成稳定合同，也不降低
+权限、工作区信任或审计要求。
+
+稳定基础 Worker 不需要 Labs。控制命令为：
+
+```text
+/workers start [--profile ROLE] [--route ID] [--model ID] [--budget TOKENS] \
+  [--file PATH ...] [--write-root PATH ...] <任务>
+/workers status <id>
+/workers peek <id> [after_cursor]
+/workers followup <id> <补充指令>
+/workers retry <id> --yes
+/workers cancel <id> --yes
+/workers review <id>                              # 预览并取得 digest
+/workers review <id> approve <digest> --yes
+/workers review <id> reject --yes
+/workers apply <id> <digest> --yes
+```
+
+- MCP Tools 可通过受控 catalog 调用；Resources/Prompts 和 transport 细节以
+  [MCP 兼容文档](../reference/MCP_COMPATIBILITY.md)为准。
+- 项目 Skill 和 Agent Profile 有严格 schema、来源、digest 与信任检查，但内容仍需人工审查。
+- Hook 与本地脚本等价，项目 Hook 受工作区信任控制；rerun 不能绕过 trust。
+- 基础子 Agent 由 daemon-owned WorkerController 管理，所有 list/start/status/retry/peek/followup/cancel/
+  review/apply 操作都严格绑定当前 session。启动时可以用 `--profile`、`--route`、`--model`、`--budget`、
+  `--file` 和 `--write-root` 收窄角色、模型、预算与写入范围；route 必须通过 readiness，权限不能高于
+  父 Turn/Goal ceiling。可写 Worker 会被强制放入受管 Git worktree；完成后 Core 从固定 base commit
+  检查 changed files、diff 和 handoff 状态。`/workers` 可查看这些证据；`/workers review <id>` 记录批准并
+  返回绑定当前审查状态的 64 位 digest，但不会修改主工作区。确认摘要无误后，必须显式运行
+  `/workers apply <id> <digest> --yes`；Core 会在应用前重新核对 session、审批状态、base commit、
+  changed files 和 digest，任何漂移或冲突都会失败关闭。apply 只修改当前工作区，不 stage、不创建 commit、
+  不 push；拒绝仍可使用 `/workers review <id> reject --yes`。模型报告的测试仅标记为
+  `reported_unverified`。Labs Fleet/Workflow 当前没有自动配置独立 worktree，因此写节点会在进程启动前
+  失败关闭，只读节点仍可运行；发布级跨平台冲突矩阵仍需外部门禁证据。
+
+VS Code 目录是 experimental 原型，不属于 v1 产品承诺，也不会随当前 release workflow 发布 VSIX。
+
+## 8. CLI 与无人值守运行
 
 ```bash
 uv run coderook ping
-uv run coderook chat
 uv run coderook sessions --all
-uv run coderook chat --resume SESSION_ID
-uv run coderook review --goal "审查当前改动" --output-format json
 uv run coderook run --goal "分析项目" --output-format stream-json
+uv run coderook review --goal "审查当前改动" --output-format json
+uv run coderook doctor runtime --json
+uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
+uv run coderook trace --follow
 ```
 
 Headless 默认在需要人工审批时 fail-fast。只允许明确工具：
@@ -251,58 +423,41 @@ Headless 默认在需要人工审批时 fail-fast。只允许明确工具：
 ```bash
 uv run coderook run --goal "修改并验证代码" \
   --permission-mode allow-list \
-  --allow-tool edit_file \
-  --allow-tool apply_patch \
+  --allow-tool File.write \
   --allow-tool Run.run \
   --allow-tool Bash.run
 ```
 
-实际可见工具取决于当前 mode、authority、trust、sandbox 和 deferred discovery。若任务可能提问，
-还要设置 `--question-mode timeout` 或 `preset`；完整参数以
-`uv run coderook run --help` 为准。
+allow-list 仍不能绕过 authority、危险命令规则、工作区边界、Windows Shell 审批和
+`audit_degraded`。若任务可能调用结构化提问，还要配置 `--question-mode timeout` 或 `preset`。
 
-会话管理：
-
-```bash
-uv run coderook session rename SESSION_ID "新标题"
-uv run coderook session fork SESSION_ID --title "实验分支"
-uv run coderook session export SESSION_ID --format markdown -o session.md
-uv run coderook session delete SESSION_ID --yes
-```
-
-诊断与产物：
-
-```bash
-uv run coderook doctor all --json
-uv run coderook doctor runtime --json
-uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
-uv run coderook artifacts list --json
-uv run coderook artifacts gc --days 30
-uv run coderook trace --follow
-```
-
-`artifacts gc` 默认预览；执行删除需要显式 `--yes`。诊断包会脱敏，但分享前仍应人工检查路径、
-Prompt 和业务数据。
-
-## 本地数据
+## 9. 本地数据与隐私
 
 用户级状态位于 `~/.coderook/`：
 
-- `config.toml`、`routes.json`、`credentials.json`（仅在 keyring 不可用时）；
-- `sessions/`、`runtime.db`、`fleet.db`、`workflow.db`；
-- `policy.toml`、`ipc-token`、`traces/`。
+- `config.toml`、`routes.json`、credentials fallback、`policy.toml`、`ipc-token`、`api-token`；
+- `sessions/`、`goals/`、`runtime.db`、`fleet.db`、`workflow.db`；
+- `traces/`、日志和升级备份。
 
-项目级状态位于 `<workspace>/.coderook/`：
+工作区状态位于 `<workspace>/.coderook/`：
 
 - `context.md`、`memory/`、`artifacts/`；
 - `worktrees/`、`skills/`、`agents/`、`hooks.toml`。
 
-升级或迁移前按[升级与回滚指南](UPGRADING.md)备份这些状态。
+CodeRook 默认不发送产品遥测。使用远端模型、MCP、Web 或 shell 时，获准调用的数据仍会交给对应
+第三方或本地进程；CodeRook 不改变 Provider 的数据保留政策。分享诊断包前仍应人工检查路径、Prompt
+和业务数据。
 
-退出 TUI 不等于停止 Core。Core 可继续持有当前 workspace 的会话、worker 和后台任务；完全停止请运行
-`uv run coderook core stop`。
+## 10. 分发状态
 
-## 常见问题
+当前公开使用方式是源码安装。Tag workflow 已准备 PyPI Trusted Publishing、五个自包含平台 archive、
+GHCR、checksum、SBOM、provenance 与签名，但这些真实资产尚未产生。
+
+未来 GitHub Release 会附带 Homebrew formula 和 Scoop manifest 文件；仓库目前没有外部 tap 或 bucket，
+因此不能写成 `brew install coderook` 或 `scoop install coderook` 已可用。详见
+[发行说明](../operations/RELEASING.md)。
+
+## 11. 常见问题
 
 ### 一直显示 connecting
 
@@ -312,15 +467,9 @@ uv run coderook core restart
 uv run coderook ping
 ```
 
-默认受管模式会尝试自动恢复 Core；如果 transcript 显示 `automatic restart failed`，按提示运行上述命令并查看
-`~/.coderook/logs/core.log`。手动 `--no-auto-core` 模式显示 `automatic recovery is disabled` 属于预期行为。
+默认受管模式会尝试自动恢复 Core；`--no-auto-core` 只重试连接，不启动进程。
 
-### 7437 或 7438 被占用
-
-先停止旧 Core。确需改端口时使用 `CODEROOK_PORT` 和 `CODEROOK_API_PORT`；CLI/TUI 与 Core
-必须读取同一配置。
-
-### 模型配置后仍不可用
+### 模型配置存在但不能提交
 
 ```bash
 uv run coderook config-status
@@ -328,19 +477,22 @@ uv run coderook provider list
 uv run coderook provider test
 ```
 
-HTTP 401/403 通常表示凭据或账号权限问题；模型列表为空可能是 provider 返回格式不兼容。不要把
-真实 key 贴进 Issue。
+`credential_missing` 表示本机找不到 route 引用的凭据；`endpoint_unreachable` 只用于本地端点探测失败；
+`configuration_complete` 表示本地前置条件齐全，不等于刚刚完成了在线 Doctor。
 
-### 修改配置后没有生效
+### 为什么 Windows 每次都询问 Shell
 
-```bash
-uv run coderook core restart
-```
+这是预期安全边界。Windows 没有已接受的强制 sandbox 后端，`auto-review` 和 `full-access` 都不能让
+Shell/Run 静默通过。
 
-环境变量优先级高于文件配置；同时检查终端中遗留的 `CODEROOK_*` 值。
+### 为什么结果卡显示未验证
 
-### 需要接口或运维细节
+只有实际事件或 Turn Receipt 能证明测试、改动和用量。没有证据时显示 unavailable 是设计行为。
 
-- HTTP/SSE：[Runtime API](../reference/RUNTIME_API.md)
-- Core、日志与恢复：[运行手册](../operations/RUNBOOK.md)
-- 安全边界：[威胁模型](../reference/THREAT_MODEL.md)
+### 需要接口、运维或升级细节
+
+- [功能架构](../reference/FUNCTIONAL_ARCHITECTURE.md)
+- [Runtime API](../reference/RUNTIME_API.md)
+- [运行手册](../operations/RUNBOOK.md)
+- [威胁模型](../reference/THREAT_MODEL.md)
+- [升级与回滚](UPGRADING.md)

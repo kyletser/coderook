@@ -16,12 +16,18 @@ log = logging.getLogger(__name__)
 # 管理所有 MCP server 连接的生命周期：启动、工具发现、注册、状态快照、关闭
 class McpServerManager:
     # 初始化多 server 状态并保存共享进程监督器
-    def __init__(self, process_supervisor: ProcessSupervisor | None = None) -> None:
+    def __init__(
+        self,
+        process_supervisor: ProcessSupervisor | None = None,
+        *,
+        enable_labs: bool = False,
+    ) -> None:
         self._clients: dict[str, McpClient] = {}
         self._tools: list[McpTool] = []
         # 每个 server 的元数据快照：status/error/tools，便于 mcp.list 查询
         self._states: dict[str, dict[str, Any]] = {}
         self._process_supervisor = process_supervisor
+        self._enable_labs = enable_labs
 
     # 依次连接每个 MCP server，发现工具后缓存供后续 registry 使用；失败时记录日志并跳过
     async def start_all(self, servers: list[McpServerConfig]) -> None:
@@ -31,12 +37,12 @@ class McpServerManager:
                 tool_defs = await client.list_tools()
                 resource_defs = []
                 prompt_defs = []
-                if "resources" in client.server_capabilities:
+                if self._enable_labs and "resources" in client.server_capabilities:
                     try:
                         resource_defs = await client.list_resources()
                     except Exception:
                         log.warning("mcp: resources/list failed for '%s'", cfg.name)
-                if "prompts" in client.server_capabilities:
+                if self._enable_labs and "prompts" in client.server_capabilities:
                     try:
                         prompt_defs = await client.list_prompts()
                     except Exception:

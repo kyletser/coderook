@@ -58,9 +58,37 @@ class IpcEventBroadcaster:
         self._subscriptions.append(sub)
         return sub_id
 
-    # 移除指定 writer 的所有订阅
-    def unsubscribe(self, writer: asyncio.StreamWriter) -> None:
-        self._subscriptions = [s for s in self._subscriptions if s.writer is not writer]
+    # 移除当前 writer 的指定订阅；省略标识时用于断线清理该 writer 的全部订阅
+    def unsubscribe(
+        self,
+        writer: asyncio.StreamWriter,
+        subscription_id: str | None = None,
+    ) -> bool:
+        before = len(self._subscriptions)
+        self._subscriptions = [
+            subscription
+            for subscription in self._subscriptions
+            if not (
+                subscription.writer is writer
+                and (
+                    subscription_id is None
+                    or subscription.sub_id == subscription_id
+                )
+            )
+        ]
+        return len(self._subscriptions) < before
+
+    # 检查指定订阅仍由当前 writer 持有，供回放发送失败时阻止确认高水位
+    def owns_subscription(
+        self,
+        writer: asyncio.StreamWriter,
+        subscription_id: str,
+    ) -> bool:
+        return any(
+            subscription.writer is writer
+            and subscription.sub_id == subscription_id
+            for subscription in self._subscriptions
+        )
 
     # 将事件推送到所有匹配的订阅客户端，写入失败时延迟清理死连接
     async def handle(self, event: BaseModel) -> None:
@@ -101,7 +129,7 @@ class IpcEventBroadcaster:
             if not self._matches_topic(event.type, sub.topics):
                 continue
             if not await self._send_event(sub, event_dict):
-                self.unsubscribe(sub.writer)
+                self.unsubscribe(sub.writer, sub.sub_id)
                 break
             count += 1
         return count
@@ -124,7 +152,7 @@ class IpcEventBroadcaster:
                 if seq <= last_seq:
                     continue
                 if not await self._send_event(sub, event_dict):
-                    self.unsubscribe(sub.writer)
+                    self.unsubscribe(sub.writer, sub.sub_id)
                     return count, last_seq
                 last_seq = seq
                 count += 1

@@ -79,6 +79,7 @@ async def _execute(request: LocalWorkerRequest) -> WorkerExecutionResult:
         run_id=request.worker_id.replace(":", "-"),
         runtime_mode=request.step.authority_ceiling.mode,
         resolved_route=route,
+        resolved_route_is_explicit=True,
     )
     parsed = parse_worker_result(outcome.result)
     status = "completed" if outcome.status == "success" else "failed"

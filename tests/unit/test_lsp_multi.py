@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from code_rook.core.lsp.client import PythonDiagnosticsClient
+import pytest
+
+from code_rook.core.lsp import multi as multi_module
+from code_rook.core.lsp.client import PythonDiagnosticsClient, _CommandOutput
 from code_rook.core.lsp.diagnostics import DiagnosticsReport
 from code_rook.core.lsp.multi import (
     TscDiagnosticsClient,
+    TypeScriptDiagnosticsClient,
     WorkspaceDiagnosticsClient,
     parse_tsc_output,
 )
@@ -49,7 +54,30 @@ async def test_tsc_client_unavailable_when_binary_missing(tmp_path: Path) -> Non
     report = await client.diagnose(["src/a.ts"])
 
     assert report.status == "unavailable"
-    assert report.tool == "tsc"
+    assert report.tool == "typescript-diagnostics"
+
+
+# 功能：验证 TypeScript Diagnostics 非零退出且无可解析诊断时明确失败
+# 设计：注入只含噪音的退出码二输出，排除“空 diagnostics 即绿色”的假成功路径
+async def test_typescript_diagnostics_nonzero_without_diagnostics_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 模拟基础设施失败但没有标准 tsc 诊断行
+    async def output(*args: object, **kwargs: object) -> _CommandOutput:
+        return _CommandOutput(2, "compiler crashed", False)
+
+    monkeypatch.setattr(multi_module, "_run_bounded_command", output)
+    client = TypeScriptDiagnosticsClient(WorkspaceBoundary(tmp_path))
+    client._tsc = "tsc"
+    client._npx = None
+
+    report = await client.diagnose(["src/a.ts"])
+
+    assert report.status == "failed"
+    assert report.infrastructure_ok is False
+    assert "non-zero" in report.error
+    assert "Infrastructure status `failed`" in report.render_context()
 
 
 # 功能：验证工作区客户端按扩展名分派并合并两种语言的诊断
@@ -71,9 +99,7 @@ async def test_workspace_client_dispatches_by_extension(tmp_path: Path) -> None:
                 status="ok",
                 tool="pyright",
                 diagnostics=(
-                    Diagnostic(
-                        path="a.py", line=3, column=1, severity="error", message="bad"
-                    ),
+                    Diagnostic(path="a.py", line=3, column=1, severity="error", message="bad"),
                 ),
             )
 
@@ -150,3 +176,58 @@ async def test_workspace_client_single_language_passthrough(tmp_path: Path) -> N
 
     assert report.status == "ok"
     assert report.tool == "pyright"
+
+
+# 功能：验证 Workspace Diagnostics 不会在 TypeScript 后端缺失时返回假绿色
+# 设计：只提交 TS 路径且显式禁用 tsc/npx，断言 unavailable 状态和可见基础设施上下文
+async def test_workspace_client_reports_unavailable_typescript_backend(
+    tmp_path: Path,
+) -> None:
+    boundary = WorkspaceBoundary(tmp_path)
+    typescript = TypeScriptDiagnosticsClient(boundary)
+    typescript._tsc = None
+    typescript._npx = None
+    client = WorkspaceDiagnosticsClient(
+        boundary,
+        typescript_client=typescript,
+        debounce_s=0,
+    )
+
+    report = await client.diagnose(["src/a.ts"])
+
+    assert report.status == "unavailable"
+    assert report.infrastructure_ok is False
+    assert "not executed successfully" in report.render_context()
+
+
+# 功能：验证并发编辑在静默窗口内合并为一次异步 Diagnostics 调用
+# 设计：两个调用错开一个事件循环 tick，stub 记录合并后的稳定路径并让两个等待者共享结果
+async def test_workspace_diagnostics_debounces_concurrent_edits(tmp_path: Path) -> None:
+    boundary = WorkspaceBoundary(tmp_path)
+
+    class _DebouncedPython(PythonDiagnosticsClient):
+        # 初始化路径调用记录并绕过真实工具探测
+        def __init__(self) -> None:
+            super().__init__(boundary, executable="pyright")
+            self.calls: list[list[str]] = []
+
+        # 记录一次合并后的 Python Diagnostics 批次
+        async def diagnose(self, paths: list[str]) -> DiagnosticsReport:
+            self.calls.append(list(paths))
+            return DiagnosticsReport(status="ok", tool="pyright")
+
+    python = _DebouncedPython()
+    client = WorkspaceDiagnosticsClient(
+        boundary,
+        python_client=python,
+        debounce_s=0.02,
+    )
+
+    first = asyncio.create_task(client.diagnose(["b.py"]))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(client.diagnose(["a.py", "b.py"]))
+    first_report, second_report = await asyncio.gather(first, second)
+
+    assert python.calls == [["a.py", "b.py"]]
+    assert first_report is second_report
+    assert first_report.status == "ok"

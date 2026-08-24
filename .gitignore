@@ -19,8 +19,6 @@ reports/
 .DS_Store
 *.log
 workspace/
-.coderook/memory/
-.coderook/context.md
-.coderook/worktrees/
+.coderook/
 .workbuddy/
 .git-credentials

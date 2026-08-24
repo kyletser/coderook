@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from pydantic import BaseModel
@@ -221,6 +222,9 @@ async def test_run_finished_event_published_on_success(tmp_path: Path) -> None:
     )
     assert finished is not None
     assert finished.status == "success"  # type: ignore[attr-defined]
+    assert finished.outcome == "completed"  # type: ignore[attr-defined]
+    assert finished.failure_category is None  # type: ignore[attr-defined]
+    assert finished.result_summary == "done"  # type: ignore[attr-defined]
 
 
 # 功能：验证步数耗尽时 run.finished 携带 failed 状态和正确的失败原因
@@ -234,6 +238,8 @@ async def test_run_finished_event_published_on_max_steps(tmp_path: Path) -> None
     finished = next(e for e in events if e.type == "run.finished")  # type: ignore[attr-defined]
     assert finished.status == "failed"  # type: ignore[attr-defined]
     assert finished.reason == "exceeded_max_steps"  # type: ignore[attr-defined]
+    assert finished.outcome == "failed"  # type: ignore[attr-defined]
+    assert finished.failure_category == "model"  # type: ignore[attr-defined]
 
 
 # 功能：验证 events.jsonl 第一行为 run.started、最后一行为 run.finished
@@ -321,9 +327,10 @@ async def test_injected_bus_receives_events(tmp_path: Path) -> None:
     assert "run.finished" in types
 
 
-# 功能：验证 session run 会从 thread.jsonl 预填 messages，并把 notes 注入 system prompt
-# 设计：用 CapturingProvider 截获 LLM 入参，不触发真实 API；同时断言 run 目录写到 session/runs 下
+# 功能：验证 session run 预填历史和 notes，但含 remember 的普通请求不会被静默保存为项目记忆
+# 设计：用 CapturingProvider 截获 LLM 入参，不触发真实 API，并同时检查 run 路径与 memory 存储
 async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
+    from code_rook.core.memory import MemoryStore
     from code_rook.core.session.model import Session
     from code_rook.core.session.store import SessionStore
 
@@ -355,6 +362,7 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
     assert "Python 3.12" in provider.system
     assert (store.runs_dir("sess-1") / "run-new" / "events.jsonl").exists()
     assert not (tmp_path / "runs" / "run-new").exists()
+    assert MemoryStore(tmp_path / ".coderook" / "memory").list_all() == []
 
 
 # 功能：验证不同领域的意图纠正都获得同一套通用语义框架与完整历史
@@ -706,3 +714,103 @@ async def test_runner_publishes_redacted_route_receipt(tmp_path: Path) -> None:
     assert selected.base_url_origin == "https://api.openai.com"  # type: ignore[attr-defined]
     assert selected.credential_source == "keyring"  # type: ignore[attr-defined]
     assert "route-secret" not in selected.model_dump_json()
+
+
+# 功能：验证冻结路由声明不支持工具时模型请求不会收到任何工具 schema
+# 设计：注入捕获型 Provider 与显式免密 route，绕过网络并直接检查首轮请求边界
+async def test_frozen_route_hides_tools_when_capability_is_disabled(
+    tmp_path: Path,
+) -> None:
+    route = get_route_preset("ollama").model_copy(
+        update={"supports_tools": False, "supports_parallel_tools": False}
+    )
+    resolved = ResolvedRoute(
+        route=route,
+        receipt=route.receipt("missing"),
+        credential="",
+    )
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        runs_dir=tmp_path,
+        workspace_root=tmp_path,
+    )
+
+    outcome = await runner.run_and_capture("hello", resolved_route=resolved)
+
+    assert outcome.status == "success"
+    assert provider.tool_schemas == []
+
+
+# 功能：验证冻结路由不支持图片时附件请求失败关闭且不会调用模型
+# 设计：给免图片 route 注入初始图片块，断言结构化失败原因而非静默删除附件
+async def test_frozen_route_rejects_images_before_provider_call(tmp_path: Path) -> None:
+    route = get_route_preset("ollama")
+    resolved = ResolvedRoute(
+        route=route,
+        receipt=route.receipt("missing"),
+        credential="",
+    )
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        runs_dir=tmp_path,
+        workspace_root=tmp_path,
+    )
+
+    outcome = await runner.run_and_capture(
+        "inspect image",
+        resolved_route=resolved,
+        initial_images=[{"type": "image", "source": {"type": "base64"}}],
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.reason == "route_capability_error"
+    assert provider.messages == []
+
+
+# 功能：验证 rule-based route 在 Turn 开始时选择一次并返回完整冻结绑定
+# 设计：用两个不可变 ResolvedRoute 的 Mock registry 驱动 PLAN 选择，避免依赖网络与凭据后端
+async def test_turn_route_selection_freezes_rule_based_plan_binding(
+    tmp_path: Path,
+) -> None:
+    active_route = get_route_preset("ollama").model_copy(update={"id": "active"})
+    plan_route = get_route_preset("ollama").model_copy(
+        update={"id": "plan", "model": "plan-model", "thinking": "high"}
+    )
+    active = ResolvedRoute(
+        route=active_route,
+        receipt=active_route.receipt("missing"),
+        credential="",
+    )
+    plan = ResolvedRoute(
+        route=plan_route,
+        receipt=plan_route.receipt("missing"),
+        credential="",
+    )
+    registry = Mock()
+    registry.resolve.side_effect = lambda route_id=None: (
+        plan if route_id == "plan" else active
+    )
+    config = _config()
+    config.llm.router = "rule_based"
+    config.llm.router_plan_route = "plan"
+    runner = AgentRunner(
+        config,
+        provider=_EndTurnProvider(),  # type: ignore[arg-type]
+        route_registry=registry,  # type: ignore[arg-type]
+        runs_dir=tmp_path,
+        workspace_root=tmp_path,
+    )
+
+    selected = await runner.resolve_turn_binding(
+        resolved_route=active,
+        runtime_mode=RuntimeMode.PLAN,
+        run_id="run-route-freeze",
+    )
+
+    assert selected is plan
+    assert selected.route.model == "plan-model"
+    assert selected.route.thinking == "high"

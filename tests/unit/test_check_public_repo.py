@@ -63,11 +63,11 @@ def test_find_docs_layout_issues_rejects_flat_markdown(tmp_path: Path) -> None:
     for name in (
         "evidence",
         "guides",
-        "images",
-        "operations",
-        "reference",
-        "status",
-    ):
+            "operations",
+            "reference",
+            "status",
+            "zh-CN",
+        ):
         (docs / name).mkdir()
 
     assert find_docs_layout_issues(tmp_path) == []
@@ -131,8 +131,8 @@ def test_find_tracked_pollution_detects_sensitive_artifacts(tmp_path: Path) -> N
     assert find_tracked_pollution(tmp_path) == [".env", "pkg/__pycache__/mod.pyc"]
 
 
-# 功能：验证公开仓库合同能发现稳定必需检查或 ruleset 诚实边界被删除
-# 设计：在隔离目录只写不完整 CI 文件，断言缺失文件和缺失汇总门禁都被报告
+# 功能：验证公开仓库合同能发现快速必需检查或手动安全证据边界被删除
+# 设计：在隔离目录只写旧名称 CI 文件，断言缺失关键 daemon smoke 和手动安全 workflow 均被报告
 def test_find_governance_contract_issues_reports_drift(tmp_path: Path) -> None:
     workflow_dir = tmp_path / ".github" / "workflows"
     workflow_dir.mkdir(parents=True)
@@ -140,7 +140,7 @@ def test_find_governance_contract_issues_reports_drift(tmp_path: Path) -> None:
 
     issues = find_governance_contract_issues(tmp_path)
 
-    assert any("needs: [quality-and-package]" in issue for issue in issues)
+    assert any("Critical daemon smoke" in issue for issue in issues)
     assert any("security.yml" in issue and "missing" in issue for issue in issues)
 
 

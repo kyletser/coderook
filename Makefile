@@ -1,4 +1,4 @@
-.PHONY: lint test integration-test docs tui-demo package-smoke verify
+.PHONY: lint test integration-test docs package-smoke verify
 
 lint:
 	uv run ruff check src tests scripts
@@ -12,9 +12,6 @@ integration-test:
 
 docs:
 	uv run python scripts/gen_protocol_doc.py
-
-tui-demo:
-	uv run python scripts/capture_tui_demo.py --output docs/images/coderook-tui.svg
 
 package-smoke:
 	uv build

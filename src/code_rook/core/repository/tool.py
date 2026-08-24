@@ -6,6 +6,10 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_rook.core.repository.index import RepositoryIndex
+from code_rook.core.repository.test_commands import (
+    command_candidate_id,
+    render_test_command,
+)
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from code_rook.core.tools.spec import (
     ApprovalRequirement,
@@ -29,13 +33,16 @@ class RepositoryParams(BaseModel):
 class RepositoryTool(BaseTool):
     name = "Repository"
     description = (
-        "Inspect the Git-aware repository map, search code symbols, or find identifier "
-        "references without reading every file."
+        "Inspect the Git-aware repository map, search symbols or references, and discover "
+        "manifest-declared test command candidates without executing them."
     )
     input_schema: dict[str, object] = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["map", "symbols", "references"]},
+            "action": {
+                "type": "string",
+                "enum": ["map", "symbols", "references", "test_commands"],
+            },
             "query": {"type": "string"},
             "symbol": {"type": "string"},
             "path": {"type": "string", "default": "."},
@@ -53,7 +60,7 @@ class RepositoryTool(BaseTool):
     def __init__(self, index: RepositoryIndex) -> None:
         self._index = index
 
-    # 为三个只读 action 生成独立 schema 和 capability 契约
+    # 为四个只读 action 生成独立 schema 和 capability 契约
     def build_spec(self) -> ToolSpec:
         action_schemas: dict[str, dict[str, object]] = {
             "map": {
@@ -83,6 +90,14 @@ class RepositoryTool(BaseTool):
                     "limit": {"type": "integer", "minimum": 1, "maximum": 500},
                 },
                 "required": ["action", "symbol"],
+            },
+            "test_commands": {
+                "type": "object",
+                "properties": {
+                    "action": {"const": "test_commands"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["action"],
             },
         }
         actions = tuple(
@@ -148,6 +163,27 @@ class RepositoryTool(BaseTool):
                     "matches": list(matches),
                     "count": len(matches),
                     "backend": "syntax-index+text-fallback",
+                }
+            elif request.action == "test_commands":
+                discovery = await asyncio.to_thread(
+                    self._index.test_commands,
+                    max_candidates=min(request.limit, 100),
+                )
+                payload = {
+                    "candidates": [
+                        {
+                            **candidate.__dict__,
+                            "argv": list(candidate.argv),
+                            "candidate_id": command_candidate_id(candidate),
+                            "command": render_test_command(candidate),
+                        }
+                        for candidate in discovery.candidates
+                    ],
+                    "count": len(discovery.candidates),
+                    "scanned_manifests": discovery.scanned_manifests,
+                    "truncated": discovery.truncated,
+                    "executed": False,
+                    "backend": "manifest-discovery",
                 }
             else:
                 return ToolResult(

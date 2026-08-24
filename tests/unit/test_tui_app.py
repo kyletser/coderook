@@ -13,10 +13,12 @@ from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
 from code_rook.core.authority import RuntimeMode
-from code_rook.core.llm.doctor import ProviderDoctorResult
+from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.doctor import ProviderDoctorCheck, ProviderDoctorResult
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.llm.routes import get_route_preset
+from code_rook.core.transport.socket_client import IpcError
 from code_rook.tui import app as tui_app_module
 from code_rook.tui.app import (
     ChatTextArea,
@@ -42,6 +44,43 @@ from code_rook.tui.app import (
     _tool_action_text,
     _tool_target,
 )
+from code_rook.tui.product import RunResultCard
+
+
+# 功能：为 TUI 测试构造与候选 route/model 摘要绑定的完整 Doctor 结果
+# 设计：按 route 声明能力生成通过或 unsupported 分项，使 fake 收据遵守生产提交门禁
+def _doctor_success(route: object, credential_source: str = "keyring") -> ProviderDoctorResult:
+    digest = getattr(route, "validation_digest")()
+    supports_tools = bool(getattr(route, "supports_tools"))
+    supports_parallel = bool(getattr(route, "supports_parallel_tools"))
+    supports_images = bool(getattr(route, "supports_images"))
+    return ProviderDoctorResult(
+        status="ok",
+        category="ok",
+        route_id=str(getattr(route, "id")),
+        message="all required capability checks passed",
+        credential_source=credential_source,  # type: ignore[arg-type]
+        readiness="verified",
+        route_digest=digest,
+        checked_at="2026-08-24T00:00:00+00:00",
+        basic=ProviderDoctorCheck(status="passed", message="bounded request passed"),
+        capabilities={
+            "streaming": ProviderDoctorCheck(status="passed", message="stream passed"),
+            "termination": ProviderDoctorCheck(status="passed", message="terminal passed"),
+            "tool_calling": ProviderDoctorCheck(
+                status="passed" if supports_tools else "unsupported",
+                message="tool capability",
+            ),
+            "parallel_tools": ProviderDoctorCheck(
+                status="passed" if supports_parallel else "unsupported",
+                message="parallel capability",
+            ),
+            "images": ProviderDoctorCheck(
+                status="passed" if supports_images else "unsupported",
+                message="image capability",
+            ),
+        },
+    )
 
 
 # 功能：验证权限审批面板以紧凑层级展示工具、请求、选项和决策说明
@@ -82,6 +121,18 @@ def test_agent_action_uses_worker_labels() -> None:
     assert _tool_action_text("agent", wait, finished=True) == (
         "已等待 Worker worker-1"
     )
+    assert _tool_action_text(
+        "agent",
+        start,
+        finished=False,
+        locale="en-US",
+    ) == "Starting Worker inspect module"
+    assert _tool_action_text(
+        "agent",
+        wait,
+        finished=True,
+        locale="en-US",
+    ) == "Waited for Worker worker-1"
 
 
 # 功能：验证权限请求文本中的 Rich 标记会按普通文本显示
@@ -454,6 +505,229 @@ async def test_checkpoint_picker_keyboard_flow() -> None:
         assert app.dismissed == 1
 
 
+# 功能：验证 checkpoint 选择只生成预览，第二条显式 --yes 命令才真正恢复文件
+# 设计：用 fake IPC 严格记录 preview/rewind 顺序与 digest，排除选择器 Enter 直接执行破坏性操作
+async def test_rewind_requires_preview_then_explicit_confirmation() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Client:
+        # 返回固定恢复预览并记录最终确认请求
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            if method == "session.rewind_preview":
+                return {
+                    "checkpoint_id": "cp-1",
+                    "paths": ["src/a.py", "tests/test_a.py"],
+                    "restorable": ["src/a.py"],
+                    "already_restored": ["tests/test_a.py"],
+                    "conflicts": [],
+                    "state_digest": "a" * 64,
+                }
+            assert method == "session.rewind"
+            return {"checkpoint_id": "cp-1", "restored": ["src/a.py"]}
+
+    class _Picker:
+        # 模拟已关闭的选择器而不依赖 Textual 挂载状态
+        def remove(self) -> None:
+            return None
+
+    class _Message:
+        picker = _Picker()
+        checkpoint_id = "cp-1"
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app.on_checkpoint_picker_selected(_Message())  # type: ignore[arg-type]
+
+    assert [method for method, _params in calls] == ["session.rewind_preview"]
+    assert app._pending_rewind == {
+        "session_id": "sess-1",
+        "checkpoint_id": "cp-1",
+        "state_digest": "a" * 64,
+    }
+    assert "/rewind --yes" in str(appended[-1].render())
+
+    await app._confirm_rewind()
+
+    assert [method for method, _params in calls] == [
+        "session.rewind_preview",
+        "session.rewind",
+    ]
+    assert calls[-1][1]["expected_digest"] == "a" * 64
+    assert calls[-1][1]["confirmed"] is True
+    assert app._pending_rewind is None
+
+
+# 功能：验证含冲突的 Rewind 预览不会留下可供 --yes 使用的待确认摘要
+# 设计：返回 conflict 路径并检查 pending 被清空，确保旧预览无法绕过冲突门禁
+async def test_rewind_conflict_invalidates_pending_confirmation() -> None:
+    class _Client:
+        # 返回带冲突的恢复预览
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            del params
+            assert method == "session.rewind_preview"
+            return {
+                "checkpoint_id": "cp-conflict",
+                "paths": ["src/a.py"],
+                "restorable": [],
+                "already_restored": [],
+                "conflicts": ["src/a.py"],
+                "state_digest": "b" * 64,
+            }
+
+    class _Picker:
+        # 模拟选择器移除
+        def remove(self) -> None:
+            return None
+
+    class _Message:
+        picker = _Picker()
+        checkpoint_id = "cp-conflict"
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    app._pending_rewind = {
+        "session_id": "sess-1",
+        "checkpoint_id": "old",
+        "state_digest": "c" * 64,
+    }
+    app._append = lambda _widget: None  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app.on_checkpoint_picker_selected(_Message())  # type: ignore[arg-type]
+
+    assert app._pending_rewind is None
+
+
+# 功能：验证 Worker 审查完整展示摘要，应用成功只声明工作区改动且明确未提交未推送
+# 设计：用同一 fake IPC 串联 review/apply 并检查参数、可复制 digest 与保守成功文案
+async def test_worker_review_digest_and_explicit_apply_result() -> None:
+    digest = "d" * 64
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Client:
+        # 返回绑定同一 digest 的审查和应用结果
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            if method == "worker.review":
+                preview_only = not bool(params.get("confirmed", False))
+                return {
+                    "worker_id": "worker-1",
+                    "handoff_status": (
+                        "pending_review" if preview_only else "reviewed_not_applied"
+                    ),
+                    "approved": not preview_only,
+                    "applied": False,
+                    "state_digest": digest,
+                    "preview_only": preview_only,
+                    "changed_files": ["src/a.py", "new.txt"],
+                    "diff": (
+                        "diff --git a/new.txt b/new.txt\n+untracked bytes\n"
+                        if preview_only
+                        else ""
+                    ),
+                    "diff_truncated": False,
+                }
+            assert method == "worker.apply"
+            return {
+                "worker_id": "worker-1",
+                "handoff_status": "applied",
+                "changed_files": ["src/a.py"],
+                "state_digest": digest,
+            }
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app._do_worker_review("worker-1", True)
+    review_text = str(appended[-1].render())
+    assert digest in review_text
+    assert "untracked bytes" in review_text
+    assert f"/workers review worker-1 approve {digest} --yes" in review_text
+
+    await app._do_worker_review(
+        "worker-1",
+        True,
+        confirmed=True,
+        expected_digest=digest,
+    )
+    approved_text = str(appended[-1].render())
+    assert f"/workers apply worker-1 {digest} --yes" in approved_text
+
+    await app._do_worker_apply("worker-1", digest)
+    apply_text = str(appended[-1].render())
+    assert "改动已应用到当前工作区" in apply_text
+    assert "未创建提交，未推送" in apply_text
+    assert calls[-1] == (
+        "worker.apply",
+        {
+            "session_id": "sess-1",
+            "worker_id": "worker-1",
+            "expected_digest": digest,
+            "confirmed": True,
+        },
+    )
+
+
+# 功能：验证 Worker apply 返回非 applied 状态时使用安全错误卡且不输出成功文案
+# 设计：让 fake IPC 返回结构异常结果并替换安全错误入口，断言诊断类别可恢复且成功提示未出现
+async def test_worker_apply_unexpected_result_fails_safely() -> None:
+    class _Client:
+        # 返回未应用状态模拟 daemon 合同异常
+        async def send_command(
+            self,
+            _method: str,
+            _params: dict[str, object],
+        ) -> dict[str, object]:
+            return {"worker_id": "worker-1", "handoff_status": "approved"}
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    appended: list[Widget] = []
+    safe_errors: list[str] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    # 捕获安全错误分类而不依赖完整 Textual 挂载
+    def _capture_safe_error(
+        category: str,
+        _error: object = None,
+        **_kwargs: object,
+    ) -> str:
+        safe_errors.append(category)
+        return "diagnostic-test"
+
+    app._show_safe_error = _capture_safe_error  # type: ignore[method-assign]
+
+    await app._do_worker_apply("worker-1", "e" * 64)
+
+    assert safe_errors == ["worker-apply"]
+    assert appended == []
+
+
 # 功能：验证长模型列表只渲染光标附近窗口并提示剩余数量
 # 设计：直接移动内部光标后检查纯文本，确保真实 API 返回大量模型时选中项始终可见
 def test_model_picker_keeps_cursor_visible_in_long_list() -> None:
@@ -466,6 +740,46 @@ def test_model_picker_keeps_cursor_visible_in_long_list() -> None:
     assert "model-15" in plain
     assert "more" in plain
     assert "model-0" not in plain
+
+
+# 功能：验证 ModelPicker 支持模型 ID 子串搜索并展示活动 route 能力标签
+# 设计：键入唯一子串过滤三项后回车，断言命中模型及 tools/images/thinking 标签均可见
+async def test_model_picker_searches_ids_and_shows_route_capabilities() -> None:
+    models = ["alpha-small", "beta-coder", "gamma-large"]
+
+    class PickerHarness(App[None]):
+        # 初始化模型搜索测试宿主
+        def __init__(self) -> None:
+            super().__init__()
+            self.selected: list[str] = []
+
+        # 挂载带能力标签的模型选择器
+        def compose(self) -> ComposeResult:
+            yield ModelPicker(
+                models,
+                "alpha-small",
+                ("tools", "parallel-tools", "images", "thinking=high"),
+            )
+
+        # 记录过滤后的模型选择结果
+        def on_model_picker_selected(self, message: ModelPicker.Selected) -> None:
+            self.selected.append(message.model)
+
+    app = PickerHarness()
+    async with app.run_test(size=(90, 20)) as pilot:
+        await pilot.pause()
+        await pilot.press("b", "e", "t", "a")
+        picker = app.query_one(ModelPicker)
+        plain = render(picker._render_ui()).plain
+
+        assert "beta-coder" in plain
+        assert "alpha-small" not in plain
+        assert "tools · parallel-tools · images · thinking=high" in plain
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert app.selected == ["beta-coder"]
 
 
 # 功能：验证 /config Provider 选择器显示四种内置接入方式并支持键盘选择
@@ -579,13 +893,7 @@ async def test_inline_config_flow_returns_verified_selection(
         # 返回成功诊断，证明 TUI 只在 doctor 通过后提交配置事务
         async def check(self, route: object, credential: object) -> ProviderDoctorResult:
             del credential
-            return ProviderDoctorResult(
-                status="ok",
-                category="ok",
-                route_id=str(getattr(route, "id")),
-                message="route is ready",
-                credential_source="keyring",
-            )
+            return _doctor_success(route)
 
     routes = RouteStore(tmp_path / "routes.json")
     app = ConfigHarness(
@@ -622,6 +930,77 @@ async def test_inline_config_flow_returns_verified_selection(
     assert routes.active().model == "gpt-5.6-terra"  # type: ignore[union-attr]
     assert app._route == "openai"
     assert app._model == "gpt-5.6-terra"
+
+
+# 功能：验证 Ollama 配置跳过 API Key 输入并以免密 route 完成 Doctor 后保存
+# 设计：驱动真实 Provider 与模型选择器，注入本地模型发现和诊断器且令凭据写入直接失败
+async def test_inline_local_provider_flow_requires_no_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def fake_discover(provider: object, api_key: str) -> list[str]:
+        assert getattr(provider, "id") == "ollama"
+        assert api_key == ""
+        return ["qwen3-coder"]
+
+    monkeypatch.setattr(tui_app_module, "discover_models", fake_discover)
+
+    class ConfigHarness(CodeRookTuiApp):
+        # 挂载隔离配置界面而不连接真实 daemon
+        def on_mount(self) -> None:
+            self._slash_items = self._build_slash_items()
+            self._session_id = "session-local"
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    class _Credentials:
+        # 返回免密解析结果并拒绝任何意外密钥持久化
+        def resolve(self, _credential_ref: str) -> object:
+            from code_rook.core.llm.credentials import CredentialResolution
+
+            return CredentialResolution(source="missing")
+
+        # 本地免密 route 不应调用凭据写入
+        def save(self, _route_id: str, _api_key: str) -> str:
+            raise AssertionError("local provider must not persist an API key")
+
+    class _RouteDoctor:
+        # 接受免密本地探测并检查 route 保留 catalog 能力元数据
+        async def check(self, route: object, credential: object) -> ProviderDoctorResult:
+            assert getattr(route, "catalog_id") == "ollama"
+            assert getattr(route, "credential_required") is False
+            assert getattr(credential, "value") is None
+            return _doctor_success(route, "missing")
+
+    routes = RouteStore(tmp_path / "routes.json")
+    app = ConfigHarness(
+        "127.0.0.1",
+        9999,
+        route_store=routes,
+        credential_store=_Credentials(),  # type: ignore[arg-type]
+        provider_doctor=_RouteDoctor(),  # type: ignore[arg-type]
+    )
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", ChatTextArea)
+        prompt.text = "/config"
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        await pilot.pause()
+        for _ in range(7):
+            await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not app.query(ConfigApiKeyPrompt)
+        assert app.query_one(ModelPicker)
+        await pilot.press("enter")
+        await pilot.pause()
+
+    active = routes.active()
+    assert active is not None
+    assert active.id == "ollama"
+    assert active.credential_required is False
+    assert active.credential_ref == "none:ollama"
+    assert app._model == "qwen3-coder"
 
 
 # 功能：验证完整输入 /model 后第一次 Enter 直接执行而不是只确认补全
@@ -712,8 +1091,8 @@ async def test_partial_slash_command_enter_only_completes() -> None:
         assert app.selected == ["model"]
 
 
-# 功能：验证 TUI 内建命令包含模型选择、帮助与会话管理入口
-# 设计：直接读取候选列表，避免依赖 socket 连接或完整界面挂载
+# 功能：验证 TUI 稳定命令包含常用入口且默认隐藏 Labs 命令
+# 设计：直接读取候选列表，同时断言实验命令不会污染首次使用界面
 def test_tui_builtin_commands_include_model_picker() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     items = {
@@ -732,10 +1111,11 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["plan"] == "只读规划并审阅后再实施：/plan [任务]"
     assert items["permissions"] == "查看或切换权限模式"
     assert items["tasks"] == "查看最近一次 run 的任务"
-    assert items["workers"] == "查看全部持久 Worker 与 Fleet"
-    assert items["workflow"] == "查看、启动或检查 workflow"
+    assert items["workers"] == "查看、审查或应用持久 Worker"
+    assert "workflow" not in items
+    assert "hooks" not in items
     assert items["diff"] == "查看工作区改动"
-    assert items["rewind"] == "从安全恢复点回滚文件"
+    assert items["rewind"] == "预览并二次确认安全恢复点"
     assert items["context"] == "查看上下文占用与用量"
     assert items["skills"] == "列出、查看、安装或删除 skills"
 
@@ -768,25 +1148,44 @@ def test_tui_skills_install_requires_explicit_confirmation(
     assert target.is_dir()
 
 
-# 功能：验证 TUI 的 Provider 与模型切换直接更新同一用户级 RouteStore
-# 设计：注入两个临时 route 后调用界面动作，断言活动项和模型无需重启 Core 即刻变化
-def test_tui_route_and_model_switch_update_route_store(tmp_path: Path) -> None:
+# 功能：验证 TUI 的 Provider 与模型切换都在 Doctor 通过后更新 RouteStore
+# 设计：注入固定凭据和摘要绑定 Doctor，依次等待两个受检动作并核对活动 route/model 与收据
+async def test_tui_route_and_model_switch_update_route_store(tmp_path: Path) -> None:
+    class _Credentials:
+        # 为两个远程 route 提供隔离测试凭据
+        def resolve(self, _credential_ref: str) -> object:
+            from code_rook.core.llm.credentials import CredentialResolution
+
+            return CredentialResolution(value="test-secret", source="file")
+
+    class _Doctor:
+        # 返回与每次候选 model 动态摘要绑定的基础成功结果
+        async def check(self, route: object, _credential: object) -> ProviderDoctorResult:
+            return _doctor_success(route, "file")
+
     routes = RouteStore(tmp_path / "routes.json")
     routes.add(get_route_preset("anthropic"), activate=True)
     routes.add(get_route_preset("openai"))
-    app = CodeRookTuiApp("127.0.0.1", 9999, route_store=routes)
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        route_store=routes,
+        credential_store=_Credentials(),  # type: ignore[arg-type]
+        provider_doctor=_Doctor(),  # type: ignore[arg-type]
+    )
     appended: list[Widget] = []
     states: list[str] = []
     app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
     app._update_header = lambda state: states.append(state)  # type: ignore[method-assign]
 
-    app._select_provider_route("openai")
-    app._select_route_model("gpt-route-test")
+    await app._select_provider_route_checked("openai")
+    await app._select_route_model_checked("gpt-route-test")
 
     active = routes.active()
     assert active is not None
     assert active.id == "openai"
     assert active.model == "gpt-route-test"
+    assert active.has_current_doctor_receipt()
     assert app._route == "openai"
     assert app._model == "gpt-route-test"
     assert states == ["ready", "ready"]
@@ -805,15 +1204,8 @@ async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:
 
     class _Doctor:
         # 返回固定成功分类，避免测试访问真实网络
-        async def check(self, _route: object, _credential: object) -> ProviderDoctorResult:
-            return ProviderDoctorResult(
-                status="ok",
-                category="ok",
-                route_id="openai",
-                message="route is ready",
-                credential_source="file",
-                http_status=200,
-            )
+        async def check(self, route: object, _credential: object) -> ProviderDoctorResult:
+            return _doctor_success(route, "file").model_copy(update={"http_status": 200})
 
     routes = RouteStore(tmp_path / "routes.json")
     routes.add(get_route_preset("openai"), activate=True)
@@ -832,7 +1224,9 @@ async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:
     await app._show_provider_doctor()
 
     rendered = "\n".join(str(widget.render()) for widget in appended)
-    assert "route is ready" in rendered
+    assert "all required capability checks passed" in rendered
+    assert "streaming=passed" in rendered
+    assert "termination=passed" in rendered
     assert "credential=file" in rendered
     assert "top-secret" not in rendered
     assert restored == [True]
@@ -1210,6 +1604,7 @@ def test_step_and_usage_events_stay_out_of_timeline() -> None:
 # 设计：直接注入两种结构化事件，断言重试类别、工具名和重复次数均可观察
 def test_retry_and_stuck_events_show_bounded_timeline_summaries() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "en-US"
     appended: list[Widget] = []
     app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
 
@@ -1246,10 +1641,65 @@ def test_run_finished_success_stays_out_of_timeline() -> None:
     assert appended == []
 
 
+# 功能：验证结果卡在 Runtime receipt 延迟投影时按有界阶梯等待而非过早回退
+# 设计：前三次返回未完成收据、第四次返回 finished_at，并替换 sleep 记录延迟避免真实等待
+async def test_run_result_waits_for_delayed_authoritative_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    # 模拟 Runtime 投影在第四次查询才完成
+    async def inspect(_client: object, turn_id: str) -> dict[str, object]:
+        nonlocal attempts
+        assert turn_id == "run-delayed"
+        attempts += 1
+        if attempts < 4:
+            return {"turn": {}, "receipt": {}}
+        return {
+            "turn": {"status": "completed"},
+            "receipt": {
+                "status": "completed",
+                "started_at": "2026-08-24T00:00:00+00:00",
+                "finished_at": "2026-08-24T00:00:01+00:00",
+                "verification": [],
+                "files_changed": [],
+            },
+        }
+
+    # 记录阶梯等待但不消耗测试墙钟时间
+    async def no_wait(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(tui_app_module.ipc_actions, "inspect_turn", inspect)
+    monkeypatch.setattr(tui_app_module.asyncio, "sleep", no_wait)
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = object()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    event = {
+        "type": "run.finished",
+        "run_id": "run-delayed",
+        "status": "success",
+        "steps": 1,
+        "ts": "2026-08-24T00:00:01+00:00",
+        "_tui_session_id": "sess-1",
+    }
+
+    await app._render_run_result(event)
+
+    assert attempts == 4
+    assert delays == [0.05, 0.1, 0.2]
+    assert len(appended) == 1
+    assert isinstance(appended[0], RunResultCard)
+
+
 # 功能：验证 run.finished failed 追加轻量失败摘要
 # 设计：与成功态对称检查失败图标、步骤数和原因，保留必要诊断而不显示内部运行头
 def test_run_finished_failed_shows_red() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "en-US"
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -1419,6 +1869,12 @@ async def test_input_submit_appends_user_turn_and_keeps_prompt_for_steering() ->
     app._client = _FakeClient()  # type: ignore[assignment]
     app._session_id = "sess-1"
 
+    # 绕过本测试范围外的 Provider 探测，只观察消息提交交互
+    async def ready() -> bool:
+        return True
+
+    app._ensure_task_ready = ready  # type: ignore[method-assign]
+
     area = _FakeArea()
     event = _FakeEvent(area)
     await app.on_chat_text_area_submitted(event)  # type: ignore[arg-type]
@@ -1451,6 +1907,23 @@ async def test_plan_command_requires_review_before_act() -> None:
                         "profile": params.get("profile", "ask"),
                     }
                 }
+            if method == "plan.respond":
+                app._handle_event(
+                    {
+                        "type": "plan.resolved",
+                        "session_id": "sess-plan",
+                        "run_id": "run-plan",
+                        "decision": params.get("decision", "approve"),
+                        "revision": "",
+                        "ts": "t",
+                    }
+                )
+                return {
+                    "session_id": "sess-plan",
+                    "run_id": "run-plan",
+                    "decision": params.get("decision", "approve"),
+                    "status": "resolved",
+                }
             return {"run_id": "run-plan"}
 
     class PlanHarness(CodeRookTuiApp):
@@ -1479,6 +1952,12 @@ async def test_plan_command_requires_review_before_act() -> None:
 
         app._client = _FakeClient()  # type: ignore[assignment]
         app._session_id = "sess-plan"
+
+        # 绕过本测试范围外的 Provider 探测，只观察 Plan/Act 状态机
+        async def ready() -> bool:
+            return True
+
+        app._ensure_task_ready = ready  # type: ignore[method-assign]
         prompt.text = "/plan inspect authentication"
         await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
         assert app._busy
@@ -1522,13 +2001,81 @@ async def test_plan_command_requires_review_before_act() -> None:
         await pilot.pause()
         await asyncio.gather(*scheduled)
 
-        assert calls[2][0] == "session.set_authority"
-        assert calls[3][0] == "session.send_message"
-        assert calls[3][1]["runtime_mode"] == "act"
-        assert str(calls[3][1]["content"]).startswith("Implement the approved plan")
-        assert "Original user request:\ninspect authentication" in str(
-            calls[3][1]["content"]
+        assert calls[2] == (
+            "plan.respond",
+            {
+                "session_id": "sess-plan",
+                "run_id": "run-plan",
+                "decision": "approve",
+                "revision": "",
+            },
         )
+        assert calls[3][0] == "session.set_authority"
+        assert calls[4][0] == "session.send_message"
+        assert calls[4][1]["runtime_mode"] == "act"
+        assert str(calls[4][1]["content"]).startswith("Implement the approved plan")
+        assert "Original user request:\ninspect authentication" in str(
+            calls[4][1]["content"]
+        )
+
+
+# 功能：验证 plan.respond 失败时审阅面板与 pending 状态保持可重试且不会启动 Act
+# 设计：让 fake IPC 在 durable 决定边界报错，检查控件仍挂载、恢复焦点且没有后续命令
+async def test_plan_response_failure_keeps_review_pending() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FailingClient:
+        # 在计划决定命令处模拟 Core 拒绝或持久化失败
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            raise IpcError(-32602, "plan response could not be persisted")
+
+    class PlanHarness(CodeRookTuiApp):
+        # 跳过 socket worker并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = PlanHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        app._client = _FailingClient()  # type: ignore[assignment]
+        app._session_id = "sess-plan"
+        app._handle_event(
+            {
+                "type": "plan.ready",
+                "session_id": "sess-plan",
+                "run_id": "run-plan",
+                "request": "inspect auth",
+                "plan": "1. Inspect",
+                "ts": "t",
+            }
+        )
+        await pilot.pause()
+        review = app.query_one(PlanReview)
+
+        await app.on_plan_review_decided(PlanReview.Decided(review, "approve"))
+        await pilot.pause()
+
+        assert calls == [
+            (
+                "plan.respond",
+                {
+                    "session_id": "sess-plan",
+                    "run_id": "run-plan",
+                    "decision": "approve",
+                    "revision": "",
+                },
+            )
+        ]
+        assert app.query_one(PlanReview) is review
+        assert review.has_focus
+        assert not review.disabled
+        assert app._plan_review_pending
+        assert app._plan_run_id == "run-plan"
 
 
 # 功能：验证单独输入 /plan 会直接进入下一条消息的计划模式而不发送空 run
@@ -1703,6 +2250,7 @@ async def test_trust_and_sandbox_commands_are_independent() -> None:
             }
 
     app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "en-US"
     app._client = _FakeClient()  # type: ignore[assignment]
     app._session_id = "sess-trust"
     app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
@@ -1722,14 +2270,21 @@ async def test_trust_and_sandbox_commands_are_independent() -> None:
     assert "Sandbox" in output
     assert "DEGRADED" in output
     assert "windows_none" in output
-    assert "不等同于系统沙箱" in output
+    assert "not an OS sandbox" in output
 
 
 # 功能：验证首次连接在无模型与无 OS 沙箱时显示非阻塞的可执行空状态
 # 设计：截获 transcript 输出并重复调用启动状态，断言两类提示各出现一次且不会强制打开配置流程
-def test_startup_state_explains_no_model_and_degraded_sandbox_once() -> None:
+def test_startup_state_explains_no_model_and_degraded_sandbox_once(
+    tmp_path: Path,
+) -> None:
     appended: list[Widget] = []
-    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        route_store=RouteStore(tmp_path / "routes.json"),
+        credential_store=CredentialStore(tmp_path / "credentials.json"),
+    )
     app._sandbox = {
         "available": False,
         "kind": "windows_none",
@@ -1741,8 +2296,8 @@ def test_startup_state_explains_no_model_and_degraded_sandbox_once() -> None:
     app._show_startup_state()
 
     output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
-    assert output.count("No active model") == 1
-    assert "会话浏览、帮助和管理命令仍可使用" in output
+    assert output.count("欢迎使用 CodeRook") == 1
+    assert "浏览会话和管理功能已经可用" in output
     assert output.count("Sandbox DEGRADED") == 1
     assert "windows_none" in output
 
@@ -1760,8 +2315,9 @@ def test_connection_problem_notice_deduplicates_until_recovery() -> None:
     app._show_connection_problem("unreachable", "cannot connect")
 
     output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
-    assert output.count("Core unavailable") == 2
-    assert "coderook core start" in output
+    assert output.count("操作未完成") == 2
+    assert "诊断 ID" in output
+    assert "cannot connect" not in output
 
 
 # 功能：验证 TUI 明确区分新建、恢复与断线重连会话，并避免首次提示重复
@@ -1769,6 +2325,7 @@ def test_connection_problem_notice_deduplicates_until_recovery() -> None:
 def test_session_ready_notice_describes_context_source() -> None:
     appended: list[Widget] = []
     app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "en-US"
     app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
 
     app._show_session_ready("created", "sess-1", "", 0)
@@ -1890,14 +2447,23 @@ async def test_high_frequency_views_render_core_results() -> None:
     rendered = "\n".join(
         str(getattr(widget, "content", "")) for widget in appended
     )
-    assert calls == ["session.tasks", "workspace.diff", "session.context"]
+    assert calls == [
+        "session.tasks",
+        "workspace.diff",
+        "session.context",
+        "turn.inspect",
+        "session.context",
+    ]
     assert "修复权限" in rendered
     assert "src/auth.py" in rendered
     assert "estimated_tokens" in rendered
-    assert any(isinstance(widget, Markdown) for widget in appended)
+    assert "改动中心" in rendered
 
 
-@pytest.mark.parametrize("command", ["/tasks", "/diff", "/rewind", "/context", "/turn"])
+@pytest.mark.parametrize(
+    "command",
+    ["/tasks", "/changes", "/diff", "/rewind", "/context", "/turn"],
+)
 # 功能：验证五个高频视图命令第一次 Enter 就直接执行
 # 设计：提交完整命令并截获 worker coroutine，检查输入清空、禁用和单次调度，防止回车两次回归
 async def test_high_frequency_commands_execute_on_first_submit(command: str) -> None:
@@ -2070,7 +2636,9 @@ async def test_send_failure_restores_draft_and_attachments() -> None:
     assert prompt.focused
     assert app._pending_image_attachments == [attachment]
     assert states == ["ready"]
-    assert "connection closed" in str(getattr(appended[-1], "content", ""))
+    rendered = str(getattr(appended[-1], "content", ""))
+    assert "诊断 ID" in rendered
+    assert "connection closed" not in rendered
 
 
 # 功能：验证运行中纠偏发送失败时恢复纠偏草稿且不终止原 run
@@ -2141,6 +2709,49 @@ async def test_goal_create_disconnect_restores_command_draft() -> None:
     assert prompt.disabled
     assert prompt.border_title == "连接中 · Goal 输入已恢复"
     assert states == ["disconnected"]
+
+
+# 功能：验证 Goal 状态摘要展示当前轮次、累计预算、已有证据、未完成标准和恢复原因
+# 设计：构造暂停且需确认的完整 Goal 投影，核对稳定产品面要求的所有可审计字段
+def test_goal_summary_shows_progress_evidence_and_pause_reason() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+
+    rendered = app._format_goal_summary(
+        {
+            "id": "goal-123456789abc",
+            "status": "paused",
+            "objective": "Ship v1",
+            "tokens_used": 900,
+            "token_budget": 1200,
+            "elapsed_ms": 125000,
+            "max_wall_seconds": 1800,
+            "linked_run_ids": ["run-1", "run-2"],
+            "auto_turns_used": 1,
+            "max_auto_turns": 3,
+            "completion_criteria": ["tests pass", "docs aligned"],
+            "completion_evidence": [
+                {
+                    "kind": "verified-run",
+                    "reference": "run://run-2",
+                    "summary": "tests pass",
+                    "covered_criteria": ["tests pass"],
+                }
+            ],
+            "paused_reason": "daemon_restart_confirmation_required",
+            "status_reason": "daemon restarted",
+            "paused_needs_confirmation": True,
+        }
+    )
+
+    assert "round=2" in rendered
+    assert "auto=1/3" in rendered
+    assert "tokens=900/1200" in rendered
+    assert "elapsed=125s/1800s" in rendered
+    assert "paused_needs_confirmation=yes" in rendered
+    assert "已有证据" in rendered and "tests pass" in rendered
+    assert "未完成标准" in rendered and "docs aligned" in rendered
+    assert "daemon_restart_confirmation_required" in rendered
+    assert "/goal resume" in rendered
 
 
 # 功能：验证 Agent 结构化问题在 TUI 内显示，选择答案后恢复同一活动 run
@@ -2303,3 +2914,104 @@ def test_route_selected_event_updates_observable_header_state() -> None:
     assert app._route == "openai-work"
     assert app._model == "gpt-test"
     assert states == ["running"]
+# 功能：验证 stage 后强制展示包含既有 index 内容的完整 staged 审查并保存 staged 令牌
+# 设计：让 Core 返回 one 与 two 的最终 staged Diff，断言 TUI 不只显示文件名而会渲染不可跳过的内容视图
+async def test_stage_changes_presents_authoritative_staged_review() -> None:
+    staged_digest = "b" * 64
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _FakeClient:
+        # 返回包含既有 staged 文件与新选择文件的最终权威审查
+        async def send_command(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            calls.append((method, dict(params)))
+            if method == "workspace.stage":
+                return {
+                    "payload": {
+                        "scope": "staged",
+                        "state_digest": staged_digest,
+                        "files": [
+                            {
+                                "path": "one.txt",
+                                "index_status": "M",
+                                "worktree_status": " ",
+                                "review_complete": True,
+                                "additions": 1,
+                                "deletions": 1,
+                            },
+                            {
+                                "path": "two.txt",
+                                "index_status": "M",
+                                "worktree_status": " ",
+                                "review_complete": True,
+                                "additions": 1,
+                                "deletions": 1,
+                            },
+                        ],
+                        "file_count": 2,
+                        "additions": 2,
+                        "deletions": 2,
+                        "diff_truncated": False,
+                        "diff": (
+                            "diff --git a/one.txt b/one.txt\n"
+                            "--- a/one.txt\n+++ b/one.txt\n"
+                            "@@ -1 +1 @@\n-base\n+preexisting staged A\n"
+                            "diff --git a/two.txt b/two.txt\n"
+                            "--- a/two.txt\n+++ b/two.txt\n"
+                            "@@ -1 +1 @@\n-base\n+new staged C\n"
+                        ),
+                    }
+                }
+            if method == "session.context":
+                return {"last_run_id": None}
+            raise AssertionError(method)
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    app._change_state_digest = "a" * 64
+    app._change_review_scope = "all"
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app._stage_changes(["two.txt"])
+
+    rendered = "\n".join(str(getattr(widget, "content", "")) for widget in appended)
+    assert calls[0] == (
+        "workspace.stage",
+        {
+            "session_id": "sess-1",
+            "paths": ["two.txt"],
+            "expected_digest": "a" * 64,
+            "confirmed": True,
+        },
+    )
+    assert "preexisting staged A" in rendered
+    assert "two.txt" in rendered
+    assert app._change_state_digest == staged_digest
+    assert app._change_review_scope == "staged"
+
+
+# 功能：验证 all-scope 审查令牌不能由 TUI 直接用于 commit
+# 设计：用禁止调用的 fake client 和安全错误捕获证明用户必须先 stage 并查看最终 staged Diff
+async def test_commit_changes_rejects_unshown_all_scope_review() -> None:
+    appended: list[Widget] = []
+
+    class _FakeClient:
+        # 任何 IPC 调用都表示客户端错误地接受了 all-scope 令牌
+        async def send_command(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            raise AssertionError((method, params))
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-1"
+    app._change_state_digest = "a" * 64
+    app._change_review_scope = "all"
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app._commit_changes("fix: reviewed")
+
+    rendered = "\n".join(str(getattr(widget, "content", "")) for widget in appended)
+    assert "/diff" in rendered
+    assert "/stage" in rendered

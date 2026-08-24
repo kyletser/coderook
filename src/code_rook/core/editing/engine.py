@@ -35,6 +35,8 @@ class EditOutcome:
     bytes_written: int
     diff: str
     diff_truncated: bool
+    additions: int
+    deletions: int
     checkpoint_id: str | None
 
 
@@ -121,7 +123,11 @@ class EditEngine:
                 f"edited content is {len(encoded)} bytes; limit is {self._max_bytes} bytes",
             )
 
-        diff, diff_truncated = _unified_diff(path_value, text, updated)
+        diff, diff_truncated, additions, deletions = _unified_diff(
+            path_value,
+            text,
+            updated,
+        )
         checkpoint_id = None
         if self._checkpoint_store is not None:
             from code_rook.core.checkpoints import CheckpointError
@@ -148,6 +154,8 @@ class EditEngine:
             bytes_written=len(encoded),
             diff=diff,
             diff_truncated=diff_truncated,
+            additions=additions,
+            deletions=deletions,
             checkpoint_id=checkpoint_id,
         )
 
@@ -215,8 +223,9 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def _unified_diff(path: str, before: str, after: str) -> tuple[str, bool]:
-    diff = "".join(
+# 生成有界 unified diff，并在截断前统计真实增删行
+def _unified_diff(path: str, before: str, after: str) -> tuple[str, bool, int, int]:
+    lines = list(
         difflib.unified_diff(
             before.splitlines(keepends=True),
             after.splitlines(keepends=True),
@@ -224,6 +233,9 @@ def _unified_diff(path: str, before: str, after: str) -> tuple[str, bool]:
             tofile=f"b/{path}",
         )
     )
+    additions = sum(line.startswith("+") and not line.startswith("+++") for line in lines)
+    deletions = sum(line.startswith("-") and not line.startswith("---") for line in lines)
+    diff = "".join(lines)
     if len(diff) <= MAX_DIFF_CHARS:
-        return diff, False
-    return diff[:MAX_DIFF_CHARS] + "\n[diff truncated]\n", True
+        return diff, False, additions, deletions
+    return diff[:MAX_DIFF_CHARS] + "\n[diff truncated]\n", True, additions, deletions

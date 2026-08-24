@@ -18,7 +18,7 @@ FetchResult = tuple[JsonValue | None, str | None]
 Fetcher = Callable[[str, str], FetchResult]
 
 _API = "https://api.github.com"
-_REQUIRED_CHECKS = {"Required CI gate", "Required security gate"}
+_REQUIRED_CHECKS = {"Required Ubuntu gate"}
 _WORKFLOWS: dict[str, int] = {
     "ci.yml": 3,
     "security.yml": 1,

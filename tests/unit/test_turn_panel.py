@@ -65,11 +65,11 @@ def test_turn_inspector_renders_durable_facts() -> None:
     assert "read_file" in rendered
     assert "README.md" in rendered
     assert "run_tests" in rendered
-    assert "context_selection" in rendered
+    assert "context selection" in rendered
     assert "src/auth.py" in rendered
     assert "1/1/0" in rendered
     assert "修复跨文件缓存缺陷" in rendered
     assert "workers=1/1" in rendered
-    assert "pending_approvals=0" in rendered
+    assert "pending approvals=0" in rendered
     assert "failure=none" in rendered
     assert "sandbox=degraded" in rendered

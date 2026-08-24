@@ -7,10 +7,11 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
+from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import (
     AuthoritySnapshot,
     RuntimeMode,
@@ -50,6 +51,8 @@ _SESSION_TO_THREAD_STATUS = {
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _IGNORED_BUS_EVENTS = {"llm.token", "runtime.event_appended"}
 logger = logging.getLogger(__name__)
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 # 将 session 时间文本解析为 datetime
@@ -79,6 +82,7 @@ class RuntimeService:
         bus: EventBus | None = None,
         boot_id: str | None = None,
         authority_provider: Callable[[str], AuthoritySnapshot] | None = None,
+        audit_health: AuditHealth | None = None,
     ) -> None:
         self._store = store
         self._workspace = str(workspace.resolve())
@@ -90,6 +94,21 @@ class RuntimeService:
         )
         self._write_lock = asyncio.Lock()
         self._pending_writes: set[asyncio.Task[None]] = set()
+        self._audit_health = audit_health
+
+    # 在线程执行持久化写操作，并在任何存储异常后进入全局失败关闭状态
+    async def _run_persistent_write(
+        self,
+        operation: Callable[_P, _R],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
+        try:
+            return await asyncio.to_thread(operation, *args, **kwargs)
+        except Exception as exc:
+            if self._audit_health is not None:
+                await self._audit_health.degrade("runtime_projection", exc)
+            raise
 
     # 幂等导入历史 session 及其 run 索引，可用 transcript 时间戳恢复真实 turn 时间
     async def bootstrap_sessions(
@@ -98,14 +117,14 @@ class RuntimeService:
         turn_times: Mapping[str, tuple[str, str]] | None = None,
     ) -> None:
         async with self._write_lock:
-            await asyncio.to_thread(
+            await self._run_persistent_write(
                 self._bootstrap_sessions_sync, sessions, turn_times
             )
 
     # 创建或同步单个 session 的 thread 投影
     async def sync_session(self, session: Session) -> ThreadRecord:
         async with self._write_lock:
-            return await asyncio.to_thread(self._sync_session_sync, session)
+            return await self._run_persistent_write(self._sync_session_sync, session)
 
     # 为用户消息创建 running turn、message item 和启动事件
     async def start_turn(
@@ -125,7 +144,7 @@ class RuntimeService:
         if runtime_mode is not None:
             authority = authority.model_copy(update={"mode": runtime_mode})
         async with self._write_lock:
-            turn, event = await asyncio.to_thread(
+            turn, event = await self._run_persistent_write(
                 self._start_turn_sync,
                 session,
                 run_id,
@@ -149,14 +168,14 @@ class RuntimeService:
         await self.drain_pending_writes()
         async with self._write_lock:
             if result.strip():
-                message_event = await asyncio.to_thread(
+                message_event = await self._run_persistent_write(
                     self._append_assistant_message_sync,
                     run_id,
                     result,
                     _parse_time(session.updated_at),
                 )
                 await self._publish_runtime_event(message_event)
-            turn, event = await asyncio.to_thread(
+            turn, event = await self._run_persistent_write(
                 self._finish_turn_sync,
                 session,
                 run_id,
@@ -169,7 +188,7 @@ class RuntimeService:
     # 删除 session 对应的 runtime thread
     async def delete_session(self, session_id: str) -> None:
         async with self._write_lock:
-            await asyncio.to_thread(self._store.delete_thread, session_id)
+            await self._run_persistent_write(self._store.delete_thread, session_id)
 
     # 异步查询 thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:
@@ -230,7 +249,7 @@ class RuntimeService:
             # 在专用线程完成 SQLite 写入并按 seq 发布事件
             async def persist() -> None:
                 async with self._write_lock:
-                    event = await asyncio.to_thread(
+                    event = await self._run_persistent_write(
                         self._store.append_event,
                         thread_id=thread_id,
                         turn_id=turn_id,
@@ -265,7 +284,7 @@ class RuntimeService:
     # 恢复其他 daemon boot 遗留的活动 turn 并发布持久事件
     async def recover_stale_turns(self, ts: datetime) -> list[RuntimeEventRecord]:
         async with self._write_lock:
-            events = await asyncio.to_thread(
+            events = await self._run_persistent_write(
                 self._store.recover_stale_turns,
                 self.boot_id,
                 ts,
@@ -298,7 +317,10 @@ class RuntimeService:
             return
         async with self._write_lock:
             try:
-                persisted = await asyncio.to_thread(self._record_bus_event_sync, event)
+                persisted = await self._run_persistent_write(
+                    self._record_bus_event_sync,
+                    event,
+                )
             except RecordNotFoundError:
                 return
             except RecordAlreadyExistsError:

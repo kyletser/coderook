@@ -7,16 +7,19 @@ import pytest
 
 import code_rook.core.tools.builtin.web as web_module
 from code_rook.core.authority import RuntimeMode
-from code_rook.core.config import CodeRookConfig
+from code_rook.core.config import CodeRookConfig, LlmConfig
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.credentials import CredentialStore, save_api_key
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.builtin.web import (
     SearchHit,
     SearXngSearchBackend,
+    StructuredSearchBackend,
     WebFetchTool,
     WebSearchBackend,
     WebSearchTool,
+    default_search_backends,
     html_to_text,
     parse_duckduckgo_html,
 )
@@ -278,10 +281,77 @@ async def test_searxng_backend_normalizes_results() -> None:
     assert hits[0].backend == "searxng"
 
 
+# 功能：验证 Web Search 端点按进程环境高于显式 overlay 的顺序装配
+# 设计：先用 overlay 构造结构化与 SearXNG 后端，再设置同名进程变量检查覆盖和空值抑制
+def test_default_search_backends_consume_explicit_overlay_with_process_priority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEROOK_WEB_SEARCH_URL", raising=False)
+    monkeypatch.delenv("CODEROOK_SEARXNG_URL", raising=False)
+    credential_path = tmp_path / "credentials.json"
+    save_api_key("web-search", "fixed-search-secret", credential_path)
+    credentials = CredentialStore(credential_path)
+    overlay = {
+        "CODEROOK_WEB_SEARCH_URL": "https://overlay.example/search",
+        "CODEROOK_SEARXNG_URL": "https://overlay-searx.example",
+    }
+
+    backends = default_search_backends(overlay, credential_store=credentials)
+
+    assert isinstance(backends[0], StructuredSearchBackend)
+    assert backends[0]._base_url == "https://overlay.example/search"
+    assert backends[0]._api_key == "fixed-search-secret"
+    assert isinstance(backends[1], SearXngSearchBackend)
+    assert backends[1]._base_url == "https://overlay-searx.example"
+
+    monkeypatch.setenv("CODEROOK_WEB_SEARCH_URL", "https://process.example/search")
+    monkeypatch.setenv("CODEROOK_SEARXNG_URL", "")
+    overridden = default_search_backends(overlay, credential_store=credentials)
+    assert isinstance(overridden[0], StructuredSearchBackend)
+    assert overridden[0]._base_url == "https://process.example/search"
+    assert not any(isinstance(backend, SearXngSearchBackend) for backend in overridden)
+
+
+# 功能：验证恶意 endpoint 字符串不能重定向 Web Search 到任意 env 凭据
+# 设计：overlay 同时伪造凭据引用和受害密钥，断言端点不展开且 Authorization 仍固定来自 file:web-search
+def test_search_endpoint_cannot_select_arbitrary_env_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEROOK_WEB_SEARCH_URL", raising=False)
+    credential_path = tmp_path / "credentials.json"
+    save_api_key("web-search", "fixed-search-secret", credential_path)
+    credentials = CredentialStore(credential_path)
+    overlay = {
+        "CODEROOK_WEB_SEARCH_URL": "https://evil.example/${VICTIM_SECRET}",
+        "CODEROOK_WEB_SEARCH_CREDENTIAL_REF": "env:VICTIM_SECRET",
+        "VICTIM_SECRET": "must-not-be-used",
+    }
+
+    backends = default_search_backends(overlay, credential_store=credentials)
+
+    assert isinstance(backends[0], StructuredSearchBackend)
+    assert backends[0]._base_url == "https://evil.example/${VICTIM_SECRET}"
+    assert backends[0]._api_key == "fixed-search-secret"
+    assert "must-not-be-used" not in repr(backends)
+
+
 # 功能：验证 web 工具在 ACT 模式注册、PLAN 模式被裁剪且默认需要审批
 # 设计：用真实 Runner 构建目录，断言模型可见面与 spec 的 approval 语义
-def test_web_tools_registered_and_gated(tmp_path: Path) -> None:
-    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, bus=EventBus())
+def test_web_tools_registered_and_gated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEROOK_SEARXNG_URL", raising=False)
+    config = CodeRookConfig(
+        llm=LlmConfig(
+            credential_overlay={
+                "CODEROOK_SEARXNG_URL": "https://overlay-searx.example"
+            }
+        )
+    )
+    runner = AgentRunner(config, workspace_root=tmp_path, bus=EventBus())
     registry = runner._build_registry(
         TaskManager(tmp_path / ".tasks"),
         run_id="run-web",
@@ -296,6 +366,9 @@ def test_web_tools_registered_and_gated(tmp_path: Path) -> None:
     assert not fetch.is_read_only
     assert fetch.build_spec().approval_requirement == ApprovalRequirement.POLICY
     assert search.build_spec().approval_requirement == ApprovalRequirement.POLICY
+    assert isinstance(search, WebSearchTool)
+    assert isinstance(search._backends[0], SearXngSearchBackend)
+    assert search._backends[0]._base_url == "https://overlay-searx.example"
 
     plan_registry = runner._build_registry(
         TaskManager(tmp_path / ".tasks-plan"),

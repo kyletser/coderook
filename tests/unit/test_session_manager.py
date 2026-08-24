@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput
-from code_rook.core.authority import RuntimeMode
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.context import ExecutionContext
@@ -16,6 +17,8 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.goal import GoalService, GoalStore
 from code_rook.core.hooks import HookManager
 from code_rook.core.runner import RunOutcome
+from code_rook.core.runtime.service import RuntimeService
+from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session.manager import (
     RUN_NOT_ACTIVE,
     SESSION_BUSY,
@@ -31,6 +34,16 @@ from code_rook.core.workspace import WorkspaceBoundary
 
 
 class _Runner:
+    # 原样返回测试注入的冻结 route，模拟生产 Runner 的 Turn 级选择入口
+    async def resolve_turn_binding(
+        self,
+        *,
+        resolved_route: object | None,
+        runtime_mode: RuntimeMode,
+        run_id: str,
+    ) -> object | None:
+        return resolved_route
+
     # 模拟 AgentRunner，将 run 新消息写入 thread 后返回成功
     async def run_and_capture(
         self,
@@ -86,6 +99,47 @@ class _GoalRunner(_Runner):
     ) -> RunOutcome:
         self.goal_context = persistent_goal_context
         return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+
+# 功能：验证 daemon 启动后自动删除超过保留期且从未使用的空会话
+# 设计：同时构造过期空会话、过期已命名会话和新空会话，确认只剪枝无用项且同步 Runtime
+async def test_session_bootstrap_prunes_only_stale_unused_empty_sessions(
+    tmp_path: Path,
+) -> None:
+    class _Runtime:
+        # 初始化被删除的 Runtime thread 记录
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        # 接受会话投影启动而不修改 fixture
+        async def bootstrap_sessions(self, *_args: object) -> None:
+            return None
+
+        # 记录自动剪枝对应的 Runtime thread
+        async def delete_session(self, session_id: str) -> None:
+            self.deleted.append(session_id)
+
+    store = SessionStore(tmp_path / "sessions")
+    old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    recent = datetime.now(UTC).isoformat()
+    stale = Session("sess-stale", "chat", "interrupted", "", old, old)
+    named = Session("sess-named", "chat", "interrupted", "Keep me", old, old)
+    fresh = Session("sess-fresh", "chat", "interrupted", "", recent, recent)
+    for session in (stale, named, fresh):
+        store.write_meta(session)
+    runtime = _Runtime()
+    manager = SessionManager(
+        store,
+        lambda: _Runner(),
+        EventBus(),
+        runtime_service=runtime,  # type: ignore[arg-type]
+    )  # type: ignore[arg-type]
+
+    sessions = await manager.list_sessions(include_closed=True)
+
+    assert {session.id for session in sessions} == {"sess-named", "sess-fresh"}
+    assert runtime.deleted == ["sess-stale"]
+    assert not store.session_dir("sess-stale").exists()
 
 
 # 功能：验证 session_start、message_submit、turn_start、session_stop 接入真实会话生命周期
@@ -385,6 +439,476 @@ async def test_session_manager_executes_and_preserves_active_goal(tmp_path: Path
     assert progressed.completion_evidence == []
 
 
+# 功能：验证 SessionManager 根据 typed 决策自动启动下一轮并在硬轮次上限暂停
+# 设计：只发送初始消息，以 Turn 总上限二等待唯一续跑，排除客户端手动驱动的伪 Loop
+async def test_session_manager_publishes_bounded_goal_decisions(tmp_path: Path) -> None:
+    events: list[object] = []
+    bus = EventBus()
+
+    # 收集 EventBus 对象以核对 typed Goal 决策事件
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    store = SessionStore(tmp_path / "sessions")
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    runner = _GoalRunner()
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        bus,
+        goal_service=goals,
+        authority_provider=lambda _sid: AuthoritySnapshot(),
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "bounded delivery",
+        session_id=session.id,
+        auto_continue=True,
+        max_auto_turns=2,
+        completion_criteria=["tests pass"],
+    )
+
+    await manager.send_message(session.id, "initial work")
+    for _attempt in range(100):
+        if goals.get(goal.id).status == "paused":
+            break
+        await asyncio.sleep(0.01)
+
+    decisions = [
+        event for event in events if getattr(event, "type", "") == "goal.continue_decision"
+    ]
+    assert [getattr(event, "reason", "") for event in decisions] == [
+        "ready_for_bounded_continuation",
+        "max_auto_turns_reached",
+    ]
+    assert len(store.read_meta(session.id).run_ids) == 2
+    assert goals.get(goal.id).status == "paused"
+    assert goals.get(goal.id).paused_needs_confirmation is True
+    await manager.cancel_all()
+
+
+# 功能：验证 Goal 剩余墙钟会作为单个 Turn 的硬 deadline 并在超时后进入确认暂停
+# 设计：把服务剩余额缩短到毫秒级并运行可取消 stub，断言协程已取消且不会继续自动调度
+async def test_session_manager_enforces_goal_wall_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SlowGoalRunner:
+        # 初始化取消观测标志
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        # 阻塞到 deadline 取消并在 finally 中记录清理已发生
+        async def run_and_capture(self, *_args: object, **_kwargs: object) -> RunOutcome:
+            try:
+                await asyncio.sleep(60)
+            finally:
+                self.cancelled = True
+
+    store = SessionStore(tmp_path / "sessions")
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    runner = _SlowGoalRunner()
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        EventBus(),
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "stop at wall deadline",
+        session_id=session.id,
+        auto_continue=True,
+        completion_criteria=["verified"],
+    )
+    monkeypatch.setattr(goals, "remaining_wall_seconds", lambda _goal_id: 0.01)
+
+    await manager.send_message(session.id, "start bounded work")
+
+    persisted = goals.get(goal.id)
+    assert runner.cancelled is True
+    assert persisted.status == "paused"
+    assert persisted.paused_reason == "max_wall_seconds_reached"
+    assert persisted.paused_needs_confirmation is True
+    assert len(store.read_meta(session.id).run_ids) == 1
+    await manager.cancel_all()
+
+
+# 功能：验证自动 Goal 只对明确 transport/stream 故障续跑，普通 llm_error 必须阻塞
+# 设计：经 SessionManager 的生产分类入口完成两个隔离 run，比较 blocked 与 bounded retry 决策
+async def test_auto_goal_retries_only_explicit_transient_failures(tmp_path: Path) -> None:
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: _GoalRunner(),
+        EventBus(),
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    generic = goals.create(
+        "do not retry auth or config failures",
+        session_id="sess-generic",
+        auto_continue=True,
+        completion_criteria=["verified"],
+    )
+    goals.start_run(generic.id, "run-generic")
+
+    generic_decision = await manager._finish_goal_run(
+        generic.id,
+        "run-generic",
+        succeeded=False,
+        reason="llm_error",
+    )
+
+    assert generic_decision is not None
+    assert generic_decision.should_continue is False
+    assert goals.get(generic.id).status == "blocked"
+
+    transport = goals.create(
+        "retry a dropped transport",
+        session_id="sess-transport",
+        auto_continue=True,
+        completion_criteria=["verified"],
+    )
+    goals.start_run(transport.id, "run-transport")
+    transport_decision = await manager._finish_goal_run(
+        transport.id,
+        "run-transport",
+        succeeded=False,
+        reason="transport_error",
+    )
+
+    assert transport_decision is not None
+    assert transport_decision.should_continue is True
+    assert goals.get(transport.id).status == "active"
+
+    reserved = goals.create(
+        "retry after concurrent lease settles",
+        session_id="sess-reserved",
+        auto_continue=True,
+        completion_criteria=["verified"],
+    )
+    goals.start_run(reserved.id, "run-reserved")
+    reserved_decision = await manager._finish_goal_run(
+        reserved.id,
+        "run-reserved",
+        succeeded=False,
+        reason="token_budget_reserved",
+    )
+
+    assert reserved_decision is not None
+    assert reserved_decision.should_continue is True
+    assert goals.get(reserved.id).status == "active"
+
+
+# 功能：验证 Goal run 在 session ledger 首次写入前已原子登记 current_run_id
+# 设计：包装真实 SessionStore.append_message 并从 GoalStore 回读，覆盖 user 与 runner 消息的持久顺序
+async def test_goal_run_is_reserved_before_session_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    manager = SessionManager(
+        store,
+        lambda: _GoalRunner(),
+        EventBus(),
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "persist in order",
+        session_id=session.id,
+        completion_criteria=["done"],
+    )
+    observed: list[str | None] = []
+    original_append = store.append_message
+
+    # 每次 ledger 写入前从独立文件真值确认 Goal 已持有本轮预留
+    def checked_append(*args: object, **kwargs: object) -> None:
+        observed.append(goals.get(goal.id).current_run_id)
+        original_append(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "append_message", checked_append)
+    run_id = await manager.send_message(session.id, "start")
+
+    assert observed
+    assert all(item == run_id for item in observed)
+    assert goals.get(goal.id).current_run_id is None
+
+
+# 功能：验证 Goal 预留后的 session 持久化失败会取消未启动 runner 并原子终结预留
+# 设计：让首条 ledger append 抛出磁盘错误，核对 Goal blocked、session interrupted 且无 active runner
+async def test_goal_run_reservation_rolls_back_when_session_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    runner = _GoalRunner()
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        EventBus(),
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "fail consistently",
+        session_id=session.id,
+        completion_criteria=["done"],
+    )
+
+    # 模拟目标磁盘在首次 Turn ledger 写入时失败
+    def fail_append(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "append_message", fail_append)
+    with pytest.raises(OSError, match="disk full"):
+        await manager.send_message(session.id, "start")
+
+    persisted = goals.get(goal.id)
+    assert persisted.status == "blocked"
+    assert persisted.current_run_id is None
+    assert persisted.timeline[-1].event == "goal.run_aborted"
+    assert manager.active_run_id(session.id) is None
+    assert store.read_meta(session.id).status == "interrupted"
+
+
+# 功能：验证 runtime Turn 创建失败与 ledger 失败使用同一 Goal 回滚终态
+# 设计：让 start_turn 在异步持久边界抛错，核对未启动 runner、Goal blocked 和 session interrupted
+async def test_goal_run_reservation_rolls_back_when_runtime_start_fails(
+    tmp_path: Path,
+) -> None:
+    class _FailingRuntime:
+        # 接受 session bootstrap 以让失败精确发生在目标 Turn 创建
+        async def bootstrap_sessions(self, *_args: object) -> None:
+            return None
+
+        # 接受 session 创建投影
+        async def sync_session(self, *_args: object) -> None:
+            return None
+
+        # 模拟 runtime 持久存储在创建 Turn 时失败
+        async def start_turn(self, *_args: object, **_kwargs: object) -> None:
+            raise OSError("runtime disk full")
+
+        # 模拟不存在的部分 Turn 无法二次终结
+        async def finish_turn(self, *_args: object, **_kwargs: object) -> None:
+            raise LookupError("turn was not created")
+
+    class _CountingRunner(_GoalRunner):
+        # 初始化执行计数以证明 runtime 失败不会越过启动屏障
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        # 记录任何不应发生的 runner 执行
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            self.calls += 1
+            return await super().run_and_capture(*args, **kwargs)
+
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    runner = _CountingRunner()
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        EventBus(),
+        runtime_service=_FailingRuntime(),  # type: ignore[arg-type]
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "runtime failure",
+        session_id=session.id,
+        completion_criteria=["done"],
+    )
+
+    with pytest.raises(OSError, match="runtime disk full"):
+        await manager.send_message(session.id, "start")
+
+    persisted = goals.get(goal.id)
+    assert persisted.status == "blocked"
+    assert persisted.current_run_id is None
+    assert store.read_meta(session.id).status == "interrupted"
+    assert runner.calls == 0
+
+
+# 功能：验证 pause 在 runtime 启动窗口内仍能找到内存 runner 并留下单一暂停终态
+# 设计：阻塞 runtime.start_turn 后先 pause 再 cancel，确保启动屏障让 runner 从未执行且 Goal 无悬挂 run
+async def test_goal_pause_during_turn_preparation_cancels_barrier_runner(
+    tmp_path: Path,
+) -> None:
+    class _BlockingRuntime:
+        # 初始化 runtime 启动阻塞点与终态记录
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = False
+
+        # 接受 session bootstrap 而不产生额外状态
+        async def bootstrap_sessions(self, *_args: object) -> None:
+            return None
+
+        # 接受 session 同步而不产生额外状态
+        async def sync_session(self, *_args: object) -> None:
+            return None
+
+        # 在 runtime Turn 创建处阻塞以暴露 pause 竞态窗口
+        async def start_turn(self, *_args: object, **_kwargs: object) -> None:
+            self.started.set()
+            await self.release.wait()
+
+        # 记录 SessionManager 已将取消 Turn 转为显式终态
+        async def finish_turn(self, *_args: object, **_kwargs: object) -> None:
+            self.finished = True
+
+    class _NeverRunner(_GoalRunner):
+        # 初始化执行计数以证明启动屏障前的取消没有进入 runner
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        # 若被真正启动则增加计数后复用普通行为
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            self.calls += 1
+            return await super().run_and_capture(*args, **kwargs)
+
+    runtime = _BlockingRuntime()
+    runner = _NeverRunner()
+    goals = GoalService(GoalStore(tmp_path / "goals"))
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: runner,
+        EventBus(),
+        runtime_service=runtime,  # type: ignore[arg-type]
+        goal_service=goals,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    goal = goals.create(
+        "pause preparation",
+        session_id=session.id,
+        completion_criteria=["done"],
+    )
+    send_task = asyncio.create_task(manager.send_message(session.id, "start"))
+    await runtime.started.wait()
+    active_run_id = manager.active_run_id(session.id)
+    assert active_run_id is not None
+
+    goals.pause(goal.id)
+    cancel_task = asyncio.create_task(manager.cancel_run(active_run_id))
+    runtime.release.set()
+    await cancel_task
+    await send_task
+
+    persisted = goals.get(goal.id)
+    assert persisted.status == "paused"
+    assert persisted.current_run_id is None
+    assert runner.calls == 0
+    assert runtime.finished is True
+
+
+# 功能：验证工作区变更会等待并发 Turn 排空，并在持锁期间阻止其他 session 启动新 Turn
+# 设计：先让两个 session runner 同时阻塞，再申请 mutation，随后检查第三个 Turn 只能在变更释放后进入
+async def test_workspace_mutation_guard_coordinates_all_sessions(tmp_path: Path) -> None:
+    class _GuardRunner(_Runner):
+        # 初始化独立进入与释放事件供三个 session 精确编排
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        # 标记进入 runner 后等待测试释放
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            self.started.set()
+            await self.release.wait()
+            return await super().run_and_capture(*args, **kwargs)
+
+    runners = [_GuardRunner(), _GuardRunner(), _GuardRunner()]
+    runner_iter = iter(runners)
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: next(runner_iter),
+        EventBus(),
+    )  # type: ignore[arg-type]
+    sessions = [await manager.create("chat") for _ in range(3)]
+    first = asyncio.create_task(manager.send_message(sessions[0].id, "one"))
+    second = asyncio.create_task(manager.send_message(sessions[1].id, "two"))
+    await asyncio.gather(runners[0].started.wait(), runners[1].started.wait())
+
+    mutation_entered = asyncio.Event()
+    mutation_release = asyncio.Event()
+
+    # 进入独占窗口后保持占用，供第三个 Turn 验证不能穿透
+    async def mutate_workspace() -> None:
+        async with manager.workspace_mutation():
+            mutation_entered.set()
+            await mutation_release.wait()
+
+    mutation = asyncio.create_task(mutate_workspace())
+    await asyncio.sleep(0)
+    assert not mutation_entered.is_set()
+    runners[0].release.set()
+    runners[1].release.set()
+    await asyncio.gather(first, second)
+    await mutation_entered.wait()
+
+    third = asyncio.create_task(manager.send_message(sessions[2].id, "three"))
+    await asyncio.sleep(0)
+    assert not runners[2].started.is_set()
+    mutation_release.set()
+    await mutation
+    await runners[2].started.wait()
+    runners[2].release.set()
+    await third
+
+
+# 功能：验证 slash skill 的正文仅在 session workspace trust 为 trusted 时进入 runner
+# 设计：同一 manager 先以 untrusted 调用并断言拒绝，再切换 authority 快照后执行本地 skill
+async def test_session_skill_execution_consumes_workspace_trust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / ".coderook" / "skills"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "local.md").write_text(
+        "---\nname: local\ndescription: local\n---\ntrusted skill $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    boundary = WorkspaceBoundary(workspace)
+    monkeypatch.setattr(WorkspaceBoundary, "current", classmethod(lambda cls: boundary))
+    current_trust = WorkspaceTrust.UNTRUSTED
+
+    class _SkillRunner(_Runner):
+        # 初始化捕获槽以证明 skill 正文确实进入 runner
+        def __init__(self) -> None:
+            self.seen_goal = ""
+
+        # 捕获展开后的 skill 目标并复用普通成功 runner
+        async def run_and_capture(self, goal: str, **kwargs: object) -> RunOutcome:
+            self.seen_goal = goal
+            return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+    runner = _SkillRunner()
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: runner,
+        EventBus(),
+        authority_provider=lambda _sid: AuthoritySnapshot(
+            workspace_trust=current_trust
+        ),
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    with pytest.raises(HandlerError, match="not trusted"):
+        await manager.send_message(session.id, "/local target.py")
+
+    current_trust = WorkspaceTrust.TRUSTED
+    await manager.send_message(session.id, "/local target.py")
+    assert runner.seen_goal == "trusted skill target.py"
+
+
 async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: Path) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -662,9 +1186,78 @@ async def test_session_checkpoint_view_and_rewind_latest_run(
     apply_file_transaction(workspace, [mutation])
 
     run_id, checkpoints = manager.list_checkpoints(session.id)
-    result = manager.rewind(session.id, checkpoint_id)
+    preview = manager.preview_rewind(session.id, checkpoint_id)
+    result = manager.rewind(
+        session.id,
+        checkpoint_id,
+        expected_digest=str(preview["state_digest"]),
+    )
 
     assert run_id == "run-latest"
     assert checkpoints[0]["checkpoint_id"] == checkpoint_id
+    assert preview["restorable"] == ["value.txt"]
     assert result["restored"] == ["value.txt"]
     assert target.read_text(encoding="utf-8") == "before"
+
+
+# 功能：验证计划决定写入 Runtime 后可跨 daemon 重启恢复且只接受当前 run 一次
+# 设计：用真实 SQLite Runtime 跑 Plan turn，重建 SessionManager 后解决并检查阻断、顺序与幂等边界
+async def test_plan_response_is_durable_across_manager_restart(tmp_path: Path) -> None:
+    transcript = SessionStore(tmp_path / "sessions")
+    runtime_path = tmp_path / "runtime.db"
+    first_bus = EventBus()
+    first_runtime = RuntimeService(
+        RuntimeStore(runtime_path),
+        workspace=Path.cwd(),
+        bus=first_bus,
+    )
+    first_bus.subscribe(first_runtime.record_bus_event)
+    first = SessionManager(
+        transcript,
+        lambda: _Runner(),
+        first_bus,
+        runtime_service=first_runtime,
+    )  # type: ignore[arg-type]
+    session = await first.create("chat")
+    plan_run_id = await first.send_message(
+        session.id,
+        "inspect auth",
+        runtime_mode=RuntimeMode.PLAN,
+    )
+
+    with pytest.raises(HandlerError, match="pending plan"):
+        await first.send_message(session.id, "must be blocked")
+
+    restarted_bus = EventBus()
+    restarted_runtime = RuntimeService(
+        RuntimeStore(runtime_path),
+        workspace=Path.cwd(),
+        bus=restarted_bus,
+    )
+    restarted = SessionManager(
+        transcript,
+        lambda: _Runner(),
+        restarted_bus,
+        runtime_service=restarted_runtime,
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(HandlerError, match="does not match"):
+        await restarted.respond_plan(session.id, "run-stale", "cancel")
+    with pytest.raises(HandlerError, match="could not be persisted"):
+        await restarted.respond_plan(session.id, plan_run_id, "cancel")
+    assert "plan.resolved" not in [
+        event.type for event in await restarted_runtime.list_events(session.id)
+    ]
+
+    restarted_bus.subscribe(restarted_runtime.record_bus_event)
+    resolved = await restarted.respond_plan(session.id, plan_run_id, "cancel")
+    events = await restarted_runtime.list_events(session.id)
+
+    assert resolved.type == "plan.resolved"
+    assert [event.type for event in events].index("plan.ready") < [
+        event.type for event in events
+    ].index("plan.resolved")
+    with pytest.raises(HandlerError, match="not pending"):
+        await restarted.respond_plan(session.id, plan_run_id, "cancel")
+    next_run_id = await restarted.send_message(session.id, "continue safely")
+    assert next_run_id != plan_run_id

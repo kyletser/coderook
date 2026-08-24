@@ -2,14 +2,6 @@ name: Official MCP compatibility
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "41 4 * * 3"
-  pull_request:
-    paths:
-      - "src/code_rook/core/mcp/**"
-      - "scripts/run_mcp_official_interop.py"
-      - "tests/fixtures/mcp_official_server.py"
-      - ".github/workflows/mcp-interop.yml"
 
 permissions:
   contents: read

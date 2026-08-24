@@ -26,6 +26,12 @@ def _sha256(path: Path) -> str:
 # 根据扩展名给发行资产标记可读类型
 def _artifact_kind(path: Path) -> str:
     name = path.name
+    if name.startswith("coderook-windows-") and name.endswith(".zip"):
+        return "self-contained-windows"
+    if name.startswith("coderook-linux-") and name.endswith(".tar.gz"):
+        return "self-contained-linux"
+    if name.startswith("coderook-macos-") and name.endswith(".tar.gz"):
+        return "self-contained-macos"
     if name.endswith(".whl"):
         return "python-wheel"
     if name.endswith(".tar.gz"):

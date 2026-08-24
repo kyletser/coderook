@@ -9,16 +9,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from code_rook.core.artifacts import ArtifactError, ArtifactSpool, ArtifactStore
 from code_rook.core.processes import (
     ProcessSupervisor,
     _decode_shell_output,
+    sanitized_shell_environment,
     terminate_process_tree,
 )
 from code_rook.core.sandbox.planner import SandboxPlan, persistent_sandbox_argv
 
 _IDLE_RECYCLE_S = 1800.0
 _MAX_SESSION_OUTPUT_BYTES = 64 * 1024
-_EXIT_TAIL_RE = re.compile(rb"_(\d+)\s*$")
+_EXIT_TAIL_RE = re.compile(rb"_(\d+)\r?\n")
+_READ_CHUNK_BYTES = 64 * 1024
 
 
 # 返回平台默认常驻 shell 命令行
@@ -38,6 +41,10 @@ class ShellRunOutcome:
     died: bool = False
     job_id: str = ""
     process_usage: dict[str, object] | None = None
+    output_bytes: int = 0
+    output_artifact: str = ""
+    output_artifact_size: int = 0
+    output_artifact_error: str = ""
 
 
 class PersistentShellSession:
@@ -50,12 +57,14 @@ class PersistentShellSession:
         *,
         process_supervisor: ProcessSupervisor | None = None,
         label: str = "persistent-shell",
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._argv = argv or default_shell_argv()
         self._cwd = cwd
         self._is_cmd = os.path.basename(self._argv[0]).lower() in {"cmd", "cmd.exe"}
         self._proc: asyncio.subprocess.Process | None = None
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+        # 有界队列向 OS pipe 施加背压，后台持续输出不能无限占用 daemon 内存
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
         self._reader: asyncio.Task[None] | None = None
         # alive 表示"未终止"；进程在首条命令时惰性启动
         self._alive = True
@@ -64,6 +73,10 @@ class PersistentShellSession:
         self._process_supervisor = process_supervisor
         self._label = label
         self._command_sequence = 0
+        self._command_lock = asyncio.Lock()
+        self._carryover = bytearray()
+        self._artifact_store = artifact_store
+        self._active_spool: ArtifactSpool | None = None
 
     # 返回会话进程是否仍在运行
     @property
@@ -93,6 +106,7 @@ class PersistentShellSession:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=sanitized_shell_environment(),
             )
         else:
             self._proc = await asyncio.create_subprocess_exec(
@@ -101,6 +115,7 @@ class PersistentShellSession:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=sanitized_shell_environment(),
                 **platform_options,  # type: ignore[arg-type]
             )
         self._alive = True
@@ -111,16 +126,17 @@ class PersistentShellSession:
             job_id=f"{self._label}:startup",
         )
 
-    # 持续把 stdout 行推入队列，进程退出时投递 EOF 空行
+    # 持续把 stdout 分块推入队列，支持任意长度的无换行输出
     async def _read_loop(self) -> None:
         proc = self._proc
         if proc is None or proc.stdout is None:
             return
         while True:
-            line = await proc.stdout.readline()
-            if not line:
+            chunk = await proc.stdout.read(_READ_CHUNK_BYTES)
+            if not chunk:
                 break
-            await self._queue.put(line)
+            await self._queue.put(chunk)
+        self._alive = False
         await self._queue.put(b"")
         if self._process_supervisor is not None:
             self._process_supervisor.forget(proc)
@@ -147,11 +163,22 @@ class PersistentShellSession:
         if self._is_cmd:
             wrapped = f"{command}\n@echo {self._marker}_%ERRORLEVEL%\n"
         else:
-            wrapped = f'{command}\necho "{self._marker}_$?"\n'
+            wrapped = (
+                f"{command}\n"
+                "__coderook_status=$?\n"
+                "for __coderook_pid in $(jobs -p 2>/dev/null); do "
+                'kill "$__coderook_pid" 2>/dev/null; done\n'
+                "wait 2>/dev/null\n"
+                f'echo "{self._marker}_$__coderook_status"\n'
+            )
         proc.stdin.write(wrapped.encode("utf-8", errors="replace"))
         await proc.stdin.drain()
 
         output = bytearray()
+        output_spool = ArtifactSpool(self._artifact_store)
+        self._active_spool = output_spool
+        pending = bytearray(self._carryover)
+        self._carryover.clear()
         truncated = False
         exit_code: int | None = None
         timed_out = False
@@ -164,28 +191,40 @@ class PersistentShellSession:
                 timed_out = True
                 break
             try:
-                line = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                chunk = await asyncio.wait_for(self._queue.get(), timeout=remaining)
             except TimeoutError:
                 timed_out = True
                 break
-            if not line:
+            if not chunk:
                 died = True
                 break
-            if marker_bytes in line:
-                match = _EXIT_TAIL_RE.search(line)
+            pending.extend(chunk)
+            marker_start = pending.find(marker_bytes)
+            if marker_start >= 0:
+                match = _EXIT_TAIL_RE.search(pending, marker_start + len(marker_bytes))
                 if match is not None:
+                    complete = bytes(pending[:marker_start])
+                    output_spool.write(complete)
+                    self._append_bounded_output(
+                        output,
+                        complete,
+                    )
                     try:
                         exit_code = int(match.group(1))
                     except ValueError:
                         exit_code = None
-                break
-            if len(output) < _MAX_SESSION_OUTPUT_BYTES:
-                room = _MAX_SESSION_OUTPUT_BYTES - len(output)
-                output.extend(line[:room])
-                if len(line) > room:
-                    truncated = True
-            else:
-                truncated = True
+                    self._carryover.extend(pending[match.end():])
+                    break
+            safe_length = max(0, len(pending) - len(marker_bytes) - 32)
+            if safe_length:
+                safe = bytes(pending[:safe_length])
+                output_spool.write(safe)
+                self._append_bounded_output(output, safe)
+                del pending[:safe_length]
+        if exit_code is None and pending:
+            output_spool.write(bytes(pending))
+            self._append_bounded_output(output, bytes(pending))
+        truncated = output_spool.size > len(output)
         after_usage = (
             self._process_supervisor.usage(proc)
             if self._process_supervisor is not None
@@ -211,6 +250,19 @@ class PersistentShellSession:
             process_usage = usage_payload
         if timed_out or died:
             await self._terminate()
+        artifact_handle = ""
+        artifact_size = 0
+        artifact_error = ""
+        try:
+            artifact = await output_spool.finish(persist=truncated)
+        except (ArtifactError, OSError) as exc:
+            artifact_error = getattr(exc, "code", "artifact_error")
+        else:
+            if artifact is not None:
+                artifact_handle = artifact.handle
+                artifact_size = artifact.size
+        finally:
+            self._active_spool = None
         text = _decode_shell_output(bytes(output))
         return ShellRunOutcome(
             text=text,
@@ -220,16 +272,40 @@ class PersistentShellSession:
             died=died,
             job_id=job_id,
             process_usage=process_usage,
+            output_bytes=output_spool.size,
+            output_artifact=artifact_handle,
+            output_artifact_size=artifact_size,
+            output_artifact_error=artifact_error,
         )
+
+    # 向固定容量缓冲区追加输出并丢弃超出容量的尾部
+    @staticmethod
+    def _append_bounded_output(output: bytearray, data: bytes) -> None:
+        room = max(0, _MAX_SESSION_OUTPUT_BYTES - len(output))
+        if room:
+            output.extend(data[:room])
 
     # 在常驻会话中执行一条命令，保留 cwd/env 状态
     async def run(self, command: str, *, timeout_s: float) -> ShellRunOutcome:
-        self._command_sequence += 1
-        return await self._send_and_collect(
-            command,
-            timeout_s=timeout_s,
-            job_id=f"{self._label}:job-{self._command_sequence}",
-        )
+        async with self._command_lock:
+            self._command_sequence += 1
+            try:
+                return await self._send_and_collect(
+                    command,
+                    timeout_s=timeout_s,
+                    job_id=f"{self._label}:job-{self._command_sequence}",
+                )
+            except asyncio.CancelledError:
+                if self._active_spool is not None:
+                    self._active_spool.discard()
+                    self._active_spool = None
+                await asyncio.shield(self._terminate())
+                raise
+            except Exception:
+                if self._active_spool is not None:
+                    self._active_spool.discard()
+                    self._active_spool = None
+                raise
 
     # 终止常驻进程并标记会话失效
     async def _terminate(self) -> None:
@@ -239,6 +315,7 @@ class PersistentShellSession:
             if proc.stdin is not None:
                 try:
                     proc.stdin.close()
+                    await proc.stdin.wait_closed()
                 except (OSError, RuntimeError):
                     pass
             try:
@@ -249,9 +326,12 @@ class PersistentShellSession:
             except (OSError, RuntimeError, ProcessLookupError):
                 pass
             self._proc = None
-        if self._reader is not None and not self._reader.done():
-            self._reader.cancel()
-            self._reader = None
+        reader = self._reader
+        self._reader = None
+        if reader is not None and reader is not asyncio.current_task():
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
 
 
 class PersistentShellPool:
@@ -262,10 +342,12 @@ class PersistentShellPool:
         *,
         idle_recycle_s: float = _IDLE_RECYCLE_S,
         process_supervisor: ProcessSupervisor | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._sessions: dict[str, PersistentShellSession] = {}
         self._idle_recycle_s = idle_recycle_s
         self._process_supervisor = process_supervisor
+        self._artifact_store = artifact_store
 
     # 返回 key 对应的活跃会话，失效或缺失时新建；顺带回收空闲会话
     def get_or_create(
@@ -273,6 +355,7 @@ class PersistentShellPool:
         key: str,
         cwd: Path | None = None,
         sandbox_plan: SandboxPlan | None = None,
+        artifact_store: ArtifactStore | None = None,
     ) -> PersistentShellSession:
         self._sweep()
         sandbox_argv = (
@@ -297,6 +380,7 @@ class PersistentShellPool:
                 cwd=cwd,
                 process_supervisor=self._process_supervisor,
                 label=f"persistent-shell:{key}",
+                artifact_store=artifact_store or self._artifact_store,
             )
             self._sessions[key] = session
         return session

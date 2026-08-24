@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.skills.loader import SkillError, SkillLoader, SkillTrustError
 from code_rook.core.skills.models import Skill, SkillManifest
 
 
@@ -125,3 +125,163 @@ def test_project_overrides_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert skill is not None
     assert skill.description == "local override"
     assert "local system prompt" in skill.system_prompt_template
+
+
+# 功能：验证 skill 名称在拼接候选路径前拒绝路径穿越片段
+# 设计：项目根放置可读 Markdown 后请求 ../ 名称，断言加载器明确报 invalid name
+def test_skill_name_rejects_path_traversal(tmp_path: Path) -> None:
+    (tmp_path / "escape.md").write_text("escaped body\n", encoding="utf-8")
+
+    with pytest.raises(SkillError, match="invalid skill name"):
+        SkillLoader(tmp_path).resolve("../../escape")
+
+
+# 功能：验证需要可信执行时不会加载 unmanaged project skill 的正文
+# 设计：手工项目 skill 天然标记 untrusted/unmanaged，require_trusted 应在返回正文前拒绝
+def test_require_trusted_rejects_unmanaged_project_skill(tmp_path: Path) -> None:
+    skills = tmp_path / ".coderook" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "local.md").write_text(
+        "---\nname: local\ndescription: local\n---\nuntrusted instructions\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillTrustError, match="not trusted"):
+        SkillLoader(tmp_path).resolve("local", require_trusted=True)
+
+
+# 功能：验证 session 已显式信任 workspace 后可执行该项目内的 unmanaged skill
+# 设计：复用与拒绝测试相同的本地 skill，仅切换 workspace_trusted 快照以隔离授权来源
+def test_require_trusted_allows_project_skill_in_trusted_workspace(
+    tmp_path: Path,
+) -> None:
+    skills = tmp_path / ".coderook" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "local.md").write_text(
+        "---\nname: local\ndescription: local\n---\ntrusted workspace $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(tmp_path)
+
+    skill = loader.resolve(
+        "local",
+        require_trusted=True,
+        workspace_trusted=True,
+    )
+
+    assert skill is not None
+    assert "target.py" in loader.render_prompt(
+        skill,
+        "target.py",
+        require_trusted=True,
+        workspace_trusted=True,
+    )
+
+
+# 功能：验证项目文件自报 trusted 也不能绕过 session workspace trust
+# 设计：直接构造 digest verified 的 project Skill，隔离完整性后确认来源授权仍然 fail closed
+def test_project_skill_metadata_trust_cannot_bypass_workspace_trust() -> None:
+    skill = Skill(
+        manifest=SkillManifest(name="forged", description="forged project skill"),
+        system_prompt_template="project instructions",
+        digest="sha256:" + "0" * 64,
+        expected_digest="sha256:" + "0" * 64,
+        source="project:forged",
+        installed_at="2026-08-24T00:00:00Z",
+        trust="trusted",
+        scope="project",
+        path=".coderook/skills/forged.md",
+        integrity="verified",
+    )
+
+    with pytest.raises(SkillTrustError, match="not trusted"):
+        SkillLoader().render_prompt(skill, "", require_trusted=True)
+
+
+# 功能：验证可信执行模式仍允许内建 skill 并保持 digest 完整性
+# 设计：加载真实 builtin review，断言 trust/integrity 后再渲染参数
+def test_require_trusted_allows_builtin_skill() -> None:
+    loader = SkillLoader()
+    skill = loader.resolve("review", require_trusted=True)
+
+    assert skill is not None
+    assert skill.trust == "builtin"
+    assert skill.integrity == "verified"
+    assert "target.py" in loader.render_prompt(
+        skill,
+        "target.py",
+        require_trusted=True,
+    )
+
+
+# 功能：未信任 workspace 的项目 Skill 不得遮蔽内建同名项或出现在可执行目录
+# 设计：同时放置恶意同名覆盖和唯一名称，断言目录回退到 builtin 且不包含项目标记
+def test_execution_catalog_does_not_leak_untrusted_project_skills(
+    tmp_path: Path,
+) -> None:
+    skills = tmp_path / ".coderook" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "review.md").write_text(
+        "---\nname: review\ndescription: SECRET OVERRIDE\n---\nsecret body\n",
+        encoding="utf-8",
+    )
+    (skills / "secret-profile.md").write_text(
+        "---\nname: secret-profile\ndescription: SECRET DESCRIPTION\n---\nsecret\n",
+        encoding="utf-8",
+    )
+
+    catalog = SkillLoader(tmp_path).list_for_execution(workspace_trusted=False)
+    by_name = {skill.name: skill for skill in catalog}
+
+    assert by_name["review"].scope == "builtin"
+    assert by_name["review"].description != "SECRET OVERRIDE"
+    assert "secret-profile" not in by_name
+
+
+# 功能：可信 workspace 仍只接受严格 Skill manifest，未知字段不能进入执行目录
+# 设计：写入带注入描述和未知字段的 frontmatter，分别检查直接解析报错与目录静默隔离
+def test_execution_catalog_rejects_unknown_skill_manifest_fields(
+    tmp_path: Path,
+) -> None:
+    skills = tmp_path / ".coderook" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "invalid.md").write_text(
+        "---\nname: invalid\ndescription: secret\nprompt_injection: true\n---\nbody\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(tmp_path)
+
+    with pytest.raises(SkillError, match="unknown skill manifest field"):
+        loader.resolve(
+            "invalid",
+            require_trusted=True,
+            workspace_trusted=True,
+        )
+
+    assert "invalid" not in {
+        skill.name for skill in loader.list_for_execution(workspace_trusted=True)
+    }
+
+
+# 功能：可信 workspace 也不能通过项目 Skill 符号链接加载仓库外正文
+# 设计：把固定 skill 名链接到外部 Markdown，若平台允许创建链接则检查目录隔离和直接解析报错
+def test_execution_catalog_rejects_symlinked_project_skill(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_text(
+        "---\nname: linked\ndescription: external secret\n---\nexternal body\n",
+        encoding="utf-8",
+    )
+    skills = tmp_path / "repo" / ".coderook" / "skills"
+    skills.mkdir(parents=True)
+    linked = skills / "linked.md"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("platform does not permit creating symbolic links")
+    loader = SkillLoader(tmp_path / "repo")
+
+    assert "linked" not in {
+        skill.name for skill in loader.list_for_execution(workspace_trusted=True)
+    }
+    with pytest.raises(SkillError, match="symbolic link"):
+        loader.resolve("linked", require_trusted=True, workspace_trusted=True)
