@@ -418,9 +418,9 @@ def _gate_passed(
     recovery_rate: float,
     min_rate: float,
     orphaned_tool_calls: int,
-    duplicate_modifications: int,
-    ledger_errors: int,
-    orphaned_processes: int,
+    duplicate_modifications: int = 0,
+    ledger_errors: int = 0,
+    orphaned_processes: int = 0,
     infrastructure_error: str | None,
 ) -> bool:
     return (

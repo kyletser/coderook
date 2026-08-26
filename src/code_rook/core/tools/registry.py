@@ -39,17 +39,25 @@ class ToolRegistry:
         self._allowed_authority_actions = allowed_authority_actions
         self._model_tool_allowlist: frozenset[str] | None = None
         self._model_action_allowlist: dict[str, frozenset[str]] = {}
+        self._canonical_model_cache: dict[tuple[str, ...], bytes] = {}
 
     # 冻结本次 Turn 对模型可见的工具集合，执行解析沿用同一集合失败关闭
     def set_model_tool_allowlist(self, allowlist: frozenset[str] | None) -> None:
+        if self._model_tool_allowlist == allowlist:
+            return
         self._model_tool_allowlist = allowlist
+        self._canonical_model_cache.clear()
 
     # 冻结 family 工具的模型可见 action 子集并与调用解析共用
     def set_model_action_allowlist(
         self,
         allowlist: dict[str, frozenset[str]],
     ) -> None:
-        self._model_action_allowlist = dict(allowlist)
+        normalized = dict(allowlist)
+        if self._model_action_allowlist == normalized:
+            return
+        self._model_action_allowlist = normalized
+        self._canonical_model_cache.clear()
 
     # 判断工具是否通过当前任务画像的模型可见性约束
     def _model_tool_allowed(self, name: str) -> bool:
@@ -90,6 +98,7 @@ class ToolRegistry:
             return
         self._tools[tool.name] = tool
         self._catalog.register(filtered_spec)
+        self._canonical_model_cache.clear()
 
     # 按名称查找工具，不存在返回 None
     def get(self, name: str) -> BaseTool | None:
@@ -133,12 +142,17 @@ class ToolRegistry:
 
     # 返回模型目录的 canonical JSON 字节并复用 memoized 结果
     def canonical_catalog_json(self, *, activated: tuple[str, ...] = ()) -> bytes:
-        return json.dumps(
-            self.tool_schemas(activated=activated),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        combined = tuple(dict.fromkeys((*self._activated_deferred, *activated)))
+        cached = self._canonical_model_cache.get(combined)
+        if cached is None:
+            cached = json.dumps(
+                self.tool_schemas(activated=activated),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._canonical_model_cache[combined] = cached
+        return cached
 
     # 返回模型目录允许暴露的工具数量硬上限
     @property

@@ -274,11 +274,12 @@ def _worker_id(content: str) -> str:
     return content.split("worker_id=", 1)[1].split(".", 1)[0]
 
 
-# 功能：统一 agent 工具暴露规范要求的 start/retry 与完整控制 action
-# 设计：直接检查 ToolSpec action 顺序和名称，避免旧 spawn_agent 成为另一个模型入口
+# 功能：统一 agent 工具暴露计划校验、start/retry 与完整控制 action
+# 设计：直接检查 ToolSpec action 顺序和名称，确保委派必须先经过确定性计划校验入口
 def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
     tool, _, _ = _agent(tmp_path, _ResultProvider())
     assert [action.name for action in tool.build_spec().actions] == [
+        "validate_plan",
         "start",
         "retry",
         "status",
