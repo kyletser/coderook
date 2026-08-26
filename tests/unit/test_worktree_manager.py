@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.worktree import WorktreeError, WorktreeManager
+from code_rook.core.worktree import (
+    WorktreeBatchApplyItem,
+    WorktreeError,
+    WorktreeManager,
+)
 
 
 # 初始化包含一次提交的最小 Git 仓库
@@ -141,6 +145,41 @@ async def test_worktree_apply_rejects_stale_review_digest(tmp_path: Path) -> Non
         text=True,
     )
     assert status.stdout == ""
+
+
+# 功能：验证多个同基线且文件互斥的 Worker 补丁以一次批量事务进入主工作区
+# 设计：两个真实 worktree 分别新增文件，审查摘要后批量应用并对账完整路径集合
+async def test_reviewed_worktrees_apply_as_disjoint_batch(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    manager = WorktreeManager(tmp_path)
+    base_commit = await manager.resolve_ref()
+    left = await manager.create("batch-left", base_commit)
+    right = await manager.create("batch-right", base_commit)
+    (left / "left.txt").write_text("left\n", encoding="utf-8")
+    (right / "right.txt").write_text("right\n", encoding="utf-8")
+    left_preview = await manager.preview_apply("batch-left", base_commit=base_commit)
+    right_preview = await manager.preview_apply("batch-right", base_commit=base_commit)
+
+    result = await manager.apply_many(
+        (
+            WorktreeBatchApplyItem(
+                name="batch-left",
+                base_commit=base_commit,
+                expected_digest=left_preview.state_digest,
+                reviewed_files=left_preview.changed_files,
+            ),
+            WorktreeBatchApplyItem(
+                name="batch-right",
+                base_commit=base_commit,
+                expected_digest=right_preview.state_digest,
+                reviewed_files=right_preview.changed_files,
+            ),
+        )
+    )
+
+    assert set(result.changed_files) == {"left.txt", "right.txt"}
+    assert (tmp_path / "left.txt").read_text(encoding="utf-8") == "left\n"
+    assert (tmp_path / "right.txt").read_text(encoding="utf-8") == "right\n"
 
 
 # 功能：主仓库有任何本地改动时禁止应用 Worker，避免覆盖用户正在编辑的文件

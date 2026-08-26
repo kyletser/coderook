@@ -27,6 +27,7 @@ from code_rook.core.bus.events import (
     VerificationFailedEvent,
 )
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
+from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.execution.invariants import (
@@ -369,6 +370,21 @@ class AgentLoop:
     @staticmethod
     async def _cancellation_checkpoint() -> None:
         await asyncio.sleep(0)
+
+    # 预测下一请求的上下文占比并为模型输出预留固定安全空间
+    def _projected_context_pct(
+        self,
+        context: ExecutionContext,
+        response: LlmResponse,
+        *,
+        output_reserve_tokens: int = 4_096,
+    ) -> float:
+        usage = response.usage
+        if usage is None or usage.context_pct <= 0 or usage.input_tokens <= 0:
+            return 0.0
+        estimated_capacity = usage.input_tokens / usage.context_pct
+        projected_input = estimate_messages_tokens(context.messages) + output_reserve_tokens
+        return projected_input / max(1.0, estimated_capacity)
 
     # 在 watchdog 下调用 Provider，并分别统计 transient 与 no-content 重试
     async def _call_provider(self, context: ExecutionContext) -> LlmResponse:
@@ -1338,7 +1354,10 @@ class AgentLoop:
                 and self._compactor is not None
                 and self._compact_threshold > 0
                 and response.usage is not None
-                and response.usage.context_pct >= self._compact_threshold
+                and max(
+                    response.usage.context_pct,
+                    self._projected_context_pct(context, response),
+                ) >= self._compact_threshold
             ):
                 await self._apply_tool_result_budget(context)
                 compacted = await self._compactor.compact(

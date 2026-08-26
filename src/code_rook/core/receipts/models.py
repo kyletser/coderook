@@ -109,3 +109,5 @@ class TurnReceipt(BaseModel):
     outcome: RunOutcome | None = None
     failure_category: str | None = None
     result_summary: str | None = None
+    task_profile: dict[str, JsonValue] = Field(default_factory=dict)
+    task_profile_digest: str = ""

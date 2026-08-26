@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "dataset": "coderook-long-context-v1",
+  "description": "Synthetic frozen long-session scenarios; they are not real user data.",
+  "tasks": [
+    {"id":"long-single-01","category":"single_file_fix","history_rounds":12,"path":"src/cache.py","constraints":["keep the public signature","do not add dependencies","run the focused test"],"stale_error":"old timeout no longer reproduces","large_output_chars":18000},
+    {"id":"long-single-02","category":"single_file_fix","history_rounds":14,"path":"src/parser.py","constraints":["preserve Unicode input","reject partial JSON","keep error codes stable"],"stale_error":"obsolete syntax failure","large_output_chars":22000},
+    {"id":"long-single-03","category":"single_file_fix","history_rounds":16,"path":"src/store.py","constraints":["use atomic replace","keep checksum validation","avoid global state"],"stale_error":"resolved file lock","large_output_chars":24000},
+    {"id":"long-single-04","category":"single_file_fix","history_rounds":20,"path":"src/router.py","constraints":["risk can only increase","invalid JSON must fail closed","classification output stays bounded"],"stale_error":"superseded classifier response","large_output_chars":28000},
+    {"id":"long-multi-01","category":"multi_file_change","history_rounds":14,"path":"src/runtime/service.py","constraints":["preserve schema 1 compatibility","update generated protocol","do not auto push"],"stale_error":"old projection gap","large_output_chars":20000},
+    {"id":"long-multi-02","category":"multi_file_change","history_rounds":18,"path":"src/subagent/controller.py","constraints":["maximum three workers","write claims cannot overlap","workers use independent worktrees"],"stale_error":"resolved branch collision","large_output_chars":26000},
+    {"id":"long-multi-03","category":"multi_file_change","history_rounds":20,"path":"src/compact/compactor.py","constraints":["keep complete tool pairs","retain source event references","fall back on quality failure"],"stale_error":"obsolete token estimate","large_output_chars":30000},
+    {"id":"long-explain-01","category":"explain","history_rounds":12,"path":"src/execution/ledger.py","constraints":["distinguish fact log from projection","mention post-commit broadcast","do not claim exactly-once execution"],"stale_error":"none","large_output_chars":18000},
+    {"id":"long-explain-02","category":"explain","history_rounds":15,"path":"src/sandbox/base.py","constraints":["state Windows is ask-only","separate denied from runner failure","avoid production-ready claims"],"stale_error":"old sandbox probe warning","large_output_chars":21000},
+    {"id":"long-explain-03","category":"explain","history_rounds":18,"path":"src/llm/routes.py","constraints":["name the wire format","explain credential redaction","include termination semantics"],"stale_error":"retired route name","large_output_chars":25000},
+    {"id":"long-repair-01","category":"test_then_fix","history_rounds":16,"path":"tests/test_recovery.py","constraints":["first reproduce the failure","record the verifier command","leave no child process"],"stale_error":"first verifier failed with orphan pid","large_output_chars":24000},
+    {"id":"long-repair-02","category":"test_then_fix","history_rounds":20,"path":"tests/test_protocol.py","constraints":["regenerate protocol docs","preserve old exit codes","run the focused test after repair"],"stale_error":"first protocol check failed","large_output_chars":30000}
+  ]
+}

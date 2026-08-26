@@ -315,6 +315,16 @@ def build_turn_receipt(
         if isinstance(raw_result_summary, str) and raw_result_summary
         else None
     )
+    profiled_payload = next(
+        (dict(event.payload) for event in events if event.type == "task.profiled"),
+        {},
+    )
+    raw_task_profile = profiled_payload.get("profile")
+    task_profile = dict(raw_task_profile) if isinstance(raw_task_profile, dict) else {}
+    raw_profile_digest = profiled_payload.get("profile_digest")
+    task_profile_digest = (
+        str(raw_profile_digest) if isinstance(raw_profile_digest, str) else ""
+    )
     files_changed = _changed_files(items)
     changes = _file_changes(items, files_changed)
     unavailable: list[str] = []
@@ -394,4 +404,6 @@ def build_turn_receipt(
         outcome=outcome,
         failure_category=failure_category,
         result_summary=result_summary,
+        task_profile=task_profile,
+        task_profile_digest=task_profile_digest,
     )

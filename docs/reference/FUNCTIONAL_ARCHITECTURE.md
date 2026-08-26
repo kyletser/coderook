@@ -60,6 +60,9 @@ Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置�
 
 - `commands.py`：认证、run、session、runtime、权限、任务、worker、workflow 和扩展管理命令。
 - `events.py`：run/step、LLM、工具、审批、上下文、计划、subagent 和后台状态事件。
+- `task.profiled` 在模型调用前持久化混合 TaskProfile；画像包含意图、范围、风险、执行策略、上下文
+  策略、置信度和信号。明确安全信号由规则决定，只有歧义任务才允许一次结构化分类；风险和范围在
+  合并时只能提高，低置信度固定回退 `plan_first` 并关闭委派。
 - `envelope.py`：请求、成功、错误、事件推送和认证错误码。
 
 `scripts/gen_protocol_doc.py` 从模型生成 `WIRE_PROTOCOL.md`。手写架构文档不复制字段表。
@@ -261,7 +264,11 @@ Catalog 的非法组合都会拒绝自动重迁移并进入 `audit_degraded`。�
 - `core/artifacts/`：内容寻址的大输出与图片存储；
 - `core/turn/`：读缓存、重复行为守卫和流看门狗。
 
-压缩保持工具调用/结果配对，不把自动摘要当作原始 transcript 的替代事实。
+压缩保持工具调用/结果配对，不把自动摘要当作原始 transcript 的替代事实。策略支持 `truncate`、
+`structured` 和默认候选 `adaptive_evidence`。后者从事实日志固定当前目标、TaskProfile、未决审批与
+失败工具，要求摘要逐项携带 `source_event_seqs`；正文或来源序号不一致时拒绝替换上下文。旧窗口内
+相同内容哈希的重复工具结果只在模型视图折叠，完整正文仍留在 Ledger。触发判断使用下一请求加输出
+预留后的预测占比，而非只等待当前请求超过固定阈值。
 
 ## 10. 多 Agent 与编排
 
@@ -278,6 +285,10 @@ Catalog 的非法组合都会拒绝自动重迁移并进入 `audit_degraded`。�
 - `core/workflow/`：声明式 IR、事件溯源账本和执行器。
 
 并行 worker 不共享未声明的写权限；写入隔离依赖强制 worktree 和 write claim，而不是模型自律。
+模型只有在冻结 TaskProfile 允许委派时才能看到 `agent` 工具；启动前可用 `agent.validate_plan` 校验
+最多三个 Worker 的 DAG、总预算、验收条件和 Write Claim。依赖环、父级路径逃逸、嵌套委派或任意
+写入交集都会失败关闭。多个已审查 handoff 只有在 base commit 相同、digest 未漂移且文件集合互斥
+时，才可通过组合补丁预检后一次应用，避免逐个应用造成基线漂移。
 当前 Labs Fleet scheduler 还不会自动创建受管 worktree，因此任何带写 claim 的 workflow worker 都在
 host 进程启动前失败关闭；只读 Fleet 节点不受此限制。
 稳定基础 Worker 由 daemon-owned `WorkerController` 通过统一 Route Catalog 真正启动或重试；route

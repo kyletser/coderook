@@ -92,6 +92,7 @@ async def test_auto_compact_persists_summary_and_recent_window(tmp_path: Path) -
         store.session_dir("sess-1"),
         "sess-1",
         store=store,
+        strategy="structured",
     )
     context = ExecutionContext(run_id="r1", goal="test", max_steps=5)
     context.messages = _make_messages()

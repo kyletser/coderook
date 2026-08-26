@@ -6,6 +6,8 @@ import os
 import platform
 import shutil
 import socket
+import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,8 @@ class _BlockingModelHandler(BaseHTTPRequestHandler):
     request_started = threading.Condition()
     request_count = 0
     request_phase = "llm_request_in_flight"
+    phase_request_count = 0
+    shell_command = ""
 
     # 按故障阶段阻塞模型请求或返回一个待恢复的工具调用
     def do_POST(self) -> None:  # noqa: N802
@@ -34,13 +38,32 @@ class _BlockingModelHandler(BaseHTTPRequestHandler):
         self.rfile.read(content_length)
         with self.request_started:
             type(self).request_count += 1
+            type(self).phase_request_count += 1
             phase = type(self).request_phase
+            phase_request_count = type(self).phase_request_count
             self.request_started.notify_all()
-        if phase == "llm_request_in_flight":
+        response: dict[str, object]
+        if phase == "request_snapshot_in_flight" or (
+            phase == "tool_result_persisted" and phase_request_count > 1
+        ):
             time.sleep(3.0)
             status = 503
             response = {"error": "delayed crash-matrix model"}
         else:
+            tool_name = "Bash"
+            arguments: dict[str, object] = {
+                "action": "run",
+                "command": "echo crash-matrix",
+            }
+            if phase == "shell_process_running":
+                arguments["command"] = type(self).shell_command
+            elif phase == "tool_result_persisted":
+                tool_name = "File"
+                arguments = {
+                    "action": "write",
+                    "path": "recovery-marker.txt",
+                    "content": "written-once\n",
+                }
             status = 200
             response = {
                 "choices": [
@@ -54,13 +77,8 @@ class _BlockingModelHandler(BaseHTTPRequestHandler):
                                     "id": "crash-matrix-tool-call",
                                     "type": "function",
                                     "function": {
-                                        "name": "Bash",
-                                        "arguments": json.dumps(
-                                            {
-                                                "action": "run",
-                                                "command": "echo crash-matrix",
-                                            }
-                                        ),
+                                        "name": tool_name,
+                                        "arguments": json.dumps(arguments),
                                     },
                                 }
                             ],
@@ -101,7 +119,9 @@ def _start_model_server() -> tuple[ThreadingHTTPServer, threading.Thread, int]:
 
 
 # 构造隔离 HOME、随机端口和本地假模型所需的 daemon 环境
-def _daemon_environment(home: Path, ipc_port: int, api_port: int, model_port: int) -> dict[str, str]:
+def _daemon_environment(
+    home: Path, ipc_port: int, api_port: int, model_port: int
+) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
@@ -113,9 +133,7 @@ def _daemon_environment(home: Path, ipc_port: int, api_port: int, model_port: in
             "CODEROOK_LOG_LEVEL": "WARNING",
             "CODEROOK_LLM_PROVIDER": "openai_compatible",
             "CODEROOK_LLM_DEFAULT_MODEL": "crash-matrix-model",
-            "CODEROOK_LLM_BASE_URL": (
-                f"http://127.0.0.1:{model_port}/v1/chat/completions"
-            ),
+            "CODEROOK_LLM_BASE_URL": (f"http://127.0.0.1:{model_port}/v1/chat/completions"),
             "CODEROOK_LLM_API_KEY_ENV": "CODEROOK_MATRIX_KEY",
             "CODEROOK_MATRIX_KEY": "test-only-not-a-real-key",
         }
@@ -128,6 +146,7 @@ def _start_daemon(env: dict[str, str], home: Path, api_port: int) -> subprocess.
     process = subprocess.Popen(
         [sys.executable, "-m", "code_rook.core"],
         env=env,
+        cwd=home,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -247,11 +266,7 @@ def _create_turn_resilient(
                 "GET",
                 f"/v1/threads/{thread_id}/turns",
             )
-            created = [
-                turn
-                for turn in turns
-                if str(turn.get("id", "")) not in known_turn_ids
-            ]
+            created = [turn for turn in turns if str(turn.get("id", "")) not in known_turn_ids]
             if len(created) == 1:
                 return created[0]
             if len(created) > 1:
@@ -273,8 +288,7 @@ def _wait_for_model_request(expected_count: int) -> None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
-                    "model request did not arrive within "
-                    f"{_MODEL_REQUEST_TIMEOUT_S:g} seconds"
+                    f"model request did not arrive within {_MODEL_REQUEST_TIMEOUT_S:g} seconds"
                 )
             _BlockingModelHandler.request_started.wait(timeout=remaining)
 
@@ -293,9 +307,74 @@ def _wait_for_tool_call(api_port: int, token: str, turn_id: str) -> None:
             return
         time.sleep(0.05)
     raise RuntimeError(
-        "tool call did not become durable within "
-        f"{_MODEL_REQUEST_TIMEOUT_S:g} seconds"
+        f"tool call did not become durable within {_MODEL_REQUEST_TIMEOUT_S:g} seconds"
     )
+
+
+# 等待运行时 SQLite 出现指定事件并返回解析后的事件载荷
+def _wait_for_runtime_event(
+    home: Path,
+    turn_id: str,
+    event_type: str,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
+    database = home / ".coderook" / "runtime.db"
+    while time.monotonic() < deadline:
+        if database.is_file():
+            try:
+                with sqlite3.connect(database, timeout=1.0) as connection:
+                    row = connection.execute(
+                        "SELECT payload_json FROM runtime_events "
+                        "WHERE turn_id = ? AND type = ? ORDER BY seq DESC LIMIT 1",
+                        (turn_id, event_type),
+                    ).fetchone()
+                if row is not None:
+                    payload = json.loads(str(row[0]))
+                    return payload if isinstance(payload, dict) else {}
+            except (OSError, sqlite3.Error, json.JSONDecodeError):
+                pass
+        time.sleep(0.05)
+    raise RuntimeError(f"runtime event did not become durable: {event_type}")
+
+
+# 等待工具结果写入运行时投影，确保强杀位于结果与 Turn 终态之间
+def _wait_for_tool_result(api_port: int, token: str, turn_id: str) -> None:
+    deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
+    while time.monotonic() < deadline:
+        items = _request_list(api_port, token, "GET", f"/v1/turns/{turn_id}/items")
+        if any(item.get("kind") == "tool_result" for item in items):
+            return
+        time.sleep(0.05)
+    raise RuntimeError("tool result did not become durable")
+
+
+# 等待长 Shell 写出子进程 PID，证明故障确实注入在受管进程树运行期间
+def _wait_for_shell_pid(pid_file: Path) -> int:
+    deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
+    while time.monotonic() < deadline:
+        try:
+            value = int(pid_file.read_text(encoding="utf-8").strip())
+            if value > 0:
+                return value
+        except (OSError, UnicodeError, ValueError):
+            pass
+        time.sleep(0.05)
+    raise RuntimeError("managed shell child did not start")
+
+
+# 使用零信号探测 PID 是否仍存在，权限拒绝视为进程仍存活
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 87:
+            return False
+        raise
+    return True
 
 
 # 返回工具调用中没有对应终态结果的稳定标识
@@ -339,6 +418,9 @@ def _gate_passed(
     recovery_rate: float,
     min_rate: float,
     orphaned_tool_calls: int,
+    duplicate_modifications: int,
+    ledger_errors: int,
+    orphaned_processes: int,
     infrastructure_error: str | None,
 ) -> bool:
     return (
@@ -346,6 +428,9 @@ def _gate_passed(
         and completed_iterations == iterations
         and recovery_rate >= min_rate
         and orphaned_tool_calls == 0
+        and duplicate_modifications == 0
+        and ledger_errors == 0
+        and orphaned_processes == 0
     )
 
 
@@ -389,52 +474,113 @@ def run_matrix(
             home.mkdir()
             env = _daemon_environment(home, ipc_port, api_port, model_port)
             process = _start_daemon(env, home, api_port)
-            token = (home / ".coderook" / "api-token").read_text(
-                encoding="utf-8"
-            ).strip()
-            thread = _request_json(
-                api_port,
-                token,
-                "POST",
-                "/v1/threads",
-                {"title": "crash matrix", "mode": "chat"},
+            token = (home / ".coderook" / "api-token").read_text(encoding="utf-8").strip()
+            shell_pid_file = home / "managed-shell-child.pid"
+            child_code = (
+                "import os,time,pathlib;"
+                f"pathlib.Path({str(shell_pid_file)!r}).write_text(str(os.getpid()),encoding='utf-8');"
+                "time.sleep(60)"
             )
-            thread_id = str(thread["id"])
-            known_turn_ids = {
-                str(turn.get("id", ""))
-                for turn in _request_list(
-                    api_port,
-                    token,
-                    "GET",
-                    f"/v1/threads/{thread_id}/turns",
-                )
+            parent_code = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+                "time.sleep(60)"
+            )
+            _BlockingModelHandler.shell_command = subprocess.list2cmdline(
+                [sys.executable, "-c", parent_code]
+            )
+            phases = (
+                "request_snapshot_in_flight",
+                "tool_call_persisted",
+                "shell_process_running",
+                "permission_waiting",
+                "tool_result_persisted",
+            )
+            prompts = {
+                "request_snapshot_in_flight": "Inspect and explain the current repository.",
+                "tool_call_persisted": "Run a shell command to inspect the environment.",
+                "shell_process_running": "Run the requested long shell process.",
+                "permission_waiting": "Run a shell command after requesting approval.",
+                "tool_result_persisted": (
+                    "Implement a file change by writing recovery-marker.txt with the "
+                    "requested content."
+                ),
             }
             for index in range(iterations):
                 current_iteration = index + 1
-                phase = (
-                    "llm_request_in_flight"
-                    if index % 2 == 0
-                    else "tool_call_unresolved"
-                )
+                phase = phases[index % len(phases)]
                 current_phase = phase
                 with _BlockingModelHandler.request_started:
                     _BlockingModelHandler.request_phase = phase
+                    _BlockingModelHandler.phase_request_count = 0
+                    expected_request_count = _BlockingModelHandler.request_count + 1
+                if shell_pid_file.exists():
+                    shell_pid_file.unlink()
+                current_stage = "create_thread"
+                thread = _request_json(
+                    api_port,
+                    token,
+                    "POST",
+                    "/v1/threads",
+                    {"title": f"crash matrix {index + 1}", "mode": "chat"},
+                )
+                thread_id = str(thread["id"])
+                known_turn_ids: set[str] = set()
                 current_stage = "create_turn"
                 turn = _create_turn_resilient(
                     api_port,
                     token,
                     thread_id,
-                    f"crash injection {index + 1}",
+                    prompts[phase],
                     known_turn_ids,
                 )
                 turn_id = str(turn["id"])
                 known_turn_ids.add(turn_id)
                 current_stage = "wait_for_model_request"
-                _wait_for_model_request(index + 1)
-                if phase == "tool_call_unresolved":
+                _wait_for_model_request(expected_request_count)
+                shell_child_pid: int | None = None
+                if phase in {
+                    "tool_call_persisted",
+                    "shell_process_running",
+                    "permission_waiting",
+                    "tool_result_persisted",
+                }:
                     current_stage = "wait_for_tool_call"
                     _wait_for_tool_call(api_port, token, turn_id)
+                if phase in {
+                    "shell_process_running",
+                    "permission_waiting",
+                    "tool_result_persisted",
+                }:
+                    current_stage = "wait_for_permission"
+                    permission = _wait_for_runtime_event(
+                        home,
+                        turn_id,
+                        "permission.requested",
+                    )
+                    tool_use_id = str(permission.get("tool_use_id", ""))
+                    if not tool_use_id:
+                        raise RuntimeError("permission event omitted tool_use_id")
+                    if phase != "permission_waiting":
+                        current_stage = "approve_permission"
+                        response = _request_json(
+                            api_port,
+                            token,
+                            "POST",
+                            f"/v1/permissions/{tool_use_id}",
+                            {"decision": "allow_once"},
+                        )
+                        if not response.get("accepted"):
+                            raise RuntimeError("permission response was not accepted")
+                if phase == "shell_process_running":
+                    current_stage = "wait_for_shell_process"
+                    shell_child_pid = _wait_for_shell_pid(shell_pid_file)
+                if phase == "tool_result_persisted":
+                    current_stage = "wait_for_tool_result"
+                    _wait_for_tool_result(api_port, token, turn_id)
+                    _wait_for_model_request(expected_request_count + 1)
                 current_stage = "hard_kill"
+                recovery_started = time.monotonic()
                 _hard_kill(process)
                 current_stage = "restart_daemon"
                 process = _start_daemon(env, home, api_port)
@@ -445,6 +591,7 @@ def run_matrix(
                     "GET",
                     f"/v1/turns/{turn_id}",
                 )
+                recovery_ms = int((time.monotonic() - recovery_started) * 1_000)
                 current_stage = "read_receipt"
                 receipt = _request_json(
                     api_port,
@@ -460,9 +607,25 @@ def run_matrix(
                     f"/v1/turns/{turn_id}/items",
                 )
                 unmatched_tool_calls = _unmatched_tool_call_ids(items)
+                from code_rook.core.session.store import SessionStore
+
+                ledger_issues = SessionStore(
+                    home / ".coderook" / "sessions",
+                    initialize=False,
+                ).verify_ledger(thread_id)
+                orphaned_process = False
+                if shell_child_pid is not None:
+                    deadline = time.monotonic() + 2.0
+                    while time.monotonic() < deadline and _pid_alive(shell_child_pid):
+                        time.sleep(0.05)
+                    orphaned_process = _pid_alive(shell_child_pid)
+                marker_writes = 0
+                marker_path = home / "recovery-marker.txt"
+                if phase == "tool_result_persisted" and marker_path.is_file():
+                    marker_writes = marker_path.read_text(encoding="utf-8").count("written-once")
                 status = str(recovered.get("status", ""))
                 error = dict(recovered.get("error") or {})
-                expected_tool_calls = 1 if phase == "tool_call_unresolved" else 0
+                expected_tool_calls = 0 if phase == "request_snapshot_in_flight" else 1
                 passed = (
                     status == "interrupted"
                     and error.get("reason") == "daemon_restarted"
@@ -470,6 +633,13 @@ def run_matrix(
                     and receipt.get("finished_at") is not None
                     and receipt.get("tool_call_count") == expected_tool_calls
                     and not unmatched_tool_calls
+                    and not ledger_issues
+                    and not orphaned_process
+                    and (phase != "tool_result_persisted" or marker_writes == 1)
+                    and (
+                        phase != "permission_waiting"
+                        or receipt.get("approvals", {}).get("requested") == 1
+                    )
                 )
                 results.append(
                     {
@@ -481,6 +651,10 @@ def run_matrix(
                         "receipt_status": receipt.get("status"),
                         "tool_call_count": receipt.get("tool_call_count"),
                         "orphaned_tool_call_ids": unmatched_tool_calls,
+                        "ledger_issues": ledger_issues,
+                        "orphaned_high_risk_process": orphaned_process,
+                        "marker_write_count": marker_writes,
+                        "recovery_ms": recovery_ms,
                         "passed": passed,
                     }
                 )
@@ -510,13 +684,17 @@ def run_matrix(
         if temp_root is not None and temp_root.name.startswith("coderook-crash-matrix-"):
             shutil.rmtree(temp_root, ignore_errors=True)
         passed = sum(bool(item["passed"]) for item in results)
-        orphaned_tool_calls = sum(
-            len(item.get("orphaned_tool_call_ids", [])) for item in results
+        orphaned_tool_calls = sum(len(item.get("orphaned_tool_call_ids", [])) for item in results)
+        duplicate_modifications = sum(
+            max(0, int(item.get("marker_write_count", 0)) - 1) for item in results
         )
+        ledger_errors = sum(len(item.get("ledger_issues", [])) for item in results)
+        orphaned_processes = sum(bool(item.get("orphaned_high_risk_process")) for item in results)
+        recovery_samples = [int(item["recovery_ms"]) for item in results]
         recovery_rate = passed / iterations if iterations else 0.0
         completed_iterations = len(results)
         report = {
-            "schema_version": 3,
+            "schema_version": 4,
             "generated_at": datetime.now(UTC).isoformat(),
             "commit": _git_commit(),
             "platform": platform.system(),
@@ -529,12 +707,24 @@ def run_matrix(
             "passed": passed,
             "recovery_rate": recovery_rate,
             "orphaned_tool_calls": orphaned_tool_calls,
+            "duplicate_modifications": duplicate_modifications,
+            "ledger_errors": ledger_errors,
+            "orphaned_high_risk_processes": orphaned_processes,
+            "recovery_ms_p50": (statistics.median(recovery_samples) if recovery_samples else None),
+            "recovery_ms_p95": (
+                sorted(recovery_samples)[max(0, int(len(recovery_samples) * 0.95) - 1)]
+                if recovery_samples
+                else None
+            ),
             "infrastructure_error": infrastructure_error,
             "failure_context": failure_context,
             "coverage": [
                 "user_message_durable",
-                "llm_request_in_flight",
-                "tool_call_unresolved",
+                "request_snapshot_in_flight",
+                "tool_call_persisted_before_execution",
+                "managed_shell_process_tree",
+                "permission_waiting",
+                "tool_result_persisted_before_turn_finish",
                 "client_disconnect",
                 "daemon_hard_kill",
                 "restart_reconcile",
@@ -547,6 +737,9 @@ def run_matrix(
                 recovery_rate=recovery_rate,
                 min_rate=min_rate,
                 orphaned_tool_calls=orphaned_tool_calls,
+                duplicate_modifications=duplicate_modifications,
+                ledger_errors=ledger_errors,
+                orphaned_processes=orphaned_processes,
                 infrastructure_error=infrastructure_error,
             ),
             "results": results,

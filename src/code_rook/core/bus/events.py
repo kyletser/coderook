@@ -375,6 +375,10 @@ class ContextCompactedEvent(BaseModel):
     quality_score: float = 1.0
     trigger: str = "auto"
     summary_path: str = ""
+    strategy: str = "structured"
+    pinned_fact_count: int = Field(default=0, ge=0)
+    pinned_fact_retained: int = Field(default=0, ge=0)
+    deduplicated_reads: int = Field(default=0, ge=0)
     ts: str
 
 
@@ -393,6 +397,14 @@ class ContextWorkingSetEvent(BaseModel):
     run_id: str
     step: int
     paths: list[str]
+    ts: str
+
+
+class TaskProfiledEvent(BaseModel):
+    type: Literal["task.profiled"] = "task.profiled"
+    run_id: str
+    profile: dict[str, Any]
+    profile_digest: str
     ts: str
 
 
@@ -620,6 +632,7 @@ Event = Annotated[
     | SessionInterruptedEvent
     | SessionClosedEvent
     | ContextCompactedEvent
+    | TaskProfiledEvent
     | ContextPrefixFingerprintEvent
     | ContextWorkingSetEvent
     | ContextRepositoryEvent

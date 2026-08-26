@@ -8,6 +8,7 @@ from code_rook.core.subagent.backends import (
 )
 from code_rook.core.subagent.controller import WorkerController, WorkerControllerError
 from code_rook.core.subagent.models import WorkerRecord, WorkerStatus, WriteClaim
+from code_rook.core.subagent.planning import DelegationPlan, DelegationTask
 from code_rook.core.subagent.registry import (
     BackgroundTaskRegistry,
     WorkerBudgetError,
@@ -21,6 +22,8 @@ __all__ = [
     "AgentTool",
     "AcpWorkerBackend",
     "BackgroundTaskRegistry",
+    "DelegationPlan",
+    "DelegationTask",
     "SpawnAgentTool",
     "WorkerRecord",
     "WorkerBackendCapabilities",

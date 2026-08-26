@@ -8,6 +8,12 @@ class CompactedFile(BaseModel):
     state: str
 
 
+class PinnedFact(BaseModel):
+    id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    source_event_seqs: list[int] = Field(min_length=1)
+
+
 class CompactionSummary(BaseModel):
     goal: str = Field(min_length=1)
     completed: list[str] = Field(default_factory=list)
@@ -17,6 +23,7 @@ class CompactionSummary(BaseModel):
     todos: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     critical_data: list[str] = Field(default_factory=list)
+    pinned_facts: list[PinnedFact] = Field(default_factory=list)
 
     # 将结构化摘要渲染成供模型续接和人工审计的 Markdown
     def to_markdown(self) -> str:
@@ -29,6 +36,12 @@ class CompactionSummary(BaseModel):
         sections.append(_render_list("TODO", self.todos))
         sections.append(_render_list("Errors", self.errors))
         sections.append(_render_list("Critical Data", self.critical_data))
+        fact_lines = [
+            f"{fact.id} [events: {','.join(str(seq) for seq in fact.source_event_seqs)}] "
+            f"{fact.text}"
+            for fact in self.pinned_facts
+        ]
+        sections.append(_render_list("Pinned Facts", fact_lines))
         return "\n\n".join(sections)
 
 

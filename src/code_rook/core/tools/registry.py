@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from code_rook.core.authority import RuntimeMode, ToolAction
@@ -36,6 +37,28 @@ class ToolRegistry:
         self._activated_deferred: list[str] = []
         self._model_tool_limit = model_tool_limit
         self._allowed_authority_actions = allowed_authority_actions
+        self._model_tool_allowlist: frozenset[str] | None = None
+        self._model_action_allowlist: dict[str, frozenset[str]] = {}
+
+    # 冻结本次 Turn 对模型可见的工具集合，执行解析沿用同一集合失败关闭
+    def set_model_tool_allowlist(self, allowlist: frozenset[str] | None) -> None:
+        self._model_tool_allowlist = allowlist
+
+    # 冻结 family 工具的模型可见 action 子集并与调用解析共用
+    def set_model_action_allowlist(
+        self,
+        allowlist: dict[str, frozenset[str]],
+    ) -> None:
+        self._model_action_allowlist = dict(allowlist)
+
+    # 判断工具是否通过当前任务画像的模型可见性约束
+    def _model_tool_allowed(self, name: str) -> bool:
+        allowlist = self._model_tool_allowlist
+        if allowlist is None:
+            return True
+        if "__all_except_delegation__" in allowlist:
+            return name not in {"agent", "spawn_agent"}
+        return name in allowlist
 
     # 按不可变 authority ceiling 裁剪 action，目录和直接调用共同 fail closed
     def _authority_filtered_spec(self, spec: ToolSpec) -> ToolSpec | None:
@@ -76,6 +99,12 @@ class ToolRegistry:
     def tool_schemas(self, *, activated: tuple[str, ...] = ()) -> list[dict[str, object]]:
         combined = tuple(dict.fromkeys((*self._activated_deferred, *activated)))
         schemas = self._catalog.tool_schemas(self._runtime_mode, activated=combined)
+        schemas = [
+            schema
+            for schema in schemas
+            if self._model_tool_allowed(str(schema.get("name", "")))
+        ]
+        schemas = [self._filter_schema_actions(schema) for schema in schemas]
         if len(schemas) > self._model_tool_limit:
             raise ToolCatalogError(
                 "model-visible tool limit exceeded: "
@@ -83,11 +112,33 @@ class ToolRegistry:
             )
         return schemas
 
+    # 裁剪 family schema 的 oneOf action 变体，避免隐藏动作仍出现在模型目录
+    def _filter_schema_actions(self, schema: dict[str, object]) -> dict[str, object]:
+        name = str(schema.get("name", ""))
+        allowed = self._model_action_allowlist.get(name)
+        if allowed is None:
+            return schema
+        input_schema = schema.get("input_schema")
+        if not isinstance(input_schema, dict):
+            return schema
+        variants = input_schema.get("oneOf")
+        if isinstance(variants, list):
+            input_schema["oneOf"] = [
+                variant
+                for variant in variants
+                if isinstance(variant, dict)
+                and _schema_action_name(variant) in allowed
+            ]
+        return schema
+
     # 返回模型目录的 canonical JSON 字节并复用 memoized 结果
     def canonical_catalog_json(self, *, activated: tuple[str, ...] = ()) -> bytes:
-        combined = tuple(dict.fromkeys((*self._activated_deferred, *activated)))
-        self.tool_schemas(activated=activated)
-        return self._catalog.canonical_json(self._runtime_mode, activated=combined)
+        return json.dumps(
+            self.tool_schemas(activated=activated),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
     # 返回模型目录允许暴露的工具数量硬上限
     @property
@@ -142,6 +193,17 @@ class ToolRegistry:
         caller: ToolCaller | str = ToolCaller.MODEL,
     ) -> ResolvedToolCall:
         resolved = self._catalog.resolve_call(name, params, caller=caller)
+        if resolved.caller == ToolCaller.MODEL and not self._model_tool_allowed(name):
+            raise ToolCatalogError(f"tool is hidden by the frozen task profile: {name}")
+        allowed_actions = self._model_action_allowlist.get(name)
+        if (
+            resolved.caller == ToolCaller.MODEL
+            and allowed_actions is not None
+            and resolved.action.name not in allowed_actions
+        ):
+            raise ToolCatalogError(
+                f"action is hidden by the frozen task profile: {name}.{resolved.action.name}"
+            )
         if (
             resolved.caller == ToolCaller.MODEL
             and resolved.spec.deferred
@@ -165,3 +227,17 @@ class ToolRegistry:
         self.resolve_call(name, params, caller=caller)
         tool = self._tools[name]
         return tool.resource_claims(params)
+
+
+# 从 family oneOf 变体读取唯一的 action enum 值
+def _schema_action_name(variant: dict[str, object]) -> str:
+    properties = variant.get("properties")
+    if not isinstance(properties, dict):
+        return ""
+    action = properties.get("action")
+    if not isinstance(action, dict):
+        return ""
+    values = action.get("enum")
+    if not isinstance(values, list) or len(values) != 1:
+        return ""
+    return str(values[0])

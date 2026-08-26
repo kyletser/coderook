@@ -47,3 +47,7 @@ uv run python scripts/aggregate_benchmark_reports.py \
 
 每个任务通过 `suites` 声明归属；`nightly` 与 `release` 必须覆盖完整任务集，`quick` 只保留
 能在开发循环中快速暴露回归的代表性任务。
+
+可靠长任务的对照入口、35 USD 共享预算和 12 个合成长会话场景见
+[`docs/guides/RELIABILITY_EXPERIMENTS.md`](../docs/guides/RELIABILITY_EXPERIMENTS.md)。运行
+`scripts/run_reliability_suite.py` 默认只生成计划；只有显式增加 `--execute` 才调用真实模型。

@@ -18,6 +18,7 @@ from code_rook.core.bus.events import (
     StepStartedEvent,
     SubagentFinishedEvent,
     SubagentStartedEvent,
+    TaskProfiledEvent,
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
@@ -204,6 +205,8 @@ def _project_event(
         return [("steer.admitted", event.run_id, step_id, payload)]
     if isinstance(event, ContextCompactedEvent):
         return [("context.compacted", event.run_id, step_id, payload)]
+    if isinstance(event, TaskProfiledEvent):
+        return [("task.profiled", event.run_id, "", payload)]
     if isinstance(event, SubagentStartedEvent):
         return [("worker.started", event.parent_run_id, "", payload)]
     if isinstance(event, SubagentFinishedEvent):

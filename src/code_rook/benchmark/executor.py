@@ -27,6 +27,8 @@ from code_rook.core.llm.pricing import estimate_cost, resolve_pricing_quote
 from code_rook.core.llm.route_registry import RouteRegistry, RouteResolutionError
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.runner import AgentRunner
+from code_rook.core.subagent import BackgroundTaskRegistry, WorkerStatus
+from code_rook.core.worktree import WorktreeBatchApplyItem, WorktreeManager
 
 
 class CodeRookBenchmarkExecutor:
@@ -36,9 +38,11 @@ class CodeRookBenchmarkExecutor:
         config: CodeRookConfig,
         *,
         temperature: float = 0.0,
+        auto_apply_reviewed_workers: bool = False,
     ) -> None:
         self._config = config
         self._temperature = temperature
+        self._auto_apply_reviewed_workers = auto_apply_reviewed_workers
 
     # 在隔离工作区内运行当前 CodeRook Agent，并收集评分需要的最小事件指标
     async def execute(
@@ -119,6 +123,7 @@ class CodeRookBenchmarkExecutor:
             config.llm,
             temperature_override=self._temperature,
         )
+        worker_registry = BackgroundTaskRegistry()
         runner = AgentRunner(
             config,
             bus=bus,
@@ -126,6 +131,7 @@ class CodeRookBenchmarkExecutor:
             permission_manager=permission_manager,
             workspace_root=workspace,
             route_registry=route_registry,
+            subagent_registry=worker_registry,
         )
 
         started = time.monotonic()
@@ -161,16 +167,81 @@ class CodeRookBenchmarkExecutor:
             reason = f"runtime_error:{type(exc).__name__}"
             timed_out = False
 
+        worker_apply_count = 0
+        worker_conflicts = 0
+        unreviewed_workspace_writes = 0
+        if self._auto_apply_reviewed_workers:
+            try:
+                live_tasks = [live_task for live_task, _context in worker_registry.all()]
+                if live_tasks:
+                    await asyncio.wait_for(
+                        asyncio.gather(*live_tasks, return_exceptions=True),
+                        timeout=min(60.0, task.budgets.wall_time_s),
+                    )
+                completed = [
+                    worker
+                    for worker in worker_registry.list_records()
+                    if worker.status == WorkerStatus.COMPLETED
+                    and worker.handoff_status == "pending_review"
+                    and worker.verification_status == "verified"
+                ]
+                manager = WorktreeManager(workspace)
+                if worker_registry.list_records():
+                    unreviewed_workspace_writes = len(
+                        [
+                            path
+                            for path in await manager.workspace_changes()
+                            if path != ".coderook" and not path.startswith(".coderook/")
+                        ]
+                    )
+                batch_items: list[WorktreeBatchApplyItem] = []
+                for worker in completed:
+                    preview = await manager.preview_apply(
+                        worker.worktree,
+                        base_commit=worker.base_commit,
+                    )
+                    worker_registry.review_handoff(
+                        worker.id,
+                        approved=True,
+                        review_digest=preview.state_digest,
+                        changed_files=list(preview.changed_files),
+                        diff_truncated=preview.diff_truncated,
+                        diff_preview=preview.diff,
+                    )
+                    batch_items.append(
+                        WorktreeBatchApplyItem(
+                            name=worker.worktree,
+                            base_commit=worker.base_commit,
+                            expected_digest=preview.state_digest,
+                            reviewed_files=preview.changed_files,
+                        )
+                    )
+                if batch_items:
+                    applied = await manager.apply_many(tuple(batch_items))
+                    digests = dict(applied.item_digests)
+                    for worker in completed:
+                        worker_registry.mark_handoff_applied(
+                            worker.id,
+                            state_digest=digests[worker.worktree],
+                            changed_files=list(
+                                next(
+                                    item.reviewed_files
+                                    for item in batch_items
+                                    if item.name == worker.worktree
+                                )
+                            ),
+                        )
+                    worker_apply_count = len(batch_items)
+            except (TimeoutError, ValueError, RuntimeError):
+                worker_conflicts += 1
+
         input_tokens = sum(event.input_tokens for event in usage_events)
         output_tokens = sum(event.output_tokens for event in usage_events)
         cache_read_tokens = sum(event.cache_read_input_tokens for event in usage_events)
-        cache_write_tokens = sum(
-            event.cache_creation_input_tokens for event in usage_events
-        )
+        cache_write_tokens = sum(event.cache_creation_input_tokens for event in usage_events)
         estimated_cost, pricing_evidence = self._estimate_usage_cost(usage_events)
         process_wall_ms = sum(
-            self._nonnegative_int(record.get("wall_time_ms"))
-            for record in process_usage
+            self._nonnegative_int(record.get("wall_time_ms")) for record in process_usage
         )
         process_cpu_ms = sum(
             self._nonnegative_int(record.get("user_cpu_ms"))
@@ -215,11 +286,14 @@ class CodeRookBenchmarkExecutor:
                 default=0,
             ),
             process_count=sum(
-                self._nonnegative_int(record.get("process_count"))
-                for record in process_usage
+                self._nonnegative_int(record.get("process_count")) for record in process_usage
             ),
             first_edit_correct=first_edit_correct,
             timed_out=timed_out,
+            worker_count=len(worker_registry.list_records()),
+            worker_conflicts=worker_conflicts,
+            worker_apply_count=worker_apply_count,
+            unreviewed_workspace_writes=unreviewed_workspace_writes,
         )
 
     # 将事件中的任意 JSON 数值安全收敛为非负整数

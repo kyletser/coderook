@@ -20,6 +20,7 @@ from code_rook.core.bus.events import (
     RunFinishedEvent,
     RunOutcomeStatus,
     RunStartedEvent,
+    TaskProfiledEvent,
 )
 from code_rook.core.capabilities import (
     CapabilityContribution,
@@ -59,6 +60,7 @@ from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
+from code_rook.core.strategy import TaskProfile, TaskStrategyRouter
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
@@ -99,6 +101,7 @@ def _request_metadata(
     runtime_mode: RuntimeMode,
     preset_id: str = "standard",
     preset_digest: str = "",
+    task_profile: TaskProfile | None = None,
 ) -> dict[str, object]:
     contract = {
         "runtime_mode": runtime_mode.value,
@@ -120,6 +123,10 @@ def _request_metadata(
         "execution_contract_digest": digest,
         "preset_id": preset_id,
         "preset_digest": preset_digest,
+        "task_profile": (
+            task_profile.model_dump(mode="json") if task_profile is not None else {}
+        ),
+        "task_profile_digest": task_profile.digest if task_profile is not None else "",
     }
 
 
@@ -530,6 +537,35 @@ class AgentRunner:
                             self._goal_service,
                             active_goal.id,
                         )
+                task_profile = await TaskStrategyRouter().classify(
+                    goal,
+                    provider=provider if self._provider is None else None,
+                    runtime_mode=runtime_mode,
+                    preset_id=agent_preset.id if agent_preset is not None else "standard",
+                    run_id=run_id,
+                    method=self._config.agent.task_router,
+                    delegation_policy=self._config.agent.delegation_policy,
+                )
+                await bus.publish(
+                    TaskProfiledEvent(
+                        run_id=run_id,
+                        profile=task_profile.model_dump(mode="json"),
+                        profile_digest=task_profile.digest,
+                        ts=_now(),
+                    )
+                )
+                context.runtime_context = (
+                    context.runtime_context.rstrip()
+                    + "\n\n## Frozen Task Strategy\n"
+                    + json.dumps(
+                        task_profile.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\nFollow this frozen strategy. For plan_first, establish an explicit "
+                    "bounded plan before mutation. For delegate, call agent.validate_plan before "
+                    "starting any worker; if validation fails, continue as one agent."
+                )
                 turn_authority_active = False
                 if permission_manager is not None and session_id_str:
                     permission_manager.begin_turn(
@@ -558,6 +594,16 @@ class AgentRunner:
                         runtime_mode=runtime_mode,
                         resolved_route=route_binding,
                         authority_snapshot=turn_authority,
+                    )
+                    registry.set_model_tool_allowlist(
+                        task_profile.model_tool_allowlist()
+                        if self._provider is None
+                        else None
+                    )
+                    registry.set_model_action_allowlist(
+                        task_profile.model_action_allowlist()
+                        if self._provider is None
+                        else {}
                     )
                     tool_scope = CapabilityScope(
                         workspace=self._workspace_capability_scope.workspace,
@@ -605,6 +651,7 @@ class AgentRunner:
                         session_id_str,
                         store=store if session is not None else None,
                         retain_ratio=self._config.compaction.retain_ratio,
+                        strategy=self._config.compaction.strategy,
                     )
                     loop = AgentLoop(
                         provider, registry, bus,
@@ -650,6 +697,7 @@ class AgentRunner:
                             runtime_mode=runtime_mode,
                             preset_id=agent_preset.id if agent_preset is not None else "standard",
                             preset_digest=agent_preset.digest if agent_preset is not None else "",
+                            task_profile=task_profile,
                         ),
                     )
                     if self._interaction_manager is not None:

@@ -140,6 +140,12 @@ endpoint 或 overlay 不能指定任意环境变量名来读取其他用户秘�
 `.coderook/config.toml` 永远不能设置 `provider`、`base_url`、`api_key_env` 或
 `active_route_id`，即使通过显式配置路径指向它也不能绕过限制。
 
+行为配置可选择 `agent.task_router = "hybrid"`、`agent.delegation_policy = "routed"` 和
+`compaction.strategy = "adaptive_evidence"`。生产默认的混合路由只在规则置信度低于 0.75 时调用一次
+结构化分类；显式 Plan/Preset 和权限上限始终优先。`single`、`always_delegate`、`truncate` 等值主要
+用于可复现实验，不会降低现有权限或沙箱门禁。完整证据入口见
+[可靠长任务实验指南](RELIABILITY_EXPERIMENTS.md)。
+
 用户进程中显式设置的 `CODEROOK_*` 环境变量仍是最高优先级。不要在仓库文件中保存真实 key。
 
 ## 3. 一次任务的完整闭环

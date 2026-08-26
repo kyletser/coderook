@@ -12,6 +12,7 @@
 
 - [中文快速开始](zh-CN/README.md)：源码启动、配置模型和第一个任务闭环。
 - [使用说明](guides/USER_GUIDE.md)：安装、模型配置、TUI、CLI、权限和故障排查。
+- [可靠长任务实验](guides/RELIABILITY_EXPERIMENTS.md)：固定路由、预算门禁、对照实验与原始报告约定。
 - [升级、备份与回滚](guides/UPGRADING.md)：升级前检查、数据备份、迁移和回滚。
 - [可运行示例](../examples/README.md)：只读审查、受控修改、MCP、Skill 和 Hook。
 

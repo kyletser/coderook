@@ -10,10 +10,11 @@ import subprocess
 from pathlib import Path
 
 from code_rook.benchmark.executor import CodeRookBenchmarkExecutor
+from code_rook.benchmark.loader import LoadedBenchmarkTask
 from code_rook.benchmark.models import BenchmarkRunConfig
 from code_rook.benchmark.polyglot import load_polyglot_tasks
 from code_rook.benchmark.report import write_json_report, write_markdown_report
-from code_rook.benchmark.runner import BenchmarkRunner
+from code_rook.benchmark.runner import BenchmarkRunner, verify_benchmark_baseline
 from code_rook.core.config import get_config
 from code_rook.core.llm.route_registry import RouteRegistry
 
@@ -34,6 +35,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", action="append", default=[])
     parser.add_argument("--keyword", action="append", default=[])
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--fixed-slice-per-language",
+        type=int,
+        default=3,
+        help="Select this many deterministic baseline-failing tasks per language; 0 disables.",
+    )
+    parser.add_argument("--slice-seed", default="coderook-v1")
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--wall-time", type=float, default=600.0)
     parser.add_argument("--max-cost", type=float)
@@ -44,6 +52,42 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path(".benchmark-results/aider-polyglot"),
     )
     return parser
+
+
+# 按 SHA256 实例排序并仅保留原始基线失败且 verifier 可执行的固定语言切片
+async def _fixed_baseline_failing_slice(
+    tasks: list[LoadedBenchmarkTask],
+    *,
+    per_language: int,
+    seed: str,
+) -> list[LoadedBenchmarkTask]:
+    by_language: dict[str, list[LoadedBenchmarkTask]] = {}
+    for loaded in tasks:
+        by_language.setdefault(loaded.task.language.casefold(), []).append(loaded)
+    selected: list[LoadedBenchmarkTask] = []
+    for language, candidates in sorted(by_language.items()):
+        ordered = sorted(
+            candidates,
+            key=lambda loaded: hashlib.sha256(f"{loaded.task.id}{seed}".encode()).hexdigest(),
+        )
+        accepted: list[LoadedBenchmarkTask] = []
+        for loaded in ordered:
+            results = await verify_benchmark_baseline(loaded)
+            executable = all(
+                result.exit_code is not None and not result.timed_out for result in results
+            )
+            baseline_failed = any(not result.passed for result in results)
+            if executable and baseline_failed:
+                accepted.append(loaded)
+            if len(accepted) == per_language:
+                break
+        if len(accepted) != per_language:
+            raise SystemExit(
+                f"language {language} has only {len(accepted)} executable baseline-failing "
+                f"tasks; required {per_language}"
+            )
+        selected.extend(accepted)
+    return selected
 
 
 # 读取当前 CodeRook commit，确保公开报告能回溯 Agent 代码版本
@@ -120,6 +164,16 @@ async def _run(args: argparse.Namespace, root: Path) -> int:
         wall_time_s=args.wall_time,
         max_cost_usd=args.max_cost,
     )
+    if args.fixed_slice_per_language < 0:
+        raise SystemExit("--fixed-slice-per-language must be non-negative")
+    if args.fixed_slice_per_language:
+        if args.limit is not None:
+            raise SystemExit("--limit cannot be combined with a fixed per-language slice")
+        tasks = await _fixed_baseline_failing_slice(
+            tasks,
+            per_language=args.fixed_slice_per_language,
+            seed=args.slice_seed,
+        )
     output = args.output.resolve()
     config = get_config()
     runner = BenchmarkRunner(

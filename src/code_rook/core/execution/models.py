@@ -51,7 +51,7 @@ class SessionEventEnvelope(BaseModel):
 class RequestSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: int = Field(default=1, ge=1, le=1)
+    schema_version: int = Field(default=2, ge=1, le=2)
     messages: tuple[dict[str, JsonValue], ...]
     system: str
     tool_schemas: tuple[dict[str, JsonValue], ...]
@@ -64,6 +64,8 @@ class RequestSnapshot(BaseModel):
     supports_images: bool = False
     token_budget: int | None = Field(default=None, ge=1)
     cost_budget_usd: float | None = Field(default=None, ge=0)
+    task_profile: dict[str, JsonValue] = Field(default_factory=dict)
+    task_profile_digest: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     # 从实际 Provider 入参和冻结元数据创建不可变请求快照
@@ -78,7 +80,7 @@ class RequestSnapshot(BaseModel):
     ) -> RequestSnapshot:
         raw_metadata = dict(metadata or {})
         payload: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "messages": messages,
             "system": system,
             "tool_schemas": tool_schemas,
@@ -95,15 +97,19 @@ class RequestSnapshot(BaseModel):
             "supports_images": bool(raw_metadata.get("supports_images", False)),
             "token_budget": raw_metadata.get("token_budget"),
             "cost_budget_usd": raw_metadata.get("cost_budget_usd"),
+            "task_profile": raw_metadata.get("task_profile", {}),
+            "task_profile_digest": str(raw_metadata.get("task_profile_digest", "")),
         }
         digest = hashlib.sha256(_canonical_json(payload)).hexdigest()
         return cls.model_validate({**payload, "digest": digest})
 
     # 重新计算快照摘要，供持久化回放验证内容未发生漂移
     def calculated_digest(self) -> str:
-        return hashlib.sha256(
-            _canonical_json(self.model_dump(exclude={"digest"}))
-        ).hexdigest()
+        payload = self.model_dump(exclude={"digest"})
+        if self.schema_version == 1:
+            payload.pop("task_profile", None)
+            payload.pop("task_profile_digest", None)
+        return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 # 将嵌套请求对象编码为确定性的 UTF-8 JSON 字节

@@ -175,6 +175,15 @@ the durable thread stream with a per-session sequence cursor, while global daemo
 separate channel. Details are in the
 [functional architecture](docs/reference/FUNCTIONAL_ARCHITECTURE.md).
 
+Before each Turn, CodeRook freezes a hybrid TaskProfile that controls planning, model-visible
+tools, long-context policy, and whether delegation is permitted. Adaptive compaction refuses to
+replace context if Ledger-backed goals, constraints, pending approvals, or failures lose their
+source-event references. Multi-agent plans are bounded to three Workers, reject dependency cycles
+and overlapping Write Claims, and keep writes in independent worktrees until digest-bound review.
+These mechanisms have reproducible experiment runners, but the repository does not claim quality
+improvements until their raw reports exist. See the
+[reliability experiment guide](docs/guides/RELIABILITY_EXPERIMENTS.md).
+
 ## CLI and development
 
 ```bash

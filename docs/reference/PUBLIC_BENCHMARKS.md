@@ -112,13 +112,21 @@ docker run --rm \
   python scripts/run_polyglot_benchmark.py \
     --dataset /datasets/polyglot \
     --expected-commit <POLYGLOT_COMMIT> \
-    --language python --limit 5 \
+    --fixed-slice-per-language 0 --language python --limit 5 \
     --output /results
 ```
 
 API key 应使用仅供 benchmark 的限额凭据，并在运行后轮换。容器隔离宿主机，但不把模型输出视为可信；
 不要挂载个人主目录、SSH agent、Docker socket 或写权限源码目录。JavaScript/C++ 任务还需要把固定 commit 的
 Aider `benchmark/` 目录只读挂载，并传 `--aider-benchmark-dir`。
+
+正式固定切片不按目录顺序取题：每种语言对 `instance_id + "coderook-v1"` 计算 SHA-256 并排序，
+逐个运行原始 verifier，取前三个“verifier 可执行且未修改基线失败”的任务。`--limit` 不能与固定
+切片同时使用。选择过程本身不调用模型。
+
+可靠长任务的内部消融、五阶段强杀矩阵和统一 35 USD 预算入口见
+[可靠长任务实验指南](../guides/RELIABILITY_EXPERIMENTS.md)。这些报告未实际生成前，README 和简历
+不得引用计划阈值作为已取得成绩。
 
 ## 4. SWE-bench Lite/Verified
 

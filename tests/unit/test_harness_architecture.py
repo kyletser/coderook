@@ -210,6 +210,42 @@ def test_execution_ledger_verifier_detects_request_digest_mismatch(tmp_path: Pat
     ]
 
 
+# 功能：验证新增 TaskProfile 字段后旧版 RequestSnapshot 摘要仍可正确复算
+# 设计：手工按 v1 字段集合计算摘要再解析，锁定历史会话不会因默认字段被误报损坏
+def test_request_snapshot_v1_digest_remains_backward_compatible() -> None:
+    import hashlib
+    import json
+
+    payload = {
+        "schema_version": 1,
+        "messages": [{"role": "user", "content": "legacy"}],
+        "system": "system",
+        "tool_schemas": [],
+        "route_id": "",
+        "model": "",
+        "wire_format": "",
+        "execution_contract_digest": "",
+        "thinking": "",
+        "supports_parallel_tools": False,
+        "supports_images": False,
+        "token_budget": None,
+        "cost_budget_usd": None,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    snapshot = RequestSnapshot.model_validate({**payload, "digest": digest})
+
+    assert snapshot.schema_version == 1
+    assert snapshot.calculated_digest() == digest
+
+
 # 功能：验证最近作用域覆盖全局贡献且批量卸载会执行资源清理
 # 设计：注册同 ID 的 global/session 两层贡献并记录 cleanup，覆盖解析优先级和无残留撤销
 def test_capability_kernel_resolves_nearest_scope_and_disposes_cleanup() -> None:

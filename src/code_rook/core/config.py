@@ -36,6 +36,8 @@ class AgentConfig:
     max_steps: int = _DEFAULT_MAX_STEPS
     # 步数耗尽时的自动续段数（每段追加 max_steps 步）；交互模式另有 ask 续跑
     max_step_continues: int = 0
+    task_router: str = "hybrid"
+    delegation_policy: str = "routed"
 
 
 @dataclass
@@ -81,6 +83,7 @@ class ApiConfig:
 
 @dataclass
 class CompactionConfig:
+    strategy: str = "adaptive_evidence"
     # context_pct 触发自动压缩的阈值（0 表示禁用）
     auto_threshold: float = 0.80
     retain_ratio: float = 0.25  # 压缩后保留的最近原文 token 比例
@@ -267,6 +270,8 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
         unknown_agent: set[str] = set(agent.keys()) - {
             "max_steps",
             "max_step_continues",
+            "task_router",
+            "delegation_policy",
         }
         if unknown_agent:
             raise SystemExit(f"Unknown [agent] keys: {', '.join(sorted(unknown_agent))}")
@@ -282,6 +287,21 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
                     "Config error: agent.max_step_continues must be a non-negative integer"
                 )
             config.agent.max_step_continues = continues
+        if "task_router" in agent:
+            task_router = agent["task_router"]
+            if task_router not in {"rules_only", "llm_only", "hybrid"}:
+                raise SystemExit(
+                    "Config error: agent.task_router must be rules_only, llm_only, or hybrid"
+                )
+            config.agent.task_router = str(task_router)
+        if "delegation_policy" in agent:
+            delegation_policy = agent["delegation_policy"]
+            if delegation_policy not in {"single", "always_delegate", "routed"}:
+                raise SystemExit(
+                    "Config error: agent.delegation_policy must be single, "
+                    "always_delegate, or routed"
+                )
+            config.agent.delegation_policy = str(delegation_policy)
 
     if "llm" in data:
         llm = data["llm"]
@@ -428,6 +448,7 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
         if not isinstance(comp, dict):
             raise SystemExit("Config error: [compaction] must be a table")
         known_compaction = {
+            "strategy",
             "auto_threshold",
             "retain_ratio",
             "tool_result_limit",
@@ -442,6 +463,14 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise SystemExit("Config error: compaction.auto_threshold must be between 0 and 1")
             config.compaction.auto_threshold = float(val)
+        if "strategy" in comp:
+            strategy = comp["strategy"]
+            if strategy not in {"truncate", "structured", "adaptive_evidence"}:
+                raise SystemExit(
+                    "Config error: compaction.strategy must be truncate, structured, "
+                    "or adaptive_evidence"
+                )
+            config.compaction.strategy = str(strategy)
         if "retain_ratio" in comp:
             val = comp["retain_ratio"]
             if not isinstance(val, (int, float)) or not (0.0 < val < 1.0):
@@ -612,6 +641,23 @@ def _apply_env(config: CodeRookConfig, environ: Mapping[str, str]) -> None:
                 f"Config error: CODEROOK_MAX_STEPS must be an integer, got: {max_steps_str!r}"
             )
 
+    task_router = environ.get("CODEROOK_TASK_ROUTER")
+    if task_router is not None:
+        if task_router not in {"rules_only", "llm_only", "hybrid"}:
+            raise SystemExit(
+                "Config error: CODEROOK_TASK_ROUTER must be rules_only, llm_only, or hybrid"
+            )
+        config.agent.task_router = task_router
+
+    delegation_policy = environ.get("CODEROOK_DELEGATION_POLICY")
+    if delegation_policy is not None:
+        if delegation_policy not in {"single", "always_delegate", "routed"}:
+            raise SystemExit(
+                "Config error: CODEROOK_DELEGATION_POLICY must be single, "
+                "always_delegate, or routed"
+            )
+        config.agent.delegation_policy = delegation_policy
+
     default_model = environ.get("CODEROOK_LLM_DEFAULT_MODEL")
     if default_model is not None:
         config.llm.default_model = default_model
@@ -699,6 +745,15 @@ def _apply_env(config: CodeRookConfig, environ: Mapping[str, str]) -> None:
                 "Config error: CODEROOK_COMPACT_THRESHOLD must be a number, "
                 f"got: {compact_threshold!r}"
             )
+
+    compact_strategy = environ.get("CODEROOK_COMPACT_STRATEGY")
+    if compact_strategy is not None:
+        if compact_strategy not in {"truncate", "structured", "adaptive_evidence"}:
+            raise SystemExit(
+                "Config error: CODEROOK_COMPACT_STRATEGY must be truncate, structured, "
+                "or adaptive_evidence"
+            )
+        config.compaction.strategy = compact_strategy
 
     compact_retain_ratio = environ.get("CODEROOK_COMPACT_RETAIN_RATIO")
     if compact_retain_ratio is not None:

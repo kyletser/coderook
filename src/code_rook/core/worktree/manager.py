@@ -68,6 +68,21 @@ class WorktreeApplyResult:
 
 
 @dataclass(frozen=True)
+class WorktreeBatchApplyItem:
+    name: str
+    base_commit: str
+    expected_digest: str
+    reviewed_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorktreeBatchApplyResult:
+    base_commit: str
+    changed_files: tuple[str, ...]
+    item_digests: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class _WorktreeApplySnapshot:
     preview: WorktreeApplyPreview
     patch: bytes
@@ -103,6 +118,10 @@ class WorktreeManager:
     # 读取指定 ref 的完整提交标识，供 Worker 固定可审查的合入基线
     async def resolve_ref(self, ref: str = "HEAD") -> str:
         return (await self._git("rev-parse", "--verify", ref)).strip()
+
+    # 返回主工作区当前 tracked 与 untracked 变更路径用于审查污染检测
+    async def workspace_changes(self) -> tuple[str, ...]:
+        return tuple(await self._status_paths(self._root))
 
     # 从受管 worktree 收集相对固定基线的真实状态、统计和有界 diff
     async def inspect(
@@ -258,6 +277,75 @@ class WorktreeManager:
             base_commit=base_commit,
             changed_files=preview.changed_files,
             state_digest=preview.state_digest,
+        )
+
+    # 将同一基线且文件互斥的多个已审查补丁合成为一次主工作区原子应用
+    async def apply_many(
+        self,
+        items: tuple[WorktreeBatchApplyItem, ...],
+        *,
+        max_diff_chars: int = 200_000,
+    ) -> WorktreeBatchApplyResult:
+        if not items:
+            raise WorktreeError("batch apply requires at least one reviewed worktree")
+        base_commits = {item.base_commit for item in items}
+        if len(base_commits) != 1:
+            raise WorktreeError("batch apply requires one immutable base commit")
+        base_commit = next(iter(base_commits))
+        if (await self.resolve_ref()) != base_commit:
+            raise WorktreeError("workspace HEAD moved since batch workers were created")
+        if await self._workspace_status():
+            raise WorktreeError("workspace must be clean before applying worker handoffs")
+        snapshots: list[_WorktreeApplySnapshot] = []
+        seen_files: set[str] = set()
+        for item in items:
+            snapshot = await self._apply_snapshot(
+                item.name,
+                base_commit=item.base_commit,
+                max_diff_chars=max_diff_chars,
+            )
+            preview = snapshot.preview
+            if not hmac.compare_digest(preview.state_digest, item.expected_digest):
+                raise WorktreeError(f"stale batch review digest: {item.name}")
+            if set(preview.changed_files) != set(item.reviewed_files):
+                raise WorktreeError(f"reviewed files changed for worker: {item.name}")
+            overlap = seen_files & set(preview.changed_files)
+            if overlap:
+                raise WorktreeError(
+                    "batch worker file claims overlap: " + ", ".join(sorted(overlap))
+                )
+            seen_files.update(preview.changed_files)
+            snapshots.append(snapshot)
+        patch = b"\n".join(snapshot.patch for snapshot in snapshots)
+        if len(patch) > max_diff_chars:
+            raise WorktreeError("combined worker patch exceeds batch review limit")
+        with tempfile.TemporaryDirectory(prefix="coderook-worker-batch-apply-") as temp_dir:
+            patch_path = Path(temp_dir) / "handoff.patch"
+            patch_path.write_bytes(patch)
+            validation_index = Path(temp_dir) / "validation.index"
+            env = _git_environment(index_file=validation_index)
+            await self._git_env(env, "read-tree", base_commit)
+            await self._git_env(
+                env,
+                "apply",
+                "--cached",
+                "--3way",
+                "--whitespace=nowarn",
+                str(patch_path),
+            )
+            await self._git("apply", "--check", "--whitespace=nowarn", str(patch_path))
+            await self._git("apply", "--whitespace=nowarn", str(patch_path))
+        applied_files = tuple(await self._status_paths(self._root))
+        if set(applied_files) != seen_files:
+            raise WorktreeApplyStateError(
+                "batch apply postcondition failed: workspace paths differ from reviewed files"
+            )
+        return WorktreeBatchApplyResult(
+            base_commit=base_commit,
+            changed_files=applied_files,
+            item_digests=tuple(
+                (snapshot.preview.name, snapshot.preview.state_digest) for snapshot in snapshots
+            ),
         )
 
     # 构造包含未跟踪文件的完整补丁，并把主仓库与 Worker 状态绑定到同一摘要
@@ -429,9 +517,7 @@ class WorktreeManager:
 
     # 在项目仓库中运行 git 子命令，失败时转换为领域错误
     async def _git(self, *args: str) -> str:
-        return (await self._git_bytes_env(_git_environment(), *args)).decode(
-            errors="replace"
-        )
+        return (await self._git_bytes_env(_git_environment(), *args)).decode(errors="replace")
 
     # 使用指定环境运行 Git 并返回解码后的标准输出
     async def _git_env(self, env: dict[str, str], *args: str) -> str:

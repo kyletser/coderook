@@ -113,6 +113,10 @@ class AgentExecution(BaseModel):
     process_count: int = Field(default=0, ge=0)
     first_edit_correct: bool | None = None
     timed_out: bool = False
+    worker_count: int = Field(default=0, ge=0)
+    worker_conflicts: int = Field(default=0, ge=0)
+    worker_apply_count: int = Field(default=0, ge=0)
+    unreviewed_workspace_writes: int = Field(default=0, ge=0)
 
 
 class FileChange(BaseModel):

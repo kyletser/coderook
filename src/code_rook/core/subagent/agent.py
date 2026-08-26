@@ -7,6 +7,7 @@ import json
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from code_rook.core.subagent.models import WorkerRecord, WorkerStatus
+from code_rook.core.subagent.planning import DelegationPlan
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.store import WorkerStoreError
 from code_rook.core.subagent.tool import SpawnAgentTool, worker_result_payload
@@ -118,6 +119,27 @@ class AgentTool(BaseTool):
         read = frozenset({ToolCapability.READ})
         external = frozenset({ToolCapability.EXTERNAL})
         actions = (
+            ToolActionSpec(
+                name="validate_plan",
+                description=(
+                    "Validate a bounded delegation DAG, budgets, acceptance gates, and "
+                    "non-overlapping write claims before starting workers."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "tasks": {"type": "array", "minItems": 1, "maxItems": 3},
+                        "total_token_budget": {"type": "integer", "minimum": 256},
+                        "max_workers": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "allow_nested_delegation": {"type": "boolean"},
+                    },
+                    "required": ["tasks", "total_token_budget"],
+                },
+                capabilities=read,
+                permission_policy_aliases=("agent_result",),
+                approval_requirement=ApprovalRequirement.NEVER,
+                parallel_policy=ParallelPolicy.SERIAL,
+            ),
             ToolActionSpec(
                 name="start",
                 description="Start a durable background worker after validating its write claim.",
@@ -319,6 +341,20 @@ class AgentTool(BaseTool):
         payload = dict(params)
         payload.pop("action", None)
         try:
+            if action == "validate_plan":
+                plan = DelegationPlan.model_validate(payload)
+                return ToolResult(
+                    json.dumps(
+                        {
+                            "valid": True,
+                            "execution_waves": plan.execution_waves(),
+                            "tasks": [task.model_dump(mode="json") for task in plan.tasks],
+                            "fallback": None,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             if action in {"start", "retry"}:
                 worker_id = payload.get("worker_id")
                 if action == "retry" and (not isinstance(worker_id, str) or not worker_id):

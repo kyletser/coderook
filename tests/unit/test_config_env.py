@@ -347,3 +347,44 @@ def test_runtime_api_nonblank_token_rejects_whitespace(
 
     with pytest.raises(SystemExit, match="must not contain whitespace"):
         get_config()
+
+
+# 功能：验证任务路由、委派和压缩三种实验策略可由显式进程环境选择
+# 设计：同时设置三个非敏感开关并通过统一配置入口读取，覆盖真实 benchmark 启动路径
+def test_reliability_strategy_environment_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEROOK_TASK_ROUTER", "llm_only")
+    monkeypatch.setenv("CODEROOK_DELEGATION_POLICY", "single")
+    monkeypatch.setenv("CODEROOK_COMPACT_STRATEGY", "truncate")
+
+    config = get_config()
+
+    assert config.agent.task_router == "llm_only"
+    assert config.agent.delegation_policy == "single"
+    assert config.compaction.strategy == "truncate"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CODEROOK_TASK_ROUTER", "unsafe"),
+        ("CODEROOK_DELEGATION_POLICY", "unbounded"),
+        ("CODEROOK_COMPACT_STRATEGY", "lossy_magic"),
+    ],
+)
+# 功能：验证未知可靠性策略在 daemon 启动前失败关闭
+# 设计：逐个污染显式环境值并断言配置错误，避免拼写错误静默改变实验组
+def test_reliability_strategy_environment_rejects_unknown_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(SystemExit, match="must be"):
+        get_config()

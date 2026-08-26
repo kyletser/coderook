@@ -23,6 +23,12 @@
 - 50 任务 benchmark、Aider/SWE-bench 适配器、三平台发行与恢复验证脚本。
 - VS Code Runtime API 客户端原型及 Extension Host smoke。
 - 贡献、安全、治理、发布、兼容性和威胁模型文档。
+- 混合 Task Strategy Router，以确定性风险规则和有界结构化分类冻结任务意图、作用域、风险、
+  执行策略与工具可见性，并将结果写入 Ledger、Request Snapshot 和 Turn Receipt。
+- Evidence-Preserving Adaptive Compaction，以来源事件固定目标、约束、失败和未决审批，去重重复读取，
+  在事实覆盖校验失败时拒绝压缩。
+- 受约束 DelegationPlan、Write Claim/DAG 校验和多 Worktree 批量审查应用，无法安全拆分时回退单 Agent。
+- 50 任务路由、12 个冻结长会话、多 Agent 对照和五阶段强杀恢复实验入口，以及进程级真实模型费用硬门禁。
 
 ### Changed
 

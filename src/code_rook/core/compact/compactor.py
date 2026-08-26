@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -7,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from code_rook.core.bus.events import ContextCompactedEvent
-from code_rook.core.compact.models import CompactionQuality, CompactionSummary
+from code_rook.core.compact.models import (
+    CompactionQuality,
+    CompactionSummary,
+    PinnedFact,
+)
 from code_rook.core.compact.protocol import (
     estimate_messages_tokens,
     evaluate_summary_quality,
@@ -40,9 +46,13 @@ Return JSON only with this exact shape:
   "todos": ["ordered unfinished work"],
   "errors": ["unresolved errors or important resolved failure causes"],
   "critical_data": ["IDs, commands, config values, and exact facts needed later"]
+  "pinned_facts": [
+    {"id": "provided fact id", "text": "faithful fact text", "source_event_seqs": [1]}
+  ]
 }
 
 Preserve exact file paths and user constraints. Do not invent completion, files, or errors.
+Copy every provided pinned fact with the same id and source_event_seqs; omission is invalid.
 Omit reasoning and failed attempts unless their cause changes the next action.
 """
 
@@ -69,6 +79,10 @@ class CompactionResult:
     quality: CompactionQuality
     messages: list[dict[str, Any]]
     summary_path: str = ""
+    strategy: str = "structured"
+    pinned_fact_count: int = 0
+    pinned_fact_retained: int = 0
+    deduplicated_reads: int = 0
 
 
 class Compactor:
@@ -81,12 +95,16 @@ class Compactor:
         *,
         store: SessionStore | None = None,
         retain_ratio: float = 0.25,
+        strategy: str = "adaptive_evidence",
     ) -> None:
         self._bus = bus
         self._session_dir = session_dir
         self._session_id = session_id
         self._store = store
         self._retain_ratio = retain_ratio
+        if strategy not in {"truncate", "structured", "adaptive_evidence"}:
+            raise ValueError(f"unknown compaction strategy: {strategy}")
+        self._strategy = strategy
 
     # 增量压缩旧窗口并在质量检查通过后原子替换执行上下文
     async def compact(
@@ -145,6 +163,7 @@ class Compactor:
         *,
         retain_ratio: float | None = None,
         force: bool = False,
+        strategy: str | None = None,
     ) -> CompactionResult | None:
         from code_rook.core.events.bus import EventBus as _Bus
 
@@ -153,6 +172,7 @@ class Compactor:
             logger.warning("compactor: invalid tool protocol: %s", "; ".join(protocol_errors))
             return None
 
+        selected_strategy = strategy or self._strategy
         ratio = self._retain_ratio if retain_ratio is None else retain_ratio
         older: list[dict[str, Any]]
         recent: list[dict[str, Any]]
@@ -165,8 +185,29 @@ class Compactor:
             return None
 
         original_estimate = estimate_messages_tokens(messages)
-        history_text = _messages_to_text(older)
+        pinned_facts = (
+            self._extract_pinned_facts() if selected_strategy == "adaptive_evidence" else []
+        )
+        prepared_older, deduplicated_reads = (
+            _deduplicate_tool_results(older)
+            if selected_strategy == "adaptive_evidence"
+            else (older, 0)
+        )
+        if selected_strategy == "truncate":
+            return self._truncate_result(
+                messages,
+                recent,
+                original_estimate=original_estimate,
+                force=force,
+            )
+        history_text = _messages_to_text(prepared_older)
         prompt = _COMPACT_PROMPT
+        if pinned_facts:
+            prompt += "\n\nPinned facts that must be copied exactly:\n" + json.dumps(
+                [fact.model_dump(mode="json") for fact in pinned_facts],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         if focus.strip():
             prompt += f"\nFocus requested by the user/runtime: {focus.strip()}"
         compress_request: list[dict[str, object]] = [
@@ -191,6 +232,14 @@ class Compactor:
             logger.warning("compactor: LLM returned an invalid structured summary")
             return None
         quality = evaluate_summary_quality(summary, history_text)
+        missing_facts = _missing_pinned_facts(summary, pinned_facts)
+        if missing_facts:
+            quality = CompactionQuality(
+                passed=False,
+                score=0.0,
+                checks={**quality.checks, "pinned_facts": False},
+                missing=[*quality.missing, *missing_facts],
+            )
         if not quality.passed:
             logger.warning(
                 "compactor: quality gate failed score=%.2f missing=%s",
@@ -235,6 +284,105 @@ class Compactor:
             compacted_tokens=compacted_tokens,
             quality=quality,
             messages=output_messages,
+            strategy=selected_strategy,
+            pinned_fact_count=len(pinned_facts),
+            pinned_fact_retained=len(pinned_facts),
+            deduplicated_reads=deduplicated_reads,
+        )
+
+    # 从事实日志提取目标、策略、未决审批、失败工具和修改结果等不可丢失事实
+    def _extract_pinned_facts(self) -> list[PinnedFact]:
+        if self._store is None or not self._session_id:
+            return []
+        events = self._store.read_session_events(self._session_id)
+        resolved_permissions = {
+            str(event.payload.get("tool_use_id", ""))
+            for event in events
+            if event.type == "permission.resolved"
+        }
+        selected: list[PinnedFact] = []
+        latest_input = next(
+            (event for event in reversed(events) if event.type == "input.admitted"),
+            None,
+        )
+        if latest_input is not None:
+            selected.append(
+                PinnedFact(
+                    id="current_goal",
+                    text=_event_fact_text(latest_input.payload),
+                    source_event_seqs=[latest_input.seq],
+                )
+            )
+        latest_profile = next(
+            (event for event in reversed(events) if event.type == "task.profiled"),
+            None,
+        )
+        if latest_profile is not None:
+            selected.append(
+                PinnedFact(
+                    id="task_profile",
+                    text=_event_fact_text(latest_profile.payload),
+                    source_event_seqs=[latest_profile.seq],
+                )
+            )
+        for event in events:
+            tool_use_id = str(event.payload.get("tool_use_id", ""))
+            if event.type == "permission.requested" and tool_use_id not in resolved_permissions:
+                selected.append(
+                    PinnedFact(
+                        id=f"pending_permission_{event.seq}",
+                        text=_event_fact_text(event.payload),
+                        source_event_seqs=[event.seq],
+                    )
+                )
+            elif event.type == "tool.call_failed":
+                selected.append(
+                    PinnedFact(
+                        id=f"failed_tool_{event.seq}",
+                        text=_event_fact_text(event.payload),
+                        source_event_seqs=[event.seq],
+                    )
+                )
+        return selected[-24:]
+
+    # 生成不依赖模型的头尾截断对照结果并保持完整工具调用原子组
+    def _truncate_result(
+        self,
+        messages: list[dict[str, Any]],
+        recent: list[dict[str, Any]],
+        *,
+        original_estimate: int,
+        force: bool,
+    ) -> CompactionResult | None:
+        first_user = next(
+            (message for message in messages if message.get("role") == "user"),
+            None,
+        )
+        output_messages = ([first_user] if first_user is not None else []) + recent
+        valid, _errors = validate_tool_protocol(output_messages)
+        if not valid:
+            return None
+        compacted_tokens = estimate_messages_tokens(output_messages)
+        if not force and compacted_tokens >= original_estimate:
+            return None
+        goal = str((first_user or {}).get("content", "continued task"))[:2_000]
+        summary = CompactionSummary(goal=goal or "continued task")
+        quality = CompactionQuality(
+            passed=True,
+            score=1.0,
+            checks={"tool_protocol": True},
+        )
+        return CompactionResult(
+            summary=summary,
+            summary_text=goal,
+            original_token_estimate=original_estimate,
+            summary_tokens=max(1, len(goal) // 4),
+            retained_tokens=estimate_messages_tokens(recent),
+            retained_messages=len(recent),
+            compacted_tokens=compacted_tokens,
+            quality=quality,
+            messages=output_messages,
+            strategy="truncate",
         )
 
     # 发布包含触发原因、保留窗口和质量分的类型化压缩事件
@@ -256,6 +404,10 @@ class Compactor:
                 quality_score=result.quality.score,
                 trigger=trigger,
                 summary_path=result.summary_path,
+                strategy=result.strategy,
+                pinned_fact_count=result.pinned_fact_count,
+                pinned_fact_retained=result.pinned_fact_retained,
+                deduplicated_reads=result.deduplicated_reads,
                 ts=_now(),
             )
         )
@@ -304,3 +456,55 @@ def _messages_to_text(messages: list[dict[str, Any]]) -> str:
                     )
             parts.append(f"[{role}]\n" + "\n".join(blocks))
     return "\n\n".join(parts)
+
+
+# 将事件载荷稳定压缩为可供摘要模型逐字保留的事实文本
+def _event_fact_text(payload: dict[str, Any]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )[:2_000]
+
+
+# 校验模型摘要完整保留每个固定事实的 ID 和来源事件序号
+def _missing_pinned_facts(
+    summary: CompactionSummary,
+    required: list[PinnedFact],
+) -> list[str]:
+    actual = {fact.id: (fact.text, tuple(fact.source_event_seqs)) for fact in summary.pinned_facts}
+    return [
+        f"pinned_fact:{fact.id}"
+        for fact in required
+        if actual.get(fact.id) != (fact.text, tuple(fact.source_event_seqs))
+    ]
+
+
+# 用内容哈希折叠旧窗口内重复工具结果，完整原文仍保留在事实日志
+def _deduplicate_tool_results(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    copied = json.loads(json.dumps(messages, ensure_ascii=False))
+    seen: set[str] = set()
+    removed = 0
+    for message in reversed(copied):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in reversed(content):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            raw = block.get("content", "")
+            if not isinstance(raw, str) or len(raw) < 128:
+                continue
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            if digest in seen:
+                block["content"] = (
+                    "[duplicate tool result omitted; identical later result retained; "
+                    f"sha256={digest}]"
+                )
+                removed += 1
+            else:
+                seen.add(digest)
+    return copied, removed
