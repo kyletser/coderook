@@ -307,8 +307,18 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     }
   };
 
-  const sessionAction = async (action: "fork" | "delete" | "export") => {
+  const sessionAction = async (action: "rename" | "fork" | "delete" | "export") => {
     if (!selectedId) return;
+    if (action === "rename") {
+      const title = prompt("输入新的会话名称", selectedThread?.title || "");
+      if (!title?.trim()) return;
+      const updated = await request<ThreadRecord>(`/v1/threads/${selectedId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: title.trim() }),
+      });
+      setThreads((current) => current.map((thread) => thread.id === updated.id ? updated : thread));
+      return;
+    }
     if (action === "fork") {
       const forked = await request<ThreadRecord>(`/v1/threads/${selectedId}/fork`, {
         method: "POST",
@@ -380,6 +390,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           <div><strong>{selectedThread?.title || "欢迎使用 CodeRook"}</strong><small title={workspace}>{workspace.split(/[\\/]/).pop()}</small></div>
           <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabels[phase] || "正在工作" : "就绪"}</div>
           <div className="session-menu">
+            <button disabled={!selectedId} onClick={() => void sessionAction("rename")}>重命名</button>
             <button disabled={!selectedId} onClick={() => void sessionAction("fork")}>Fork</button>
             <button disabled={!selectedId} onClick={() => void sessionAction("export")}>导出</button>
             <button disabled={!selectedId} onClick={() => void sessionAction("delete")}>删除</button>
@@ -506,10 +517,10 @@ function EventCard({
           </div>
         )}
         {isPlan && event.turn_id && (
-          <div className="card-actions">
-            <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, "计划已批准")}>批准计划</button>
-            <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, "计划已取消")}>取消</button>
-          </div>
+          <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder="可选：说明希望怎样修改计划" /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, "已要求修改计划")}>要求修改</button></div><div className="card-actions">
+              <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, "计划已批准")}>批准计划</button>
+              <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, "计划已取消")}>取消</button>
+            </div></>
         )}
         {isQuestion && questionId && (
           <div className="answer-row">
@@ -640,7 +651,18 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
     catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSaving(false); }
   };
-  return <div className="panel-content"><div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? "模型已就绪" : "需要配置模型"}</b><p>{catalog?.readiness.reason}</p></div><form className="provider-form" onSubmit={(event) => void save(event)}><label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? " · 本地" : ""}</option>)}</select></label><label>模型<input value={model} onChange={(event) => setModel(event.target.value)} list="provider-models" /></label><datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>{preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只发送到本地 Core，不写入浏览器" /></label>}<div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div><button className="primary" disabled={!model || saving}>{saving ? "正在验证…" : "Doctor 验证并启用"}</button></form><h3>已配置路由</h3>{catalog?.routes.map((route) => <div className="route-row" key={textValue(route.id)}><div><b>{textValue(route.id)}</b><small>{textValue(route.model)}</small></div><span>{catalog.active_route_id === route.id ? "当前" : textValue(route.credential_source)}</span></div>)}</div>;
+  const routeAction = async (routeId: string, action: "activate" | "delete") => {
+    try {
+      if (action === "delete") {
+        if (!confirm(`删除路由 ${routeId} 及其受管凭据？`)) return;
+        await request(`/v1/providers/${encodeURIComponent(routeId)}`, { method: "DELETE", body: JSON.stringify({ confirmed: true, delete_credential: true }) });
+      } else {
+        await request(`/v1/providers/${encodeURIComponent(routeId)}/activate`, { method: "POST", body: "{}" });
+      }
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  return <div className="panel-content"><div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? "模型已就绪" : "需要配置模型"}</b><p>{catalog?.readiness.reason}</p></div><form className="provider-form" onSubmit={(event) => void save(event)}><label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? " · 本地" : ""}</option>)}</select></label><label>模型<input value={model} onChange={(event) => setModel(event.target.value)} list="provider-models" /></label><datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>{preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只发送到本地 Core，不写入浏览器" /></label>}<div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div><button className="primary" disabled={!model || saving}>{saving ? "正在验证…" : "Doctor 验证并启用"}</button></form><h3>已配置路由</h3>{catalog?.routes.map((route) => { const routeId = textValue(route.id); const active = catalog.active_route_id === route.id; return <div className="route-row" key={routeId}><div><b>{routeId}</b><small>{textValue(route.model)}</small></div><div className="route-actions"><span>{active ? "当前" : textValue(route.credential_source)}</span>{!active && <button onClick={() => void routeAction(routeId, "activate")}>启用</button>}<button onClick={() => void routeAction(routeId, "delete")}>删除</button></div></div>; })}</div>;
 }
 
 function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
@@ -648,6 +670,7 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const [data, setData] = useState<Record<string, unknown>>({});
   const [objective, setObjective] = useState("");
   const [memoryBody, setMemoryBody] = useState("");
+  const [skillSource, setSkillSource] = useState("");
   const endpoint = tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
   const load = useCallback(() => {
     if ((tab === "goals" || tab === "workers") && !threadId) { setData({}); return Promise.resolve(); }
@@ -663,12 +686,89 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const skills = (data.skills || []) as Array<Record<string, unknown>>;
   const servers = (data.servers || []) as Array<Record<string, unknown>>;
   const memories = (data.memories || []) as Array<Record<string, unknown>>;
+  const memorySettings = (data.settings || {}) as Record<string, unknown>;
+  const workerFollowup = async (workerId: string) => {
+    const message = prompt("向 Worker 发送后续指令");
+    if (!message?.trim()) return;
+    await mutate(`/v1/workers/${encodeURIComponent(workerId)}/followup`, {
+      session_id: threadId,
+      message: message.trim(),
+    });
+  };
+  const workerReviewApply = async (workerId: string) => {
+    try {
+      const preview = await request<Record<string, unknown>>(`/v1/workers/${encodeURIComponent(workerId)}/review`, {
+        method: "POST",
+        body: JSON.stringify({ session_id: threadId, approved: true, confirmed: false }),
+      });
+      const files = (preview.changed_files || []) as string[];
+      const digest = textValue(preview.state_digest);
+      const summary = files.length ? files.join("\n") : "没有可应用的文件";
+      if (!digest || !confirm(`审查 Worker 变更：\n\n${summary}\n\n确认审查通过？`)) return;
+      await request(`/v1/workers/${encodeURIComponent(workerId)}/review`, {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: threadId,
+          approved: true,
+          confirmed: true,
+          expected_digest: digest,
+        }),
+      });
+      if (!confirm("审查已通过。是否将这批变更应用到主工作区？")) { await load(); return; }
+      await request(`/v1/workers/${encodeURIComponent(workerId)}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ session_id: threadId, expected_digest: digest, confirmed: true }),
+      });
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const installSkill = async (event: FormEvent) => {
+    event.preventDefault();
+    const source = skillSource.trim();
+    if (!source) return;
+    try {
+      const previewResult = await request<Record<string, unknown>>("/v1/skills/install", {
+        method: "POST",
+        body: JSON.stringify({ source, scope: "project", trust: "untrusted", confirmed: false }),
+      });
+      const preview = (previewResult.preview || {}) as Record<string, unknown>;
+      const files = ((preview.files || []) as string[]).join("\n");
+      if (!previewResult.confirmation_required || !confirm(`安装 Skill：${textValue(preview.name)}\nDigest：${textValue(preview.digest)}\n\n${files}\n\n确认安装到当前项目？`)) return;
+      await request("/v1/skills/install", {
+        method: "POST",
+        body: JSON.stringify({ source, scope: "project", trust: "untrusted", confirmed: true, overwrite: Boolean(preview.overwrite) }),
+      });
+      setSkillSource("");
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const editMemory = async (memory: Record<string, unknown>) => {
+    const body = prompt("编辑记忆内容", textValue(memory.body));
+    if (!body?.trim() || body.trim() === textValue(memory.body).trim()) return;
+    try {
+      await request(`/v1/memories/${encodeURIComponent(textValue(memory.id))}`, {
+        method: "PATCH",
+        body: JSON.stringify({ body: body.trim() }),
+      });
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const toggleMemoryAuto = async () => {
+    const autoSave = textValue(memorySettings.auto_save) === "off" ? "prompt" : "off";
+    try {
+      await request("/v1/memory/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ auto_save: autoSave }),
+      });
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
   return <div className="panel-content"><div className="advanced-tabs">{(["goals", "workers", "skills", "mcp", "memory"] as const).map((name) => <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>{name}</button>)}</div>
     {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => { event.preventDefault(); void mutate("/v1/goals", { session_id: threadId, objective, start: false }); setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{textValue(goal.status)}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{goal.status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>恢复</button>}<button className="danger" onClick={() => void mutate(`/v1/goals/${goal.id}/clear`, {})}>取消</button></div></section>)}</div>}
-    {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => <section key={textValue(worker.worker_id || worker.id)}><div><b>{textValue(worker.description || worker.worker_id || worker.id)}</b><span className="stable">{textValue(worker.status)}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p>{["running", "waiting"].includes(textValue(worker.status)) && <button onClick={() => void mutate(`/v1/workers/${worker.worker_id || worker.id}/cancel`, { session_id: threadId })}>取消 Worker</button>}</section>)}</div>}
-    {tab === "skills" && <div className="advanced-list">{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">暂无 Skill。安装必须先预览文件与 digest，再明确确认。</p>}</div>}
+    {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{status}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>跟进</button><button onClick={() => void mutate(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, { session_id: threadId })}>取消 Worker</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>审查并应用</button>}</div></section>; })}</div>}
+    {tab === "skills" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => void installSkill(event)}><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder="工作区内 Skill 文件或目录" /><button disabled={!skillSource.trim()}>预览安装</button></form>{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">暂无 Skill。安装必须先预览文件与 digest，再明确确认。</p>}</div>}
     {tab === "mcp" && <div className="advanced-list">{servers.map((server) => <section key={textValue(server.name)}><div><b>{textValue(server.name)}</b><span className={server.status === "connected" ? "stable" : "labs"}>{textValue(server.status)}</span></div><p>{textValue(server.transport)} · {textValue(server.tool_count)} tools</p>{server.error ? <small>{textValue(server.error)}</small> : null}</section>)}{!servers.length && <p className="empty">没有配置 MCP Tool Server。</p>}</div>}
-    {tab === "memory" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => { event.preventDefault(); void mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId }); setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><button className="danger" onClick={async () => { if (!confirm("删除这条记忆？")) return; try { await request(`/v1/memories/${memory.id}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }}>删除</button></section>)}</div>}
+    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={(event) => { event.preventDefault(); void mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId }); setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={async () => { if (!confirm("删除这条记忆？")) return; try { await request(`/v1/memories/${memory.id}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }}>删除</button></div></section>)}</div>}
     <div className="labs-note"><b>Labs 已隐藏</b><p>Fleet、Workflow、ACP、Hooks 和 Tool Program 不进入默认 Web 导航。</p></div>
   </div>;
 }

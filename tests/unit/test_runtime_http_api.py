@@ -267,6 +267,46 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
         await server.stop()
 
 
+# 功能：验证 Web 记忆编辑路由把路径 ID 与正文交给受限控制分发器
+# 设计：通过真实 HTTP PATCH 捕获 dispatcher 参数，固定新增管理闭环而不依赖用户记忆目录
+async def test_http_memory_edit_routes_through_control_dispatcher(tmp_path: Path) -> None:
+    service = _FakeRuntimeApi(tmp_path)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    # 记录 Web 控制命令并返回最小可序列化结果
+    async def dispatch(command: str, payload: dict[str, Any]) -> dict[str, object]:
+        calls.append((command, payload))
+        return {"memory": {"id": payload["memory_id"], "body": payload["body"]}}
+
+    server = HttpApiServer(
+        "127.0.0.1",
+        0,
+        "test-token",
+        service,  # type: ignore[arg-type]
+        control_dispatcher=dispatch,
+    )
+    host, port = await server.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://{host}:{port}",
+            timeout=2.0,
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            response = await client.patch(
+                "/v1/memories/memory-1",
+                json={"body": "Run focused tests."},
+            )
+        assert response.status_code == 200
+        assert calls == [
+            (
+                "memory.edit",
+                {"body": "Run focused tests.", "memory_id": "memory-1"},
+            )
+        ]
+    finally:
+        await server.stop()
+
+
 # 功能：验证配置 token 时所有 HTTP 路由拒绝缺失或错误 bearer 并接受正确凭据
 # 设计：对同一 capabilities 路由发送三种 header，排除业务路由差异对鉴权结果的影响
 async def test_http_bearer_auth_is_applied_before_routing(tmp_path: Path) -> None:

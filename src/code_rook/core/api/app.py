@@ -575,6 +575,13 @@ class HttpApiServer:
                 ),
             )
         memory_action = re.fullmatch(r"/v1/memories/([^/]+)", path)
+        if request.method == "PATCH" and memory_action:
+            payload = _json_object(request.body)
+            payload["memory_id"] = memory_action.group(1)
+            return HTTPStatus.OK, await self._dispatch_control(
+                "memory.edit",
+                payload,
+            )
         if request.method == "DELETE" and memory_action:
             body = _json_object(request.body)
             if body.get("confirmed") is not True:

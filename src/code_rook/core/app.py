@@ -600,6 +600,7 @@ class CoreApp:
             "mcp.list": self._mcp_list_handler,
             "memory.list": self._memory_list_handler,
             "memory.add": self._memory_add_handler,
+            "memory.edit": self._memory_edit_handler,
             "memory.delete": self._memory_delete_handler,
             "memory.settings.get": self._memory_settings_get_handler,
             "memory.settings.set": self._memory_settings_set_handler,
