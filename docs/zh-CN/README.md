@@ -36,7 +36,8 @@ uv run coderook provider test local
 ## 完成第一个任务
 
 1. 用 `/plan <任务>` 做只读规划，或直接在 `act` 模式描述任务。
-2. 核对权限卡中的命令、路径与 Windows “NO OS SANDBOX” 提示。
+2. 核对权限卡中的命令、路径与 Windows `PARTIAL WINDOWS SANDBOX`（或探针失败后的
+   `NO OS SANDBOX`）提示。
 3. 在结果卡查看真实执行状态、模型、改动与验证证据。
 4. 用 `/changes` 查看文件和 hunk；需要时使用 `/review` 或 `/rewind`。
 5. `/stage <path...> --yes` 和 `/commit <主题> --yes` 只操作本地仓库，v1 不自动 push。

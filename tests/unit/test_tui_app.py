@@ -2273,6 +2273,29 @@ async def test_trust_and_sandbox_commands_are_independent() -> None:
     assert "not an OS sandbox" in output
 
 
+# 功能：验证 Windows ACL 能力在 TUI 中明确显示 PARTIAL 和读网边界
+# 设计：直接渲染 capability 卡片并检查用户文案，防止 available 布尔值把部分隔离误标为 ENFORCED
+def test_windows_acl_sandbox_status_is_rendered_as_partial() -> None:
+    appended: list[Widget] = []
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "zh-CN"
+    app._sandbox = {
+        "available": True,
+        "kind": "windows_acl",
+        "reason": "restricted-token probe succeeded",
+    }
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._show_sandbox_status()
+
+    output = "\n".join(
+        str(widget.content) for widget in appended if isinstance(widget, Static)
+    )
+    assert "PARTIAL" in output
+    assert "windows_acl" in output
+    assert "读取和网络不隔离" in output
+
+
 # 功能：验证首次连接在无模型与无 OS 沙箱时显示非阻塞的可执行空状态
 # 设计：截获 transcript 输出并重复调用启动状态，断言两类提示各出现一次且不会强制打开配置流程
 def test_startup_state_explains_no_model_and_degraded_sandbox_once(
@@ -3015,3 +3038,39 @@ async def test_commit_changes_rejects_unshown_all_scope_review() -> None:
     rendered = "\n".join(str(getattr(widget, "content", "")) for widget in appended)
     assert "/diff" in rendered
     assert "/stage" in rendered
+
+
+# 功能：验证 v1.1 顶栏只保留仓库、模型和权威运行阶段而不泄露内部 ID
+# 设计：直接设置阶段投影并以 80 列渲染，检查关键状态可见且 session/route 标签被移除
+def test_focused_header_uses_authoritative_run_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    app = CodeRookTuiApp("127.0.0.1", 9999, model="deepseek-chat")
+    app._session_id = "session-secret"
+    app._route = "route-internal"
+    app._run_phase = "verifying"
+    app._run_phase_current = 6
+    app._run_phase_total = 8
+
+    rendered = app._render_responsive_header("running", 80)
+
+    assert "deepseek-chat" in rendered
+    assert "6/8" in rendered
+    assert "session-secret" not in rendered
+    assert "route-internal" not in rendered
+
+
+# 功能：验证 @文件 仅注入工作区相对引用和有界读取约束而不附加文件全文
+# 设计：创建含敏感正文的真实文件，解析后检查路径存在、正文缺失且越界引用被忽略
+def test_file_reference_is_bounded_path_not_full_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "auth.py").write_text("SECRET_FULL_FILE_CONTENT", encoding="utf-8")
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+
+    augmented = app._augment_file_references("review @auth.py", "review @auth.py")
+
+    assert '"auth.py"' in augmented
+    assert "SECRET_FULL_FILE_CONTENT" not in augmented
+    assert "do not inject entire files" in augmented

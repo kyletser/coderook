@@ -144,3 +144,17 @@ def test_read_profile_filters_family_actions_fail_closed() -> None:
     registry.resolve_call("File", {"action": "read"})
     with pytest.raises(ToolCatalogError, match="hidden"):
         registry.resolve_call("File", {"action": "write"})
+
+
+# 功能：验证可写任务在 Plan Ticket 签发前仍只暴露 File/Git 的只读 action
+# 设计：使用明确跨文件修改画像应用 planning allowlist，直接尝试 File.write 证明 Core 门禁独立于风险字段
+def test_plan_gate_filters_mutating_family_actions() -> None:
+    profile = TaskStrategyRouter().classify_rules("修改整个仓库的多个模块")
+    registry = ToolRegistry()
+    registry.register(_FileFamily())
+    registry.set_model_tool_allowlist(profile.planning_tool_allowlist())
+    registry.set_model_action_allowlist(profile.planning_action_allowlist())
+
+    registry.resolve_call("File", {"action": "read"})
+    with pytest.raises(ToolCatalogError, match="hidden"):
+        registry.resolve_call("File", {"action": "write"})

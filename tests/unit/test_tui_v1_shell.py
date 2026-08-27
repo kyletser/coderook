@@ -139,8 +139,8 @@ def test_command_palette_categories_priority_and_labs_boundary() -> None:
 
 
 @pytest.mark.parametrize("width", [80, 100, 140])
-# 功能：验证顶栏在三档列宽主动选择字段且最终 Rich 文本不超过终端宽度
-# 设计：固定短仓库、会话、route 与 Goal，分别断言 80/100/140 档字段包含关系而非依赖截断
+# 功能：验证专注顶栏在三档列宽只保留仓库、模型和权威运行阶段
+# 设计：固定内部会话与 route 后检查它们不泄露，产品状态移入独立底栏且 Rich 文本不溢出
 def test_responsive_header_field_contract(width: int) -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999, locale="en-US")
     app._session_id = "session-1234"
@@ -153,18 +153,13 @@ def test_responsive_header_field_contract(width: int) -> None:
     plain = Text.from_markup(markup)
 
     assert plain.cell_len <= width
-    assert "repo:" in plain.plain
-    assert "ses:" in plain.plain or "session:" in plain.plain
-    assert "model:" in plain.plain or "route:" in plain.plain
-    assert "act" in plain.plain and "ready" in plain.plain and "ctx:" in plain.plain
-    if width == 80:
-        assert "perm:" not in plain.plain and "trust:" not in plain.plain
-    elif width == 100:
-        assert "perm:" in plain.plain and "$0.0123" in plain.plain
-        assert "trust:" not in plain.plain
-    else:
-        assert "route:deepseek/deepseek-coder" in plain.plain
-        assert "trust:" in plain.plain and "goal:running" in plain.plain
+    assert "coderook" in plain.plain.casefold()
+    assert "deepseek" in plain.plain
+    assert "ready" in plain.plain
+    assert "session-1234" not in plain.plain
+    assert "route:" not in plain.plain
+    assert "trust:" not in plain.plain
+    assert "goal:" not in plain.plain
 
 
 # 功能：验证附件条持久显示序号、尺寸、大小和短 hash，并支持 remove/clear
@@ -224,7 +219,7 @@ async def test_language_switch_refreshes_existing_product_shell(
         prompt = app.query_one("#prompt", ChatTextArea)
         palette = app.query_one(CommandPalette)
         strip = Text.from_markup(str(app.query_one("#attachment-strip").render())).plain
-        assert "repo:" in header and "ready" in header
+        assert "CodeRook" in header and "ready" in header
         assert prompt.border_title == "Describe a task or press Ctrl+P"
         assert "Command Palette" in str(palette.render())
         assert "Pending attachments" in strip

@@ -877,6 +877,49 @@ async def test_windows_unisolated_shell_always_requires_explicit_approval() -> N
     assert "NO OS SANDBOX" in emitted[0]["param_preview"]
 
 
+# 功能：验证 Windows partial 沙箱会包裹命令但仍拒绝 Full Access 和 always 静默批准
+# 设计：注入真实 windows_acl 能力并完成单次审批，同时检查计划强制力和风险提示保持一致
+async def test_windows_partial_shell_is_sandboxed_and_explicitly_approved() -> None:
+    mgr = _make_manager()
+    mgr._persistent_always["bash"] = "allow"
+    mgr.set_authority_snapshot(
+        "s-windows-partial",
+        AuthoritySnapshot(
+            profile=AuthorityProfile.FULL_ACCESS,
+            sandbox=SandboxCapability(
+                available=True,
+                kind="windows_acl",
+                reason="restricted-token probe succeeded",
+            ),
+        ),
+    )
+    plan = mgr.shell_sandbox_plan("s-windows-partial", ".")
+    emitted, emitter = await _collect_emitted()
+
+    # 在 permission Future 建立后提交一次性批准，排除持久缓存路径
+    async def _approve() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("t-windows-partial", "allow_once")
+
+    response = asyncio.create_task(_approve())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="t-windows-partial",
+        tool_name="bash",
+        params={"command": "echo explicit"},
+        session_id="s-windows-partial",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+    await response
+
+    assert plan is not None and plan.enforcement == "partial"
+    assert allowed is True and decision == "allow_once"
+    assert emitted[0]["params"]["_safety_notice"].startswith(
+        "Windows partial sandbox"
+    )
+    assert "PARTIAL WINDOWS SANDBOX" in emitted[0]["param_preview"]
+
+
 # 功能：验证 active turn 权限快照不会被同会话或全局默认设置在执行中扩大
 # 设计：冻结 Ask 快照后把后续会话和默认值改成 Full Access，断言有效快照仍为 Ask
 def test_active_turn_authority_is_immutable_until_turn_ends() -> None:
@@ -987,6 +1030,19 @@ def test_future_policy_schema_blocks_unsupported_downgrade(
 # 设计：这是"沙箱失败→回落审批"的伴随判定：无后端就不该 wrapper，闭环交由 ASK 兜底
 def test_shell_sandbox_plan_none_without_autoreview_or_backend() -> None:
     mgr = _make_manager()
+    plain = mgr.get_authority_snapshot("splain")
+    mgr.set_authority_snapshot(
+        "splain",
+        plain.model_copy(
+            update={
+                "sandbox": SandboxCapability(
+                    available=False,
+                    kind="none",
+                    reason="test fixes the unavailable-backend branch",
+                )
+            }
+        ),
+    )
     assert mgr.shell_sandbox_plan("splain", "/ws") is None
     current = mgr.get_authority_snapshot("s-auto")
     mgr.set_authority_snapshot(

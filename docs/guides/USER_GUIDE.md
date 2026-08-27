@@ -140,9 +140,13 @@ endpoint 或 overlay 不能指定任意环境变量名来读取其他用户秘�
 `.coderook/config.toml` 永远不能设置 `provider`、`base_url`、`api_key_env` 或
 `active_route_id`，即使通过显式配置路径指向它也不能绕过限制。
 
-行为配置可选择 `agent.task_router = "hybrid"`、`agent.delegation_policy = "routed"` 和
-`compaction.strategy = "adaptive_evidence"`。生产默认的混合路由只在规则置信度低于 0.75 时调用一次
-结构化分类；显式 Plan/Preset 和权限上限始终优先。`single`、`always_delegate`、`truncate` 等值主要
+行为配置可选择 `agent.task_router = "rules_only"`、`agent.delegation_policy = "routed"` 和
+`compaction.strategy = "adaptive_evidence"`。默认路由不额外调用分类模型：确定性规则先识别安全边界，
+低置信度任务初始只开放一次结构化提问；用户回答后 Core 用“原请求 + 回答”重新生成画像，但仍保留
+`plan_first` 安全门禁。复杂或含糊修改只开放只读探索和 `update_plan`；计划票据签发后 Core 展示
+计划审阅卡，当前 Turn 仍保持只读。用户批准后 TUI 才创建新的 Act Turn，因此未批准计划不能在原
+Turn 内获得修改工具。
+`hybrid`、`llm_only`、`single`、`always_delegate`、`truncate` 等值主要
 用于可复现实验，不会降低现有权限或沙箱门禁。完整证据入口见
 [可靠长任务实验指南](RELIABILITY_EXPERIMENTS.md)。
 
@@ -229,6 +233,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | `Ctrl+C` | 有选择时复制；否则按提示再次取消当前任务 |
 | `Ctrl+Shift+C` | 复制选择或上一条回复 |
 | `Ctrl+P` | 打开分类命令面板；常用项置顶，Labs 默认隐藏 |
+| `Ctrl+O` | 展开或收起推理、工具步骤与完整输出 |
 | `Ctrl+Q` | 退出 TUI；会话和 Core 状态不会被删除 |
 
 常用命令：
@@ -243,7 +248,14 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
 | Labs/高级 | `/preset tool-program`、`/workflow`、`/hooks` |
 
+`/theme auto|dark|light|high-contrast` 可即时切换主题；高对比度会强化固定顶栏与状态栏，主题切换不
+改变当前会话、权限或运行状态。
+
 输入历史按工作区保存，可关闭或清空。密钥样式的输入不会写入历史；这是模式脱敏，不是完备的 DLP。
+普通输入中的 `@相对路径` 会建立最多 8 个有界文件引用；只把路径和按需读取约束交给 Agent，不自动把
+整份文件塞入上下文。以 `!` 开头的输入表示用户明确要求执行其后的原始 Shell 命令，但命令仍经过同一
+权限、Sandbox、审计和 Artifact 管线。Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
+`排队:` 前缀可把消息放到当前会话队列，并在本轮进入等待输入后自动发送。
 `/export [md|json]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
 `/export [md|json] --force --yes` 才允许覆盖。该命令不接受自定义输出路径。
 粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息一次性交付；composer
@@ -263,6 +275,12 @@ TUI 先创建或恢复 session，再订阅该 thread 的 durable 事件流。每
 Goal 从独立的权威 Goal 投影恢复，session-scoped composer 从本地 workspace/session 快照恢复。已被后续
 durable 进度解决的旧控件不会复活。若视图准备或事件交付在激活中途失败，该 session 会进入
 `requires_replay` fence；更高 `seq` 不得越过缺口确认，重试从最后成功交付的游标补交。
+
+若恢复的是中断会话，TUI 会显示 `recovery.available` 卡片。daemon 冷启动不再为了配平模型消息而删除
+正常强杀留下的 Tool Call；完整事实保留在 Ledger，`derive_messages()` 只对当前模型投影安全裁剪。只读
+工具中断标记为可重跑；修改或命令状态不确定时不会自动重复执行，而是要求先查看变更、恢复
+Checkpoint、放弃本轮或导出诊断。每次工具调用的 `operation_id` 与原始 tool use ID 一致，已确认完成的
+操作不会由恢复流程重放。只有 JSON、消息分组或 checksum 链真正损坏时才归档并修复尾部。
 
 这套设计用于避免 session 间的 token、审批、busy、取消和结果状态污染；发布级 100 次双 session
 并发/断线矩阵尚未形成外部证据，因此不要把架构声明当成该门禁已通过。
@@ -285,8 +303,10 @@ durable 进度解决的旧控件不会复活。若视图准备或事件交付在
 轮次不能越过它。
 
 Linux bubblewrap 和 macOS Seatbelt 只有在真实执行探针成功后才视为可用。强制配置只暴露工作区、
-必要系统运行时和临时目录，Home 默认不可见。Windows 当前没有 OS 文件/网络沙箱：Shell/Run 每次
-都要明确审批并显示 “NO OS SANDBOX”；Job Object 只负责进程树回收，不等同于隔离。
+必要系统运行时和临时目录，Home 默认不可见。Windows 使用 Restricted Token、工作区 capability SID、
+私有临时目录 ACL 和 Job Object：工作区外写入由 OS 拒绝，但读取与网络不隔离，因此始终显示
+`PARTIAL WINDOWS SANDBOX`，Shell/Run 每次仍需明确审批。探针、ACL 或进程创建任一步失败都会回退
+`windows_none` 并失败关闭，不会静默无约束执行。
 
 Shell 环境采用白名单，并过滤常见 API key、云凭据、SSH 与 Git token 环境变量。按域名的 Shell
 出站白名单无法强制时 fail closed。
@@ -510,10 +530,10 @@ uv run coderook provider test
 `credential_missing` 表示本机找不到 route 引用的凭据；`endpoint_unreachable` 只用于本地端点探测失败；
 `configuration_complete` 表示本地前置条件齐全，不等于刚刚完成了在线 Doctor。
 
-### 为什么 Windows 每次都询问 Shell
+### 为什么 Windows 有沙箱仍每次询问 Shell
 
-这是预期安全边界。Windows 没有已接受的强制 sandbox 后端，`auto-review` 和 `full-access` 都不能让
-Shell/Run 静默通过。
+这是预期安全边界。Windows 后端只对写入位置提供 `partial` 强制力，不能阻止读取用户可读文件或联网；
+`auto-review` 和 `full-access` 因此都不能让 Shell/Run 静默通过。权限卡会同时展示命令和这一限制。
 
 ### 为什么结果卡显示未验证
 

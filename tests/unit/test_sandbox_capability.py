@@ -3,14 +3,37 @@ from __future__ import annotations
 from code_rook.core.authority import detect_sandbox_capability
 
 
-# 功能：验证 Windows 明确报告没有可用 OS sandbox，而不是把审批机制冒充隔离
-# 设计：注入 win32 平台避免依赖 CI 主机，精确检查 available、kind 和用户可见原因
-def test_windows_reports_no_os_sandbox() -> None:
-    capability = detect_sandbox_capability(platform="win32")
+# 功能：验证 Windows 真实 ACL runner 探针成功后只报告 partial 后端
+# 设计：注入成功探针隔离宿主差异，同时检查 argv 确实调用受限令牌 runner 而非文件存在判断
+def test_windows_reports_partial_acl_sandbox_after_probe() -> None:
+    seen: list[list[str]] = []
+
+    # 记录 Windows 生产探针参数并模拟受限写边界验证成功
+    def _success(argv: list[str]) -> tuple[bool, str]:
+        seen.append(argv)
+        return True, "ok"
+
+    capability = detect_sandbox_capability(platform="win32", run_probe=_success)
+
+    assert capability.available is True
+    assert capability.kind == "windows_acl"
+    assert "partial" in capability.reason
+    assert seen[0][-1] == "--probe"
+    assert "-I" in seen[0]
+    assert seen[0][-2].endswith("windows_acl_runner.py")
+
+
+# 功能：验证 Windows Restricted Token 或 ACL 探针失败时立即回退 windows_none
+# 设计：注入确定性失败结果并固定用户可见原因，证明后端不会在初始化失败后无约束运行
+def test_windows_probe_failure_reports_no_os_sandbox() -> None:
+    capability = detect_sandbox_capability(
+        platform="win32",
+        run_probe=lambda _argv: (False, "exit code 127"),
+    )
 
     assert capability.available is False
     assert capability.kind == "windows_none"
-    assert capability.reason == "no OS isolation backend"
+    assert capability.reason == "Windows ACL sandbox probe failed (exit code 127)"
 
 
 # 功能：验证 Linux 仅在真实找到 bubblewrap 可执行文件时报告 sandbox 可用

@@ -67,6 +67,32 @@ async def test_ask_user_question_tool_returns_answer() -> None:
     assert result.content == "User answer: 保留兼容性"
 
 
+# 功能：验证低置信度澄清门禁只在用户回答后推进一次执行状态
+# 设计：给提问工具安装一次性异步回调并连续提问，证明首个回答解锁而后续问题不会重复扩权
+async def test_ask_user_question_answer_handler_runs_once() -> None:
+    bus = EventBus()
+    manager = InteractionManager(bus)
+    answers = iter(("先保持兼容", "再确认一次"))
+    handled: list[str] = []
+
+    # 对每个问题立即给出下一个固定答案，避免计时与客户端依赖
+    async def answer(event: BaseModel) -> None:
+        manager.answer(str(getattr(event, "question_id")), next(answers))
+
+    # 记录澄清答案，模拟 Core 推进到下一层执行门禁
+    async def unlock(value: str) -> None:
+        handled.append(value)
+
+    bus.subscribe(answer)
+    tool = AskUserQuestionTool(manager, "sess-1", "run-1")
+    tool.set_answer_handler(unlock)
+
+    await tool.invoke({"question": "任务边界是什么？"})
+    await tool.invoke({"question": "还需要确认吗？"})
+
+    assert handled == ["先保持兼容"]
+
+
 # 功能：验证运行中纠偏只接受活动 run，并按到达顺序一次性取走
 # 设计：覆盖未注册、已注册、空内容和注销四种边界，确保消息不会串到其他或后续 run
 def test_steering_queue_is_scoped_to_active_run() -> None:

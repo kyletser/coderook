@@ -8,6 +8,7 @@ from code_rook.core.sandbox.planner import (
     SandboxSpawnRequest,
     SandboxTier,
     SeatbeltBackend,
+    WindowsAclBackend,
     backend_for_capability,
     build_bwrap_argv,
     persistent_sandbox_argv,
@@ -81,6 +82,29 @@ def test_tier_for_auto_review_falls_back_without_sandbox() -> None:
     assert tier_for_auto_review(cap) == SandboxTier.NONE
     ok = SandboxCapability(available=True, kind="linux_bwrap", reason="ok")
     assert tier_for_auto_review(ok) == SandboxTier.WORKSPACE_WRITE
+
+
+# 功能：验证 Windows ACL 计划进入真实 runner、标记 partial 且不获得 AUTO_REVIEW 静默放行
+# 设计：同时检查一次性和常驻 argv，锁定 Restricted Token 后端与显式审批的产品边界
+def test_windows_acl_plan_is_partial_and_ask_only() -> None:
+    capability = SandboxCapability(
+        available=True,
+        kind="windows_acl",
+        reason="probe succeeded",
+    )
+
+    plan = plan_sandbox(capability, SandboxTier.WORKSPACE_WRITE, ".")
+    persistent = persistent_sandbox_argv(plan)
+
+    assert plan.enforced is True
+    assert plan.enforcement == "partial"
+    assert plan.backend == "windows_acl"
+    assert any(item.endswith("windows_acl_runner.py") for item in plan.wrapper)
+    assert "-I" in plan.wrapper
+    assert plan.wrapper[-1] == "--"
+    assert plan.policy_version == 3
+    assert persistent is not None and persistent[-1] == "/Q"
+    assert tier_for_auto_review(capability) == SandboxTier.NONE
 
 
 # 功能：验证不受支持但声称可用的后端不能触发 AUTO_REVIEW 自动放行
@@ -172,10 +196,12 @@ def test_backend_factory_maps_only_enforced_capabilities() -> None:
     linux = SandboxCapability(available=True, kind="linux_bwrap", reason="ok")
     macos = SandboxCapability(available=True, kind="macos_seatbelt", reason="ok")
     windows = SandboxCapability(available=True, kind="windows_none", reason="bad")
+    windows_acl = SandboxCapability(available=True, kind="windows_acl", reason="ok")
 
     assert isinstance(backend_for_capability(linux), BwrapBackend)
     assert isinstance(backend_for_capability(macos), SeatbeltBackend)
     assert isinstance(backend_for_capability(windows), DegradedBackend)
+    assert isinstance(backend_for_capability(windows_acl), WindowsAclBackend)
 
 
 # 功能：验证 SandboxPlan 完整描述强制力、工作区、网络、可写根和策略版本

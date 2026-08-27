@@ -11,17 +11,23 @@ from code_rook.core.bus.events import (
     PermissionDeniedEvent,
     PermissionGrantedEvent,
     PermissionRequestedEvent,
+    PlanUpdatedEvent,
     RunFinishedEvent,
+    RunPhaseChangedEvent,
     RunStartedEvent,
     RunSteeredEvent,
     StepFinishedEvent,
     StepStartedEvent,
+    StrategyProposedEvent,
+    StrategyResolvedEvent,
     SubagentFinishedEvent,
     SubagentStartedEvent,
     TaskProfiledEvent,
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
+    VerificationCompletedEvent,
+    VerificationFailedEvent,
 )
 
 if TYPE_CHECKING:
@@ -182,6 +188,8 @@ def _project_event(
     step_id = f"{run_id}:{raw_step}" if run_id and isinstance(raw_step, int) else ""
     if isinstance(event, RunStartedEvent):
         return [("turn.started", event.run_id, "", payload)]
+    if isinstance(event, RunPhaseChangedEvent):
+        return [("run.phase_changed", event.run_id, "", payload)]
     if isinstance(event, RunFinishedEvent):
         return [
             ("run.outcome", event.run_id, "", payload),
@@ -207,6 +215,16 @@ def _project_event(
         return [("context.compacted", event.run_id, step_id, payload)]
     if isinstance(event, TaskProfiledEvent):
         return [("task.profiled", event.run_id, "", payload)]
+    if isinstance(event, PlanUpdatedEvent):
+        return [("plan.updated", event.run_id, "", payload)]
+    if isinstance(event, StrategyProposedEvent):
+        return [("strategy.proposed", event.run_id, "", payload)]
+    if isinstance(event, StrategyResolvedEvent):
+        return [("strategy.resolved", event.run_id, "", payload)]
+    if isinstance(event, VerificationCompletedEvent):
+        return [("verification.completed", event.run_id, step_id, payload)]
+    if isinstance(event, VerificationFailedEvent):
+        return [("verification.failed", event.run_id, step_id, payload)]
     if isinstance(event, SubagentStartedEvent):
         return [("worker.started", event.parent_run_id, "", payload)]
     if isinstance(event, SubagentFinishedEvent):

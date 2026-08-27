@@ -43,7 +43,7 @@ CodeRook 是在单个用户本机运行的 Coding Agent。核心安全目标是�
 |---|---|---|---|
 | TM-01 | Prompt injection 诱导读取秘密、改代码或执行命令 | 工具 capability、PLAN 只读、权限六层决策、headless fail-fast/allow-list；repo map 默认排除 `.env*`、`.coderook/`、credential/token/runtime 文件 | **支持边界**：不依赖模型自律；不保证识别所有恶意文本，用户批准仍可能授权危险动作 |
 | TM-02 | 路径穿越、绝对路径或 symlink 逃出 workspace | `WorkspaceBoundary.resolve()` 对所有直接文件工具做 resolved-path containment；patch/edit 事务、hash 冲突和 checkpoint | **支持**；shell 路径不由此边界强制，见 TM-03 |
-| TM-03 | shell 命令修改工作区外文件、派生孤儿进程或逃逸 | deny patterns、outside-cwd 检测、审批、ProcessSupervisor 杀进程树；真实探针成功后 Linux bwrap/macOS Seatbelt 只暴露必要运行时、工作区、隔离 Home/临时目录；shell 环境过滤常见 secret 变量 | Linux/macOS 后端可用时 **enforced**；Windows 或缺失后端 **degraded + ASK**。Job Object 不是文件系统边界，环境过滤也不是完备 DLP |
+| TM-03 | shell 命令修改工作区外文件、派生孤儿进程或逃逸 | deny patterns、outside-cwd 检测、审批、ProcessSupervisor 杀进程树；Linux bwrap/macOS Seatbelt 隔离文件与网络；Windows Restricted Token + capability ACL 限制工作区外写入；shell 环境过滤常见 secret 变量 | Linux/macOS 后端可用时 **full**；Windows 为 **partial + ASK**，不隔离读取/网络/Everyone ACE/hard-link；探针失败为 **degraded + ASK**。Job Object 不是文件系统边界，环境过滤也不是完备 DLP |
 | TM-04 | SSRF、重定向到内网、任意出站或数据外泄 | WebFetch 每跳校验公网地址、协议/大小/超时边界；sandbox 支持完全断网；域白名单无法强制时 fail closed | SSRF 路径 **支持**；按域正向放行 **拒绝**；用户显式允许全网后仍可能发生内容外泄 |
 | TM-05 | API key 出现在仓库、prompt、trace、报告或日志 | keyring 优先、0600 credential fallback、仓库 `.env` 不自动加载、项目 TOML 禁止 route/endpoint/credential 引用、显式 env 文件禁用插值且不能设置 `CODEROOK_CONFIG`、WebSearch 使用固定受管凭据引用、trace 脱敏、诊断包确认导出、secret scan | **支持但非 DLP**；用户进程显式环境和获批 shell 仍是信任输入，无法保证识别所有秘密格式 |
 | TM-06 | 未授权本机进程调用 daemon/API | IPC token 独占创建、0600、首帧认证、常量时间比较、loopback peer；Runtime API 始终校验 Bearer token，空环境值不能关闭鉴权；未配置时 no-follow 加载或排他创建 `~/.coderook/api-token`，POSIX 验证 owner/0600，Windows 验证父目录、重解析点、普通文件和句柄/路径身份 | **支持**；同一 OS 账户下能读取 token 的恶意进程不属于隔离目标，Windows 不宣称 POSIX mode 或额外 ACL 隔离 |
@@ -69,7 +69,8 @@ ACT/OPERATE 仍要经过工具 action capability 与 permission policy。`Approv
 - permission 决定当前动作是否获准；
 - sandbox plan 说明获准动作是否被 OS 强制限制；
 - `enforced=false` 或 `degraded_reason` 非空不能描述为 sandboxed；
-- Windows 的 ProcessSupervisor/Job Object 只提供终止与资源记账，不提供文件系统或网络隔离。
+- Windows 的 Restricted Token + ACL 只限制部分文件写入；ProcessSupervisor/Job Object 只提供终止与
+  资源记账。两者都不提供文件读取或网络隔离。
 
 ## 5. 凭据与隐私数据流
 
@@ -85,7 +86,7 @@ token/成本和有界证据，不保存 credential。仓库地图不读取默认
 
 - 抵御拥有同一 OS 账户、管理员/root 权限或能读取进程内存的本地攻击者；
 - 多租户隔离、服务端托管隔离或恶意用户之间的权限分离；
-- Windows AppContainer/受限令牌级文件系统 sandbox；
+- Windows 完整 AppContainer、文件读取或网络 sandbox；当前 Restricted Token 后端仅承诺部分写隔离；
 - 按 DNS 域强制的出站白名单；
 - 自动判断第三方 MCP、Skill、Hook 或模型供应商本身可信；
 - 检测所有 prompt injection、秘密格式、许可证问题或生成代码漏洞；

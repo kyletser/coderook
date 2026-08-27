@@ -97,10 +97,21 @@ def detect_sandbox_capability(
 ) -> SandboxCapability:
     target = platform or sys.platform
     if target == "win32":
+        from code_rook.core.sandbox.windows_acl_runner import runner_command
+
+        probe_ok, probe_reason = run_probe(
+            [*runner_command(), "--probe"]
+        )
+        if probe_ok:
+            return SandboxCapability(
+                available=True,
+                kind="windows_acl",
+                reason="restricted-token ACL execution probe succeeded (partial)",
+            )
         return SandboxCapability(
             available=False,
             kind="windows_none",
-            reason="no OS isolation backend",
+            reason=f"Windows ACL sandbox probe failed ({probe_reason})",
         )
     if target.startswith("linux"):
         executable = find_executable("bwrap")

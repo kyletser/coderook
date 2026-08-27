@@ -61,7 +61,10 @@ class PersistentShellSession:
     ) -> None:
         self._argv = argv or default_shell_argv()
         self._cwd = cwd
-        self._is_cmd = os.path.basename(self._argv[0]).lower() in {"cmd", "cmd.exe"}
+        self._is_cmd = any(
+            os.path.basename(item).lower() in {"cmd", "cmd.exe"}
+            for item in self._argv
+        )
         self._proc: asyncio.subprocess.Process | None = None
         # 有界队列向 OS pipe 施加背压，后台持续输出不能无限占用 daemon 内存
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)

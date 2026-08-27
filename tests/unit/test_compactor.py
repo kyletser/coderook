@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.compact.protocol import SUMMARY_MARKER, validate_tool_protocol
 from code_rook.core.context import ExecutionContext
@@ -102,7 +104,10 @@ async def test_auto_compact_persists_summary_and_recent_window(tmp_path: Path) -
     assert result is not None
     assert store.read_messages("sess-1") == context.messages
     assert len(context.messages) > 2
-    assert list(store.session_dir("sess-1").glob("thread_*.jsonl.bak"))
+    events = store.read_session_events("sess-1")
+    assert any(event.type == "context.compaction.started" for event in events)
+    assert any(event.type == "context.compaction.committed" for event in events)
+    assert not list(store.session_dir("sess-1").glob("thread_*.jsonl.bak"))
 
 
 # 功能：验证压缩摘要文件包含质量分和结构化 Markdown 内容
@@ -244,4 +249,27 @@ async def test_compact_failure_preserves_context(tmp_path: Path) -> None:
     result = await Compactor(EventBus(), tmp_path, "sess-1").compact(context, provider)
 
     assert result is None
+    assert context.messages == original_messages
+
+
+# 功能：验证 Ledger 提交失败时内存上下文也保持原样而不会偏离事实日志
+# 设计：让摘要成功但 append_compaction 抛磁盘错误，断言异常上抛且 context.messages 未提前替换
+async def test_compaction_commit_failure_does_not_change_context(tmp_path: Path) -> None:
+    store = MagicMock()
+    store.read_session_events.return_value = []
+    store.append_compaction.side_effect = OSError("disk full")
+    context = ExecutionContext(run_id="r1", goal="test", max_steps=5)
+    original_messages = _make_messages()
+    context.messages = list(original_messages)
+    compactor = Compactor(
+        EventBus(),
+        tmp_path,
+        "sess-1",
+        store=store,
+        strategy="structured",
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        await compactor.compact(context, _stub_provider())
+
     assert context.messages == original_messages

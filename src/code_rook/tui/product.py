@@ -397,6 +397,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "app.sandbox.available": (
             "OS 强制隔离后端可用；每次命令的实际隔离计划与结果记录在 receipt 中。"
         ),
+        "app.sandbox.partial": (
+            "Windows Restricted Token + ACL 已限制工作区外写入；读取和网络不隔离，"
+            "Shell/Run 仍需逐次审批。"
+        ),
         "app.sandbox.unavailable": (
             "当前没有 OS 强制隔离；危险动作继续走 ASK 审批和工作区边界，"
             "但这些机制不等同于系统沙箱。"
@@ -709,6 +713,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "command.copy": "复制上一条回复",
         "command.history": "当前工作区输入历史：查看、开关或清空",
         "command.language": "切换界面语言：中文或 English",
+        "command.theme": "切换界面主题：自动、深色、浅色或高对比度",
         "command.attachments": "查看或移除待发送图片",
         "command.plan": "只读规划并审阅后再实施：/plan [任务]",
         "command.review": "只读复审当前改动：/review [关注点]",
@@ -1173,6 +1178,10 @@ _TEXT: dict[str, dict[str, str]] = {
             "An OS isolation backend is available; each command records its actual sandbox "
             "plan and result in the receipt."
         ),
+        "app.sandbox.partial": (
+            "Windows Restricted Token + ACL blocks writes outside the workspace; reads and "
+            "network are not isolated, so Shell/Run still requires per-command approval."
+        ),
         "app.sandbox.unavailable": (
             "No OS isolation backend is available. Risky actions still require ASK approval "
             "and workspace-boundary checks, but these are not an OS sandbox."
@@ -1509,6 +1518,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "command.copy": "Copy the last response",
         "command.history": "Manage workspace input history",
         "command.language": "Switch the UI language",
+        "command.theme": "Switch the UI theme",
         "command.attachments": "Inspect or remove pending images",
         "command.plan": "Plan read-only, then review before acting",
         "command.review": "Review current changes read-only",

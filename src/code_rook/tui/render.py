@@ -135,6 +135,10 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
                 prompt.border_title = tr("shell.connected", _locale(app))
                 prompt.focus()
         app._update_header("plan ready" if app._plan_review_pending else "ready")
+        call_later = getattr(app, "call_later", None)
+        flush_queue = getattr(app, "_flush_queued_message", None)
+        if callable(call_later) and callable(flush_queue):
+            call_later(flush_queue)
 
     elif t == "session.interrupted":
         app._busy = False
@@ -285,7 +289,46 @@ def _render_user_question(app: Any, event: dict[str, Any]) -> None:
 
 # 处理 run 生命周期事件：开始记录状态、结束清理并渲染结果
 def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
-    if t == "run.started":
+    if t == "run.phase_changed":
+        phase = str(event.get("phase") or "running")
+        previous = getattr(app, "_run_phase", "")
+        app._run_phase = phase
+        app._run_phase_current = int(event.get("current") or 0)
+        app._run_phase_total = int(event.get("total") or 0)
+        app._update_header(phase)
+        if phase != previous and phase not in {"completed", "failed", "interrupted"}:
+            labels = {
+                "zh-CN": {
+                    "understanding": "理解任务",
+                    "exploring": "定位问题",
+                    "planning": "制定计划",
+                    "waiting_confirmation": "等待确认",
+                    "executing": "修改与执行",
+                    "verifying": "验证结果",
+                    "reviewing": "审查变更",
+                },
+                "en-US": {
+                    "understanding": "Understand task",
+                    "exploring": "Locate problem",
+                    "planning": "Build plan",
+                    "waiting_confirmation": "Wait for approval",
+                    "executing": "Edit and execute",
+                    "verifying": "Verify result",
+                    "reviewing": "Review changes",
+                },
+            }
+            locale = "en-US" if _locale(app) == "en-US" else "zh-CN"
+            label = labels[locale].get(phase, phase)
+            summary = escape(str(event.get("summary") or ""))
+            detail = f"  [dim]{summary}[/dim]" if summary else ""
+            app._append(
+                Static(
+                    f"[bold cyan]● {label}[/bold cyan]{detail}",
+                    classes="log-line",
+                )
+            )
+
+    elif t == "run.started":
         run_id = str(event.get("run_id", ""))
         app._active_run_id = run_id
         app._current_steps.pop(run_id, None)
@@ -363,8 +406,10 @@ def _render_stage(app: Any, t: str, event: dict[str, Any]) -> None:
         app._subagent_run_ids[run_id] = description
         app._subagent_start_times[run_id] = time.monotonic()
         short_id = run_id[:8] if len(run_id) >= 8 else run_id
+        active = len(app._subagent_run_ids)
         app._append(Static(
-            f"[dim]┌─[/dim] [cyan]{_preview(description, 72)}[/cyan]  [dim]{short_id}[/dim]",
+            f"[bold cyan]▣ {active} Agent{'s' if active != 1 else ''} working[/bold cyan]\n"
+            f"  [dim]◌[/dim] [cyan]{_preview(description, 72)}[/cyan]  [dim]{short_id}[/dim]",
             classes="log-line",
         ))
 
@@ -383,12 +428,12 @@ def _render_stage(app: Any, t: str, event: dict[str, Any]) -> None:
         desc_part = f"[cyan]{_preview(description, 72)}[/cyan]{elapsed}"
         if status == "success":
             app._append(Static(
-                f"[dim]└─[/dim] [bold green]done[/bold green] {desc_part}",
+                f"  [bold green]✓[/bold green] {desc_part}",
                 classes="log-line",
             ))
         else:
             app._append(Static(
-                f"[dim]└─[/dim] [bold red]failed[/bold red] {desc_part}",
+                f"  [bold red]×[/bold red] {desc_part}",
                 classes="log-line",
             ))
 
@@ -508,6 +553,18 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
                 is_error=True,
                 presentation=presentation,
             )
+        category = escape(str(event.get("failure_category") or event.get("error_class") or "tool"))
+        action = (
+            "检查权限或修改命令后重试"
+            if _locale(app) == "zh-CN"
+            else "Check permission or adjust the command, then retry"
+        )
+        app._append(
+            Static(
+                f"[yellow]{category}[/yellow]  [dim]{action}[/dim]",
+                classes="log-line",
+            )
+        )
 
 
 # 处理上下文压缩、权限审批、LSP 诊断与日志等杂项事件
@@ -574,29 +631,33 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
 
     elif t == "context.compacted":
         orig = event.get("original_tokens", 0)
-        summary = event.get("summary_tokens", 0)
         compacted = event.get("compacted_tokens", 0)
-        retained_messages = event.get("retained_messages", 0)
-        retained_tokens = event.get("retained_tokens", 0)
-        quality = float(event.get("quality_score", 0.0))
-        trigger = event.get("trigger", "auto")
-        summary_path = str(event.get("summary_path", ""))
+        pinned = int(event.get("pinned_fact_retained", 0))
         if int(orig) > 0:
             app._last_context_pct *= int(compacted) / int(orig)
         else:
             app._last_context_pct = 0.0
         app._append(Static(
-            f"[bold cyan]Context compacted[/bold cyan]"
-            f"  [dim]trigger={trigger}  original≈{orig} → compacted≈{compacted}  "
-            f"summary={summary}  retained={retained_messages} msgs/{retained_tokens} tokens  "
-            f"quality={quality:.0%}[/dim]",
+            f"[bold cyan]Context compacted[/bold cyan]  "
+            f"[dim]{orig} → {compacted} tokens · retained {pinned} task facts[/dim]",
             classes="log-line",
         ))
-        if summary_path:
-            app._append(Static(
-                f"[dim]  summary file: {summary_path}[/dim]",
-                classes="log-line",
-            ))
+
+    elif t == "recovery.available":
+        safe = bool(event.get("safe_to_resume", False))
+        marker = "[green]✓[/green]" if safe else "[yellow]![/yellow]"
+        summary = escape(str(event.get("summary") or "Interrupted turn available"))
+        actions = (
+            "继续 · 查看变更 · 恢复 Checkpoint · 放弃本轮 · 导出诊断"
+            if _locale(app) == "zh-CN"
+            else "Continue · View changes · Rewind · Abandon turn · Export diagnostics"
+        )
+        app._append(
+            Static(
+                f"[bold cyan]Recovery[/bold cyan] {marker}\n{summary}\n[dim]{actions}[/dim]",
+                classes="product-card",
+            )
+        )
 
     elif t == "permission.requested":
         tool_use_id = str(event.get("tool_use_id", ""))

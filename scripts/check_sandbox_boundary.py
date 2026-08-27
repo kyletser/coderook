@@ -20,6 +20,7 @@ from code_rook.core.sandbox.planner import (
     tier_for_auto_review,
     wrap_sandbox_command,
 )
+from code_rook.core.sandbox.windows_acl_runner import probe as probe_windows_acl
 
 
 # 构造单项沙箱检查的机器可读结果
@@ -169,6 +170,29 @@ def _check_enforced_boundary(workspace: Path) -> list[dict[str, str]]:
     return checks
 
 
+# 在真实 Windows Restricted Token 中验证写边界并固定 partial/Ask-only 公开语义
+def _check_windows_acl_boundary(workspace: Path) -> list[dict[str, str]]:
+    capability = detect_sandbox_capability()
+    writable = plan_sandbox(capability, SandboxTier.WORKSPACE_WRITE, str(workspace))
+    readonly = plan_sandbox(capability, SandboxTier.READ_ONLY, str(workspace))
+    if writable.enforcement != "partial" or readonly.enforcement != "partial":
+        raise RuntimeError("Windows ACL backend did not report partial enforcement")
+    if tier_for_auto_review(capability) != SandboxTier.NONE:
+        raise RuntimeError("Windows partial sandbox must remain explicit-approval only")
+    if not probe_windows_acl():
+        raise RuntimeError("Windows ACL production probe rejected its write boundary")
+    return [
+        _check_result("partial_enforcement_reported", "passed"),
+        _check_result("workspace_and_readonly_write_boundary", "passed"),
+        _check_result("auto_review_disabled", "passed"),
+        _check_result(
+            "network_and_reads_not_isolated",
+            "passed",
+            "documented partial boundary",
+        ),
+    ]
+
+
 # 解析沙箱门禁输出参数
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify the OS sandbox boundary")
@@ -197,6 +221,13 @@ def _write_report(
         "backend": capability_kind,
         "backend_reason": capability_reason,
         "enforced": enforced,
+        "enforcement": (
+            "partial"
+            if enforced and capability_kind == "windows_acl"
+            else "full"
+            if enforced
+            else "unavailable"
+        ),
         "degraded": degraded,
         "checks": checks,
         "gate_passed": gate_passed,
@@ -293,7 +324,10 @@ def main() -> int:
     enforced = plan.enforced
     degraded = plan.degraded
     try:
-        checks.extend(_check_enforced_boundary(Path.cwd().resolve()))
+        if capability.kind == "windows_acl":
+            checks.extend(_check_windows_acl_boundary(Path.cwd().resolve()))
+        else:
+            checks.extend(_check_enforced_boundary(Path.cwd().resolve()))
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         error = str(exc)
         checks.append(_check_result("boundary_matrix", "failed", error))

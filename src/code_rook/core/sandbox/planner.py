@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -56,9 +58,11 @@ class SandboxPlan:
         return self.capability.kind if self.enforced else "degraded"
 
     @property
-    # 返回跨平台统一的强制级别，内建 OS 后端为 full，降级路径为 unavailable
+    # 返回跨平台统一的强制级别，Windows ACL 只约束部分写入边界
     def enforcement(self) -> Literal["full", "partial", "unavailable"]:
-        return "full" if self.enforced else "unavailable"
+        if not self.enforced:
+            return "unavailable"
+        return "partial" if self.capability.kind == "windows_acl" else "full"
 
     # 返回可写入 receipt 的完整隔离决策，不包含命令或环境变量
     def describe(self) -> dict[str, object]:
@@ -260,6 +264,98 @@ class SeatbeltBackend(_BaseBackend):
         )
 
 
+class WindowsAclBackend(_BaseBackend):
+    # 生成 Windows Restricted Token + ACL 部分隔离计划并固定独立 runner argv
+    def plan(
+        self,
+        tier: SandboxTier,
+        workspace: str,
+        *,
+        network: bool = False,
+        allowed_domains: tuple[str, ...] = (),
+    ) -> SandboxPlan:
+        _reject_unenforceable_domain_policy(allowed_domains)
+        if tier not in {SandboxTier.READ_ONLY, SandboxTier.WORKSPACE_WRITE}:
+            raise SandboxPolicyError(f"Windows ACL backend cannot enforce {tier.value}")
+        resolved_workspace = str(Path(workspace).resolve())
+        temp_root = Path(tempfile.gettempdir()) / "coderook-sandbox"
+        mode = "read-only" if tier == SandboxTier.READ_ONLY else "workspace-write"
+        from code_rook.core.sandbox.windows_acl_runner import runner_command
+
+        wrapper = [
+            *runner_command(),
+            "--workspace",
+            resolved_workspace,
+            "--temp-root",
+            str(temp_root),
+            "--mode",
+            mode,
+            "--",
+        ]
+        return SandboxPlan(
+            tier=tier,
+            capability=self.probe(),
+            degraded=False,
+            wrapper=wrapper,
+            reason=(
+                f"Windows restricted-token ACL {tier.value}; "
+                "write confinement is partial and network/read access is not isolated"
+            ),
+            workspace=resolved_workspace,
+            network=network,
+            allowed_domains=allowed_domains,
+            writable_roots=(resolved_workspace,) if tier == SandboxTier.WORKSPACE_WRITE else (),
+            policy_version=3,
+        )
+
+    # 以精确 argv 调用独立 runner，避免 shell 二次解析破坏 Windows 参数边界
+    async def spawn(
+        self,
+        plan: SandboxPlan,
+        request: SandboxSpawnRequest,
+        supervisor: ProcessSupervisor | None,
+    ) -> asyncio.subprocess.Process:
+        from code_rook.core.processes import sanitized_shell_environment
+
+        process_env = sanitized_shell_environment(request.env)
+        if request.argv:
+            target_argv = [*request.argv]
+            stdin = request.stdin
+            stdout = request.stdout
+            stderr = request.stderr
+        else:
+            assert request.command is not None
+            target_argv = [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/s",
+                "/c",
+                request.command,
+            ]
+            stdin = asyncio.subprocess.PIPE if request.interactive_stdin else None
+            stdout = asyncio.subprocess.PIPE
+            stderr = asyncio.subprocess.STDOUT
+        argv = [*plan.wrapper, *target_argv]
+        if supervisor is not None:
+            return await supervisor.start_exec(
+                *argv,
+                label=request.label,
+                cwd=request.cwd,
+                env=process_env,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        return await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=request.cwd,
+            env=process_env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
 class DegradedBackend(_BaseBackend):
     # 生成明确不具备强制力的降级计划
     def plan(
@@ -299,6 +395,8 @@ def backend_for_capability(capability: SandboxCapability) -> SandboxBackend:
         return BwrapBackend(capability)
     if capability.available and capability.kind == "macos_seatbelt":
         return SeatbeltBackend(capability)
+    if capability.available and capability.kind == "windows_acl":
+        return WindowsAclBackend(capability)
     return DegradedBackend(capability)
 
 
@@ -471,6 +569,8 @@ def wrap_sandbox_command(plan: SandboxPlan, command: str) -> str:
 def persistent_sandbox_argv(plan: SandboxPlan) -> list[str] | None:
     if not plan.enforced:
         return None
+    if plan.capability.kind == "windows_acl":
+        return [*plan.wrapper, os.environ.get("COMSPEC", "cmd.exe"), "/Q"]
     if len(plan.wrapper) >= 2 and plan.wrapper[-2:] == ["/bin/sh", "-c"]:
         return [*plan.wrapper[:-1]]
     return [*plan.wrapper]

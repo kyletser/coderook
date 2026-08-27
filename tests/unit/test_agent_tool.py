@@ -30,6 +30,7 @@ from code_rook.core.subagent.agent import AgentTool
 from code_rook.core.subagent.models import WorkerStatus
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import SpawnAgentTool, _WorkerVerificationTracker
+from code_rook.core.tools.base import ToolResult
 from code_rook.core.workspace import WorkspaceBoundary
 
 
@@ -130,8 +131,8 @@ class _BudgetProvider:
         await bus.publish(
             LlmUsageEvent(
                 run_id=str(kwargs["run_id"]),
-                input_tokens=3,
-                output_tokens=2,
+                input_tokens=128,
+                output_tokens=128,
                 cache_read_input_tokens=0,
                 cache_creation_input_tokens=0,
                 ts="2026-08-04T00:00:00+00:00",
@@ -141,7 +142,7 @@ class _BudgetProvider:
         return LlmResponse(
             stop_reason="end_turn",
             text="SUMMARY\nshould be cancelled",
-            usage=UsageStats(input_tokens=3, output_tokens=2),
+            usage=UsageStats(input_tokens=128, output_tokens=128),
         )
 
 
@@ -274,6 +275,46 @@ def _worker_id(content: str) -> str:
     return content.split("worker_id=", 1)[1].split(".", 1)[0]
 
 
+# 先生成单任务委派计划票据，再用票据启动 Worker 以复用生产约束
+async def _start_with_ticket(
+    tool: AgentTool,
+    params: dict[str, object],
+    *,
+    task_id: str = "task",
+) -> ToolResult:
+    read_only = bool(params.get("read_only", True))
+    token_budget = max(256, int(params.get("token_budget", 256) or 256))
+    validated = await tool.invoke(
+        {
+            "action": "validate_plan",
+            "tasks": [
+                {
+                    "id": task_id,
+                    "role": str(params.get("subagent_type") or params.get("description") or "worker"),
+                    "prompt": str(params.get("prompt") or "complete task"),
+                    "write_claim": {
+                        "read_only": read_only,
+                        "exact_files": list(params.get("exact_files", [])),
+                        "write_roots": list(params.get("write_roots", [])),
+                        "coordination_contract": str(
+                            params.get("coordination_contract", "")
+                        ),
+                    },
+                    "acceptance": list(params.get("acceptance", ["task completed"])),
+                    "token_budget": token_budget,
+                    "wall_time_s": int(params.get("wall_time_s", 900) or 900),
+                }
+            ],
+            "total_token_budget": token_budget,
+        }
+    )
+    assert not validated.is_error
+    ticket = str(json.loads(validated.content)["plan_ticket"])
+    return await tool.invoke(
+        {"action": "start", "plan_ticket": ticket, "task_id": task_id}
+    )
+
+
 # 功能：统一 agent 工具暴露计划校验、start/retry 与完整控制 action
 # 设计：直接检查 ToolSpec action 顺序和名称，确保委派必须先经过确定性计划校验入口
 def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
@@ -290,6 +331,20 @@ def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
     ]
 
 
+# 功能：验证模型不能跳过 Delegation Plan 票据直接启动 Worker
+# 设计：对 start 提交完整旧参数但不提供票据，断言在创建进程和 worktree 前失败关闭
+async def test_agent_start_requires_delegation_ticket(tmp_path: Path) -> None:
+    tool, registry, _ = _agent(tmp_path, _ResultProvider())
+
+    result = await tool.invoke(
+        {"action": "start", "description": "bypass", "prompt": "run directly"}
+    )
+
+    assert result.is_error
+    assert result.error_type == "permission_required"
+    assert registry.list_records() == []
+
+
 # 功能：两个可写 Worker 自动进入不同受管 worktree，不能直接共享主工作区
 # 设计：在真实 Git 仓库并发启动相同 claim，断言后端自动分配不同隔离目录
 async def test_agent_start_isolates_writers_in_distinct_worktrees(tmp_path: Path) -> None:
@@ -303,8 +358,8 @@ async def test_agent_start_isolates_writers_in_distinct_worktrees(tmp_path: Path
         "read_only": False,
         "exact_files": ["src/app.py"],
     }
-    first = await tool.invoke(start)
-    second = await tool.invoke(start)
+    first = await _start_with_ticket(tool, start, task_id="first")
+    second = await _start_with_ticket(tool, start, task_id="second")
 
     assert not first.is_error
     assert not second.is_error
@@ -324,7 +379,8 @@ async def test_agent_start_isolates_writers_in_distinct_worktrees(tmp_path: Path
 async def test_writing_worker_returns_authoritative_pending_handoff(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     tool, registry, _ = _agent(tmp_path, _WritingProvider())
-    started = await tool.invoke(
+    started = await _start_with_ticket(
+        tool,
         {
             "action": "start",
             "description": "write isolated file",
@@ -359,7 +415,8 @@ async def test_writing_worker_handoff_blocks_write_claim_violation(
 ) -> None:
     _init_repo(tmp_path)
     tool, registry, _ = _agent(tmp_path, _WritingProvider("outside.txt"))
-    started = await tool.invoke(
+    started = await _start_with_ticket(
+        tool,
         {
             "action": "start",
             "description": "attempt claim escape",
@@ -400,7 +457,8 @@ async def test_child_authority_is_narrower_than_parent(tmp_path: Path) -> None:
         provider,
         permission_manager=permissions,
     )
-    started = await tool.invoke(
+    started = await _start_with_ticket(
+        tool,
         {
             "action": "start",
             "description": "attempt write",
@@ -439,7 +497,8 @@ async def test_child_registry_denies_hidden_mutation_under_read_ceiling(
         permission_manager=permissions,
     )
 
-    started = await tool.invoke(
+    started = await _start_with_ticket(
+        tool,
         {
             "action": "start",
             "description": "attempt hidden write",
@@ -470,8 +529,9 @@ async def test_agent_returns_structured_result_and_bounded_events(tmp_path: Path
 
     parent_bus.subscribe(collect)
     tool, _, _ = _agent(tmp_path, _EventProvider(), bus=parent_bus)
-    started = await tool.invoke(
-        {"action": "start", "description": "inspect", "prompt": "inspect files"}
+    started = await _start_with_ticket(
+        tool,
+        {"action": "start", "description": "inspect", "prompt": "inspect files"},
     )
     worker_id = _worker_id(started.content)
     waited = await tool.invoke(
@@ -504,12 +564,13 @@ async def test_agent_returns_structured_result_and_bounded_events(tmp_path: Path
 # 设计：provider 在一次调用中发布 3+2 tokens，预算设为 5，验证取消和持久终态同步发生
 async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
     tool, registry, _ = _agent(tmp_path, _BudgetProvider())
-    started = await tool.invoke(
+    started = await _start_with_ticket(
+        tool,
         {
             "action": "start",
             "description": "budgeted",
             "prompt": "use bounded tokens",
-            "token_budget": 5,
+            "token_budget": 256,
         }
     )
     worker_id = _worker_id(started.content)
@@ -521,7 +582,7 @@ async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
     assert waited.is_error
     assert worker is not None
     assert worker.status == WorkerStatus.BUDGET_LIMITED
-    assert worker.token_usage == 5
+    assert worker.token_usage == 256
     # 预算耗尽时结果常为空，父上下文必须拿到标注 budget_exhausted 的合成收尾回执
     assert "budget_exhausted" in worker.summary
 
@@ -538,8 +599,9 @@ async def test_agent_followup_reaches_running_worker(tmp_path: Path) -> None:
         bus=parent_bus,
         interaction_manager=interaction,
     )
-    started = await tool.invoke(
-        {"action": "start", "description": "followup", "prompt": "old requirement"}
+    started = await _start_with_ticket(
+        tool,
+        {"action": "start", "description": "followup", "prompt": "old requirement"},
     )
     worker_id = _worker_id(started.content)
     await asyncio.wait_for(provider.first_started.wait(), timeout=2)

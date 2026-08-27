@@ -20,7 +20,8 @@ _READ_RE = re.compile(
     r"(?i)(解释|说明|分析|理解|检查|审查|查看|是什么|为什么|explain|inspect|review|analy[sz]e|why|what)"
 )
 _MUTATE_RE = re.compile(
-    r"(?i)(修复|修改|实现|增加|删除|重构|改造|补全|fix|change|implement|add|remove|refactor|update)"
+    r"(?i)(修复|修改|实现|增加|删除|重构|改造|补全|记住|保存记忆|"
+    r"fix|change|implement|add|remove|refactor|update|remember)"
 )
 _TEST_RE = re.compile(r"(?i)(测试|验证|pytest|mypy|ruff|test|verify|lint|build)")
 _SHELL_RE = re.compile(
@@ -207,6 +208,9 @@ class TaskStrategyRouter:
             signals=tuple(signals),
             source="rules",
             delegation_allowed=delegation_allowed,
+            deliverable=_deliverable_for(intent),
+            success_criteria=_success_criteria_for(intent, risk),
+            user_summary=_user_summary_for(strategy, scope, risk),
         ).with_digest()
 
     # 将模型语义分类与规则安全底座合并，风险和范围只允许提高
@@ -235,6 +239,9 @@ class TaskStrategyRouter:
             signals=tuple(dict.fromkeys((*rules.signals, *model.signals))),
             source="hybrid",
             delegation_allowed=delegation_allowed,
+            deliverable=model.deliverable or rules.deliverable,
+            success_criteria=model.success_criteria or rules.success_criteria,
+            user_summary=model.user_summary or _user_summary_for(strategy, scope, risk),
         ).with_digest()
 
     # 使用无工具短输出请求处理规则无法判断的语义歧义
@@ -317,3 +324,42 @@ class TaskStrategyRouter:
                 }
             ).with_digest()
         raise ValueError(f"unknown delegation policy: {policy}")
+
+
+# 返回任务类型对应的默认可交付结果说明
+def _deliverable_for(intent: TaskIntent) -> str:
+    return {
+        TaskIntent.EXPLAIN: "基于代码证据的解释",
+        TaskIntent.INSPECT: "带定位依据的审查结论",
+        TaskIntent.FIX: "可审查的修复与验证结果",
+        TaskIntent.REFACTOR: "保持行为兼容的重构与验证结果",
+        TaskIntent.TEST: "可复现的测试或诊断结果",
+        TaskIntent.MULTI_FILE_CHANGE: "跨文件变更、验证结果与风险说明",
+    }[intent]
+
+
+# 返回任务类型和风险对应的最低成功标准
+def _success_criteria_for(intent: TaskIntent, risk: TaskRisk) -> tuple[str, ...]:
+    criteria = ["结论与实际代码或命令结果一致"]
+    if intent in {TaskIntent.FIX, TaskIntent.REFACTOR, TaskIntent.MULTI_FILE_CHANGE}:
+        criteria.extend(("变更范围与用户目标一致", "报告实际运行过的验证"))
+    elif intent == TaskIntent.TEST:
+        criteria.append("测试命令和结果可复现")
+    if risk in {TaskRisk.SHELL, TaskRisk.EXTERNAL}:
+        criteria.append("高风险操作经过权限与沙箱管线")
+    return tuple(criteria)
+
+
+# 生成时间线中展示的一句话执行策略说明
+def _user_summary_for(
+    strategy: TaskStrategy,
+    scope: TaskScope,
+    risk: TaskRisk,
+) -> str:
+    if strategy == TaskStrategy.DELEGATE:
+        return "先验证任务能否安全拆分，再决定是否并行委派。"
+    if strategy == TaskStrategy.PLAN_FIRST:
+        return "先只读定位并形成计划，计划生效后再修改。"
+    if scope == TaskScope.READ_ONLY or risk == TaskRisk.READ:
+        return "直接阅读相关代码并给出有证据的结论。"
+    return "直接处理明确范围，并在结束前验证变更。"

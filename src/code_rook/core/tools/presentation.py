@@ -12,7 +12,7 @@ from code_rook.core.tools.spec import ResolvedToolCall, ToolPresentationKind
 class ToolPresentation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: int = Field(default=1, ge=1)
+    schema_version: int = Field(default=2, ge=1)
     kind: ToolPresentationKind
     title_key: str
     status: str
@@ -25,6 +25,8 @@ class ToolPresentation(BaseModel):
     artifact: dict[str, Any] | None = None
     diagnostics: str = ""
     sandbox_enforcement: str = "unavailable"
+    failure_category: str = ""
+    recovery_actions: tuple[str, ...] = ()
 
 
 # 从可信 Manifest、调用参数和工具结果生成可持久化的纯展示数据
@@ -54,12 +56,22 @@ def build_tool_presentation(
     artifact: dict[str, Any] | None = None
     diagnostics = ""
     enforcement = "unavailable"
+    failure_category = ""
+    recovery_actions: tuple[str, ...] = ()
     if result is not None:
         usage = result.process_usage or {}
         raw_exit = usage.get("exit_code")
         exit_code = raw_exit if isinstance(raw_exit, int) else None
         enforcement = result.sandbox_enforcement
         diagnostics = result.error_type or ""
+        failure_category = result.failure_category or ""
+        if result.is_error:
+            recovery_actions = (
+                "review_permissions",
+                "adjust_parameters",
+                "retry_once",
+                "stop_run",
+            )
         try:
             structured = json.loads(result.content)
         except (json.JSONDecodeError, TypeError):
@@ -71,10 +83,10 @@ def build_tool_presentation(
             raw_artifact = structured.get("artifact")
             artifact = dict(raw_artifact) if isinstance(raw_artifact, dict) else None
     return ToolPresentation(
-        schema_version=spec.result_schema_version,
+        schema_version=max(2, spec.result_schema_version),
         kind=spec.kind,
         title_key=spec.title_key,
-        status="pending" if result is None else "error" if result.is_error else "success",
+        status="running" if result is None else "failed" if result.is_error else "succeeded",
         subject=subject,
         locations=locations,
         command=command,
@@ -84,4 +96,6 @@ def build_tool_presentation(
         artifact=artifact,
         diagnostics=diagnostics,
         sandbox_enforcement=enforcement,
+        failure_category=failure_category,
+        recovery_actions=recovery_actions,
     )

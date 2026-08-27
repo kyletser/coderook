@@ -149,6 +149,7 @@ async def _fail(
             run_id=run_id,
             tool_use_id=tool_call.id,
             tool_name=tool_call.name,
+            operation_id=tool_call.id,
             error_class=error_class,
             error_message=error_message,
             elapsed_ms=elapsed_ms,
@@ -231,10 +232,10 @@ async def invoke_tool(
         ).model_dump(mode="json")
         if resolved_call is not None
         else {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "generic",
             "title_key": "tool.generic",
-            "status": "pending",
+            "status": "running",
         }
     )
 
@@ -243,6 +244,7 @@ async def invoke_tool(
             run_id=run_id,
             tool_use_id=tool_call.id,
             tool_name=tool_call.name,
+            operation_id=tool_call.id,
             params=dict(tool_call.input),
             step=step,
             presentation=pending_presentation,
@@ -455,6 +457,7 @@ async def invoke_tool(
                         run_id=run_id,
                         tool_use_id=tool_call.id,
                         tool_name=tool_call.name,
+                        operation_id=tool_call.id,
                         elapsed_ms=ms,
                         output=result.content,
                         process_usage=result.process_usage or {},
@@ -510,6 +513,7 @@ async def invoke_tool(
                     run_id=run_id,
                     tool_use_id=tool_call.id,
                     tool_name=tool_call.name,
+                    operation_id=tool_call.id,
                     error_class=error_class,
                     error_message=error_message,
                     elapsed_ms=ms,

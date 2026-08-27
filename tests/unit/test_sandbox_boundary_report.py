@@ -43,6 +43,46 @@ def test_degraded_sandbox_report_is_machine_readable(
     }
 
 
+# 功能：验证 Windows ACL 手动门禁输出 partial 写边界而不是冒充 full
+# 设计：注入成功 capability 与生产探针结果，在任意 CI 平台固定报告字段和四项 Windows 检查
+def test_windows_partial_sandbox_report_is_machine_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "sandbox-windows.json"
+    capability = SandboxCapability(
+        available=True,
+        kind="windows_acl",
+        reason="restricted-token probe succeeded",
+    )
+    monkeypatch.setattr(
+        check_sandbox_boundary,
+        "detect_sandbox_capability",
+        lambda: capability,
+    )
+    monkeypatch.setattr(check_sandbox_boundary, "probe_windows_acl", lambda: True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_sandbox_boundary.py", "--output", str(output)],
+    )
+
+    assert check_sandbox_boundary.main() == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+
+    assert report["backend"] == "windows_acl"
+    assert report["enforced"] is True
+    assert report["enforcement"] == "partial"
+    assert report["degraded"] is False
+    assert report["gate_passed"] is True
+    assert {item["name"] for item in report["checks"]} >= {
+        "partial_enforcement_reported",
+        "workspace_and_readonly_write_boundary",
+        "auto_review_disabled",
+        "network_and_reads_not_isolated",
+    }
+
+
 # 功能：验证仅手动触发的安全矩阵为三个平台上传沙箱 JSON artifact
 # 设计：锁定 workflow_dispatch、runner.os 文件名和 always 上传合同，避免增加日常 CI 邮件
 def test_manual_security_workflow_uploads_platform_sandbox_evidence() -> None:

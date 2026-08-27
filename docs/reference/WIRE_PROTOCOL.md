@@ -789,6 +789,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -1229,6 +1230,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -1684,6 +1686,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -2412,6 +2415,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -2812,6 +2816,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -4357,6 +4362,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -4667,6 +4673,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -4981,6 +4988,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -5299,6 +5307,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -5691,6 +5700,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "state": {
           "enum": [
             "enforcement_available",
+            "partial_enforcement",
             "degraded"
           ],
           "title": "State",
@@ -5699,6 +5709,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "windows_forced_sandbox": {
           "enum": [
             "available",
+            "partial",
             "unavailable",
             "not_applicable"
           ],
@@ -5726,6 +5737,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -6251,6 +6263,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "enum": [
             "none",
             "windows_none",
+            "windows_acl",
             "linux_bwrap",
             "macos_seatbelt"
           ],
@@ -11206,6 +11219,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `tool_use_id` | `string` | yes |
 | `tool_name` | `string` | yes |
+| `operation_id` | `string` | no |
 | `params` | `object` | yes |
 | `step` | `integer` | no |
 | `ledger_seq` | `integer | null` | no |
@@ -11235,6 +11249,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "tool_name": {
       "title": "Tool Name",
+      "type": "string"
+    },
+    "operation_id": {
+      "default": "",
+      "title": "Operation Id",
       "type": "string"
     },
     "params": {
@@ -11333,6 +11352,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `tool_use_id` | `string` | yes |
 | `tool_name` | `string` | yes |
+| `operation_id` | `string` | no |
 | `elapsed_ms` | `integer` | yes |
 | `output` | `string` | no |
 | `process_usage` | `object` | no |
@@ -11366,6 +11386,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "tool_name": {
       "title": "Tool Name",
+      "type": "string"
+    },
+    "operation_id": {
+      "default": "",
+      "title": "Operation Id",
       "type": "string"
     },
     "elapsed_ms": {
@@ -11493,6 +11518,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `tool_use_id` | `string` | yes |
 | `tool_name` | `string` | yes |
+| `operation_id` | `string` | no |
 | `error_class` | `string` | yes |
 | `error_message` | `string` | yes |
 | `elapsed_ms` | `integer` | yes |
@@ -11529,6 +11555,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "tool_name": {
       "title": "Tool Name",
+      "type": "string"
+    },
+    "operation_id": {
+      "default": "",
+      "title": "Operation Id",
       "type": "string"
     },
     "error_class": {
@@ -12719,6 +12750,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `request` | `string` | yes |
 | `plan` | `string` | yes |
+| `plan_ticket` | `string` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -12744,6 +12776,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "plan": {
       "title": "Plan",
+      "type": "string"
+    },
+    "plan_ticket": {
+      "default": "",
+      "title": "Plan Ticket",
       "type": "string"
     },
     "ts": {
@@ -12785,6 +12822,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `decision` | `string` | yes |
 | `revision` | `string` | no |
+| `plan_ticket` | `string` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -12818,6 +12856,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "title": "Revision",
       "type": "string"
     },
+    "plan_ticket": {
+      "default": "",
+      "title": "Plan Ticket",
+      "type": "string"
+    },
     "ts": {
       "title": "Ts",
       "type": "string"
@@ -12842,6 +12885,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `explanation` | `string` | no |
 | `plan` | `array` | yes |
+| `plan_ticket` | `string` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -12893,6 +12937,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       },
       "title": "Plan",
       "type": "array"
+    },
+    "plan_ticket": {
+      "default": "",
+      "title": "Plan Ticket",
+      "type": "string"
     },
     "ts": {
       "title": "Ts",

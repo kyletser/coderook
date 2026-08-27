@@ -202,8 +202,9 @@ uv run python scripts/check_sandbox_boundary.py
 ```
 
 Linux/macOS 有后端时，该命令真实验证工作区内写成功、工作区外写失败、read-only 写失败。
-Windows 当前输出 `DEGRADED (windows_none)`，这是受支持结论：AUTO_REVIEW shell 会回到 ASK，
-Job Object/进程树回收不被描述成文件系统 sandbox。
+Windows 会运行 Restricted Token + ACL 真实探针；成功时输出 `PASS (windows_acl)` 并报告 `partial`，
+失败时输出 `DEGRADED (windows_none)`。Windows 即使探针成功也保持 Shell/Run Ask-only，因为读取和网络
+不在该后端边界内；Job Object 只负责进程树回收。
 
 ---
 

@@ -61,6 +61,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "delete": "session",
     "history": "session",
     "language": "session",
+    "theme": "session",
     "attachments": "session",
     "changes": "review",
     "diff": "review",
@@ -351,6 +352,12 @@ async def _cmd_history(app: Any, ta: ChatTextArea, content: str) -> None:
 async def _cmd_language(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
     app._handle_language_command(content.removeprefix("/language").strip())
+
+
+# 查看或切换 TUI 主题且不影响当前运行状态
+async def _cmd_theme(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    app._handle_theme_command(content.removeprefix("/theme").strip())
 
 
 # 查看、移除或清空当前 composer 的待发送图片
@@ -1246,6 +1253,14 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         _cmd_language,
         usage="zh-CN|en-US",
         arg_candidates=("zh-CN", "en-US"),
+    ),
+    SlashCommand(
+        "theme",
+        "切换界面主题",
+        False,
+        _cmd_theme,
+        usage="auto|dark|light|high-contrast",
+        arg_candidates=("auto", "dark", "light", "high-contrast"),
     ),
     SlashCommand(
         "attachments",

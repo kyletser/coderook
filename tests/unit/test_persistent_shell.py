@@ -132,6 +132,27 @@ async def test_pool_recycles_when_execution_policy_changes(tmp_path: Path) -> No
     await pool.aclose_all()
 
 
+# 功能：验证 Windows ACL runner 包装后的常驻进程仍使用 cmd sentinel 协议
+# 设计：构造 python-runner 前缀加末尾 cmd 的真实计划，防止只检查 argv 首项而误发 POSIX 脚本
+async def test_windows_acl_wrapped_persistent_shell_detects_cmd(tmp_path: Path) -> None:
+    pool = PersistentShellPool()
+    capability = SandboxCapability(available=True, kind="windows_acl", reason="ok")
+    sandbox_plan = plan_sandbox(
+        capability,
+        SandboxTier.WORKSPACE_WRITE,
+        str(tmp_path),
+    )
+
+    session = pool.get_or_create("sess-windows-acl", tmp_path, sandbox_plan)
+
+    assert session._is_cmd is True
+    assert any(
+        item.endswith("windows_acl_runner.py")
+        for item in session.execution_identity[0]
+    )
+    await pool.aclose_all()
+
+
 # 功能：验证 BashTool 持久模式走池路径且退出码语义正确
 # 设计：注入池与 key 执行两条命令，断言成功输出格式与原 isolated 路径一致
 async def test_bash_tool_persistent_session(tmp_path: Path) -> None:

@@ -53,6 +53,9 @@ class TaskProfile(BaseModel):
     signals: tuple[str, ...] = ()
     source: str = "rules"
     delegation_allowed: bool = False
+    deliverable: str = ""
+    success_criteria: tuple[str, ...] = ()
+    user_summary: str = ""
     digest: str = Field(default="", pattern=r"^(?:|[0-9a-f]{64})$")
 
     # 返回补全稳定摘要后的不可变任务画像
@@ -100,6 +103,39 @@ class TaskProfile(BaseModel):
     def model_action_allowlist(self) -> dict[str, frozenset[str]]:
         if self.risk != TaskRisk.READ:
             return {}
+        return {
+            "File": frozenset({"read", "list", "search_name", "search_content"}),
+            "Git": frozenset({"status", "diff", "log", "show", "blame"}),
+        }
+
+    # 返回 plan_first 尚未签发计划票据时允许模型使用的只读探索工具
+    def planning_tool_allowlist(self) -> frozenset[str]:
+        return frozenset(
+            {
+                "File",
+                "Git",
+                "artifact_read",
+                "git_diff",
+                "glob",
+                "grep",
+                "list_dir",
+                "read_file",
+                "read_image",
+                "repository",
+                "skill",
+                "task_get",
+                "task_list",
+                "tasks",
+                "tool_search",
+                "web_fetch",
+                "web_search",
+                "ask_user_question",
+                "update_plan",
+            }
+        )
+
+    # 返回 plan ticket 签发前 family 工具允许的只读 action 集合
+    def planning_action_allowlist(self) -> dict[str, frozenset[str]]:
         return {
             "File": frozenset({"read", "list", "search_name", "search_content"}),
             "Git": frozenset({"status", "diff", "log", "show", "blame"}),

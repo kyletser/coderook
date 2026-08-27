@@ -144,8 +144,8 @@ async def test_tui_accumulates_cost_from_usage_events() -> None:
         # 100k*3 + 10k*15 + 50k*0.3 = 300+150+15 毫美元 = $0.465
         assert app._cost_total == pytest.approx(0.465)
         assert "mystery-model" in app._unpriced_models
-        header_text = str(app.query_one("#header").render())
-        assert "0.4650" in header_text
+        status_text = str(app.query_one("#status-bar").render())
+        assert "0.4650" in status_text
 
 # 功能：验证会话切换复位成本累计
 # 设计：先累计一笔成本，调用 _reset_cost_state 后断言全部分解归零

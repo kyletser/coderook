@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
+import secrets
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -104,6 +106,9 @@ class AgentTool(BaseTool):
     ) -> None:
         self._registry = registry
         self._spawn = spawn_backend
+        self._plan_tickets: dict[str, DelegationPlan] = {}
+        self._started_tasks: set[tuple[str, str]] = set()
+        self._task_workers: dict[tuple[str, str], str] = {}
 
     # 返回六个 agent action 的独立能力、审批和输入契约
     def build_spec(self) -> ToolSpec:
@@ -111,11 +116,9 @@ class AgentTool(BaseTool):
         properties = start_schema.get("properties")
         if isinstance(properties, dict):
             properties.pop("run_in_background", None)
-        start_schema.pop("required", None)
-        start_schema["oneOf"] = [
-            {"required": ["description", "prompt"]},
-            {"required": ["worker_id"]},
-        ]
+            properties["plan_ticket"] = {"type": "string", "minLength": 64}
+            properties["task_id"] = {"type": "string", "minLength": 1}
+        start_schema["required"] = ["plan_ticket", "task_id"]
         read = frozenset({ToolCapability.READ})
         external = frozenset({ToolCapability.EXTERNAL})
         actions = (
@@ -343,10 +346,23 @@ class AgentTool(BaseTool):
         try:
             if action == "validate_plan":
                 plan = DelegationPlan.model_validate(payload)
+                ticket = hashlib.sha256(
+                    (
+                        json.dumps(
+                            plan.model_dump(mode="json"),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        + secrets.token_hex(32)
+                    ).encode("utf-8")
+                ).hexdigest()
+                self._plan_tickets[ticket] = plan
                 return ToolResult(
                     json.dumps(
                         {
                             "valid": True,
+                            "plan_ticket": ticket,
                             "execution_waves": plan.execution_waves(),
                             "tasks": [task.model_dump(mode="json") for task in plan.tasks],
                             "fallback": None,
@@ -390,8 +406,81 @@ class AgentTool(BaseTool):
                     payload.setdefault("wall_time_s", existing.wall_time_s)
                     payload.setdefault("max_attempts", existing.max_attempts)
                     payload.setdefault("retry_backoff_s", existing.retry_backoff_s)
+                if action == "start":
+                    ticket = str(payload.pop("plan_ticket", ""))
+                    task_id = str(payload.pop("task_id", ""))
+                    ticket_plan = self._plan_tickets.get(ticket)
+                    if ticket_plan is None:
+                        return ToolResult(
+                            "agent.start requires a valid delegation plan ticket",
+                            is_error=True,
+                            error_type="permission_required",
+                        )
+                    task = next(
+                        (item for item in ticket_plan.tasks if item.id == task_id),
+                        None,
+                    )
+                    if task is None:
+                        return ToolResult(
+                            f"task_id is not covered by delegation ticket: {task_id}",
+                            is_error=True,
+                            error_type="schema_error",
+                        )
+                    task_key = (ticket, task_id)
+                    if task_key in self._started_tasks:
+                        return ToolResult(
+                            f"delegation task already started: {task_id}",
+                            is_error=True,
+                            error_type="runtime_error",
+                        )
+                    incomplete = [
+                        dependency
+                        for dependency in task.dependencies
+                        if not self._dependency_completed(ticket, dependency)
+                    ]
+                    if incomplete:
+                        return ToolResult(
+                            f"delegation dependencies are not complete: {incomplete}",
+                            is_error=True,
+                            error_type="runtime_error",
+                        )
+                    payload.update(
+                        {
+                            "description": task.role,
+                            "prompt": task.prompt,
+                            "subagent_type": (
+                                task.role.casefold()
+                                if task.role.casefold() in {"planner", "executor", "reviewer"}
+                                else "reviewer"
+                                if task.write_claim.read_only
+                                else "executor"
+                            ),
+                            "read_only": task.write_claim.read_only,
+                            "exact_files": list(task.write_claim.exact_files),
+                            "write_roots": list(task.write_claim.write_roots),
+                            "coordination_contract": (
+                                task.write_claim.coordination_contract
+                            ),
+                            "dependencies": list(task.dependencies),
+                            "acceptance": list(task.acceptance),
+                            "token_budget": task.token_budget,
+                            "wall_time_s": task.wall_time_s,
+                        }
+                    )
                 payload["run_in_background"] = True
-                return await self._spawn.invoke(payload)
+                result = await self._spawn.invoke(payload)
+                if action == "start" and not result.is_error:
+                    self._started_tasks.add(task_key)
+                    try:
+                        result_payload = json.loads(result.content)
+                    except (json.JSONDecodeError, TypeError):
+                        result_payload = {}
+                    result_worker_id = str(
+                        result_payload.get("worker_id", result_payload.get("run_id", ""))
+                    )
+                    if result_worker_id:
+                        self._task_workers[task_key] = result_worker_id
+                return result
             if action == "status":
                 return self._status(payload)
             if action == "peek":
@@ -418,3 +507,9 @@ class AgentTool(BaseTool):
             is_error=True,
             error_type="schema_error",
         )
+
+    # 判断依赖任务对应 Worker 是否已经以成功终态完成
+    def _dependency_completed(self, ticket: str, task_id: str) -> bool:
+        worker_id = self._task_workers.get((ticket, task_id), "")
+        worker = self._registry.record(worker_id) if worker_id else None
+        return worker is not None and worker.status == WorkerStatus.COMPLETED

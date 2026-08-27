@@ -24,6 +24,8 @@ from code_rook.core.bus.events import (
     GoalContinueDecisionEvent,
     PlanReadyEvent,
     PlanResolvedEvent,
+    RecoveryAvailableEvent,
+    RecoveryResolvedEvent,
     RunSteeredEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
@@ -101,6 +103,7 @@ class _PendingPlan:
     run_id: str
     request: str
     plan: str
+    plan_ticket: str = ""
 
 
 class WorkspaceMutationGuard:
@@ -181,6 +184,7 @@ class SessionManager:
         self._goal_continuations: dict[str, _GoalContinuation] = {}
         self._pending_plans: dict[str, _PendingPlan] = {}
         self._pending_plans_loaded: set[str] = set()
+        self._pending_recoveries: set[str] = set()
         workspace = WorkspaceBoundary.current().root
         self._workspace = workspace.resolve()
         self._skill_loader = SkillLoader(self._workspace)
@@ -437,9 +441,12 @@ class SessionManager:
             if Path(session.workspace).resolve() != self._workspace:
                 continue
             if session.status == "active":
-                self._store.recover_incomplete_tail(session.id)
+                if self._store.has_damaged_ledger(session.id):
+                    self._store.recover_incomplete_tail(session.id)
                 session.status = "interrupted"
                 self._store.write_meta(session)
+            if session.status == "interrupted":
+                self._pending_recoveries.add(session.id)
             self._sessions[session.id] = session
             self._locks[session.id] = asyncio.Lock()
 
@@ -501,6 +508,7 @@ class SessionManager:
                             run_id=event.turn_id,
                             request=str(event.payload.get("request", "")),
                             plan=str(event.payload.get("plan", "")),
+                            plan_ticket=str(event.payload.get("plan_ticket", "")),
                         )
                     elif (
                         event.type == "plan.resolved"
@@ -546,6 +554,7 @@ class SessionManager:
                 run_id=run_id,
                 decision=decision,
                 revision=revision.strip(),
+                plan_ticket=pending.plan_ticket,
                 ts=_now(),
             )
             await self._bus.publish(resolved)
@@ -565,6 +574,49 @@ class SessionManager:
             self._pending_plans.pop(sid, None)
             self._pending_plans_loaded.add(sid)
             return resolved
+
+    # 从当前 Turn 的可信 Ledger 提取仍需用户批准的策略计划
+    def _strategy_pending_plan(
+        self,
+        sid: str,
+        run_id: str,
+        request: str,
+    ) -> _PendingPlan | None:
+        strategy = ""
+        latest_plan: dict[str, Any] | None = None
+        for event in self._store.read_session_events(sid):
+            if event.turn_id != run_id:
+                continue
+            if event.type == "task.profiled":
+                profile = event.payload.get("profile")
+                if isinstance(profile, dict):
+                    strategy = str(profile.get("strategy", ""))
+            elif event.type == "plan.updated":
+                latest_plan = event.payload
+        if strategy != "plan_first" or latest_plan is None:
+            return None
+        raw_steps = latest_plan.get("plan")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return None
+        lines: list[str] = []
+        explanation = str(latest_plan.get("explanation", "")).strip()
+        if explanation:
+            lines.append(explanation)
+        for index, raw_step in enumerate(raw_steps, start=1):
+            if not isinstance(raw_step, dict):
+                continue
+            step = str(raw_step.get("step", "")).strip()
+            if step:
+                lines.append(f"{index}. {step}")
+        if not lines:
+            return None
+        return _PendingPlan(
+            session_id=sid,
+            run_id=run_id,
+            request=request,
+            plan="\n".join(lines),
+            plan_ticket=str(latest_plan.get("plan_ticket", "")),
+        )
 
     # 返回供 Change Center 与 rewind 使用的独占工作区变更上下文
     def workspace_mutation(self) -> Any:
@@ -796,10 +848,23 @@ class SessionManager:
             runtime_started = False
             runtime_attempted = False
             try:
+                resumed_from_interruption = (
+                    session.status == "interrupted" or sid in self._pending_recoveries
+                )
                 if session.status in ("waiting_for_input", "interrupted"):
                     await self._bus.publish(
                         SessionResumedEvent(session_id=sid, ts=_now())
                     )
+                if resumed_from_interruption:
+                    await self._bus.publish(
+                        RecoveryResolvedEvent(
+                            session_id=sid,
+                            run_id=session.run_ids[-1] if session.run_ids else "",
+                            action="continue_with_new_turn",
+                            ts=_now(),
+                        )
+                    )
+                    self._pending_recoveries.discard(sid)
                 self._store.append_message(
                     sid,
                     "user",
@@ -963,6 +1028,21 @@ class SessionManager:
                         ts=session.updated_at,
                     )
                 )
+            elif outcome.status == "success":
+                strategy_plan = self._strategy_pending_plan(sid, run_id, content)
+                if strategy_plan is not None:
+                    self._pending_plans[sid] = strategy_plan
+                    self._pending_plans_loaded.add(sid)
+                    await self._bus.publish(
+                        PlanReadyEvent(
+                            session_id=sid,
+                            run_id=run_id,
+                            request=content,
+                            plan=strategy_plan.plan,
+                            plan_ticket=strategy_plan.plan_ticket,
+                            ts=session.updated_at,
+                        )
+                    )
             if session.mode == "one_shot":
                 if self._hooks is not None:
                     await self._hooks.emit(
@@ -1347,12 +1427,55 @@ class SessionManager:
             raise HandlerError(SESSION_NOT_RESUMABLE, "only chat sessions can be resumed")
 
         async with lock:
+            was_interrupted = session.status == "interrupted"
+            interrupted_run_id = session.run_ids[-1] if session.run_ids else ""
             session.status = "waiting_for_input"
             session.updated_at = _now()
             self._store.write_meta(session)
             if self._runtime is not None:
                 await self._runtime.sync_session(session)
             await self._bus.publish(SessionResumedEvent(session_id=sid, ts=session.updated_at))
+            if was_interrupted:
+                self._pending_recoveries.add(sid)
+                pending = self._store.find_incomplete_tool_calls(sid)
+                read_only_tools = {
+                    "artifact_read",
+                    "glob",
+                    "grep",
+                    "list_dir",
+                    "read_file",
+                    "read_image",
+                    "repository",
+                    "tool_search",
+                }
+                safe_to_resume = not pending or all(
+                    call.tool_name in read_only_tools for call in pending
+                )
+                interruption_kind = "turn_interrupted"
+                summary = "会话已恢复，可从最后一个持久化步骤继续。"
+                if pending and safe_to_resume:
+                    interruption_kind = "read_tool_interrupted"
+                    summary = "只读工具在中断时未返回，可安全重新读取后继续。"
+                elif pending:
+                    interruption_kind = "tool_state_unknown"
+                    summary = "修改或命令状态不确定，请先查看中断前变更。"
+                await self._bus.publish(
+                    RecoveryAvailableEvent(
+                        session_id=sid,
+                        run_id=interrupted_run_id,
+                        interruption_kind=interruption_kind,
+                        safe_to_resume=safe_to_resume,
+                        summary=summary,
+                        actions=[
+                            "continue",
+                            "view_changes",
+                            "rewind_checkpoint",
+                            "abandon_turn",
+                            "export_diagnostics",
+                        ],
+                        ts=session.updated_at,
+                    )
+                )
         return session
 
     async def rename(self, sid: str, title: str) -> Session:

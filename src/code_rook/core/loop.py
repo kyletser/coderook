@@ -26,7 +26,7 @@ from code_rook.core.bus.events import (
     VerificationCompletedEvent,
     VerificationFailedEvent,
 )
-from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
+from code_rook.core.compact.budget import truncate_tool_results
 from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -655,14 +655,8 @@ class AgentLoop:
         snapshot = self._todo_snapshot()
         return snapshot != self._last_todo_snapshot
 
-    # 对上下文内工具结果应用蒸馏与头尾截断的分级预算
+    # 对上下文内工具结果应用确定性头尾裁剪并保留 Artifact 回查入口
     async def _apply_tool_result_budget(self, context: ExecutionContext) -> None:
-        context.messages, _ = await distill_tool_results(
-            context.messages,
-            self._provider,
-            threshold=self._tool_result_summarize_threshold,
-            fallback_keep=self._tool_result_keep,
-        )
         context.messages = truncate_tool_results(
             context.messages,
             limit=self._tool_result_limit,
@@ -735,6 +729,7 @@ class AgentLoop:
                 run_id=context.run_id,
                 tool_use_id=tc.id,
                 tool_name=tc.name,
+                operation_id=tc.id,
                 params=dict(tc.input),
                 ts=_now(),
             )
@@ -744,6 +739,7 @@ class AgentLoop:
                 run_id=context.run_id,
                 tool_use_id=tc.id,
                 tool_name=tc.name,
+                operation_id=tc.id,
                 elapsed_ms=0,
                 output=result.content,
                 ts=_now(),

@@ -244,10 +244,16 @@ class BashTool(BaseTool):
 
         returncode = proc.returncode or 0
         if returncode != 0:
+            runner_failed = bool(
+                self._sandbox_plan is not None
+                and self._sandbox_plan.capability.kind == "windows_acl"
+                and returncode == 127
+                and output.lstrip().startswith("windows-acl-run:")
+            )
             return ToolResult(
                 content=f"[exit {returncode}]\n{output}",
                 is_error=True,
-                error_type="nonzero_exit",
+                error_type=("sandbox_runner_failed" if runner_failed else "nonzero_exit"),
                 process_usage=process_usage,
                 sandbox_enforcement=(
                     self._sandbox_plan.enforcement
@@ -302,10 +308,16 @@ class BashTool(BaseTool):
             )
         text = rendered_output or "[no output]"
         if outcome.exit_code != 0:
+            runner_failed = bool(
+                self._sandbox_plan is not None
+                and self._sandbox_plan.capability.kind == "windows_acl"
+                and outcome.exit_code == 127
+                and text.lstrip().startswith("windows-acl-run:")
+            )
             return ToolResult(
                 content=f"[exit {outcome.exit_code}]\n{text}",
                 is_error=True,
-                error_type="nonzero_exit",
+                error_type=("sandbox_runner_failed" if runner_failed else "nonzero_exit"),
                 process_usage=outcome.process_usage,
                 sandbox_enforcement=(
                     self._sandbox_plan.enforcement

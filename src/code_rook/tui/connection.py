@@ -40,6 +40,8 @@ _THREAD_TOPICS = [
     "subagent.*",
     "skill.*",
     "plan.*",
+    "strategy.*",
+    "recovery.*",
     "user_question.*",
     "lsp.*",
     "background.*",

@@ -24,7 +24,8 @@
   身份而不宣称额外 ACL 隔离。
 - 每个 Turn 冻结 authority、route/model、工具、图片、并行、thinking 与 sandbox capability。修改另一
   session 或运行中配置不能扩大当前 Turn，子 Agent authority 只能收窄。
-- Windows Shell/Run 没有强制 OS sandbox，始终保留显式审批；Linux bwrap/macOS Seatbelt 只有真实探针
+- Windows Restricted Token + capability ACL 在真实探针成功后提供 `partial` 写隔离，并始终保留显式
+  审批；读取、网络、Everyone ACE 与 hard-link 不在承诺内。Linux bwrap/macOS Seatbelt 只有真实探针
   成功才启用，且不再暴露整个宿主根目录。Shell 环境过滤常见 API、云、Git 与 SSH 凭据变量。
 - Anthropic Messages、OpenAI Chat 与 OpenAI Responses 使用统一终止状态；length、incomplete、提前
   EOF、content filter、失败和取消不会误报成功，被截断的工具参数不会执行。
@@ -107,7 +108,7 @@
 
 ## 4. 已知边界
 
-- Windows 的正式目标是 TUI 可用，不是强制 sandbox；Shell/Run 必须 Ask-only。
+- Windows 正式提供 `partial` 写隔离，不宣称完整 sandbox；Shell/Run 必须 Ask-only。
 - 域名级 Shell 出站白名单没有可接受的 OS 强制后端，当前 fail closed。
 - Labs 默认关闭；即使启用，其 UX/恢复语义也不属于稳定合同。
 - Labs Workflow 图、协议状态值、日志正文和 Provider/Skill/MCP 动态文本不翻译。

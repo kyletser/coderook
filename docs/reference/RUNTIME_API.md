@@ -49,7 +49,9 @@ items、events 或 receipt 查询。
 `/v1/capabilities` 除 API/事件/stream-json 版本外，还返回 `feature_flags.stable/labs/internal`、
 `labs_enabled` 和当前宿主的 sandbox capability/state。`feature_flags.labs` 表示代码中存在实验能力；
 `labs_enabled=false`（默认）表示当前进程没有激活这些控制面。调用方必须同时协商级别与激活状态，不能
-仅因命令模型存在就调用 Labs；Windows 的 `windows_forced_sandbox=unavailable` 不能被 UI 描述为已隔离。
+仅因命令模型存在就调用 Labs。Windows 探针成功时返回
+`state=partial_enforcement`、`windows_forced_sandbox=partial`；失败时返回 `unavailable`。客户端必须展示
+partial 的读取/网络限制，不能把它描述为完整隔离。
 
 ## SSE 事件
 

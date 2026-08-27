@@ -65,8 +65,10 @@ class RuntimeSandboxStatus(BaseModel):
 
     platform: str
     capability: SandboxCapability
-    state: Literal["enforcement_available", "degraded"]
-    windows_forced_sandbox: Literal["available", "unavailable", "not_applicable"]
+    state: Literal["enforcement_available", "partial_enforcement", "degraded"]
+    windows_forced_sandbox: Literal[
+        "available", "partial", "unavailable", "not_applicable"
+    ]
 
 
 # 返回旧调用方省略新增字段时使用的完整 feature flag 默认快照
@@ -82,8 +84,12 @@ def _default_feature_flags() -> RuntimeFeatureFlags:
 def _default_sandbox_status() -> RuntimeSandboxStatus:
     target_platform = sys.platform
     detected = detect_sandbox_capability(platform=target_platform)
-    windows_status: Literal["available", "unavailable", "not_applicable"] = (
-        "available"
+    windows_status: Literal[
+        "available", "partial", "unavailable", "not_applicable"
+    ] = (
+        "partial"
+        if target_platform == "win32" and detected.kind == "windows_acl"
+        else "available"
         if target_platform == "win32" and detected.available
         else "unavailable"
         if target_platform == "win32"
@@ -92,7 +98,13 @@ def _default_sandbox_status() -> RuntimeSandboxStatus:
     return RuntimeSandboxStatus(
         platform=target_platform,
         capability=detected,
-        state="enforcement_available" if detected.available else "degraded",
+        state=(
+            "partial_enforcement"
+            if detected.kind == "windows_acl"
+            else "enforcement_available"
+            if detected.available
+            else "degraded"
+        ),
         windows_forced_sandbox=windows_status,
     )
 
@@ -128,12 +140,21 @@ def build_runtime_capabilities(
 ) -> RuntimeCapabilitiesSnapshot:
     target_platform = (
         platform_name
-        or ("win32" if sandbox is not None and sandbox.kind == "windows_none" else None)
+        or (
+            "win32"
+            if sandbox is not None
+            and sandbox.kind in {"windows_none", "windows_acl"}
+            else None
+        )
         or sys.platform
     )
     detected = sandbox or detect_sandbox_capability(platform=target_platform)
-    windows_status: Literal["available", "unavailable", "not_applicable"] = (
-        "available"
+    windows_status: Literal[
+        "available", "partial", "unavailable", "not_applicable"
+    ] = (
+        "partial"
+        if target_platform == "win32" and detected.kind == "windows_acl"
+        else "available"
         if target_platform == "win32" and detected.available
         else "unavailable"
         if target_platform == "win32"
@@ -151,7 +172,13 @@ def build_runtime_capabilities(
         sandbox=RuntimeSandboxStatus(
             platform=target_platform,
             capability=detected,
-            state="enforcement_available" if detected.available else "degraded",
+            state=(
+                "partial_enforcement"
+                if detected.kind == "windows_acl"
+                else "enforcement_available"
+                if detected.available
+                else "degraded"
+            ),
             windows_forced_sandbox=windows_status,
         ),
         stream_json_schema_versions=list(STREAM_JSON_SCHEMA_VERSIONS),

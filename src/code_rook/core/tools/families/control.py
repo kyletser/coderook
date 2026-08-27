@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+import json
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -307,18 +309,42 @@ class UpdatePlanTool(BaseTool):
     def __init__(self, bus: EventBus, run_id: str) -> None:
         self._bus = bus
         self._run_id = run_id
+        self._ticket_handler: Callable[[str], Awaitable[None]] | None = None
+
+    # 绑定计划首次发布后的 Core 解锁回调，避免提示词约束被模型绕过
+    def set_ticket_handler(
+        self,
+        handler: Callable[[str], Awaitable[None]],
+    ) -> None:
+        self._ticket_handler = handler
 
     # 发布可由 runtime 持久投影的类型化计划事件
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         parsed = UpdatePlanParams.model_validate(params)
+        ticket = hashlib.sha256(
+            json.dumps(
+                {
+                    "run_id": self._run_id,
+                    "plan": [item.model_dump(mode="json") for item in parsed.plan],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         await self._bus.publish(
             PlanUpdatedEvent(
                 run_id=self._run_id,
                 explanation=parsed.explanation,
                 plan=parsed.plan,
+                plan_ticket=ticket,
                 ts=_now(),
             )
         )
+        if self._ticket_handler is not None:
+            handler = self._ticket_handler
+            self._ticket_handler = None
+            await handler(ticket)
         completed = sum(step.status == "completed" for step in parsed.plan)
         return ToolResult(f"plan updated: {completed}/{len(parsed.plan)} completed")
 

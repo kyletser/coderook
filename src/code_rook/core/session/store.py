@@ -331,6 +331,7 @@ class SessionStore:
     # 从原生 v2 事件和只读 legacy 前缀投影唯一的模型消息历史
     def derive_messages(self, sid: str) -> list[dict[str, Any]]:
         rows = self._read_rows(sid)
+        shadowed, replacements = self._compaction_projection(rows)
         referenced = {
             int(value)
             for _line_no, row in rows
@@ -378,7 +379,13 @@ class SessionStore:
         for _line_no, row in rows:
             ledger_seq = row.get("ledger_seq")
             if row.get("kind") == "event":
-                if row.get("type") not in {"input.admitted", "llm.message"}:
+                event_type = row.get("type")
+                if not isinstance(ledger_seq, int) or ledger_seq in shadowed:
+                    continue
+                if event_type == "context.compaction.message":
+                    if ledger_seq not in replacements:
+                        continue
+                elif event_type not in {"input.admitted", "llm.message"}:
                     continue
                 payload = row.get("payload")
                 if not isinstance(payload, dict):
@@ -391,7 +398,9 @@ class SessionStore:
                     block_id=payload.get("block_id", f"event:{ledger_seq}"),
                 )
                 continue
-            if isinstance(ledger_seq, int) and ledger_seq in referenced:
+            if isinstance(ledger_seq, int) and (
+                ledger_seq in referenced or ledger_seq in shadowed
+            ):
                 continue
             if row.get("kind") == "block":
                 append_content(
@@ -411,6 +420,58 @@ class SessionStore:
 
         return truncate_tool_results(messages)
 
+    # 从已提交压缩事件计算被遮蔽事实和生效替代消息，忽略未完成压缩批次
+    def _compaction_projection(
+        self,
+        rows: list[tuple[int, dict[str, Any]]],
+    ) -> tuple[set[int], set[int]]:
+        shadowed: set[int] = set()
+        replacements: set[int] = set()
+        for _line_no, row in rows:
+            if row.get("kind") != "event" or row.get("type") != "context.compaction.committed":
+                continue
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            shadowed.update(
+                value
+                for value in payload.get("shadowed_event_seqs", [])
+                if isinstance(value, int) and value > 0
+            )
+            replacements.update(
+                value
+                for value in payload.get("replacement_event_seqs", [])
+                if isinstance(value, int) and value > 0
+            )
+        replacements.difference_update(shadowed)
+        return shadowed, replacements
+
+    # 返回当前模型投影实际消费的账本序号，供下一次压缩建立 shadow 范围
+    def _active_model_ledger_seqs(self, sid: str) -> list[int]:
+        rows = self._read_rows(sid)
+        shadowed, replacements = self._compaction_projection(rows)
+        referenced = {
+            int(value)
+            for _line_no, row in rows
+            if row.get("kind") == "event"
+            for value in row.get("source_event_seqs", [])
+            if isinstance(value, int)
+        }
+        active: list[int] = []
+        for _line_no, row in rows:
+            sequence = row.get("ledger_seq")
+            if not isinstance(sequence, int) or sequence in shadowed:
+                continue
+            if row.get("kind") == "event":
+                event_type = row.get("type")
+                if event_type in {"input.admitted", "llm.message"} or (
+                    event_type == "context.compaction.message" and sequence in replacements
+                ):
+                    active.append(sequence)
+            elif sequence not in referenced:
+                active.append(sequence)
+        return active
+
     # 读取完整 thread 并返回可直接传给 Anthropic 的 messages
     def read_messages(self, sid: str) -> list[dict[str, Any]]:
         return self.derive_messages(sid)
@@ -418,6 +479,11 @@ class SessionStore:
     def find_incomplete_tool_calls(self, sid: str) -> list[IncompleteToolCall]:
         _, pending, _, _ = self._scan_recovery_state(sid)
         return list(pending.values())
+
+    # 检查账本是否存在校验链、JSON 或消息分组损坏，未配对工具本身不算文件损坏
+    def has_damaged_ledger(self, sid: str) -> bool:
+        _, _, damaged, _ = self._scan_recovery_state(sid)
+        return damaged
 
     def recover_incomplete_tail(self, sid: str) -> TranscriptRecovery | None:
         path = self.session_dir(sid) / "thread.jsonl"
@@ -865,47 +931,84 @@ class SessionStore:
         finally:
             os.close(descriptor)
 
-    # 将压缩后的模型历史改写为纯 v2 事件账本并保留原文件备份
-    def write_compacted(self, sid: str, messages: list[dict[str, Any]]) -> None:
-        path = self.session_dir(sid) / "thread.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        bak = self.session_dir(sid) / f"thread_{ts_str}.jsonl.bak"
-        if path.exists():
-            self._write_new_file(bak, path.read_bytes())
-        timestamp = _now()
-        raw_rows = [
-            SessionEventEnvelope(
-                session_id=sid,
-                seq=sequence,
-                timestamp=timestamp,
-                type="llm.message",
+    # 追加完整压缩事务并以最后一条 committed 事件原子启用 shadow 投影
+    def append_compaction(
+        self,
+        sid: str,
+        messages: list[dict[str, Any]],
+        *,
+        run_id: str,
+        summary: str = "",
+        trigger: str = "auto",
+        original_tokens: int = 0,
+        compacted_tokens: int = 0,
+        pinned_fact_count: int = 0,
+    ) -> tuple[list[int], list[int]]:
+        shadowed = self._active_model_ledger_seqs(sid)
+        if not shadowed:
+            return [], []
+        started = self.append_session_event(
+            sid,
+            event_type="context.compaction.started",
+            turn_id=run_id,
+            source_event_seqs=tuple(shadowed),
+            payload={
+                "shadow_start_seq": min(shadowed),
+                "shadow_end_seq": max(shadowed),
+                "trigger": trigger,
+            },
+            provenance="compaction",
+        )
+        replacement_seqs: list[int] = []
+        for index, message in enumerate(messages, 1):
+            replacement = self.append_session_event(
+                sid,
+                event_type="context.compaction.message",
+                turn_id=run_id,
+                source_event_seqs=tuple(shadowed),
                 payload={
-                    "role": msg["role"],
-                    "content": msg["content"],
-                    "message_id": f"compacted:{sequence}",
+                    "role": message.get("role", "user"),
+                    "content": message.get("content", ""),
+                    "message_id": f"compaction:{started.seq}:{index}",
                 },
                 provenance="compaction",
                 replay_fidelity="compacted",
-            ).model_dump(mode="json")
-            for sequence, msg in enumerate(messages, 1)
-        ]
-        rows: list[dict[str, Any]] = []
-        previous = ""
-        for sequence, row in enumerate(raw_rows, 1):
-            ledger_row = dict(row)
-            ledger_row["ledger_seq"] = sequence
-            ledger_row["ledger_prev_checksum"] = previous
-            ledger_row["ledger_checksum"] = self._ledger_checksum(previous, ledger_row)
-            previous = str(ledger_row["ledger_checksum"])
-            rows.append(ledger_row)
-        content_bytes = "".join(
-            json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
-            for row in rows
-        ).encode("utf-8")
-        self._replace_file(path, content_bytes)
-        self._known_block_ids.pop(sid, None)
-        self._ledger_heads[sid] = (len(rows), previous)
+            )
+            replacement_seqs.append(replacement.seq)
+        self.append_session_event(
+            sid,
+            event_type="context.compaction.summary",
+            turn_id=run_id,
+            source_event_seqs=tuple(shadowed),
+            payload={"summary": summary, "pinned_fact_count": pinned_fact_count},
+            provenance="compaction",
+        )
+        self.append_session_event(
+            sid,
+            event_type="context.compaction.committed",
+            turn_id=run_id,
+            source_event_seqs=tuple((*shadowed, *replacement_seqs)),
+            payload={
+                "shadowed_event_seqs": shadowed,
+                "replacement_event_seqs": replacement_seqs,
+                "original_tokens": original_tokens,
+                "compacted_tokens": compacted_tokens,
+                "started_seq": started.seq,
+            },
+            provenance="compaction",
+            replay_fidelity="compacted",
+        )
+        return shadowed, replacement_seqs
+
+    # 兼容旧调用方并改为追加式压缩，永不重写 thread.jsonl
+    def write_compacted(self, sid: str, messages: list[dict[str, Any]]) -> None:
+        self.append_compaction(
+            sid,
+            messages,
+            run_id="legacy-compaction",
+            summary="legacy compaction projection",
+            trigger="legacy_api",
+        )
 
     # 读取 notes.md 全文，文件不存在时返回空字符串
     def read_notes(self, sid: str) -> str:

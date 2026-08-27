@@ -43,6 +43,7 @@ async def test_runtime_capabilities_publish_supported_contract_versions() -> Non
     assert capabilities["feature_flags"]["internal"]["runtime_projection"] is True
     assert capabilities["sandbox"]["state"] in {
         "enforcement_available",
+        "partial_enforcement",
         "degraded",
     }
 

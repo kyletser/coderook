@@ -113,8 +113,9 @@ index races, and stale review tokens fail closed.
 - Linux can use bubblewrap and macOS can use Seatbelt after a real execution probe succeeds.
   The enforced profiles expose the workspace, required runtime paths, and temporary directories
   instead of read-binding the whole host filesystem.
-- Windows is supported for the TUI, but it has no enforced filesystem/network sandbox. Shell and
-  Run actions remain explicit-approval operations and display the degraded boundary.
+- Windows uses a probed Restricted Token + NTFS ACL backend that confines writes to the workspace
+  and a private temporary directory. It is reported as `partial`: reads and network remain outside
+  this boundary, and every Shell/Run action still requires explicit approval.
 - Shell environments are allow-listed and remove common API-key, cloud, Git, and SSH credential
   variables. This is defense in depth, not a general secret-detection guarantee.
 - If the event ledger or runtime projection fails to persist, CodeRook emits `audit.degraded` and
@@ -175,11 +176,14 @@ the durable thread stream with a per-session sequence cursor, while global daemo
 separate channel. Details are in the
 [functional architecture](docs/reference/FUNCTIONAL_ARCHITECTURE.md).
 
-Before each Turn, CodeRook freezes a hybrid TaskProfile that controls planning, model-visible
-tools, long-context policy, and whether delegation is permitted. Adaptive compaction refuses to
-replace context if Ledger-backed goals, constraints, pending approvals, or failures lose their
-source-event references. Multi-agent plans are bounded to three Workers, reject dependency cycles
-and overlapping Write Claims, and keep writes in independent worktrees until digest-bound review.
+Before each Turn, CodeRook freezes a deterministic TaskProfile that controls planning,
+model-visible tools, long-context policy, and whether delegation is permitted. Low-confidence work
+must ask one focused clarification; ambiguous mutation then remains read-only until a Plan Ticket is
+recorded and approved through the durable Plan Review flow. Adaptive compaction appends a shadow
+projection instead of rewriting the Ledger and refuses to commit if
+Ledger-backed goals, constraints, pending approvals, or failures lose their source-event references.
+Multi-agent plans are bounded to three Workers, require a Delegation Ticket, reject dependency
+cycles and overlapping Write Claims, and keep writes in independent worktrees until digest-bound review.
 These mechanisms have reproducible experiment runners, but the repository does not claim quality
 improvements until their raw reports exist. See the
 [reliability experiment guide](docs/guides/RELIABILITY_EXPERIMENTS.md).

@@ -314,15 +314,16 @@ async def test_header_shows_context_bar() -> None:
         app._update_header("running")
         await pilot.pause()
         header_text = str(app.query_one("#header").render())
+        status_text = str(app.query_one("#status-bar").render())
 
-        assert "ctx:42%" in header_text
+        assert "ctx 42%" in status_text
         assert "running" in header_text
 
         app._handle_event({"type": "llm.usage", "run_id": "run-x", "context_pct": 0.9})
         await pilot.pause()
-        header_text = str(app.query_one("#header").render())
+        status_text = str(app.query_one("#status-bar").render())
 
-        assert "ctx:90%" in header_text
+        assert "ctx 90%" in status_text
 
 
 # 功能：验证 /rename 通过 IPC 调用 session.rename 并更新本地标题状态

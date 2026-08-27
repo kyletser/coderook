@@ -34,7 +34,13 @@ class SandboxCapability(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     available: bool
-    kind: Literal["none", "windows_none", "linux_bwrap", "macos_seatbelt"]
+    kind: Literal[
+        "none",
+        "windows_none",
+        "windows_acl",
+        "linux_bwrap",
+        "macos_seatbelt",
+    ]
     reason: str
 
 

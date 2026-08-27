@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from code_rook.core.bus.events import ContextCompactedEvent
+from code_rook.core.bus.events import (
+    ContextCompactedEvent,
+    ContextCompactionCommittedEvent,
+    ContextCompactionStartedEvent,
+    ContextCompactionSummaryEvent,
+)
 from code_rook.core.compact.models import (
     CompactionQuality,
     CompactionSummary,
@@ -126,8 +131,8 @@ class Compactor:
         if result is None:
             return None
 
-        context.messages = result.messages
         await self.commit(result, run_id=context.run_id, trigger=trigger)
+        context.messages = result.messages
         logger.info(
             "context compacted session=%s run=%s original≈%d compacted≈%d retained=%d quality=%.2f",
             self._session_id,
@@ -149,9 +154,28 @@ class Compactor:
         publish: bool = True,
     ) -> None:
         result.summary_path = self._write_summary(result)
+        shadowed: list[int] = []
+        replacements: list[int] = []
         if self._store is not None and self._session_id:
-            self._store.write_compacted(self._session_id, result.messages)
+            shadowed, replacements = self._store.append_compaction(
+                self._session_id,
+                result.messages,
+                run_id=run_id,
+                summary=result.summary_text,
+                trigger=trigger,
+                original_tokens=result.original_token_estimate,
+                compacted_tokens=result.compacted_tokens,
+                pinned_fact_count=result.pinned_fact_count,
+            )
         if publish:
+            if shadowed:
+                await self._publish_projection_events(
+                    run_id,
+                    result,
+                    trigger,
+                    shadowed,
+                    replacements,
+                )
             await self._publish_event(run_id, result, trigger)
 
     # 压缩旧消息并返回结构化摘要与完整最近窗口，失败时不修改输入
@@ -343,7 +367,76 @@ class Compactor:
                         source_event_seqs=[event.seq],
                     )
                 )
-        return selected[-24:]
+        latest_plan = next(
+            (event for event in reversed(events) if event.type == "plan.updated"),
+            None,
+        )
+        if latest_plan is not None:
+            selected.append(
+                PinnedFact(
+                    id="active_plan",
+                    text=_event_fact_text(latest_plan.payload),
+                    source_event_seqs=[latest_plan.seq],
+                )
+            )
+        latest_verification = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type in {"verification.completed", "verification.failed"}
+            ),
+            None,
+        )
+        if latest_verification is not None:
+            selected.append(
+                PinnedFact(
+                    id="latest_verification",
+                    text=_event_fact_text(latest_verification.payload),
+                    source_event_seqs=[latest_verification.seq],
+                )
+            )
+        return selected
+
+    # 发布 append-only 压缩事务的开始、摘要和提交事件供 TUI 与回放消费
+    async def _publish_projection_events(
+        self,
+        run_id: str,
+        result: CompactionResult,
+        trigger: str,
+        shadowed: list[int],
+        replacements: list[int],
+    ) -> None:
+        await self._bus.publish(
+            ContextCompactionStartedEvent(
+                session_id=self._session_id,
+                run_id=run_id,
+                shadow_start_seq=min(shadowed),
+                shadow_end_seq=max(shadowed),
+                trigger=trigger,
+                ts=_now(),
+            )
+        )
+        await self._bus.publish(
+            ContextCompactionSummaryEvent(
+                session_id=self._session_id,
+                run_id=run_id,
+                summary=result.summary_text,
+                source_event_seqs=shadowed,
+                pinned_fact_count=result.pinned_fact_count,
+                ts=_now(),
+            )
+        )
+        await self._bus.publish(
+            ContextCompactionCommittedEvent(
+                session_id=self._session_id,
+                run_id=run_id,
+                shadowed_event_seqs=shadowed,
+                replacement_event_seqs=replacements,
+                original_tokens=result.original_token_estimate,
+                compacted_tokens=result.compacted_tokens,
+                ts=_now(),
+            )
+        )
 
     # 生成不依赖模型的头尾截断对照结果并保持完整工具调用原子组
     def _truncate_result(

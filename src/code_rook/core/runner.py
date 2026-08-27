@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
@@ -19,8 +20,14 @@ from code_rook.core.bus.events import (
     RunFailureCategory,
     RunFinishedEvent,
     RunOutcomeStatus,
+    RunPhaseChangedEvent,
     RunStartedEvent,
+    StrategyProposedEvent,
+    StrategyResolvedEvent,
     TaskProfiledEvent,
+    ToolCallStartedEvent,
+    VerificationCompletedEvent,
+    VerificationFailedEvent,
 )
 from code_rook.core.capabilities import (
     CapabilityContribution,
@@ -60,10 +67,12 @@ from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
-from code_rook.core.strategy import TaskProfile, TaskStrategyRouter
+from code_rook.core.strategy import TaskProfile, TaskStrategy, TaskStrategyRouter
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
+from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
+from code_rook.core.tools.families.control import UpdatePlanTool
 from code_rook.core.tools.program import RunToolProgram
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.trace.provider import TracingProvider
@@ -466,7 +475,58 @@ class AgentRunner:
             writer.subscribe(bus)
             if isinstance(active_ledger, SessionLedgerBridge):
                 active_ledger.subscribe(bus)
+            tracked_phase = ""
+
+            # 根据可信工具与验证事件发布唯一阶段信号，TUI 不再自行猜测运行状态
+            async def publish_runtime_phase(event: object) -> None:
+                nonlocal tracked_phase
+                phase: Literal["exploring", "executing", "verifying"] | None = None
+                summary = ""
+                if isinstance(event, (VerificationCompletedEvent, VerificationFailedEvent)):
+                    phase = "verifying"
+                    summary = "正在核对验证结果"
+                elif isinstance(event, ToolCallStartedEvent):
+                    action = str(event.params.get("action", "")).casefold()
+                    if event.tool_name in {"read_file", "list_dir", "grep", "glob"} or action in {
+                        "read",
+                        "list",
+                        "search",
+                        "search_name",
+                        "search_content",
+                        "status",
+                        "diff",
+                    }:
+                        phase = "exploring"
+                        summary = "正在读取和定位相关代码"
+                    elif event.tool_name not in {"update_plan", "ask_user_question"}:
+                        phase = "executing"
+                        summary = "正在执行已冻结的任务策略"
+                if phase is None or phase == tracked_phase:
+                    return
+                tracked_phase = phase
+                await bus.publish(
+                    RunPhaseChangedEvent(
+                        run_id=run_id,
+                        phase=phase,
+                        current={"exploring": 2, "executing": 5, "verifying": 6}[phase],
+                        total=8,
+                        summary=summary,
+                        ts=_now(),
+                    )
+                )
+
+            bus.subscribe(publish_runtime_phase)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
+            await bus.publish(
+                RunPhaseChangedEvent(
+                    run_id=run_id,
+                    phase="understanding",
+                    current=1,
+                    total=8,
+                    summary="正在理解任务边界和风险",
+                    ts=_now(),
+                )
+            )
             await bus.publish(
                 ContextRepositoryEvent(
                     run_id=run_id,
@@ -482,6 +542,7 @@ class AgentRunner:
             )
 
             cancelled = False
+            plan_approval_pending = False
             try:
                 route_binding = await self.resolve_turn_binding(
                     resolved_route=resolved_route,
@@ -554,6 +615,15 @@ class AgentRunner:
                         ts=_now(),
                     )
                 )
+                await bus.publish(
+                    StrategyProposedEvent(
+                        run_id=run_id,
+                        profile_digest=task_profile.digest,
+                        strategy=task_profile.strategy.value,
+                        summary=task_profile.user_summary,
+                        ts=_now(),
+                    )
+                )
                 context.runtime_context = (
                     context.runtime_context.rstrip()
                     + "\n\n## Frozen Task Strategy\n"
@@ -595,16 +665,203 @@ class AgentRunner:
                         resolved_route=route_binding,
                         authority_snapshot=turn_authority,
                     )
-                    registry.set_model_tool_allowlist(
-                        task_profile.model_tool_allowlist()
-                        if self._provider is None
-                        else None
+                    normal_tool_allowlist = task_profile.model_tool_allowlist()
+                    normal_action_allowlist = task_profile.model_action_allowlist()
+                    plan_gate_active = (
+                        task_profile.strategy == TaskStrategy.PLAN_FIRST
+                        and runtime_mode == RuntimeMode.ACT
                     )
-                    registry.set_model_action_allowlist(
-                        task_profile.model_action_allowlist()
-                        if self._provider is None
-                        else {}
+                    question_tool = registry.get("ask_user_question")
+                    clarification_gate_active = (
+                        task_profile.confidence < 0.75
+                        and runtime_mode == RuntimeMode.ACT
+                        and isinstance(question_tool, AskUserQuestionTool)
                     )
+                    if clarification_gate_active:
+                        registry.set_model_tool_allowlist(
+                            frozenset({"ask_user_question"})
+                        )
+                        registry.set_model_action_allowlist({})
+                    else:
+                        registry.set_model_tool_allowlist(
+                            task_profile.planning_tool_allowlist()
+                            if plan_gate_active
+                            else normal_tool_allowlist
+                        )
+                        registry.set_model_action_allowlist(
+                            task_profile.planning_action_allowlist()
+                            if plan_gate_active
+                            else normal_action_allowlist
+                        )
+                    plan_tool = registry.get("update_plan")
+                    if plan_gate_active and isinstance(plan_tool, UpdatePlanTool):
+
+                        # 计划持久化后等待会话审批，当前 Turn 始终保持只读目录
+                        async def resolve_plan_gate(ticket: str) -> None:
+                            nonlocal plan_approval_pending
+                            plan_approval_pending = True
+                            await bus.publish(
+                                RunPhaseChangedEvent(
+                                    run_id=run_id,
+                                    phase="waiting_confirmation",
+                                    current=4,
+                                    total=8,
+                                    summary=(
+                                        "计划已记录，等待用户批准；当前 Turn 不开放修改工具"
+                                    ),
+                                    ts=_now(),
+                                )
+                            )
+
+                        plan_tool.set_ticket_handler(resolve_plan_gate)
+                        if not clarification_gate_active:
+                            await bus.publish(
+                                RunPhaseChangedEvent(
+                                    run_id=run_id,
+                                    phase="planning",
+                                    current=3,
+                                    total=8,
+                                    summary="只读探索并形成可执行计划",
+                                    ts=_now(),
+                                )
+                            )
+                    else:
+                        if plan_gate_active:
+                            registry.set_model_tool_allowlist(normal_tool_allowlist)
+                            registry.set_model_action_allowlist(normal_action_allowlist)
+                        if not clarification_gate_active:
+                            await bus.publish(
+                                StrategyResolvedEvent(
+                                    run_id=run_id,
+                                    profile_digest=task_profile.digest,
+                                    strategy=task_profile.strategy.value,
+                                    reason="frozen_task_profile",
+                                    ts=_now(),
+                                )
+                            )
+                            await bus.publish(
+                                RunPhaseChangedEvent(
+                                    run_id=run_id,
+                                    phase=(
+                                        "exploring"
+                                        if task_profile.risk.value == "read"
+                                        else "executing"
+                                    ),
+                                    current=(
+                                        2 if task_profile.risk.value == "read" else 5
+                                    ),
+                                    total=8,
+                                    summary=task_profile.user_summary,
+                                    ts=_now(),
+                                )
+                            )
+                    if clarification_gate_active and isinstance(
+                        question_tool,
+                        AskUserQuestionTool,
+                    ):
+
+                        # 用户回答后只推进到画像允许的下一层门禁，不直接扩大修改权限
+                        async def resolve_clarification_gate(answer: str) -> None:
+                            nonlocal task_profile
+                            nonlocal normal_action_allowlist
+                            nonlocal normal_tool_allowlist
+                            clarified = await TaskStrategyRouter().classify(
+                                f"{goal}\n\nUser clarification: {answer}",
+                                runtime_mode=runtime_mode,
+                                preset_id=(
+                                    agent_preset.id
+                                    if agent_preset is not None
+                                    else "standard"
+                                ),
+                                method="rules_only",
+                                delegation_policy=self._config.agent.delegation_policy,
+                            )
+                            if plan_gate_active:
+                                clarified = clarified.model_copy(
+                                    update={
+                                        "strategy": TaskStrategy.PLAN_FIRST,
+                                        "delegation_allowed": False,
+                                        "signals": tuple(
+                                            (*clarified.signals, "clarification_answered")
+                                        ),
+                                        "source": "rules_clarified",
+                                        "digest": "",
+                                    }
+                                ).with_digest()
+                            task_profile = clarified
+                            normal_tool_allowlist = task_profile.model_tool_allowlist()
+                            normal_action_allowlist = task_profile.model_action_allowlist()
+                            context.runtime_context = (
+                                context.runtime_context.rstrip()
+                                + "\n\n## Clarified Task Strategy\n"
+                                + json.dumps(
+                                    task_profile.model_dump(mode="json"),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                            )
+                            await bus.publish(
+                                TaskProfiledEvent(
+                                    run_id=run_id,
+                                    profile=task_profile.model_dump(mode="json"),
+                                    profile_digest=task_profile.digest,
+                                    ts=_now(),
+                                )
+                            )
+                            await bus.publish(
+                                StrategyProposedEvent(
+                                    run_id=run_id,
+                                    profile_digest=task_profile.digest,
+                                    strategy=task_profile.strategy.value,
+                                    summary=task_profile.user_summary,
+                                    ts=_now(),
+                                )
+                            )
+                            if plan_gate_active:
+                                registry.set_model_tool_allowlist(
+                                    task_profile.planning_tool_allowlist()
+                                )
+                                registry.set_model_action_allowlist(
+                                    task_profile.planning_action_allowlist()
+                                )
+                            else:
+                                registry.set_model_tool_allowlist(normal_tool_allowlist)
+                                registry.set_model_action_allowlist(normal_action_allowlist)
+                                await bus.publish(
+                                    StrategyResolvedEvent(
+                                        run_id=run_id,
+                                        profile_digest=task_profile.digest,
+                                        strategy=task_profile.strategy.value,
+                                        reason="clarification_answered",
+                                        ts=_now(),
+                                    )
+                                )
+                            await bus.publish(
+                                RunPhaseChangedEvent(
+                                    run_id=run_id,
+                                    phase="planning" if plan_gate_active else "exploring",
+                                    current=3 if plan_gate_active else 2,
+                                    total=8,
+                                    summary=(
+                                        "已收到澄清，继续只读探索并形成计划"
+                                        if plan_gate_active
+                                        else "已收到澄清，继续处理任务"
+                                    ),
+                                    ts=_now(),
+                                )
+                            )
+
+                        question_tool.set_answer_handler(resolve_clarification_gate)
+                        await bus.publish(
+                            RunPhaseChangedEvent(
+                                run_id=run_id,
+                                phase="waiting_confirmation",
+                                current=4,
+                                total=8,
+                                summary="任务边界不明确，需要一个简短澄清",
+                                ts=_now(),
+                            )
+                        )
                     tool_scope = CapabilityScope(
                         workspace=self._workspace_capability_scope.workspace,
                         session=session_id_str or run_id,
@@ -726,6 +983,31 @@ class AgentRunner:
             public_outcome, failure_category = _public_run_outcome(
                 context.status,
                 context.reason,
+            )
+            if plan_approval_pending and context.status == "success":
+                public_outcome = "incomplete"
+                failure_category = None
+            await bus.publish(
+                RunPhaseChangedEvent(
+                    run_id=run_id,
+                    phase=(
+                        "waiting_confirmation"
+                        if plan_approval_pending and context.status == "success"
+                        else "completed"
+                        if public_outcome == "completed"
+                        else "interrupted"
+                        if public_outcome == "cancelled"
+                        else "failed"
+                    ),
+                    current=8,
+                    total=8,
+                    summary=(
+                        "plan_approval_required"
+                        if plan_approval_pending and context.status == "success"
+                        else context.reason or context.status
+                    ),
+                    ts=_now(),
+                )
             )
             await bus.publish(
                 RunFinishedEvent(

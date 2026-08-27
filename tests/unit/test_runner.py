@@ -13,6 +13,7 @@ from code_rook.core.authority import AuthoritySnapshot, RuntimeMode
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.route_registry import ResolvedRoute
 from code_rook.core.llm.routes import get_route_preset
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
@@ -144,6 +145,71 @@ class _ForcedPlanWriteProvider:
         )
 
 
+class _ClarificationPlanProvider:
+    # 初始化澄清与计划门禁探针，保存每轮模型可见工具集合
+    def __init__(self) -> None:
+        self.schemas_by_call: list[set[str]] = []
+        self.file_actions_by_call: list[set[str]] = []
+
+    # 依次请求澄清、提交计划和结束，观察 Core 是否逐层开放能力
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+        thinking: str | None = None,
+    ) -> LlmResponse:
+        names = {str(schema["name"]) for schema in tool_schemas}
+        self.schemas_by_call.append(names)
+        file_schema = next(
+            (schema for schema in tool_schemas if schema["name"] == "File"),
+            None,
+        )
+        actions: set[str] = set()
+        if file_schema is not None:
+            input_schema = file_schema["input_schema"]
+            assert isinstance(input_schema, dict)
+            variants = input_schema.get("oneOf", [])
+            assert isinstance(variants, list)
+            actions = {
+                str(variant["properties"]["action"]["enum"][0])
+                for variant in variants
+            }
+        self.file_actions_by_call.append(actions)
+        if len(self.schemas_by_call) == 1:
+            return LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[
+                    ToolCallBlock(
+                        id="clarify-1",
+                        name="ask_user_question",
+                        input={"question": "需要修改哪个范围？"},
+                    )
+                ],
+            )
+        if len(self.schemas_by_call) == 2:
+            return LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[
+                    ToolCallBlock(
+                        id="plan-1",
+                        name="update_plan",
+                        input={
+                            "plan": [
+                                {"step": "确认目标范围", "status": "completed"},
+                                {"step": "执行用户确认的修改", "status": "in_progress"},
+                            ]
+                        },
+                    )
+                ],
+            )
+        return LlmResponse(stop_reason="end_turn", text="ready")
+
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -248,7 +314,11 @@ async def test_events_jsonl_created_with_started_and_finished(tmp_path: Path) ->
     await _run(tmp_path=tmp_path)
     jsonl_files = list(tmp_path.rglob("events.jsonl"))
     assert len(jsonl_files) == 1
-    lines = [json.loads(ln) for ln in jsonl_files[0].read_text().splitlines() if ln]
+    lines = [
+        json.loads(line)
+        for line in jsonl_files[0].read_text(encoding="utf-8").splitlines()
+        if line
+    ]
     event_types = [e["type"] for e in lines]
     assert event_types[0] == "run.started"
     assert event_types[-1] == "run.finished"
@@ -440,7 +510,10 @@ async def test_general_intent_correction_contract_is_injected(
     assert "## Available Extensions" in provider.system
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
     assert "skill" in schemas
-    assert "shell command in the workspace" in str(schemas["Bash"]["description"])
+    if "Bash" in schemas:
+        assert "shell command in the workspace" in str(schemas["Bash"]["description"])
+    else:
+        assert "update_plan" in schemas
     assert "scope is only CodeRook task records" in str(schemas["tasks"]["description"])
 
 
@@ -685,6 +758,62 @@ async def test_plan_mode_enforces_read_only_registry_and_restores_authority(
     }
     assert "## Plan Mode" in provider.system
     assert permission_manager.get_authority_snapshot(session.id) == original_authority
+
+
+# 功能：验证低置信度任务必须先澄清，记录 Plan 后仍不能在当前 Turn 看到修改工具
+# 设计：用三轮 provider 捕获每轮 schema，并由真实 InteractionManager 即时回答，覆盖 ask→plan→等待审批状态机
+async def test_low_confidence_task_unlocks_clarification_then_plan_gate(
+    tmp_path: Path,
+) -> None:
+    bus = EventBus()
+    interaction = InteractionManager(bus)
+    provider = _ClarificationPlanProvider()
+    events: list[BaseModel] = []
+
+    # 收到结构化澄清问题后立即回答，模拟 TUI 用户选择
+    async def answer_question(event: BaseModel) -> None:
+        if getattr(event, "type", "") == "user_question.asked":
+            interaction.answer(str(getattr(event, "question_id")), "修改当前模块")
+
+    # 收集运行结论，证明等待批准不会被结果卡误标为完成
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(answer_question)
+    bus.subscribe(collect)
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        bus=bus,
+        interaction_manager=interaction,
+        workspace_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+    )
+
+    outcome = await runner.run_and_capture("帮我处理一下", run_id="run-clarify")
+
+    assert outcome.status == "success"
+    assert provider.schemas_by_call[0] == {"ask_user_question"}
+    assert "update_plan" in provider.schemas_by_call[1]
+    assert provider.file_actions_by_call[1] == {
+        "read",
+        "list",
+        "search_name",
+        "search_content",
+    }
+    assert provider.file_actions_by_call[2] == {
+        "read",
+        "list",
+        "search_name",
+        "search_content",
+    }
+    finished = next(event for event in events if getattr(event, "type", "") == "run.finished")
+    assert getattr(finished, "outcome") == "incomplete"
+    assert any(
+        getattr(event, "type", "") == "run.phase_changed"
+        and getattr(event, "phase", "") == "waiting_confirmation"
+        for event in events
+    )
 
 
 # 功能：验证 Runner 发布实际 route receipt 事件且事件序列化不包含密钥正文

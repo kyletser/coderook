@@ -60,9 +60,10 @@ Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置�
 
 - `commands.py`：认证、run、session、runtime、权限、任务、worker、workflow 和扩展管理命令。
 - `events.py`：run/step、LLM、工具、审批、上下文、计划、subagent 和后台状态事件。
-- `task.profiled` 在模型调用前持久化混合 TaskProfile；画像包含意图、范围、风险、执行策略、上下文
-  策略、置信度和信号。明确安全信号由规则决定，只有歧义任务才允许一次结构化分类；风险和范围在
-  合并时只能提高，低置信度固定回退 `plan_first` 并关闭委派。
+- `task.profiled` 在模型调用前持久化 TaskProfile；画像包含意图、范围、风险、执行策略、上下文策略、
+  deliverable、success criteria、置信度和用户可见摘要。默认 `rules_only` 不增加分类调用；显式实验启用
+  hybrid 时，风险和范围在合并时仍只能提高。低置信度 Turn 初始只暴露结构化提问；回答入账后用原请求
+  和答案重建画像，但保留 `plan_first` 并关闭委派，防止澄清直接越过写入门禁。
 - `envelope.py`：请求、成功、错误、事件推送和认证错误码。
 
 `scripts/gen_protocol_doc.py` 从模型生成 `WIRE_PROTOCOL.md`。手写架构文档不复制字段表。
@@ -202,19 +203,22 @@ Sandbox backend 在构造时也冻结真实探针结果，避免 plan 和 spawn 
 
 - Linux：能力探测成功时使用 bubblewrap；
 - macOS：能力探测成功时使用 Seatbelt；
-- Windows：没有文件系统/网络强制后端，明确降级到审批链和工作区边界；
+- Windows：真实探针成功时使用 Restricted Token + capability SID + NTFS/ReFS ACL 限制写入，报告
+  `partial`；探针失败时降级 `windows_none`；
 - 域名白名单没有强制后端时 fail closed。
 
 Linux bwrap 不再只读绑定宿主 `/`，而是挂载必要系统运行时、工作区、隔离 Home 和临时目录；macOS
 Seatbelt 同样默认拒绝整机读取。shell 子进程使用环境白名单，过滤常见 API key、云、SSH 与 Git
-凭据变量。Windows 的 Shell/Run 无论权限姿态都不能静默批准。
+凭据变量。Windows 后端给每个工作区确定性写 SID、给每次执行随机私有临时 SID，`CreateRestrictedToken`
+只在两类 capability ACE 下放行写操作；读取、网络、Everyone ACL 与 NTFS hard-link 仍是已知边界，
+因此 Shell/Run 无论权限姿态都不能静默批准。
 
 `core/audit.py` 维护进程级审计健康状态。Event ledger 或 Runtime 投影写入异常会触发一次脱敏
 `audit.degraded` 事件；PermissionManager 随后拒绝所有非 READ 动作，直到显式修复流程清除状态。
 Trace 写入有独立的有界队列和可见降级状态，但不冒充 durable audit ledger。
 
-`ProcessSupervisor` 与 Windows Job Object 负责超时、取消、后代终止和资源采样，不等同于文件系统
-沙箱。详细攻击面见 [威胁模型](THREAT_MODEL.md)。
+`ProcessSupervisor` 与 Windows Job Object 负责超时、取消、后代终止和资源采样；Windows ACL/Restricted
+Token 才提供部分文件写边界，Job Object 本身不等同于沙箱。详细攻击面见 [威胁模型](THREAT_MODEL.md)。
 
 ## 8. 持久化与恢复
 
@@ -234,6 +238,16 @@ run/step/tool/permission/steer/compaction/worker 事实各占一条带统一序�
 同一消息额外写入 `message/block` source row。`derive_messages()` 直接从事件投影模型历史；旧会话中的
 legacy `message/block` 前缀保持只读兼容，后续追加立即使用单一 v2 格式，Compaction 也会生成纯事件
 账本。SQLite 仍是可重建的查询投影，不是独立事实来源。
+
+Compaction v2 永不改写 `thread.jsonl`。压缩事务依次追加
+`context.compaction.started`、候选 `context.compaction.message`、`context.compaction.summary` 和
+`context.compaction.committed`；只有最后一条 committed 事件会启用 shadow 投影。daemon 在此前强杀时，
+候选摘要仍留作审计事实但不会进入 `derive_messages()`。提交后原始事件继续保留在 checksum 链中，
+Runtime/TUI 只消费新的模型上下文投影。
+
+冷启动只在 JSON、消息分组或 checksum 链损坏时归档并修复 Ledger；普通强杀产生的未配对 Tool Call
+继续保留为恢复证据。模型投影会临时裁掉孤立 tool use，恢复协调器则据原始调用区分只读可重跑与
+修改/命令状态未知，避免为了满足 wire format 先删除最重要的中断证据。
 
 Runtime SQLite 当前 `PRAGMA user_version` 为 4；v4 为 `runtime_session_facades` 增加逐行
 `schema_version`。数据库版本和公开记录版本彼此独立：Thread、Turn、Item、Event、Facade 当前逐行
@@ -270,6 +284,11 @@ Catalog 的非法组合都会拒绝自动重迁移并进入 `audit_degraded`。�
 相同内容哈希的重复工具结果只在模型视图折叠，完整正文仍留在 Ledger。触发判断使用下一请求加输出
 预留后的预测占比，而非只等待当前请求超过固定阈值。
 
+默认工具输出预算只做确定性错误提取、头尾裁剪和 Artifact 回查，不再为每个大工具结果静默调用模型。
+Task Strategy 默认使用 `rules_only`：`plan_first` 初始目录只允许只读探索、提问和 `update_plan`，计划
+事件携带 digest 票据并进入现有 durable Plan Review；当前 Turn 不解锁冻结目录。用户批准票据后，TUI
+发起新的 Act Turn 才能按重新分类后的工具目录修改；这不是 System Prompt 中的自律建议。
+
 ## 10. 多 Agent 与编排
 
 - `core/task/`：单次 run 的共享任务板和原子认领；
@@ -289,6 +308,10 @@ Catalog 的非法组合都会拒绝自动重迁移并进入 `audit_degraded`。�
 最多三个 Worker 的 DAG、总预算、验收条件和 Write Claim。依赖环、父级路径逃逸、嵌套委派或任意
 写入交集都会失败关闭。多个已审查 handoff 只有在 base commit 相同、digest 未漂移且文件集合互斥
 时，才可通过组合补丁预检后一次应用，避免逐个应用造成基线漂移。
+模型可见 `agent.start` 必须携带校验返回的随机 Delegation Ticket 和受覆盖 task ID。Core 从已验证
+DAG 恢复 prompt、角色、Write Claim、预算和验收条件，忽略 start 时试图扩大的字段；同一 task 最多
+启动一次，依赖 Worker 成功前后继 task 不能启动。未知角色只映射到内置 planner/executor/reviewer
+profile，可写 Worker 仍自动创建独立 worktree。
 当前 Labs Fleet scheduler 还不会自动创建受管 worktree，因此任何带写 claim 的 workflow worker 都在
 host 进程启动前失败关闭；只读 Fleet 节点不受此限制。
 稳定基础 Worker 由 daemon-owned `WorkerController` 通过统一 Route Catalog 真正启动或重试；route
@@ -357,7 +380,9 @@ Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来�
   content-filtered/transport-error 保持独立；readiness 卡不会强制弹出配置界面；`/language` 保存用户级
   `zh-CN`/`en-US` 偏好，
   stable shell、命令、选择器、审批、管理面板、事件和结果卡使用集中式文案，Labs Workflow 图、协议值、
-  日志与第三方动态文本保留技术原文；
+  日志与第三方动态文本保留技术原文。默认布局是单一专注时间线：顶栏只展示仓库、模型和
+  `run.phase_changed` 阶段，底栏展示 mode、权限、Sandbox、上下文、成本和 queue；`Ctrl+O` 渐进展开
+  推理与工具详情，`@file` 仅建立有界路径引用，`!command` 仍进入权限和 Sandbox 管线；
 - `core/change_center.py`：`state_digest` 是绑定 scope、canonical visible payload、精确 symbolic ref/commit、
   index、tracked worktree 与 untracked 内容的审查令牌。stage 只消费 `all` 令牌，在真实 `index.lock` 下从
   原 index 字节构造私有 index，只发布用户点名且 `review_complete=true` 的词法路径，并验证未选路径的

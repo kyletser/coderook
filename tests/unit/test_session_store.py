@@ -9,6 +9,46 @@ from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 
 
+# 功能：验证压缩提交前的新摘要消息不会进入模型投影且账本只追加不重写
+# 设计：手工停在 compaction.message 故障窗口，再补 committed 事件比较前后投影和文件前缀
+def test_incomplete_compaction_is_invisible_until_commit(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    store.append_message("sess-1", "user", "original", run_id="run-1")
+    path = store.session_dir("sess-1") / "thread.jsonl"
+    original_bytes = path.read_bytes()
+    original_seq = store.read_session_events("sess-1")[0].seq
+    started = store.append_session_event(
+        "sess-1",
+        event_type="context.compaction.started",
+        turn_id="run-1",
+        source_event_seqs=(original_seq,),
+        payload={"shadow_start_seq": original_seq, "shadow_end_seq": original_seq},
+    )
+    replacement = store.append_session_event(
+        "sess-1",
+        event_type="context.compaction.message",
+        turn_id="run-1",
+        source_event_seqs=(original_seq,),
+        payload={"role": "user", "content": "summary", "message_id": "summary-1"},
+    )
+
+    assert store.read_messages("sess-1") == [{"role": "user", "content": "original"}]
+    assert path.read_bytes().startswith(original_bytes)
+
+    store.append_session_event(
+        "sess-1",
+        event_type="context.compaction.committed",
+        turn_id="run-1",
+        source_event_seqs=(original_seq, started.seq, replacement.seq),
+        payload={
+            "shadowed_event_seqs": [original_seq],
+            "replacement_event_seqs": [replacement.seq],
+        },
+    )
+
+    assert store.read_messages("sess-1") == [{"role": "user", "content": "summary"}]
+
+
 # 功能：验证 SessionStore 初始化时自动创建 sessions 根目录
 # 设计：传入 tmp_path 下不存在的目录，断言目录被创建，覆盖首次启动 daemon 的冷路径
 def test_store_creates_root(tmp_path: Path) -> None:

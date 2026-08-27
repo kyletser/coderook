@@ -150,6 +150,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding("ctrl+p", "command_palette", "command palette", show=False, priority=True),
+        Binding("ctrl+o", "toggle_details", "toggle details", show=False, priority=True),
         Binding(
             "ctrl+end",
             "scroll_log_end",
@@ -213,19 +214,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         background: #1d232a;
         color: #72c7d4;
     }
+    #status-bar {
+        height: 1;
+        padding: 0 2;
+        background: #171b20;
+        color: #8d98a5;
+    }
+    Screen.high-contrast #header, Screen.high-contrast #status-bar {
+        background: black;
+        color: white;
+        text-style: bold;
+    }
     Markdown.history-assistant { color: $text; }
     """
-
-    _BANNER_LOGO = (
-        "[bold cyan]"
-        " ██████╗ ██████╗ ██████╗ ███████╗    ██████╗  ██████╗  ██████╗ ██╗  ██╗\n"
-        "██╔════╝██╔═══██╗██╔══██╗██╔════╝    ██╔══██╗██╔═══██╗██╔═══██╗██║ ██╔╝\n"
-        "██║     ██║   ██╗██║  ██║█████╗      ██████╔╝██║   ██╗██║   ██║█████╔╝ \n"
-        "██║     ██║   ██║██║  ██║██╔══╝      ██╔══██╗██║   ██╗██║   ██║██╔═██╗ \n"
-        "╚██████╗╚██████╔╝██████╔╝███████╗    ██║  ██║╚██████╔╝╚██████╔╝██║  ██╗\n"
-        " ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝"
-        "[/bold cyan]"
-    )
 
     # 初始化连接参数和 TUI 内部状态
     def __init__(
@@ -251,6 +252,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._port = port
         self._workspace = Path.cwd().resolve()
         self._locale = normalize_locale(locale) if locale else detect_locale()
+        self._theme_mode = "auto"
         self._replay_run_id = replay_run_id
         self._resume_session_id = resume_session_id
         self._continue_recent = continue_recent
@@ -286,6 +288,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._cancel_requested = False
         self._cancel_armed = False
         self._busy = False
+        self._run_phase = "ready"
+        self._run_phase_current = 0
+        self._run_phase_total = 0
+        self._queued_messages: deque[str] = deque()
+        self._details_expanded = False
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
         self._header_state = "connecting"
@@ -335,6 +342,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         yield Label("[bold]CodeRook[/bold]", id="header")
         yield VerticalScroll(id="log-view")
         yield Static("", id="attachment-strip")
+        yield Static("", id="status-bar")
         yield ChatTextArea(id="prompt", show_line_numbers=False)
 
     def on_mount(self) -> None:
@@ -573,10 +581,47 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._refresh_locale_ui()
         self._append(Static(escape(message), classes="log-line"))
 
+    # 查看或应用 auto/dark/light/high-contrast 主题并立即刷新固定壳层
+    def _handle_theme_command(self, argument: str) -> None:
+        requested = argument.strip().casefold()
+        if not requested:
+            message = f"theme: {self._theme_mode}"
+        elif requested not in {"auto", "dark", "light", "high-contrast"}:
+            message = "usage: /theme auto|dark|light|high-contrast"
+        else:
+            self._theme_mode = requested
+            selected = "textual-light" if requested == "light" else "textual-dark"
+            if requested == "auto":
+                selected = "textual-dark"
+            self.theme = selected
+            try:
+                self.screen.set_class(requested == "high-contrast", "high-contrast")
+            except Exception:
+                pass
+            message = f"theme: {requested}"
+            self._update_header(self._header_state)
+        self._append(Static(escape(message), classes="log-line"))
+
     # 渲染当前语言的启动品牌与快捷入口提示
     def _render_banner(self) -> str:
         hint = escape(tr("shell.banner_hint", self._locale))
-        return f"{self._BANNER_LOGO}\n[dim]  {hint}[/dim]"
+        if self._locale == "zh-CN":
+            title = "CodeRook 已就绪"
+            suggestions = (
+                "解释这个仓库的核心架构",
+                "检查当前未提交变更",
+                "定位最相关的测试并运行",
+            )
+        else:
+            title = "CodeRook is ready"
+            suggestions = (
+                "Explain this repository's architecture",
+                "Review the current uncommitted changes",
+                "Find and run the most relevant tests",
+            )
+        lines = [f"[bold cyan]{title}[/bold cyan]", f"[dim]{hint}[/dim]"]
+        lines.extend(f"  [cyan]›[/cyan] {escape(item)}" for item in suggestions)
+        return "\n".join(lines)
 
     # 根据当前运行状态选择 composer 的即时本地化标题
     def _localized_prompt_title(self) -> str:
@@ -670,6 +715,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         prompt = self._prompt()
         if prompt is not None and not prompt.disabled:
             prompt.focus()
+
+    # 统一展开或收起推理、步骤与已完成工具详情，保持默认时间线紧凑
+    def action_toggle_details(self) -> None:
+        self._details_expanded = not self._details_expanded
+        for block in self.query(LLMStreamBlock):
+            if "answer" not in block.classes:
+                block.set_class(not self._details_expanded, "collapsed")
+        for group in self.query(ToolStepGroup):
+            group.set_class(not self._details_expanded, "collapsed")
+        for tool in self.query(ToolCallBlock):
+            tool.set_expanded(self._details_expanded)
 
     # 关闭 Ctrl+P 面板并把焦点还给 composer
     def on_command_palette_dismissed(self, message: CommandPalette.Dismissed) -> None:
@@ -1102,6 +1158,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 return
             event.text_area.record_history(content)
             event.text_area.text = ""
+            queue_prefixes = ("queue:", "queue：", "排队:", "排队：")
+            if content.casefold().startswith(queue_prefixes):
+                queued = content.split(":", 1)[-1].split("：", 1)[-1].strip()
+                if queued:
+                    self._queued_messages.append(queued)
+                    self._append(
+                        Static(
+                            f"[bold blue]queue >[/bold blue] {escape(queued)}",
+                            classes="user-turn",
+                        )
+                    )
+                    self._update_status_bar()
+                return
             self._append(
                 Static(
                     f"[bold magenta]steer >[/bold magenta] {escape(content)}",
@@ -1149,7 +1218,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if not await self._ensure_task_ready():
             return
         event.text_area.record_history(content)
-        self._begin_message(event.text_area, content, self._input_runtime_mode)
+        visible_content = content
+        if content.startswith("!") and len(content) > 1:
+            command = content[1:].strip()
+            content = (
+                "The user explicitly requested this exact shell command. Run it through the "
+                "normal permission and sandbox tool pipeline, then report its exit status and "
+                f"important output without changing the command: {command}"
+            )
+        content = self._augment_file_references(content, visible_content)
+        self._begin_message(
+            event.text_area,
+            content,
+            self._input_runtime_mode,
+            visible_content=visible_content,
+        )
 
     # 收到输入框图片粘贴后异步校验并写入内容寻址 ArtifactStore
     async def on_chat_text_area_image_pasted(
@@ -1299,6 +1382,53 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             message = tr("attachments.usage", self._locale)
         self._refresh_attachment_strip()
         self._append(Static(escape(message), classes="log-line"))
+
+    # 把 @文件 解析为有界工作区引用，只注入路径和读取规则而不盲目附加全文
+    def _augment_file_references(self, content: str, visible_content: str) -> str:
+        raw_refs = [
+            token[1:].strip(".,;，。；:：")
+            for token in visible_content.split()
+            if token.startswith("@") and len(token) > 1
+        ][:8]
+        resolved: list[str] = []
+        for raw in raw_refs:
+            candidate = (self._workspace / raw).resolve()
+            try:
+                candidate.relative_to(self._workspace)
+            except ValueError:
+                continue
+            if candidate.is_file():
+                resolved.append(candidate.relative_to(self._workspace).as_posix())
+                continue
+            matches = [
+                path
+                for path in self._workspace.rglob(f"*{Path(raw).name}*")
+                if path.is_file()
+                and ".git" not in path.parts
+                and ".coderook" not in path.parts
+            ][:2]
+            if len(matches) == 1:
+                resolved.append(matches[0].relative_to(self._workspace).as_posix())
+        if not resolved:
+            return content
+        unique = list(dict.fromkeys(resolved))
+        return (
+            content
+            + "\n\nBounded file references selected by the user: "
+            + json.dumps(unique, ensure_ascii=False)
+            + ". Read only the ranges needed for this task; do not inject entire files by default."
+        )
+
+    # 在当前会话恢复等待输入后发送一条排队消息并刷新队列状态
+    def _flush_queued_message(self) -> None:
+        if self._busy or not self._queued_messages:
+            return
+        prompt = self._prompt()
+        if prompt is None or prompt.disabled:
+            return
+        content = self._queued_messages.popleft()
+        self._update_status_bar()
+        self._begin_message(prompt, content, self._input_runtime_mode)
 
     # 统一进入一次用户或计划批准触发的 run，确保输入状态与 mode 同步切换
     def _begin_message(
@@ -1805,12 +1935,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 在 transcript 中如实显示操作系统隔离能力
     def _show_sandbox_status(self) -> None:
         available = bool(self._sandbox.get("available", False))
-        kind = escape(str(self._sandbox.get("kind", "none")))
+        kind_value = str(self._sandbox.get("kind", "none"))
+        kind = escape(kind_value)
         reason = escape(str(self._sandbox.get("reason", "unavailable")))
-        state = "ENFORCED" if available else "DEGRADED"
-        color = "green" if available else "yellow"
+        partial = available and kind_value == "windows_acl"
+        state = "PARTIAL" if partial else "ENFORCED" if available else "DEGRADED"
+        color = "yellow" if partial or not available else "green"
         explanation = tr(
-            "app.sandbox.available" if available else "app.sandbox.unavailable",
+            "app.sandbox.partial"
+            if partial
+            else "app.sandbox.available"
+            if available
+            else "app.sandbox.unavailable",
             self._locale,
         )
         self._append(
@@ -4238,46 +4374,63 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         }.get(state, "dim")
         state_label = tr(f"header.state.{state}", self._locale)
         repo = self._workspace.name or "-"
-        session = self._session_id or "-"
         model = self._model or "-"
-        route_label = "/".join(part for part in (self._route, self._model) if part) or "-"
-        mode = self._input_runtime_mode.value
-        permission_labels = {
-            "ask": "ask",
-            "accept_edits": "auto-review",
-            "full_access": "full-access",
+        phase_labels = {
+            "understanding": "理解" if self._locale == "zh-CN" else "Understanding",
+            "exploring": "探索" if self._locale == "zh-CN" else "Exploring",
+            "planning": "规划" if self._locale == "zh-CN" else "Planning",
+            "waiting_confirmation": "等待确认" if self._locale == "zh-CN" else "Waiting",
+            "executing": "执行" if self._locale == "zh-CN" else "Editing",
+            "verifying": "验证" if self._locale == "zh-CN" else "Verifying",
+            "reviewing": "审查" if self._locale == "zh-CN" else "Reviewing",
+            "completed": "完成" if self._locale == "zh-CN" else "Complete",
+            "failed": "失败" if self._locale == "zh-CN" else "Failed",
+            "interrupted": "中断" if self._locale == "zh-CN" else "Interrupted",
         }
-        permission = permission_labels[self._authority_preset]
-        ctx_compact = f"ctx:{self._last_context_pct * 100:.0f}%"
-        if width < 100:
-            return (
-                f"[bold]CodeRook[/bold] [dim]repo:{escape(_preview(repo, 9))}[/dim] "
-                f"[dim]ses:{escape(_preview(session, 8))}[/dim] "
-                f"[cyan]model:{escape(_preview(model, 11))}[/cyan] "
-                f"[blue]{mode}[/blue] [{color}]{escape(state_label)}[/{color}] "
-                f"[dim]{ctx_compact}[/dim]"
-            )
-        if width < 140:
-            return (
-                f"[bold]CodeRook[/bold] [dim]repo:{escape(_preview(repo, 14))}[/dim] "
-                f"[dim]ses:{escape(_preview(session, 10))}[/dim] "
-                f"[cyan]model:{escape(_preview(model, 16))}[/cyan] "
-                f"[blue]{mode}[/blue] [magenta]perm:{permission}[/magenta] "
-                f"[{color}]{escape(state_label)}[/{color}] [dim]{ctx_compact} "
-                f"${self._cost_total:.4f}[/dim]"
-            )
-        trust_color = "green" if self._workspace_trust == WorkspaceTrust.TRUSTED else "yellow"
-        goal = self._active_goal_status if self._active_goal_id is not None else "-"
+        phase = phase_labels.get(self._run_phase, state_label)
+        progress = (
+            f" {self._run_phase_current}/{self._run_phase_total}"
+            if self._run_phase_total
+            else ""
+        )
+        model_part = (
+            f" · [cyan]{escape(_preview(model, 24 if width >= 100 else 13))}[/cyan]"
+            if width >= 80
+            else ""
+        )
         return (
-            f"[bold]CodeRook[/bold] [dim]repo:{escape(repo)}[/dim] "
-            f"[dim]ses:{escape(session)}[/dim] "
-            f"[cyan]route:{escape(route_label)}[/cyan] [blue]{mode}[/blue] "
-            f"[magenta]perm:{permission}[/magenta] "
-            f"[{trust_color}]trust:{self._workspace_trust.value}[/{trust_color}] "
-            f"[bold cyan]goal:{escape(goal)}[/bold cyan] "
-            f"[{color}]{escape(state_label)}[/{color}] "
-            f"[dim]{ctx_compact}[/dim] "
-            f"[dim]${self._cost_total:.4f}[/dim]"
+            f"[bold]CodeRook[/bold] · {escape(_preview(repo, 20))}{model_part}"
+            f"    [{color}]{escape(phase)}{progress}[/{color}]"
+        )
+
+    # 刷新 Composer 上方的模式、权限、沙箱、上下文、成本和消息队列状态
+    def _update_status_bar(self) -> None:
+        try:
+            status_bar = self.query_one("#status-bar", Static)
+        except NoMatches:
+            return
+        sandbox_kind = str(self._sandbox.get("kind") or "none")
+        if self._sandbox.get("available") and sandbox_kind == "windows_acl":
+            sandbox_state = (
+                "Windows 部分沙箱"
+                if self._locale == "zh-CN"
+                else "Windows partial sandbox"
+            )
+        elif self._sandbox.get("available"):
+            sandbox_state = sandbox_kind
+        else:
+            sandbox_state = (
+                "Windows 无 OS 沙箱" if self._locale == "zh-CN" else "no OS sandbox"
+            )
+        queue = (
+            f" · queue {len(self._queued_messages)}"
+            if self._queued_messages
+            else ""
+        )
+        status_bar.update(
+            f"[blue]{self._input_runtime_mode.value.upper()}[/blue] · "
+            f"[magenta]{self._authority_preset}[/magenta] · {escape(sandbox_state)} · "
+            f"ctx {self._last_context_pct * 100:.0f}% · ${self._cost_total:.4f}{queue}"
         )
 
     # 根据连接和运行状态刷新顶部标题，并使用当前终端实际列宽选择信息层级
@@ -4289,6 +4442,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         width = self.size.width if self.size.width > 0 else 100
         header.update(self._render_responsive_header(state, width))
+        self._update_status_bar()
 
     # 终端尺寸变化时立即重算顶栏而不是等待下一条运行事件
     def on_resize(self, _event: events.Resize) -> None:

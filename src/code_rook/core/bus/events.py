@@ -54,6 +54,27 @@ class RunStartedEvent(BaseModel):
     ts: str  # ISO 8601
 
 
+class RunPhaseChangedEvent(BaseModel):
+    type: Literal["run.phase_changed"] = "run.phase_changed"
+    run_id: str
+    phase: Literal[
+        "understanding",
+        "exploring",
+        "planning",
+        "waiting_confirmation",
+        "executing",
+        "verifying",
+        "reviewing",
+        "completed",
+        "failed",
+        "interrupted",
+    ]
+    current: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+    summary: str = ""
+    ts: str
+
+
 class RunFinishedEvent(BaseModel):
     type: Literal["run.finished"] = "run.finished"
     run_id: str
@@ -111,6 +132,7 @@ class ToolCallStartedEvent(BaseModel):
     run_id: str
     tool_use_id: str
     tool_name: str
+    operation_id: str = ""
     params: dict[str, Any]
     step: int = 0
     ledger_seq: int | None = Field(default=None, ge=1)
@@ -127,6 +149,7 @@ class ToolCallFinishedEvent(BaseModel):
     run_id: str
     tool_use_id: str
     tool_name: str
+    operation_id: str = ""
     elapsed_ms: int
     output: str = ""
     process_usage: dict[str, Any] = Field(default_factory=dict)
@@ -147,6 +170,7 @@ class ToolCallFailedEvent(BaseModel):
     run_id: str
     tool_use_id: str
     tool_name: str
+    operation_id: str = ""
     # runtime_error | timeout | schema_error | permission_denied | permission_required | ...
     error_class: str
     error_message: str
@@ -298,6 +322,7 @@ class PlanReadyEvent(BaseModel):
     run_id: str
     request: str
     plan: str
+    plan_ticket: str = ""
     ts: str
 
 
@@ -307,6 +332,7 @@ class PlanResolvedEvent(BaseModel):
     run_id: str
     decision: Literal["approve", "revise", "cancel"]
     revision: str = ""
+    plan_ticket: str = ""
     ts: str
 
 
@@ -320,6 +346,26 @@ class PlanUpdatedEvent(BaseModel):
     run_id: str
     explanation: str = ""
     plan: list[PlanStepState]
+    plan_ticket: str = ""
+    ts: str
+
+
+class StrategyProposedEvent(BaseModel):
+    type: Literal["strategy.proposed"] = "strategy.proposed"
+    run_id: str
+    profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    strategy: Literal["direct", "plan_first", "delegate"]
+    summary: str
+    ts: str
+
+
+class StrategyResolvedEvent(BaseModel):
+    type: Literal["strategy.resolved"] = "strategy.resolved"
+    run_id: str
+    profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    strategy: Literal["direct", "plan_first", "delegate"]
+    ticket: str = ""
+    reason: str = ""
     ts: str
 
 
@@ -379,6 +425,56 @@ class ContextCompactedEvent(BaseModel):
     pinned_fact_count: int = Field(default=0, ge=0)
     pinned_fact_retained: int = Field(default=0, ge=0)
     deduplicated_reads: int = Field(default=0, ge=0)
+    ts: str
+
+
+class ContextCompactionStartedEvent(BaseModel):
+    type: Literal["context.compaction.started"] = "context.compaction.started"
+    session_id: str
+    run_id: str
+    shadow_start_seq: int = Field(ge=1)
+    shadow_end_seq: int = Field(ge=1)
+    trigger: str = "auto"
+    ts: str
+
+
+class ContextCompactionSummaryEvent(BaseModel):
+    type: Literal["context.compaction.summary"] = "context.compaction.summary"
+    session_id: str
+    run_id: str
+    summary: str
+    source_event_seqs: list[int]
+    pinned_fact_count: int = Field(default=0, ge=0)
+    ts: str
+
+
+class ContextCompactionCommittedEvent(BaseModel):
+    type: Literal["context.compaction.committed"] = "context.compaction.committed"
+    session_id: str
+    run_id: str
+    shadowed_event_seqs: list[int]
+    replacement_event_seqs: list[int]
+    original_tokens: int = Field(ge=0)
+    compacted_tokens: int = Field(ge=0)
+    ts: str
+
+
+class RecoveryAvailableEvent(BaseModel):
+    type: Literal["recovery.available"] = "recovery.available"
+    session_id: str
+    run_id: str
+    interruption_kind: str
+    safe_to_resume: bool
+    summary: str
+    actions: list[str]
+    ts: str
+
+
+class RecoveryResolvedEvent(BaseModel):
+    type: Literal["recovery.resolved"] = "recovery.resolved"
+    session_id: str
+    run_id: str
+    action: str
     ts: str
 
 
@@ -602,6 +698,7 @@ Event = Annotated[
     CoreStartedEvent
     | AuditDegradedEvent
     | RunStartedEvent
+    | RunPhaseChangedEvent
     | RunFinishedEvent
     | StepStartedEvent
     | StepFinishedEvent
@@ -625,6 +722,8 @@ Event = Annotated[
     | PlanReadyEvent
     | PlanResolvedEvent
     | PlanUpdatedEvent
+    | StrategyProposedEvent
+    | StrategyResolvedEvent
     | SessionResumedEvent
     | SessionRenamedEvent
     | SessionForkedEvent
@@ -632,6 +731,11 @@ Event = Annotated[
     | SessionInterruptedEvent
     | SessionClosedEvent
     | ContextCompactedEvent
+    | ContextCompactionStartedEvent
+    | ContextCompactionSummaryEvent
+    | ContextCompactionCommittedEvent
+    | RecoveryAvailableEvent
+    | RecoveryResolvedEvent
     | TaskProfiledEvent
     | ContextPrefixFingerprintEvent
     | ContextWorkingSetEvent

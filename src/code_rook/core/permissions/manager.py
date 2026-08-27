@@ -169,9 +169,11 @@ class PermissionManager:
     def clear_authority_snapshot(self, session_id: str) -> None:
         self._session_authorities.pop(session_id, None)
 
-    # 依据 authority 快照决定是否给 shell 施加真实 OS 沙箱；非 AUTO_REVIEW 或无后端时返回 None
+    # 依据 authority 快照生成 shell 沙箱；Windows partial 始终包裹但仍由审批层逐次确认
     def shell_sandbox_plan(self, session_id: str, workspace: str) -> SandboxPlan | None:
         snap = self.get_effective_authority_snapshot(session_id)
+        if snap.sandbox.available and snap.sandbox.kind == "windows_acl":
+            return plan_sandbox(snap.sandbox, SandboxTier.WORKSPACE_WRITE, workspace)
         if snap.profile != AuthorityProfile.AUTO_REVIEW:
             return None
         if tier_for_auto_review(snap.sandbox) == SandboxTier.NONE:
@@ -306,12 +308,12 @@ class PermissionManager:
         # Tier 2: 标记工作区外 bash，未显式 always 或 Full Access 时仍要求确认
         outside_cwd = bool(command and matches_outside_cwd(command))
 
-        unisolated_windows_shell = (
+        windows_shell_requires_approval = (
             is_declared_shell
-            and authority_snapshot.sandbox.kind == "windows_none"
+            and authority_snapshot.sandbox.kind in {"windows_none", "windows_acl"}
         )
 
-        if session_mode.mode == "interactive" and not unisolated_windows_shell:
+        if session_mode.mode == "interactive" and not windows_shell_requires_approval:
             # Tier 3: session always 缓存（用户显式选择后也适用于工作区外命令）
             session_key = (session_id, permission_key)
             if session_key in self._session_always:
@@ -354,21 +356,21 @@ class PermissionManager:
 
         if (
             effective_approval == ApprovalRequirement.NEVER
-            and not unisolated_windows_shell
+            and not windows_shell_requires_approval
         ):
             return True, "auto_allow"
 
         force_approval = effective_approval == ApprovalRequirement.ALWAYS
         if force_approval and (
             authority_snapshot.profile == AuthorityProfile.FULL_ACCESS
-            and not unisolated_windows_shell
+            and not windows_shell_requires_approval
         ):
             return True, "authority_allow"
 
         # Full Access 可自动执行工作区外命令，但前面的 deny_patterns 仍不可绕过
         if (
             not force_approval
-            and not unisolated_windows_shell
+            and not windows_shell_requires_approval
             and outside_cwd
             and authority_decision == AuthorityDecision.ALLOW
         ):
@@ -378,7 +380,7 @@ class PermissionManager:
         # 沙箱不可用（降级）则回落后续 ASK 路径，deny_patterns 在 Tier 1 已不可绕过
         if (
             not force_approval
-            and not unisolated_windows_shell
+            and not windows_shell_requires_approval
             and policy_name == "bash"
             and command
             and authority_snapshot.profile == AuthorityProfile.AUTO_REVIEW
@@ -387,7 +389,7 @@ class PermissionManager:
         ):
             return True, "authority_sandbox_allow"
 
-        if not outside_cwd and not force_approval and not unisolated_windows_shell:
+        if not outside_cwd and not force_approval and not windows_shell_requires_approval:
             # Tier 5: allow_patterns（bash only）
             if command and policy:
                 for pat in policy.allow_patterns:
@@ -431,11 +433,19 @@ class PermissionManager:
 
         preview = param_preview(policy_name, params)
         event_params = params
-        if unisolated_windows_shell:
-            preview = f"{preview} [NO OS SANDBOX: explicit approval required]"
+        if windows_shell_requires_approval:
+            partial = authority_snapshot.sandbox.kind == "windows_acl"
+            safety_notice = (
+                "Windows partial sandbox: workspace write restrictions are enforced; "
+                "reads and network are not isolated. Explicit approval is required."
+                if partial
+                else "No OS sandbox is available on Windows."
+            )
+            marker = "PARTIAL WINDOWS SANDBOX" if partial else "NO OS SANDBOX"
+            preview = f"{preview} [{marker}: explicit approval required]"
             event_params = {
                 **params,
-                "_safety_notice": "No OS sandbox is available on Windows.",
+                "_safety_notice": safety_notice,
             }
         await event_emitter(
             {

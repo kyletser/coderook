@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
@@ -283,8 +284,8 @@ async def test_closed_session_rejects_message(tmp_path: Path) -> None:
     assert exc.value.code == SESSION_CLOSED
 
 
-# 功能：daemon 冷启动时恢复 meta 索引，并把运行中的会话标记为 interrupted
-# 设计：预写 active meta 后重建 manager，证明异常退出状态可被用户识别和恢复
+# 功能：daemon 冷启动时保留未完成操作证据，并把运行中的会话标记为 interrupted
+# 设计：预写未配对工具调用后重建 manager，证明模型投影安全裁剪但 append-only 账本不被破坏
 async def test_rehydrate_marks_active_session_interrupted(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     session = Session(
@@ -312,7 +313,60 @@ async def test_rehydrate_marks_active_session_interrupted(tmp_path: Path) -> Non
     assert store.read_messages("sess-recover") == [
         {"role": "user", "content": "before crash"}
     ]
-    assert list(store.session_dir("sess-recover").glob("thread_interrupted_*.jsonl"))
+    assert [call.tool_use_id for call in store.find_incomplete_tool_calls("sess-recover")] == [
+        "orphan"
+    ]
+    assert not list(store.session_dir("sess-recover").glob("thread_interrupted_*.jsonl"))
+
+
+# 功能：恢复中断会话时区分只读可重跑与修改状态未知，并发布可操作恢复卡
+# 设计：分别构造 read_file 和 Bash 未配对调用，核对 safe_to_resume 与 interruption_kind 的保守分类
+@pytest.mark.parametrize(
+    ("tool_name", "safe_to_resume", "interruption_kind"),
+    [
+        ("read_file", True, "read_tool_interrupted"),
+        ("Bash", False, "tool_state_unknown"),
+    ],
+)
+async def test_resume_classifies_incomplete_tool_recovery(
+    tmp_path: Path,
+    tool_name: str,
+    safe_to_resume: bool,
+    interruption_kind: str,
+) -> None:
+    store = SessionStore(tmp_path / tool_name)
+    session = Session(
+        id=f"sess-{tool_name.lower()}",
+        mode="chat",
+        status="active",
+        title="recover",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-02T00:00:00Z",
+        run_ids=["run-old"],
+    )
+    store.write_meta(session)
+    store.append_message(session.id, "user", "continue", run_id="run-old")
+    SessionTranscriptSink(store, session.id, "run-old").append_assistant(
+        1,
+        [{"type": "tool_use", "id": "pending", "name": tool_name, "input": {}}],
+    )
+    bus = EventBus()
+    events: list[BaseModel] = []
+
+    # 收集恢复事件以验证用户可见分类，不读取内部集合实现细节
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    manager = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
+
+    await manager.resume(session.id)
+
+    recovery = next(
+        event for event in events if getattr(event, "type", "") == "recovery.available"
+    )
+    assert getattr(recovery, "safe_to_resume") is safe_to_resume
+    assert getattr(recovery, "interruption_kind") == interruption_kind
 
 
 # 功能：closed chat 可显式 resume，并继续沿用原 thread
@@ -1119,6 +1173,73 @@ async def test_plan_turn_publishes_reviewable_plan(tmp_path: Path) -> None:
     assert "Implement" in plan_event.plan  # type: ignore[attr-defined]
     event_types = [getattr(event, "type", "") for event in events]
     assert event_types.index("plan.ready") < event_types.index("session.waiting_for_input")
+
+
+# 功能：验证 Task Router 的 plan_first 会进入持久审批，而不是在原 Turn 内解锁写工具
+# 设计：fake runner 直接追加可信 task.profiled 与 plan.updated 事件，检查待审批阻断和票据随批准返回
+async def test_strategy_plan_requires_user_approval_before_next_turn(
+    tmp_path: Path,
+) -> None:
+    events: list[object] = []
+    bus = EventBus()
+    store = SessionStore(tmp_path / "sessions")
+
+    # 收集计划卡与批准事件，验证用户可见流程绑定同一票据
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    class _StrategyPlanRunner(_Runner):
+        # 写入策略和计划事实，模拟真实 Runner 的 SessionLedgerBridge
+        async def run_and_capture(
+            self,
+            goal: str,
+            **kwargs: object,
+        ) -> RunOutcome:
+            session = kwargs["session"]
+            run_id = kwargs["run_id"]
+            ledger = kwargs["store"]
+            assert isinstance(session, Session)
+            assert isinstance(run_id, str)
+            assert isinstance(ledger, SessionStore)
+            ledger.append_session_event(
+                session.id,
+                event_type="task.profiled",
+                turn_id=run_id,
+                payload={"profile": {"strategy": "plan_first"}},
+            )
+            ledger.append_session_event(
+                session.id,
+                event_type="plan.updated",
+                turn_id=run_id,
+                payload={
+                    "explanation": "先确认修改边界",
+                    "plan": [
+                        {"step": "读取目标实现", "status": "completed"},
+                        {"step": "修改并验证", "status": "pending"},
+                    ],
+                    "plan_ticket": "ticket-123",
+                },
+            )
+            return RunOutcome(status="success", result="plan proposed", reason=None)
+
+    bus.subscribe(collect)  # type: ignore[arg-type]
+    manager = SessionManager(store, lambda: _StrategyPlanRunner(), bus)  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    run_id = await manager.send_message(session.id, "帮我处理一下")
+
+    plan_ready = next(
+        event for event in events if getattr(event, "type", "") == "plan.ready"
+    )
+    assert getattr(plan_ready, "run_id") == run_id
+    assert getattr(plan_ready, "plan_ticket") == "ticket-123"
+    assert "修改并验证" in getattr(plan_ready, "plan")
+    with pytest.raises(HandlerError, match="pending plan"):
+        await manager.send_message(session.id, "绕过审批继续")
+
+    resolved = await manager.respond_plan(session.id, run_id, "approve")
+
+    assert resolved.plan_ticket == "ticket-123"
 
 
 # 功能：验证任务与 context 查询读取最近一次 run，且空目录不会伪造数据

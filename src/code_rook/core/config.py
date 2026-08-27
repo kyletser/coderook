@@ -36,7 +36,7 @@ class AgentConfig:
     max_steps: int = _DEFAULT_MAX_STEPS
     # 步数耗尽时的自动续段数（每段追加 max_steps 步）；交互模式另有 ask 续跑
     max_step_continues: int = 0
-    task_router: str = "hybrid"
+    task_router: str = "rules_only"
     delegation_policy: str = "routed"
 
 

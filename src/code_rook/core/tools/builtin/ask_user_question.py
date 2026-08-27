@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_rook.core.interaction import (
@@ -54,6 +56,14 @@ class AskUserQuestionTool(BaseTool):
         self._manager = manager
         self._session_id = session_id
         self._run_id = run_id
+        self._answer_handler: Callable[[str], Awaitable[None]] | None = None
+
+    # 设置一次性回答回调，用于由 Core 在澄清后推进冻结执行状态机
+    def set_answer_handler(
+        self,
+        handler: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        self._answer_handler = handler
 
     # 发布问题并等待用户答案，将答案作为工具结果交回模型
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -74,4 +84,8 @@ class AskUserQuestionTool(BaseTool):
                 is_error=True,
                 error_type="runtime_error",
             )
+        handler = self._answer_handler
+        self._answer_handler = None
+        if handler is not None:
+            await handler(answer)
         return ToolResult(content=f"User answer: {answer}")
