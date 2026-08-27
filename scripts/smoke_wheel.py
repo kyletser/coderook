@@ -159,6 +159,8 @@ def smoke(wheel: Path) -> None:
             site / "code_rook" / "py.typed",
             site / "code_rook" / "core" / "agents" / "builtin" / "executor.toml",
             site / "code_rook" / "core" / "skills" / "builtin" / "review.md",
+            site / "code_rook" / "web" / "static" / "index.html",
+            site / "code_rook" / "web" / "static" / "manifest.webmanifest",
         ]
         missing = [str(path.relative_to(site)) for path in required_resources if not path.is_file()]
         if missing:
@@ -228,6 +230,24 @@ print(package)
             )
             if not ping.stdout.startswith("pong server="):
                 raise RuntimeError(f"unexpected wheel ping output: {ping.stdout!r}")
+            web_launch = _run_python(
+                "import sys; sys.argv=['coderook', 'web', '--no-open']; "
+                "from code_rook.cli.main import main; main()",
+                env=env,
+                cwd=root,
+            )
+            launch_url = web_launch.stdout.strip()
+            if not launch_url.startswith("http://127.0.0.1:") or "#launch=" not in launch_url:
+                raise RuntimeError(f"unexpected wheel Web launch URL: {launch_url!r}")
+            web_shell = _run_python(
+                "import os, urllib.request; "
+                "url='http://127.0.0.1:' + os.environ['CODEROOK_API_PORT'] + '/'; "
+                "print(urllib.request.urlopen(url, timeout=5).read().decode('utf-8'))",
+                env=env,
+                cwd=root,
+            )
+            if "CodeRook Web" not in web_shell.stdout:
+                raise RuntimeError("wheel Web shell did not load from the running Core")
         finally:
             if process.poll() is None:
                 process.terminate()

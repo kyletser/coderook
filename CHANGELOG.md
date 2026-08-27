@@ -1,12 +1,17 @@
 # Changelog
 
 本项目采用 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 结构。当前包版本为
-`0.1.0` Alpha，但仓库尚未创建 Git tag 或公开 Release；Beta 前公共接口仍可能变化。
+`0.2.0b1`（对应产品候选名 `0.2.0-beta.1`），但仓库尚未创建 Git tag 或公开 Release；
+稳定版前公共接口仍可能变化。
 
 ## [Unreleased]
 
 ### Added
 
+- 同一 Core 上的 CodeRook Web：`coderook web` 一键启动、本地静态 SPA、durable SSE 时间线、
+  会话/模型/文件/Diff/审批/恢复/Goal/Worker/Skill/MCP/Memory 控制面。
+- 单次 60 秒 Web 启动票据、HttpOnly SameSite Cookie、CSRF/Origin/Host 校验与严格 CSP；浏览器
+  不接触 Core bearer token，Provider API Key 也不进入 URL 或 Web Storage。
 - 本地双进程 Coding Agent runtime：Core daemon、TUI、CLI、HTTP/SSE 和 Python SDK。
 - 类型化 IPC、durable thread/turn/event、会话恢复、上下文压缩和可审计 Turn Receipt。
 - File/Git/Run/Bash 工具族、权限审批、checkpoint/rewind、仓库索引、Diagnostics、持久 Shell 和 Artifact。

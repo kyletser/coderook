@@ -8,7 +8,7 @@ build-backend = "hatchling.build" # 使用 Hatchling 作为构建后端
 # ---- 项目元数据与运行时依赖（PEP 621）----
 [project]
 name = "CodeRook"
-version = "0.1.0"
+version = "0.2.0b1"
 description = "Local-first, durable and auditable multi-agent coding runtime"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -74,6 +74,8 @@ exclude = [
     "/editors/vscode/dist",
     "/editors/vscode/node_modules",
     "/editors/vscode/out",
+    "/web/node_modules",
+    "/web/*.tsbuildinfo",
     "/reports",
 ]
 

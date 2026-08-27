@@ -127,6 +127,7 @@ _ROOT_DIRECTORIES = {
     "scripts",
     "src",
     "tests",
+    "web",
 }
 _ROOT_LOCAL_ENTRIES = {
     ".benchmark-results",

@@ -115,6 +115,10 @@ class RouteRegistry:
         )
         self._temperature_override = temperature_override
 
+    # 返回复用同一 Route 与凭据存储的配置事务服务，供本地多前端统一管理模型
+    def configuration_service(self) -> ConfigurationService:
+        return ConfigurationService(self._routes, self._credentials)
+
     # 迁移旧 LlmConfig 或确认无需迁移，并写入绑定输入输出的完成收据
     def migrate_legacy_config(
         self,

@@ -4,11 +4,11 @@
 
 [中文快速开始](docs/zh-CN/README.md) · [中文使用说明](docs/guides/USER_GUIDE.md) · [Architecture](docs/reference/FUNCTIONAL_ARCHITECTURE.md) · [Release status](docs/status/RELEASE_SCORECARD.md)
 
-> **Status: unreleased Alpha / v1.0.0 NO-GO.** CodeRook is installable from source today.
+> **Status: 0.2.0-beta.1 candidate / v1.0.0 NO-GO.** CodeRook is installable from source today.
 > Public packages, cross-platform release artifacts, real-model benchmark results, and the v1 tag
 > have not been published. See the scorecard before relying on it for production work.
 
-CodeRook is a TUI-first coding agent built around a persistent local daemon. It can inspect a
+CodeRook is a TUI-and-Web coding agent built around one persistent local daemon. It can inspect a
 repository, plan changes, edit files, run verification, preserve sessions across reconnects, and
 show the evidence behind a result. It supports bring-your-own-key providers and local models; it
 does not require an account with a hosted CodeRook service and sends no default telemetry.
@@ -42,6 +42,28 @@ does **not** force API configuration: sessions, help, and settings remain availa
 first coding task, readiness checks require an active route and a resolvable credential (or a
 reachable no-key local route); a blocked submission keeps the draft and does not create a failed
 run.
+
+Open the same workspace in a local browser without installing Node.js:
+
+```bash
+uv run coderook web
+uv run coderook web C:\path\to\repo
+uv run coderook web --no-open
+```
+
+The Web UI binds only to `127.0.0.1`. The CLI places a 60-second, single-use launch ticket in the
+URL fragment, exchanges it for an HttpOnly SameSite cookie, and removes the fragment. Provider API
+keys and the Core bearer token never enter browser storage or ordinary responses. TUI and Web share
+the same sessions, durable event cursor, permissions, receipts, Checkpoints and Change Center.
+
+Explicit product entries are:
+
+```text
+coderook          # TUI (default)
+coderook tui      # TUI (explicit)
+coderook web      # local browser workspace
+coderook run ...  # script/headless mode
+```
 
 Configure a route in the TUI with `/config`, or use the CLI:
 
@@ -160,15 +182,15 @@ bucket. A generated formula/manifest in a future Release asset is not equivalent
 ## Architecture
 
 ```text
-coderook / coderook-tui
-        |
-        | authenticated JSON-RPC 2.0 over NDJSON/TCP
-        v
+coderook / coderook-tui -- authenticated JSON-RPC/NDJSON --+
+                                                            |
+browser SPA -- HttpOnly cookie, HTTP/JSON + durable SSE -----+
+                                                            v
 coderook-core
   |-- agent loop, provider routes, tools, permissions, sandbox plans
   |-- session ledger, runtime projection, events, receipts, checkpoints
   |-- repository index, diagnostics, memory, MCP, background work
-  `-- HTTP/JSON + durable SSE API for integrations
+  `-- local static Web assets and authenticated API
 ```
 
 The daemon owns state; the TUI and script-oriented CLI are clients. Task events are replayed from

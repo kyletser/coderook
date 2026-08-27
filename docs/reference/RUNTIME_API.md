@@ -14,8 +14,13 @@ SSE 接口。默认监听 `127.0.0.1:7438`；TUI、IPC 和 HTTP 读取同一个
 - 非空 `CODEROOK_API_TOKEN` 优先；空或纯空白值视为未配置，不能关闭鉴权。未配置时 Core 以
   no-follow/排他创建语义加载或创建 `~/.coderook/api-token`。POSIX 要求当前用户所有且严格为
   `0600`；Windows 不虚假承诺 POSIX mode，而是验证父目录、普通文件、重解析点和句柄/路径身份边界。
-- 每个 HTTP/JSON 和 SSE 请求都必须发送 `Authorization: Bearer <token>`。
+- 外部集成的每个 HTTP/JSON 和 SSE 请求都必须发送 `Authorization: Bearer <token>`。
 - token 不进入项目配置、日志、事件或 Turn Receipt。
+
+CodeRook Web 不读取 Bearer token。`coderook web` 经已认证 IPC 获取 60 秒单次票据，并只把它放在
+URL fragment；`POST /v1/web/bootstrap` 通过严格 Host/Origin 校验后交换 HttpOnly、SameSite=Strict
+Cookie 与内存 CSRF token。浏览器写请求必须带 `X-CodeRook-CSRF`，静态资源与 Web API 只接受当前
+loopback Host。票据交换后 fragment 被删除，Provider API Key 也不进入 URL 或浏览器存储。
 
 ```powershell
 $env:CODEROOK_API_HOST = "127.0.0.1"
@@ -31,15 +36,31 @@ uv run coderook-core
 | `POST` | `/v1/threads` | 创建 thread，body: `{"title":"...","mode":"chat"}` |
 | `GET` | `/v1/threads/{id}` | 读取单个 durable thread |
 | `PATCH` | `/v1/threads/{id}` | 更新标题或归档，body: `{"title":"...","archived":true}` |
+| `DELETE` | `/v1/threads/{id}` | 显式确认后删除空闲 thread |
+| `POST` | `/v1/threads/{id}/fork` | 创建独立会话 fork |
+| `GET` | `/v1/threads/{id}/export` | 导出 markdown/json 正文 |
+| `GET` | `/v1/threads/{id}/context` | 上下文与 checkpoint 摘要 |
 | `GET` | `/v1/threads/{id}/turns` | 列出 thread 的 durable turns |
-| `POST` | `/v1/threads/{id}/turns` | 启动 turn，body: `{"content":"...","mode":"act"}` |
+| `POST` | `/v1/threads/{id}/turns` | 启动 turn；支持 mode 与图片 attachments |
+| `POST` | `/v1/threads/{id}/turns/{turn}/plan` | 批准、修改或取消当前 Plan Ticket |
 | `GET` | `/v1/turns/{id}` | 读取单个 durable turn |
 | `POST` | `/v1/turns/{id}/interrupt` | 中断活动 turn |
 | `POST` | `/v1/turns/{id}/steer` | 注入指令，body: `{"content":"..."}` |
 | `GET` | `/v1/turns/{id}/items` | 读取 durable turn items |
 | `GET` | `/v1/turns/{id}/receipt` | 读取可离线重建的 Turn Receipt |
 | `POST` | `/v1/permissions/{request_id}` | 回答审批；支持 `decision`、`patch_plan_id` 与 `selected_hunks` |
+| `POST` | `/v1/questions/{id}` | 回答结构化 Agent 提问 |
+| `POST` | `/v1/artifacts/images` | 上传有界图片到内容寻址 ArtifactStore |
+| `GET` | `/v1/artifacts/{sha256}` | 分页读取完整工具 Artifact |
+| `GET` | `/v1/workspace/files` | 有界列出或搜索当前工作区文件 |
+| `GET` | `/v1/workspace/file` | 有界读取当前工作区文本文件 |
 | `GET` | `/v1/workspace/diff?scope=all&path=.` | 读取工作区 diff；scope 可为 all/staged/unstaged |
+| `POST` | `/v1/workspace/stage` | 以审查 digest stage 显式路径 |
+| `POST` | `/v1/workspace/commit` | 以 staged digest 创建本地 commit，不 push |
+| `GET/POST` | `/v1/providers` | 读取 Catalog 或 Doctor 后保存路由 |
+| `GET/POST` | `/v1/goals` | 查询或创建有界 Goal |
+| `GET` | `/v1/workers` | 查询当前会话 Worker |
+| `GET` | `/v1/skills`、`/v1/mcp`、`/v1/memories` | 稳定高级抽屉控制面 |
 | `GET` | `/v1/capabilities` | 查询协商能力 |
 | `GET` | `/v1/usage` | 汇总 durable token usage；未知价格返回 `unknown` |
 

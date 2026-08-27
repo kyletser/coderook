@@ -26,11 +26,14 @@ coderook-core
   ├─ sessions ledger + SQLite runtime projection
   ├─ background processes / MCP / workers / workflows
   └─ HTTP/JSON + SSE Runtime API
+        ^
+        | HttpOnly Cookie + same-origin HTTP/SSE
+CodeRook Web SPA
 ```
 
 - `coderook-core` 是状态所有者；默认 IPC 为 `127.0.0.1:7437`。
 - HTTP Runtime API 默认是 `127.0.0.1:7438`。
-- `coderook` 无参数时启动 TUI；CLI 子命令主要用于脚本与诊断。
+- `coderook` 无参数时启动 TUI；`coderook tui` 是显式别名，`coderook web` 打开本机 Web。
 - TUI 退出不会删除 daemon 中的 thread、turn、worker 或后台任务状态。
 
 ## 2. 进程启动与关闭
@@ -81,15 +84,22 @@ Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置�
 
 `src/code_rook/core/api/` 是无 Web framework 的 HTTP/1.1 实现，提供：
 
-- thread 创建、读取、更新和 turns；
+- thread 创建、读取、更新、fork、export、delete、context/checkpoint 和 turns；
 - turn 读取、interrupt、steer、items 和 receipt；
 - thread 事件 SSE 与 cursor replay；
-- 权限回复、工作区 diff、capabilities 和 usage。
+- 权限/Plan/Question 回复，图片 Artifact，受限文件读取与工作区 diff/stage/commit；
+- Provider Catalog/Doctor 配置，以及 Goal、Worker、Skills、MCP 和 Memory 稳定控制面；
+- 打包在 wheel 内的 React/TypeScript SPA 静态资源。
 
 Runtime API 始终使用 Bearer token；空白环境值不能关闭鉴权。环境未显式提供非空值时，Core 会以
 no-follow、普通文件和对象身份检查加载或排他创建用户级 `api-token`；POSIX 额外强制当前 owner 与
 `0600`，Windows 使用可执行的重解析点/路径身份边界而不宣称 POSIX chmod。
 接口清单和恢复语义见 [Runtime API](RUNTIME_API.md)。
+
+浏览器不接触上述 Bearer token。`web.launch` 只经已认证 IPC 签发 60 秒单次票据，CLI 把票据放在
+URL fragment；SPA 以严格 Host/Origin 校验交换 HttpOnly、SameSite=Strict Cookie 与内存 CSRF token，
+然后移除 fragment。Cookie 写请求必须同时通过同源和 CSRF header。静态壳启用 CSP、nosniff、
+referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API binding，也不提供公网监听参数。
 
 ## 4. Agent 执行链
 
@@ -383,6 +393,11 @@ Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来�
   日志与第三方动态文本保留技术原文。默认布局是单一专注时间线：顶栏只展示仓库、模型和
   `run.phase_changed` 阶段，底栏展示 mode、权限、Sandbox、上下文、成本和 queue；`Ctrl+O` 渐进展开
   推理与工具详情，`@file` 仅建立有界路径引用，`!command` 仍进入权限和 Sandbox 管线；
+- `web/` + `src/code_rook/web/static/`：React/Vite 源码与打包静态 SPA。Web 使用与 TUI 相同的 durable
+  thread/event/receipt、Plan、权限、Recovery、Provider 与 Change Center 语义；页面刷新后从最后
+  `seq` 重放。浏览器只调用 Core API，不读取 runtime.db、Ledger、凭据文件或未经过 WorkspaceBoundary
+  的路径。API Key 只作为一次配置请求 body 交给 Core，不写入 Web Storage。PlatformBridge 隔离通知、
+  剪贴板和外部打开能力，便于后续嵌入桌面壳；当前不包含 Electron/Tauri；
 - `core/change_center.py`：`state_digest` 是绑定 scope、canonical visible payload、精确 symbolic ref/commit、
   index、tracked worktree 与 untracked 内容的审查令牌。stage 只消费 `all` 令牌，在真实 `index.lock` 下从
   原 index 字节构造私有 index，只发布用户点名且 `review_complete=true` 的词法路径，并验证未选路径的

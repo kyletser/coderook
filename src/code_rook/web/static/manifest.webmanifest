@@ -1,0 +1,10 @@
+{
+  "name": "CodeRook Web",
+  "short_name": "CodeRook",
+  "description": "Local coding agent workspace",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1017",
+  "theme_color": "#0d1017",
+  "icons": []
+}

@@ -54,6 +54,54 @@ def test_new_flag_launches_tui(monkeypatch) -> None:
     assert launched == [["coderook", "--new"]]
 
 
+# 功能：验证显式 coderook tui 别名移除子命令后完整委托原 TUI 参数解析器
+# 设计：捕获 TUI 看到的 argv，确保显式别名不改变 --continue 等既有启动语义
+def test_explicit_tui_alias_launches_tui(monkeypatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr(sys, "argv", ["coderook", "tui", "--continue"])
+    monkeypatch.setattr(tui_main, "main", lambda: launched.append(list(sys.argv)))
+
+    cli_main.main()
+
+    assert launched == [["coderook", "--continue"]]
+
+
+# 功能：验证 coderook web 可切换到显式工作区并把 no-open 选项交给 Web 启动器
+# 设计：替换配置与启动器并记录 cwd，覆盖 argparse、路径解析和 Core 启动前工作区绑定
+def test_web_command_dispatches_selected_workspace(monkeypatch, tmp_path: Path) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    original = Path.cwd()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "web", str(tmp_path), "--no-open"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_web",
+        lambda passed, **kwargs: captured.update(
+            {"config": passed, "cwd": Path.cwd(), **kwargs}
+        )
+        or 0,
+    )
+    try:
+        result = cli_main.main()
+    finally:
+        os.chdir(original)
+
+    assert result == 0
+    assert captured == {
+        "config": config,
+        "cwd": tmp_path.resolve(),
+        "no_open": True,
+        "env_file": None,
+    }
+
+
 # 功能：验证带参数的 coderook 仍由原 CLI 分发器处理
 # 设计：使用无配置依赖的 --version 路径，断言旧迁移和版本命令各执行一次且不会启动 TUI
 def test_explicit_arguments_keep_cli_dispatch(

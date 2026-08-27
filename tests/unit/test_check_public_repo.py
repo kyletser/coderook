@@ -42,6 +42,7 @@ def test_find_root_layout_issues_rejects_loose_entries(tmp_path: Path) -> None:
         "scripts",
         "src",
         "tests",
+        "web",
         ".venv",
     ):
         (tmp_path / name).mkdir()

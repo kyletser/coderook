@@ -158,6 +158,8 @@ from code_rook.core.bus.commands import (
     TurnSteerResult,
     UserQuestionRespondCommand,
     UserQuestionRespondResult,
+    WebLaunchCommand,
+    WebLaunchResult,
     WorkerApplyCommand,
     WorkerApplyResult,
     WorkerCancelCommand,
@@ -562,6 +564,53 @@ class CoreApp:
         if self._shutdown_event is not None:
             self._shutdown_event.set()
         return CoreShutdownResult()
+
+    # 经已认证 IPC 签发一次性本地浏览器启动 URL
+    async def _web_launch_handler(self, params: dict[str, Any]) -> WebLaunchResult:
+        WebLaunchCommand.model_validate(params)
+        if self._http_api is None:
+            raise HandlerError(INVALID_PARAMS, "Web API is unavailable")
+        try:
+            url, expires_in_seconds = self._http_api.issue_web_launch_url()
+        except ValueError as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return WebLaunchResult(
+            url=url,
+            expires_in_seconds=expires_in_seconds,
+            workspace=str(Path.cwd().resolve()),
+        )
+
+    # 将 Web 高级抽屉限制到稳定 typed handler 白名单并返回 JSON 安全投影
+    async def _web_control_dispatcher(
+        self,
+        command: str,
+        params: dict[str, Any],
+    ) -> Any:
+        handlers = {
+            "goal.create": self._goal_create_handler,
+            "goal.list": self._goal_list_handler,
+            "goal.pause": self._goal_pause_handler,
+            "goal.resume": self._goal_resume_handler,
+            "goal.clear": self._goal_clear_handler,
+            "worker.list": self._worker_list_handler,
+            "worker.followup": self._worker_followup_handler,
+            "worker.review": self._worker_review_handler,
+            "worker.apply": self._worker_apply_handler,
+            "worker.cancel": self._worker_cancel_handler,
+            "mcp.list": self._mcp_list_handler,
+            "memory.list": self._memory_list_handler,
+            "memory.add": self._memory_add_handler,
+            "memory.delete": self._memory_delete_handler,
+            "memory.settings.get": self._memory_settings_get_handler,
+            "memory.settings.set": self._memory_settings_set_handler,
+        }
+        handler = handlers.get(command)
+        if handler is None:
+            raise HandlerError(INVALID_PARAMS, f"unsupported Web control command: {command}")
+        result = await handler(params)
+        if isinstance(result, BaseModel):
+            return result.model_dump(mode="json")
+        return result
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
     async def _trace_event_handler(self, event: BaseModel) -> None:
@@ -2394,6 +2443,10 @@ class CoreApp:
             self._sessions,
             permission_manager=self._permission_manager,
             workspace_boundary=WorkspaceBoundary.current(),
+            interaction_manager=self._interaction_manager,
+            configuration=self._route_registry.configuration_service(),
+            process_supervisor=self._process_supervisor,
+            artifact_store=self._artifact_store,
             labs_enabled=self._labs_enabled,
         )
         self._bus.subscribe(self._runtime_api.notify_runtime_event)
@@ -2403,6 +2456,7 @@ class CoreApp:
             self._config.api.port,
             api_token,
             self._runtime_api,
+            control_dispatcher=self._web_control_dispatcher,
         )
 
         server = SocketServer(
@@ -2414,6 +2468,7 @@ class CoreApp:
         )
         server.register("core.ping", self._ping_handler)
         server.register("core.shutdown", self._shutdown_handler)
+        server.register("web.launch", self._web_launch_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("goal.create", self._goal_create_handler)
         server.register("goal.get", self._goal_get_handler)

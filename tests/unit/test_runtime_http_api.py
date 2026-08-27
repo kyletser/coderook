@@ -69,6 +69,11 @@ class _FakeRuntimeApi:
         self.steering = ""
         self.permission_response: tuple[str, str] | None = None
 
+    @property
+    # 返回 Web bootstrap 响应中使用的受限测试工作区
+    def workspace_root(self) -> str:
+        return self.thread.workspace
+
     # 返回内存 thread 列表
     async def list_threads(self) -> list[ThreadRecord]:
         return [self.thread]
@@ -90,6 +95,7 @@ class _FakeRuntimeApi:
         thread_id: str,
         content: str,
         mode: RuntimeMode,
+        _attachments: object = None,
     ) -> TurnRecord:
         assert thread_id == self.thread.id
         assert content == "work"
@@ -307,6 +313,69 @@ async def test_http_loopback_empty_token_fails_closed(tmp_path: Path) -> None:
                     headers={"Authorization": "Bearer anything"},
                 )
             ).status_code == 401
+    finally:
+        await server.stop()
+
+
+# 功能：验证 Web 启动 URL 使用 fragment、单次票据、HttpOnly Cookie 和 CSRF 写保护
+# 设计：通过真实回环 HTTP 交换票据后分别执行读、无 CSRF 写和带 CSRF 写，覆盖完整浏览器认证链
+async def test_web_bootstrap_uses_single_use_cookie_and_csrf(tmp_path: Path) -> None:
+    server, service, base_url = await _start_server(tmp_path)
+    try:
+        launch_url, expires_in = server.issue_web_launch_url()
+        assert expires_in == 60
+        assert "#launch=" in launch_url
+        ticket = launch_url.split("#launch=", 1)[1]
+        origin = base_url
+        async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
+            response = await client.post(
+                "/v1/web/bootstrap",
+                json={"launch_token": ticket},
+                headers={"Origin": origin},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            csrf = payload["csrf_token"]
+            assert payload["workspace"] == service.workspace_root
+            assert "HttpOnly" in response.headers["set-cookie"]
+            assert "SameSite=Strict" in response.headers["set-cookie"]
+
+            duplicate = await client.post(
+                "/v1/web/bootstrap",
+                json={"launch_token": ticket},
+                headers={"Origin": origin},
+            )
+            assert duplicate.status_code == 401
+            assert (await client.get("/v1/web/session")).status_code == 200
+            denied = await client.post(
+                "/v1/threads",
+                json={"title": "Denied", "mode": "chat"},
+                headers={"Origin": origin},
+            )
+            assert denied.status_code == 400
+            allowed = await client.post(
+                "/v1/threads",
+                json={"title": "Web", "mode": "chat"},
+                headers={"Origin": origin, "X-CodeRook-CSRF": csrf},
+            )
+            assert allowed.status_code == 201
+    finally:
+        await server.stop()
+
+
+# 功能：验证打包 Web 壳只接受当前 loopback Host 并返回严格浏览器安全头
+# 设计：对真实静态 index 分别发送合法和恶意 Host，覆盖 DNS rebinding 防护与 CSP
+async def test_web_static_shell_rejects_untrusted_host(tmp_path: Path) -> None:
+    server, _service, base_url = await _start_server(tmp_path)
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
+            response = await client.get("/")
+            assert response.status_code == 200
+            assert "CodeRook Web" in response.text
+            assert response.headers["x-frame-options"] == "DENY"
+            assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+            rejected = await client.get("/", headers={"Host": "attacker.example"})
+            assert rejected.status_code == 400
     finally:
         await server.stop()
 

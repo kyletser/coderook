@@ -1,10 +1,10 @@
 # CodeRook 使用说明
 
-**适用基线**：`0.1.0` Alpha（v1 改造工作树）
+**适用基线**：`0.2.0-beta.1` 候选版
 
 **主要入口**：`coderook`
 
-**产品界面**：TUI；CLI 仅用于脚本、诊断和无人值守任务
+**产品界面**：TUI 与本地 Web；CLI 用于脚本、诊断和无人值守任务
 
 CodeRook 是本地优先的 Coding Agent。它可以理解仓库、规划与修改代码、运行验证、保留可恢复会话，
 并通过事件、Diff、Turn Receipt 和结果卡说明一次执行到底发生了什么。当前尚未发布 PyPI 或 GitHub
@@ -20,6 +20,23 @@ cd coderook
 uv sync
 uv run coderook
 ```
+
+也可以打开共享同一会话和 Core 的本地 Web 工作区：
+
+```bash
+uv run coderook web
+uv run coderook web C:\path\to\repo
+uv run coderook web --no-open
+uv run coderook tui
+```
+
+`coderook web` 只绑定本机回环地址，自动启动或复用当前仓库 Core，并打开最近会话。若空闲的
+受管 Core 正绑定其他仓库，会安全重启到新仓库；存在活动任务时则拒绝切换。页面无模型时仍可浏览
+会话、文件、Diff、设置和帮助，第一次提交任务前才执行 readiness 检查。
+
+浏览器通过 URL fragment 内 60 秒单次票据换取 HttpOnly Cookie；fragment 随即清除。所有写请求
+还必须通过同源与 CSRF 校验。Provider API Key 只提交给本地 Core 的配置事务，不进入 URL、日志、
+localStorage 或普通响应。刷新页面后以 durable event seq 续接，不会重新执行工具。
 
 无参数 `coderook` 会启动 TUI，并自动复用或启动当前工作区的 `coderook-core`。首次打开时不会强制
 配置 API：没有模型也可以查看帮助、历史会话和设置。界面会显示一张非阻塞 readiness 卡。

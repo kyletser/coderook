@@ -33,6 +33,23 @@ jobs:
       - name: Sync locked environment
         run: uv sync --frozen
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web typecheck and static build
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Web bundle is committed
+        run: git diff --exit-code -- src/code_rook/web/static
+
       - name: Ruff
         run: uv run ruff check .
 

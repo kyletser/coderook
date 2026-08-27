@@ -53,6 +53,16 @@ class CoreShutdownResult(BaseModel):
     shutting_down: Literal[True] = True
 
 
+class WebLaunchCommand(BaseModel):
+    type: Literal["web.launch"] = "web.launch"
+
+
+class WebLaunchResult(BaseModel):
+    url: str
+    expires_in_seconds: int = Field(ge=1, le=300)
+    workspace: str
+
+
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
     goal: str
@@ -1089,6 +1099,7 @@ class ArtifactGcResult(BaseModel):
 Command = Annotated[
     CoreAuthenticateCommand
     | CoreShutdownCommand
+    | WebLaunchCommand
     | PingCommand
     | AgentRunCommand
     | GoalCreateCommand

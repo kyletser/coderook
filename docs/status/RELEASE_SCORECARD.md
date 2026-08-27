@@ -1,14 +1,14 @@
 # CodeRook 发布评分卡
 
-**更新时间**：2026-08-24
+**更新时间**：2026-08-27
 
-**代码锚点**：`main@2a8da99` + 当前未提交的 Harness 架构改造工作树
+**代码锚点**：`main@8ff3402` + 当前未提交的 CodeRook Web 候选工作树
 
 候选状态：**NO-GO（不是 v1.0.0 Release Candidate）**
 
-当前改造尚未形成一个已提交、由 required CI 验证的候选 commit。本文只区分当前代码事实和仍需外部
-执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本仍为
-`0.1.0` Alpha，未创建 `v0.9.0-beta.1`、`v1.0.0-rc.1` 或 `v1.0.0` tag。
+当前 Web 改造尚未形成一个已提交、由 required CI 验证的候选 commit。本文只区分当前代码事实和仍需
+外部执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本为
+`0.2.0b1`（产品候选名 `0.2.0-beta.1`），未创建相应 tag 或 `v1.0.0` tag。
 
 ## 1. 当前代码事实
 
@@ -19,9 +19,12 @@
   SiliconFlow、Ollama 与 LM Studio，并支持三个自定义 wire format；readiness 在创建 run 前阻止不可用
   route，Doctor 通过后才原子提交配置。前置备份与迁移收据是独立完整性证据；完成收据配空 Catalog、
   收据冲突/损坏或首次迁移半提交均失败关闭，Route 写入会在收据失败时回滚原字节。
-- Runtime API 对包括 loopback 在内的所有请求强制 Bearer；空/纯空白环境值不能关闭鉴权。未配置时
+- 外部 Runtime API 对包括 loopback 在内的所有请求强制 Bearer；空/纯空白环境值不能关闭鉴权。未配置时
   no-follow 加载或排他创建用户 token，POSIX 校验 owner/0600，Windows 校验 reparse、普通文件及对象
   身份而不宣称额外 ACL 隔离。
+- `coderook web` 与 TUI 共用同一 Core、Session、SSE cursor、权限、Receipt、Checkpoint 和 Change
+  Center。浏览器以 IPC 签发的 60 秒单次票据换取 HttpOnly SameSite Cookie，写请求还受 Host、Origin、
+  CSRF 和 CSP 约束；Core bearer 与 Provider API Key 不进入 URL 或 Web Storage。
 - 每个 Turn 冻结 authority、route/model、工具、图片、并行、thinking 与 sandbox capability。修改另一
   session 或运行中配置不能扩大当前 Turn，子 Agent authority 只能收窄。
 - Windows Restricted Token + capability ACL 在真实探针成功后提供 `partial` 写隔离，并始终保留显式

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from code_rook.cli.commands.skills import (
 )
 from code_rook.cli.commands.trace import cmd_trace
 from code_rook.cli.commands.version import cmd_version
+from code_rook.cli.commands.web import cmd_web
 from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStoreError
 from code_rook.core.llm.routes import list_route_presets
@@ -72,7 +74,11 @@ def _run_cli() -> int:
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
         tui_probe = tui_probe[2:]
-    if not tui_probe or tui_probe[0] in tui_flags:
+    explicit_tui = bool(tui_probe) and tui_probe[0] == "tui"
+    if not tui_probe or tui_probe[0] in tui_flags or explicit_tui:
+        if explicit_tui:
+            raw_index = 1 if sys.argv[1] == "tui" else 3
+            del sys.argv[raw_index]
         from code_rook.tui.__main__ import main as tui_main
 
         tui_main()
@@ -89,6 +95,18 @@ def _run_cli() -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("ping", help="Ping the core daemon")
+    web_parser = subparsers.add_parser("web", help="Open the local CodeRook Web workspace")
+    web_parser.add_argument(
+        "workspace",
+        nargs="?",
+        type=Path,
+        help="Workspace to open; defaults to the current directory",
+    )
+    web_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the one-time launch URL instead of opening a browser",
+    )
     subparsers.add_parser("configure", aliases=["config"], help="Configure the LLM connection")
     subparsers.add_parser("config-status", help="Show the active LLM configuration")
     migrate_project = subparsers.add_parser(
@@ -373,9 +391,17 @@ def _run_cli() -> int:
         )
         return 0
 
+    if args.command == "web" and args.workspace is not None:
+        workspace = args.workspace.expanduser().resolve()
+        if not workspace.is_dir():
+            parser.error(f"web workspace is not a directory: {workspace}")
+        os.chdir(workspace)
+
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
 
+    if args.command == "web":
+        return cmd_web(config, no_open=args.no_open, env_file=args.env_file)
     if args.command in {"configure", "config"}:
         cmd_configure(config)
     elif args.command == "config-status":

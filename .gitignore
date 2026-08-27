@@ -7,6 +7,8 @@ runs/
 dist/
 dist-*/
 build/
+web/node_modules/
+web/*.tsbuildinfo
 *.egg-info/
 .mypy_cache/
 .ruff_cache/
