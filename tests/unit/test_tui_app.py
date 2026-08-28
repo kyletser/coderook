@@ -1783,6 +1783,40 @@ async def test_tool_block_fast_completion_expands_full_result() -> None:
         assert "✓ 成功 · 12 ms" in rendered_detail
 
 
+# 功能：验证运行中工具能展开并原位刷新有界输出尾部与耗时
+# 设计：先挂载未完成工具，再连续注入 progress，确保不会生成第二张卡或提前显示成功
+async def test_running_tool_progress_updates_expanded_detail() -> None:
+    block = ToolCallBlock(
+        "Bash",
+        {"action": "run", "command": "slow command"},
+        presentation={
+            "action": "run_command",
+            "kind": "terminal",
+            "command": "slow command",
+            "supports_live_output": True,
+        },
+    )
+
+    class ProgressToolHarness(App[None]):
+        # 挂载运行中工具以验证 progress 原位刷新
+        def compose(self) -> ComposeResult:
+            yield block
+
+    app = ProgressToolHarness()
+    async with app.run_test(size=(80, 20)) as pilot:
+        block.set_progress("phase 1", 1100)
+        block.set_expanded(True)
+        await pilot.pause()
+        block.set_progress("phase 2", 2200)
+        await pilot.pause()
+
+        detail = str(block.query_one(".detail-content", Static).content)
+        assert block._finished is False  # type: ignore[attr-defined]
+        assert "phase 2" in detail
+        assert "运行中 · 2200 ms" in detail
+        assert "2.2s" in render(block._summary()).plain  # type: ignore[attr-defined]
+
+
 # 功能：验证失败工具仍可展开查看错误信息
 # 设计：挂载已失败工具并显式展开，断言错误保留而成功态隐藏规则不影响故障诊断
 async def test_failed_tool_block_expands_error_details() -> None:
@@ -1804,8 +1838,8 @@ async def test_failed_tool_block_expands_error_details() -> None:
         assert "command failed" in str(block.query_one(".detail-content", Static).content)
 
 
-# 功能：验证同一 step 的多个工具被合并到一个可折叠步骤组
-# 设计：先挂载一个工具再动态追加第二个，检查标题计数、子项数量和标题点击折叠行为
+# 功能：验证同一 step 的多个工具默认折叠为一个紧凑活动组
+# 设计：先挂载再动态追加第二个，检查聚合标题、子项数量和点击展开行为
 async def test_tool_step_group_collects_and_collapses_tools() -> None:
     first = ToolCallBlock("read_file", {"path": "README.md"})
     second = ToolCallBlock("grep", {"pattern": "TODO", "path": "src"})
@@ -1825,11 +1859,53 @@ async def test_tool_step_group_collects_and_collapses_tools() -> None:
         header = group.query_one(".step-header", Static)
 
         assert "读取了文件 · 搜索了内容" in render(str(header.content)).plain
+        assert "2 项" in render(str(header.content)).plain
         assert len(group.query(ToolCallBlock)) == 2
+        assert "collapsed" in group.classes
 
         event = type("Click", (), {"widget": header})()
         group.on_click(event)  # type: ignore[arg-type]
+        assert "collapsed" not in group.classes
+
+
+# 功能：验证工具失败时活动组保持紧凑且展开后提供复制与安全重试入口
+# 设计：使用带语义 Presentation 的失败工具更新父组，先检查折叠摘要，再手动展开读取恢复提示
+async def test_tool_failure_stays_collapsed_with_recovery_actions() -> None:
+    block = ToolCallBlock(
+        "Bash",
+        {"action": "run", "command": "exit 1"},
+        presentation={
+            "action": "run_command",
+            "kind": "terminal",
+            "command": "exit 1",
+        },
+    )
+    group = ToolStepGroup(1)
+    group.add_tool(block)
+
+    class FailureGroupHarness(App[None]):
+        # 挂载失败活动组以验证父子状态联动
+        def compose(self) -> ComposeResult:
+            yield group
+
+    app = FailureGroupHarness()
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        block.set_result("command failed", 1600, is_error=True)
+        await pilot.pause()
         assert "collapsed" in group.classes
+
+        header_widget = group.query_one(".step-header", Static)
+        group.on_click(type("Click", (), {"widget": header_widget})())  # type: ignore[arg-type]
+        block.set_expanded(True)
+        await pilot.pause()
+
+        header = render(str(group.query_one(".step-header", Static).content)).plain
+        detail = str(block.query_one(".detail-content", Static).content)
+        assert "collapsed" not in group.classes
+        assert "1 项失败" in header
+        assert "1.6s" in header
+        assert "C 复制错误 · R 填入重试建议" in detail
 
 
 # 功能：验证 note_save 成功完成后使用自然动作文案
@@ -3074,3 +3150,62 @@ def test_file_reference_is_bounded_path_not_full_content(
     assert '"auth.py"' in augmented
     assert "SECRET_FULL_FILE_CONTENT" not in augmented
     assert "do not inject entire files" in augmented
+
+
+# 功能：验证恢复历史会将工具结果错误映射为失败而不是成功
+# 设计：构造相邻 tool_use/tool_result 消息并捕获简洁历史块，固定重启后不得绿勾误报的用户契约
+def test_history_tool_error_is_rendered_as_failure() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._locale = "zh-CN"
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._append_history(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-failed",
+                        "name": "Bash",
+                        "input": {"command": "wmic cpu get name"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-failed",
+                        "content": "command not found",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ]
+    )
+
+    output = "\n".join(str(getattr(widget, "content", "")) for widget in appended)
+    assert "── 历史会话 ──" in output
+    assert "[red]×[/red]" in output
+    assert "执行失败" in output
+    assert "[green]✓[/green]" not in output
+
+
+# 功能：验证沙箱能力尚未返回时状态栏显示检查中而不误报 Windows 无沙箱
+# 设计：在真实 Textual 挂载后刷新默认状态，同时覆盖连接初期的用户可见文案和控件更新
+async def test_status_bar_waits_for_sandbox_detection() -> None:
+    class StatusHarness(CodeRookTuiApp):
+        # 挂载后不连接 Core，只验证默认能力探测状态
+        def on_mount(self) -> None:
+            self._update_status_bar()
+
+    app = StatusHarness("127.0.0.1", 9999, locale="zh-CN")
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        status = str(app.query_one("#status-bar", Static).content)
+
+    assert "Sandbox 检查中" in status
+    assert "Windows 无 OS 沙箱" not in status

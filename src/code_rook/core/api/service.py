@@ -70,6 +70,11 @@ class RuntimeApiService:
         self._process_supervisor = process_supervisor
         self._artifact_store = artifact_store
         self._git_diff = GitDiffTool(workspace_boundary) if workspace_boundary else None
+        self._change_center = (
+            ChangeCenterService(workspace_boundary, process_supervisor)
+            if workspace_boundary is not None
+            else None
+        )
         self._labs_enabled = labs_enabled
 
     @property
@@ -211,7 +216,18 @@ class RuntimeApiService:
         normalized_query = query.strip().casefold()
         roots = selected.rglob("*") if normalized_query else selected.iterdir()
         entries: list[dict[str, object]] = []
-        skipped = {".git", ".coderook", ".venv", "node_modules", "dist", "build"}
+        skipped = {
+            ".git",
+            ".coderook",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+            "dist",
+            "build",
+        }
         for candidate in roots:
             if any(part in skipped for part in candidate.relative_to(boundary.root).parts):
                 continue
@@ -372,13 +388,14 @@ class RuntimeApiService:
         scope: str = "all",
         path: str = ".",
     ) -> dict[str, object]:
-        if self._git_diff is None or self._workspace_boundary is None:
+        if (
+            self._git_diff is None
+            or self._workspace_boundary is None
+            or self._change_center is None
+        ):
             raise ValueError("workspace diff is unavailable")
         if path == ".":
-            return await ChangeCenterService(
-                self._workspace_boundary,
-                self._process_supervisor,
-            ).diff(scope)
+            return await self._change_center.diff(scope)
         result = await self._git_diff.invoke({"scope": scope, "path": path})
         payload = json.loads(result.content)
         if not isinstance(payload, dict):
@@ -395,12 +412,14 @@ class RuntimeApiService:
         confirmed: bool,
     ) -> dict[str, object]:
         self._require_change_mutation(thread_id, confirmed=confirmed)
-        boundary = self._require_workspace()
+        self._require_workspace()
+        if self._change_center is None:
+            raise ValueError("workspace change center is unavailable")
         async with self._sessions.workspace_mutation():
-            return await ChangeCenterService(
-                boundary,
-                self._process_supervisor,
-            ).stage(paths, expected_digest=expected_digest)
+            return await self._change_center.stage(
+                paths,
+                expected_digest=expected_digest,
+            )
 
     # 从已审查 staged tree 创建本地 commit，永不自动 push
     async def workspace_commit(
@@ -412,12 +431,14 @@ class RuntimeApiService:
         confirmed: bool,
     ) -> dict[str, object]:
         self._require_change_mutation(thread_id, confirmed=confirmed)
-        boundary = self._require_workspace()
+        self._require_workspace()
+        if self._change_center is None:
+            raise ValueError("workspace change center is unavailable")
         async with self._sessions.workspace_mutation():
-            result = await ChangeCenterService(
-                boundary,
-                self._process_supervisor,
-            ).commit(message, expected_digest=expected_digest)
+            result = await self._change_center.commit(
+                message,
+                expected_digest=expected_digest,
+            )
         return {
             "commit": result.commit,
             "subject": result.subject,
@@ -472,7 +493,17 @@ class RuntimeApiService:
 
     # 列出所有 durable threads
     async def list_threads(self) -> list[ThreadRecord]:
-        return await self._runtime.list_threads()
+        sessions = await self._sessions.list_sessions(include_closed=False, limit=200)
+        records: list[ThreadRecord] = []
+        for session in sessions:
+            try:
+                records.append(await self._runtime.get_thread(session.id))
+            except RecordNotFoundError:
+                logger.warning(
+                    "session runtime projection missing after bootstrap sid=%s",
+                    session.id,
+                )
+        return records
 
     # 创建 chat thread 并返回其 durable 投影
     async def create_thread(self, title: str, mode: str) -> ThreadRecord:

@@ -110,8 +110,6 @@ class Session:
             r"[0-9a-f]{64}", preset_digest
         ) is None:
             raise ValueError("invalid session preset digest")
-        if schema_version >= 3 and preset_digest != preset.digest:
-            raise ValueError("session preset digest does not match the installed preset")
         return cls(
             id=session_id,
             mode=mode,

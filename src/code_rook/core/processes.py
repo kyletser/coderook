@@ -273,17 +273,21 @@ class ProcessSupervisor:
             complete=state.complete,
         )
 
-    # Windows 上把根进程加入 kill-on-close Job Object，失败则终止未受管进程并拒绝启动
+    # Windows 上把活跃根进程加入 Job；已在分配竞态中自然退出的短命进程可安全返回
     async def _attach_windows_job(self, process: asyncio.subprocess.Process) -> None:
         if os.name != "nt":
             return
         try:
             job = await asyncio.to_thread(create_kill_on_close_job, process.pid)
         except OSError as exc:
-            await terminate_process_tree(process)
-            raise RuntimeError(
-                f"failed to attach process {process.pid} to Windows Job Object: {exc}"
-            ) from exc
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.05)
+            except TimeoutError:
+                await terminate_process_tree(process)
+                raise RuntimeError(
+                    f"failed to attach process {process.pid} to Windows Job Object: {exc}"
+                ) from exc
+            return
         self._windows_jobs[process.pid] = job
 
     # 回收已退出根进程，并在移除记录前强制清理 POSIX 残留进程组

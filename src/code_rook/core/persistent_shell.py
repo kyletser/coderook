@@ -17,6 +17,7 @@ from code_rook.core.processes import (
     terminate_process_tree,
 )
 from code_rook.core.sandbox.planner import SandboxPlan, persistent_sandbox_argv
+from code_rook.core.tools.execution_metadata import report_tool_progress
 
 _IDLE_RECYCLE_S = 1800.0
 _MAX_SESSION_OUTPUT_BYTES = 64 * 1024
@@ -224,6 +225,11 @@ class PersistentShellSession:
                 output_spool.write(safe)
                 self._append_bounded_output(output, safe)
                 del pending[:safe_length]
+            progress_tail = (bytes(output[-4096:]) + bytes(pending[-4096:]))[-4096:]
+            await report_tool_progress(
+                _decode_shell_output(progress_tail),
+                output_spool.size + len(pending),
+            )
         if exit_code is None and pending:
             output_spool.write(bytes(pending))
             self._append_bounded_output(output, bytes(pending))

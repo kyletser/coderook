@@ -17,6 +17,7 @@ from code_rook.core.editing import FileMutation, apply_file_transaction
 from code_rook.core.events.bus import EventBus
 from code_rook.core.goal import GoalService, GoalStore
 from code_rook.core.hooks import HookManager
+from code_rook.core.presets import STANDARD_PRESET
 from code_rook.core.runner import RunOutcome
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import RuntimeStore
@@ -210,6 +211,41 @@ async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path
     assert messages[1]["role"] == "assistant"
 
 
+# 功能：验证内建稳定 Preset 升级后历史会话会自动迁移并继续执行
+# 设计：写入旧摘要后通过真实 SessionManager 发送消息，捕获 Runner 所见摘要并检查迁移事件
+async def test_send_message_migrates_stable_preset_digest(tmp_path: Path) -> None:
+    class _PresetRunner(_Runner):
+        # 初始化 Runner 捕获到的会话 Preset 摘要
+        def __init__(self) -> None:
+            self.seen_digest = ""
+
+        # 捕获迁移后的摘要并复用普通成功执行路径
+        async def run_and_capture(self, goal: str, **kwargs: object) -> RunOutcome:
+            session = kwargs.get("session")
+            assert isinstance(session, Session)
+            self.seen_digest = session.preset_digest
+            return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+    store = SessionStore(tmp_path)
+    runner = _PresetRunner()
+    manager = SessionManager(store, lambda: runner, EventBus())  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    session.preset_digest = "0" * 64
+    store.write_meta(session)
+
+    await manager.send_message(session.id, "continue after upgrade")
+
+    assert runner.seen_digest == STANDARD_PRESET.digest
+    assert store.read_meta(session.id).preset_digest == STANDARD_PRESET.digest
+    migrations = [
+        event
+        for event in store.read_session_events(session.id)
+        if event.type == "session.preset_migrated"
+    ]
+    assert len(migrations) == 1
+    assert migrations[0].payload["previous_digest"] == "0" * 64
+
+
 # 功能：验证图片附件只把 artifact 引用写入 transcript，并把 base64 像素临时交给 runner
 # 设计：用内容寻址 PNG 和捕获 runner 串联 send_message，分别检查 durable 与 transient 两侧
 async def test_send_message_delivers_image_artifact_once(
@@ -317,6 +353,28 @@ async def test_rehydrate_marks_active_session_interrupted(tmp_path: Path) -> Non
         "orphan"
     ]
     assert not list(store.session_dir("sess-recover").glob("thread_interrupted_*.jsonl"))
+
+
+# 功能：验证从未启动 Turn 的空会话在 daemon 重启后保持空闲而不是误报中断
+# 设计：构造 active 但无 run_ids 的持久元数据，重建 manager 后同时核对内存与磁盘状态
+async def test_rehydrate_keeps_unused_session_idle(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session = Session(
+        id="sess-unused",
+        mode="chat",
+        status="active",
+        title="draft",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+        run_ids=[],
+    )
+    store.write_meta(session)
+
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    sessions = await manager.list_sessions()
+
+    assert sessions[0].status == "waiting_for_input"
+    assert store.read_meta(session.id).status == "waiting_for_input"
 
 
 # 功能：恢复中断会话时区分只读可重跑与修改状态未知，并发布可操作恢复卡

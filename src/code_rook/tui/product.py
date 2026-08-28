@@ -221,6 +221,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "tool.action.background_status.finished": "已检查后台任务",
         "tool.action.command.running": "正在执行命令",
         "tool.action.command.finished": "已执行命令",
+        "tool.action.failed": "执行失败",
         "tool.action.checkpoint_list.running": "正在加载恢复点",
         "tool.action.checkpoint_list.finished": "已加载恢复点",
         "tool.action.checkpoint_rewind.running": "正在恢复检查点",
@@ -445,6 +446,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "app.session.reconnected": "会话已重连",
         "app.session.ready": "会话已就绪",
         "app.session.history": "{count} 条历史消息",
+        "app.session.history_divider": "历史会话",
         "app.session.export_exists": (
             "导出目标已存在，未覆盖：{path}\n"
             "确认目标无误后输入 /export {format} --force --yes"
@@ -994,6 +996,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "tool.action.background_status.finished": "Checked background job",
         "tool.action.command.running": "Running command",
         "tool.action.command.finished": "Ran command",
+        "tool.action.failed": "Failed",
         "tool.action.checkpoint_list.running": "Loading checkpoints",
         "tool.action.checkpoint_list.finished": "Loaded checkpoints",
         "tool.action.checkpoint_rewind.running": "Restoring checkpoint",
@@ -1230,6 +1233,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "app.session.reconnected": "Session reconnected",
         "app.session.ready": "Session ready",
         "app.session.history": "{count} history message(s)",
+        "app.session.history_divider": "Conversation history",
         "app.session.export_exists": (
             "Export target already exists and was not overwritten: {path}\n"
             "After checking the exact target, confirm with /export {format} --force --yes"

@@ -15,6 +15,7 @@ from code_rook.core.tools.builtin import bash as bash_module
 from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
+from code_rook.core.tools.execution_metadata import tool_invocation
 
 # ── bash ──────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,25 @@ async def test_bash_success_stdout() -> None:
     result = await BashTool().invoke({"command": "echo hello"})
     assert not result.is_error
     assert "hello" in result.content
+
+
+# 功能：验证一次性 Bash 在完成前报告有界实时输出尾部
+# 设计：通过 tool_invocation 注入内存 progress 回调执行真实 echo，避免依赖 daemon 或模型
+@pytest.mark.asyncio
+async def test_bash_reports_live_output_tail() -> None:
+    progress: list[tuple[str, int]] = []
+
+    # 收集 Bash 分块读取路径报告的尾部与累计字节数
+    async def collect(output_tail: str, total_bytes: int) -> None:
+        progress.append((output_tail, total_bytes))
+
+    with tool_invocation("tool-live", progress=collect):
+        result = await BashTool().invoke({"command": "echo live-output"})
+
+    assert result.is_error is False
+    assert progress
+    assert "live-output" in progress[-1][0]
+    assert progress[-1][1] >= len("live-output")
 
 
 @pytest.mark.asyncio

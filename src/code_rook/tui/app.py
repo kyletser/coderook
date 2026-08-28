@@ -101,6 +101,9 @@ from code_rook.tui.widgets import (
     _tool_action_text as _tool_action_text,
 )
 from code_rook.tui.widgets import (
+    _tool_failure_text as _tool_failure_text,
+)
+from code_rook.tui.widgets import (
     _tool_target as _tool_target,
 )
 from code_rook.tui.widgets.actions import ConfigSwitch as ConfigSwitch
@@ -726,6 +729,70 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             group.set_class(not self._details_expanded, "collapsed")
         for tool in self.query(ToolCallBlock):
             tool.set_expanded(self._details_expanded)
+
+    # 复制失败工具的完整错误内容并给出就地反馈
+    def on_tool_call_block_copy_requested(
+        self,
+        message: ToolCallBlock.CopyRequested,
+    ) -> None:
+        if self._write_clipboard(message.block._output):
+            self.notify(
+                "错误已复制" if self._locale != "en-US" else "Error copied"
+            )
+
+    # 把安全重试建议写入输入框供用户确认，避免直接重复底层副作用
+    def on_tool_call_block_retry_requested(
+        self,
+        message: ToolCallBlock.RetryRequested,
+    ) -> None:
+        prompt = self._prompt()
+        if prompt is None:
+            return
+        retry = message.block.retry_prompt()
+        prompt.text = f"{prompt.text.rstrip()}\n{retry}".lstrip()
+        prompt.move_cursor(prompt.document.end)
+        if not prompt.disabled:
+            prompt.focus()
+        self.notify(
+            "重试建议已填入输入框"
+            if self._locale != "en-US"
+            else "Retry guidance added to the composer"
+        )
+
+    # 在工作区边界内以有界纯文本预览工具关联文件
+    def on_tool_call_block_open_requested(
+        self,
+        message: ToolCallBlock.OpenRequested,
+    ) -> None:
+        raw = message.block.primary_location()
+        try:
+            candidate = Path(raw)
+            target = (
+                candidate.resolve()
+                if candidate.is_absolute()
+                else (self._workspace / candidate).resolve()
+            )
+            relative = target.relative_to(self._workspace)
+            if not target.is_file():
+                raise ValueError("location is not a file")
+            content = target.read_text(encoding="utf-8", errors="replace")
+            truncated = len(content) > 8_000
+            preview = content[:8_000]
+            suffix = "\n… [preview truncated]" if truncated else ""
+            self._append(
+                Static(
+                    f"{relative.as_posix()}\n\n{preview}{suffix}",
+                    classes="log-line",
+                    markup=False,
+                )
+            )
+        except (OSError, ValueError):
+            self.notify(
+                "只能预览当前工作区内的文本文件"
+                if self._locale != "en-US"
+                else "Only text files inside the workspace can be previewed",
+                severity="warning",
+            )
 
     # 关闭 Ctrl+P 面板并把焦点还给 composer
     def on_command_palette_dismissed(self, message: CommandPalette.Dismissed) -> None:
@@ -3827,7 +3894,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_image_attachments = []
         self._refresh_attachment_strip()
         self._reset_cost_state()
-        label = "resumed" if resume else "new session"
+        action = "resumed" if resume else "created"
+        label = tr(f"app.session.{action}", self._locale)
         self._append(
             Static(
                 f"[bold cyan]{label}[/bold cyan]  [dim]{session_id}[/dim]",
@@ -4140,11 +4208,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if follow:
             log_view.scroll_end(animate=False)
 
-    # 将恢复会话的历史消息转换为简洁的 TUI 块，工具结果仍由 Core 历史保留
+    # 将恢复会话的历史消息与工具结果对账后转换为简洁且状态真实的 TUI 块
     def _append_history(self, messages: list[dict[str, Any]]) -> None:
         if not messages:
             return
-        self._append(Static("[dim]── resumed conversation ──[/dim]", classes="log-line"))
+        tool_results: dict[str, dict[str, Any]] = {}
+        for message in messages:
+            content = message.get("content", "")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_use_id = str(block.get("tool_use_id", ""))
+                if tool_use_id:
+                    tool_results[tool_use_id] = block
+        divider = tr("app.session.history_divider", self._locale)
+        self._append(Static(f"[dim]── {divider} ──[/dim]", classes="log-line"))
         for message in messages:
             role = str(message.get("role", ""))
             content = message.get("content", "")
@@ -4168,16 +4248,29 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 elif block.get("type") == "tool_use":
                     params_raw = block.get("input", {})
                     params = params_raw if isinstance(params_raw, dict) else {}
+                    tool_use_id = str(block.get("id", ""))
+                    result = tool_results.get(tool_use_id)
+                    failed = bool(result and result.get("is_error"))
                     action = escape(
                         _tool_action_text(
                             str(block.get("name", "")),
                             params,
-                            finished=True,
+                            finished=not failed,
+                            locale=self._locale,
                         )
                     )
+                    marker = "[red]×[/red]" if failed else "[green]✓[/green]"
+                    if failed:
+                        action = escape(
+                            _tool_failure_text(
+                                str(block.get("name", "")),
+                                params,
+                                locale=self._locale,
+                            )
+                        )
                     self._append(
                         Static(
-                            f"[green]✓[/green] [#aab2be]{action}[/#aab2be]",
+                            f"{marker} [#aab2be]{action}[/#aab2be]",
                             classes="log-line",
                         )
                     )
@@ -4410,7 +4503,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except NoMatches:
             return
         sandbox_kind = str(self._sandbox.get("kind") or "none")
-        if self._sandbox.get("available") and sandbox_kind == "windows_acl":
+        sandbox_reason = str(self._sandbox.get("reason") or "")
+        if sandbox_kind == "none" and "not been detected" in sandbox_reason:
+            sandbox_state = (
+                "Sandbox 检查中" if self._locale == "zh-CN" else "Checking sandbox"
+            )
+        elif self._sandbox.get("available") and sandbox_kind == "windows_acl":
             sandbox_state = (
                 "Windows 部分沙箱"
                 if self._locale == "zh-CN"
@@ -4418,9 +4516,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
         elif self._sandbox.get("available"):
             sandbox_state = sandbox_kind
-        else:
+        elif sandbox_kind == "windows_none":
             sandbox_state = (
                 "Windows 无 OS 沙箱" if self._locale == "zh-CN" else "no OS sandbox"
+            )
+        else:
+            sandbox_state = (
+                "Sandbox 不可用" if self._locale == "zh-CN" else "Sandbox unavailable"
             )
         queue = (
             f" · queue {len(self._queued_messages)}"

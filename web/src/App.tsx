@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { bootstrap, request, streamEvents } from "./api";
 import { browserBridge } from "./platform";
 import type {
@@ -22,6 +22,45 @@ type ImageAttachment = {
   height: number;
   name: string;
 };
+type QueuedMessage = { content: string; mode: RunMode };
+type ToolTimelineEntry = {
+  kind: "tool";
+  key: string;
+  timestamp: string;
+  turnId: string;
+  call?: TurnItem;
+  result?: TurnItem;
+  progress?: RuntimeEvent;
+};
+type TimelineEntry =
+  | { kind: "item"; key: string; timestamp: string; item: TurnItem }
+  | ToolTimelineEntry
+  | { kind: "tool_group"; key: string; timestamp: string; tools: ToolTimelineEntry[] }
+  | { kind: "event"; key: string; timestamp: string; event: RuntimeEvent };
+type IconName = "rook" | "menu" | "plus" | "files" | "changes" | "models" | "settings" | "edit" | "fork" | "download" | "trash" | "arrow" | "arrowUp" | "image" | "stop" | "terminal";
+
+const iconPaths: Record<IconName, string> = {
+  rook: "M7 3h2v3h2V3h2v3h2V3h2v5l-2 2v8h2v3H5v-3h2v-8L5 8V3h2m2 7v8h6v-8H9Z",
+  menu: "M4 7h16M4 12h16M4 17h16",
+  plus: "M12 5v14M5 12h14",
+  files: "M4 5.5A1.5 1.5 0 0 1 5.5 4H10l2 2h6.5A1.5 1.5 0 0 1 20 7.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13Z",
+  changes: "M7 7h10M7 12h7M7 17h4M17 14v6m-3-3h6",
+  models: "M12 3a3 3 0 0 0-3 3v1H8a3 3 0 0 0-3 3v1a3 3 0 0 0 3 3h1v1a3 3 0 0 0 6 0v-1h1a3 3 0 0 0 3-3v-1a3 3 0 0 0-3-3h-1V6a3 3 0 0 0-3-3Zm0 4v10M9 10h6M9 14h6",
+  settings: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm0-5v2m0 13v2m8.5-8.5h-2m-13 0h-2m14.51-6.01-1.42 1.42M6.9 17.1l-1.42 1.42m13.03 0-1.42-1.42M6.9 6.9 5.48 5.48",
+  edit: "M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4",
+  fork: "M7 4v5a3 3 0 0 0 3 3h4a3 3 0 0 1 3 3v5M17 4v4M14 5l3 3 3-3",
+  download: "M12 3v12m-4-4 4 4 4-4M5 20h14",
+  trash: "M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m3 4v5m4-5v5",
+  arrow: "M5 12h14m-5-5 5 5-5 5",
+  arrowUp: "M12 19V5m-5 5 5-5 5 5",
+  image: "M4 5h16v14H4V5Zm3 10 3-3 2 2 2-2 3 3M8.5 9a1 1 0 1 0 0 .01",
+  stop: "M7 7h10v10H7V7Z",
+  terminal: "M4 5h16v14H4V5Zm3 4 2.5 2.5L7 14m5 0h5",
+};
+
+function Icon({ name, size = 18 }: { name: IconName; size?: number }): ReactElement {
+  return <svg aria-hidden="true" className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={iconPaths[name]} /></svg>;
+}
 
 const phaseLabels: Record<string, string> = {
   understanding: "理解任务",
@@ -34,6 +73,14 @@ const phaseLabels: Record<string, string> = {
   completed: "任务完成",
   failed: "任务失败",
   interrupted: "任务中断",
+};
+
+const statusLabels: Record<string, string> = {
+  idle: "空闲",
+  running: "运行中",
+  interrupted: "待恢复",
+  failed: "失败",
+  archived: "已归档",
 };
 
 function displayTime(value: string): string {
@@ -50,6 +97,17 @@ function textValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
   return JSON.stringify(value, null, 2);
+}
+
+function readinessReason(value: unknown): string {
+  const reason = textValue(value);
+  const labels: Record<string, string> = {
+    "the remote route has credentials but has not passed a basic Doctor probe": "已保存凭据，但当前路由尚未通过 Doctor 验证。",
+    "the active route Doctor receipt is missing or stale": "当前路由的 Doctor 验证已缺失或过期。",
+    "no provider route is configured": "尚未配置可用的模型路由。",
+    "the active route credential is missing": "当前路由缺少 API Key。",
+  };
+  return labels[reason] || reason;
 }
 
 function fileBase64(file: File): Promise<string> {
@@ -80,9 +138,229 @@ function eventTitle(event: RuntimeEvent): string {
     "user_question.asked": "需要你的回答",
     "recovery.available": "发现可恢复任务",
     "run.outcome": "任务结果",
+    "run.finished": "任务结果",
     "turn.finished": "本轮结束",
+    "turn.failed": "本轮未完成",
+    "turn.interrupted": "本轮已中断",
   };
   return names[event.type] || event.type.replaceAll(".", " · ");
+}
+
+function messageContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return textValue(value);
+  return value.map((block) => {
+    if (!block || typeof block !== "object") return textValue(block);
+    const record = block as Record<string, unknown>;
+    if (record.type === "text") return textValue(record.text);
+    if (record.type === "image") return "[图片]";
+    return textValue(record);
+  }).filter(Boolean).join("\n");
+}
+
+function inlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const tokens = text.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\))/g);
+  return tokens.filter(Boolean).map((token, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (token.startsWith("**") && token.endsWith("**")) return <strong key={key}>{token.slice(2, -2)}</strong>;
+    if (token.startsWith("`") && token.endsWith("`")) return <code key={key}>{token.slice(1, -1)}</code>;
+    const link = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+    if (link) return <a key={key} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
+    return token;
+  });
+}
+
+function MarkdownText({ content }: { content: string }): ReactElement {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let codeLines: string[] | null = null;
+  let codeLanguage = "";
+  for (const [index, line] of lines.entries()) {
+    if (line.startsWith("```")) {
+      if (codeLines === null) {
+        codeLines = [];
+        codeLanguage = line.slice(3).trim();
+      } else {
+        blocks.push(<pre className="markdown-code" key={`code-${index}`}><code data-language={codeLanguage}>{codeLines.join("\n")}</code></pre>);
+        codeLines = null;
+        codeLanguage = "";
+      }
+      continue;
+    }
+    if (codeLines !== null) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!line.trim()) {
+      blocks.push(<div className="markdown-gap" key={`gap-${index}`} />);
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      blocks.push(<div className={`markdown-heading level-${level}`} key={`heading-${index}`}>{inlineMarkdown(heading[2], `heading-${index}`)}</div>);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      blocks.push(<div className="markdown-list-row" key={`bullet-${index}`}><span>•</span><div>{inlineMarkdown(bullet[1], `bullet-${index}`)}</div></div>);
+      continue;
+    }
+    const ordered = line.match(/^\s*(\d+)\.\s+(.+)$/);
+    if (ordered) {
+      blocks.push(<div className="markdown-list-row" key={`ordered-${index}`}><span>{ordered[1]}.</span><div>{inlineMarkdown(ordered[2], `ordered-${index}`)}</div></div>);
+      continue;
+    }
+    const quote = line.match(/^>\s?(.+)$/);
+    if (quote) {
+      blocks.push(<blockquote key={`quote-${index}`}>{inlineMarkdown(quote[1], `quote-${index}`)}</blockquote>);
+      continue;
+    }
+    blocks.push(<p key={`paragraph-${index}`}>{inlineMarkdown(line, `paragraph-${index}`)}</p>);
+  }
+  if (codeLines !== null) blocks.push(<pre className="markdown-code" key="code-open"><code data-language={codeLanguage}>{codeLines.join("\n")}</code></pre>);
+  return <div className="markdown-content">{blocks}</div>;
+}
+
+function toolActionLabel(
+  toolName: string,
+  params: Record<string, unknown>,
+  state: "running" | "succeeded" | "failed",
+  semanticAction = "",
+): string {
+  const labels: Record<string, string> = {
+    run_command: "运行命令",
+    run_tests: "运行验证",
+    read_file: "读取文件",
+    browse_files: "浏览文件",
+    search_code: "搜索代码",
+    edit_code: "修改代码",
+    git: "检查 Git",
+    web: "访问网络",
+    worker: "调用 Agent",
+  };
+  const semantic = labels[semanticAction];
+  if (semantic) {
+    if (semanticAction === "run_command") return state === "failed" ? "运行失败" : state === "running" ? "正在运行" : "已运行";
+    if (semanticAction === "run_tests") return state === "failed" ? "验证失败" : state === "running" ? "正在验证" : "已验证";
+    return state === "failed" ? `${semantic}失败` : state === "running" ? `正在${semantic}` : semantic;
+  }
+  if (["Bash", "Run", "bash", "run"].includes(toolName)) {
+    return state === "failed" ? "命令执行失败" : state === "running" ? "正在运行命令" : "运行命令";
+  }
+  if (["File", "file"].includes(toolName)) {
+    const action = textValue(params.action);
+    const labels: Record<string, string> = {
+      read: "读取文件",
+      list: "浏览文件",
+      write: "写入文件",
+      patch: "修改文件",
+      search: "搜索文件",
+    };
+    const label = labels[action] || "处理文件";
+    return state === "failed" ? `${label}失败` : state === "running" ? `正在${label}` : label;
+  }
+  if (["Git", "git"].includes(toolName)) {
+    return state === "failed" ? "Git 操作失败" : state === "running" ? "正在执行 Git 操作" : "Git 操作";
+  }
+  return state === "failed" ? `${toolName} 失败` : state === "running" ? `正在使用 ${toolName}` : `使用 ${toolName}`;
+}
+
+function inferToolAction(
+  toolName: string,
+  params: Record<string, unknown>,
+  presentation: Record<string, unknown>,
+): string {
+  const declared = textValue(presentation.action);
+  if (declared) return declared;
+  const normalizedName = toolName.toLowerCase();
+  if (["bash", "run", "background_run"].includes(normalizedName)) {
+    const command = textValue(params.command).toLowerCase();
+    return /(^|\s)(pytest|mypy|ruff|vitest|jest|npm test|pnpm test|cargo test|go test)(\s|$)/.test(command)
+      ? "run_tests"
+      : "run_command";
+  }
+  if (["git", "git_diff", "git_status"].includes(normalizedName)) return "git";
+  if (["grep", "glob", "search", "memory_search"].includes(normalizedName)) return "search_code";
+  if (["read_file", "read_image"].includes(normalizedName)) return "read_file";
+  if (["list_dir", "list_files"].includes(normalizedName)) return "browse_files";
+  if (["edit_file", "write_file", "apply_patch"].includes(normalizedName)) return "edit_code";
+  if (normalizedName === "file") {
+    const action = textValue(params.action).toLowerCase();
+    if (["read", "image"].includes(action)) return "read_file";
+    if (["list", "browse"].includes(action)) return "browse_files";
+    if (["search", "grep", "glob"].includes(action)) return "search_code";
+    if (["write", "patch", "edit", "delete", "move"].includes(action)) return "edit_code";
+  }
+  if (normalizedName.startsWith("web_")) return "web";
+  if (normalizedName.startsWith("agent") || normalizedName.startsWith("worker")) return "worker";
+  return "";
+}
+
+function toolElapsed(value: unknown, showFast = false): string {
+  const elapsed = Number(value || 0);
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return "";
+  if (elapsed < 1000 && !showFast) return "";
+  return elapsed < 1000 ? `${Math.round(elapsed)} ms` : `${(elapsed / 1000).toFixed(elapsed < 10000 ? 1 : 0)} s`;
+}
+
+function showTimelineEvent(event: RuntimeEvent): boolean {
+  if (["llm.chunk", "llm.usage", "runtime.event_appended", "turn.started", "turn.completed", "message.completed"].includes(event.type)) return false;
+  if (event.type.startsWith("tool.call_")) return false;
+  return [
+    "task.profiled",
+    "llm.retry",
+    "context.compaction_committed",
+    "context.compacted",
+    "plan.ready",
+    "permission.requested",
+    "user_question.asked",
+    "recovery.available",
+    "run.outcome",
+    "run.finished",
+    "turn.finished",
+    "turn.failed",
+    "turn.interrupted",
+    "steer.admitted",
+  ].includes(event.type) || event.type.startsWith("worker.") || event.type.startsWith("subagent.");
+}
+
+function syntheticToolItem(event: RuntimeEvent, kind: "tool_call" | "tool_result"): TurnItem {
+  const id = textValue(event.payload.tool_use_id || event.payload.tool_call_id) || `event-${event.seq}`;
+  return {
+    id: `${event.turn_id || textValue(event.payload.run_id)}:${kind}:${id}`,
+    turn_id: event.turn_id || textValue(event.payload.run_id),
+    kind,
+    payload: event.payload,
+    tool_call_id: id,
+    created_at: event.ts,
+  };
+}
+
+function groupToolEntries(entries: TimelineEntry[]): TimelineEntry[] {
+  const grouped: TimelineEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== "tool") {
+      grouped.push(entry);
+      continue;
+    }
+    const previous = grouped[grouped.length - 1];
+    if (previous?.kind === "tool_group" && previous.tools[0]?.turnId === entry.turnId) {
+      previous.tools.push(entry);
+      continue;
+    }
+    if (previous?.kind === "tool" && previous.turnId === entry.turnId) {
+      grouped[grouped.length - 1] = {
+        kind: "tool_group",
+        key: `tool-group:${entry.turnId}:${previous.key}`,
+        timestamp: previous.timestamp,
+        tools: [previous, entry],
+      };
+      continue;
+    }
+    grouped.push(entry);
+  }
+  return grouped;
 }
 
 function eventDetail(event: RuntimeEvent): string {
@@ -106,6 +384,32 @@ function eventDetail(event: RuntimeEvent): string {
   return "";
 }
 
+function taskProfile(event: RuntimeEvent): Record<string, unknown> {
+  const profile = event.payload.profile;
+  return profile && typeof profile === "object" && !Array.isArray(profile)
+    ? profile as Record<string, unknown>
+    : {};
+}
+
+function taskProfileTitle(profile: Record<string, unknown>): string {
+  const strategy = textValue(profile.strategy);
+  if (strategy === "delegate") return "评估任务拆分与并行执行";
+  const intent = textValue(profile.intent);
+  const titles: Record<string, string> = {
+    explain: "理解问题并整理回答",
+    inspect: "定位相关实现与证据",
+    fix: strategy === "plan_first" ? "定位根因并规划修复" : "定位问题并准备修复",
+    refactor: "梳理重构范围与兼容边界",
+    test: "确定验证范围与执行方式",
+    multi_file_change: "拆解跨文件改动与依赖",
+  };
+  return titles[intent] || "分析任务与执行方式";
+}
+
+function isSimpleProductQuestion(value: string): boolean {
+  return /(你好|您好|你是谁|什么模型|具体型号|你能做什么|你能干什么|你会什么|有什么功能|怎么使用|如何使用)/i.test(value);
+}
+
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
@@ -120,20 +424,31 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [inspectorFile, setInspectorFile] = useState("");
   const [queueMode, setQueueMode] = useState(false);
-  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const cursors = useRef<Record<string, number>>({});
+  const initializedSelection = useRef(false);
+  const composerDrafts = useRef<Record<string, string>>({});
+  const selectedIdRef = useRef("");
+  const timelineRef = useRef<HTMLElement | null>(null);
+  const previousTimelineSize = useRef(0);
+  selectedIdRef.current = selectedId;
   const selectedThread = threads.find((thread) => thread.id === selectedId);
   const activeTurn = [...turns].reverse().find((turn) =>
-    ["running", "waiting_permission", "waiting_input"].includes(turn.status),
+    ["running", "waiting", "waiting_permission", "waiting_input"].includes(turn.status),
   );
 
   const refreshThreads = useCallback(async () => {
     const result = await request<ThreadRecord[]>("/v1/threads");
     result.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     setThreads(result);
-    setSelectedId((current) => current || result[0]?.id || "");
+    if (!initializedSelection.current) {
+      initializedSelection.current = true;
+      setSelectedId(result[0]?.id || "");
+    }
   }, []);
 
   useEffect(() => {
@@ -141,32 +456,43 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, [refreshThreads]);
 
+  const loadThread = useCallback(async (threadId: string, signal?: AbortSignal) => {
+    const loadedTurns = await request<TurnRecord[]>(
+      `/v1/threads/${encodeURIComponent(threadId)}/turns`,
+      { signal },
+    );
+    const loadedItems = await Promise.all(
+      loadedTurns.map((turn) =>
+        request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`, { signal }),
+      ),
+    );
+    if (signal?.aborted || selectedIdRef.current !== threadId) return;
+    setTurns(loadedTurns);
+    setItems(loadedItems.flat());
+  }, []);
+
   useEffect(() => {
     if (!selectedId) {
       setTurns([]);
       setItems([]);
       setEvents([]);
+      setPhase("idle");
       return;
     }
+    const controller = new AbortController();
     setError("");
+    setTurns([]);
+    setItems([]);
     setEvents([]);
-    Promise.all([
-      request<TurnRecord[]>(`/v1/threads/${encodeURIComponent(selectedId)}/turns`),
-      request<{ estimated_tokens?: number }>(
-        `/v1/threads/${encodeURIComponent(selectedId)}/context`,
-      ),
-    ])
-      .then(async ([loadedTurns]) => {
-        setTurns(loadedTurns);
-        const loadedItems = await Promise.all(
-          loadedTurns.map((turn) =>
-            request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`),
-          ),
-        );
-        setItems(loadedItems.flat());
-      })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [selectedId]);
+    setPhase("idle");
+    void loadThread(selectedId, controller.signal)
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+    });
+    return () => controller.abort();
+  }, [loadThread, selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -187,9 +513,10 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               if (event.type === "run.phase_changed") {
                 setPhase(textValue(event.payload.phase) || "working");
               }
-              if (["turn.finished", "run.outcome"].includes(event.type)) {
+              if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.outcome", "run.finished"].includes(event.type)) {
                 void refreshThreads();
-                if (event.turn_id) {
+                void loadThread(selectedId);
+                if (event.turn_id && event.type.startsWith("turn.")) {
                   setTurns((current) => current.map((turn) => turn.id === event.turn_id ? { ...turn, status: textValue(event.payload.status || event.payload.outcome || "completed") } : turn));
                 }
                 void browserBridge.notify("CodeRook", eventTitle(event));
@@ -209,17 +536,39 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       stopped = true;
       controller.abort();
     };
-  }, [refreshThreads, selectedId]);
+  }, [loadThread, refreshThreads, selectedId]);
 
   const createThread = useCallback(async (): Promise<string> => {
     const created = await request<ThreadRecord>("/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ title: "新任务", mode: "chat" }),
+      body: JSON.stringify({ title: "", mode: "chat" }),
     });
     setThreads((current) => [created, ...current]);
     setSelectedId(created.id);
+    previousTimelineSize.current = 0;
     return created.id;
   }, []);
+
+  const selectThread = useCallback((threadId: string) => {
+    composerDrafts.current[selectedId || "__new__"] = composer;
+    setSelectedId(threadId);
+    setComposer(composerDrafts.current[threadId || "__new__"] || "");
+    setTurns([]);
+    setItems([]);
+    setEvents([]);
+    setPhase("idle");
+    previousTimelineSize.current = 0;
+    setQueuedMessages([]);
+    setNotice("");
+    setError("");
+    setMobileSidebarOpen(false);
+  }, [composer, selectedId]);
+
+  const beginDraft = useCallback(() => {
+    selectThread("");
+    setAttachments([]);
+    setDrawer(null);
+  }, [selectThread]);
 
   const send = async (event: FormEvent) => {
     event.preventDefault();
@@ -228,11 +577,11 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setSending(true);
     setError("");
     try {
-      const threadId = selectedId || (await createThread());
       if (activeTurn) {
         if (queueMode) {
-          setQueuedMessages((current) => [...current, content]);
+          setQueuedMessages((current) => [...current, { content, mode }]);
           setComposer("");
+          composerDrafts.current[selectedId || "__new__"] = "";
           setNotice("消息已加入队列，将在当前任务结束后发送");
           return;
         }
@@ -242,6 +591,13 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         });
         setNotice("纠偏消息已送达当前任务");
       } else {
+        const provider = await request<ProviderCatalog>("/v1/providers");
+        if (!provider.readiness.local_ready) {
+          setDrawer("models");
+          setNotice("先完成模型配置，当前输入已为你保留");
+          return;
+        }
+        const threadId = selectedId || (await createThread());
         const submitted = content.startsWith("!") && content.length > 1
           ? `The user explicitly requested this exact shell command. Run it through the normal permission and sandbox tool pipeline, then report its exit status and important output without changing the command: ${content.slice(1).trim()}`
           : content;
@@ -257,8 +613,10 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           },
         );
         setTurns((current) => [...current, started]);
+        void loadThread(threadId);
       }
       setComposer("");
+      composerDrafts.current[selectedId || "__new__"] = "";
       setAttachments([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -273,19 +631,29 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setSending(true);
     request<TurnRecord>(`/v1/threads/${encodeURIComponent(selectedId)}/turns`, {
       method: "POST",
-      body: JSON.stringify({ content: next, mode }),
+      body: JSON.stringify({ content: next.content, mode: next.mode }),
     }).then((started) => {
       setTurns((current) => [...current, started]);
       setQueuedMessages((current) => current.slice(1));
-    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setSending(false));
-  }, [activeTurn, mode, queuedMessages, selectedId, sending]);
+      void loadThread(selectedId);
+    }).catch((reason: unknown) => {
+      setQueuedMessages((current) => current.slice(1));
+      setComposer((current) => current || next.content);
+      setError(`队列消息发送失败，已恢复到输入框：${reason instanceof Error ? reason.message : String(reason)}`);
+    }).finally(() => setSending(false));
+  }, [activeTurn, loadThread, queuedMessages, selectedId, sending]);
 
   const cancel = async () => {
     if (!activeTurn) return;
-    await request(`/v1/turns/${encodeURIComponent(activeTurn.id)}/interrupt`, {
-      method: "POST",
-      body: "{}",
-    });
+    try {
+      await request(`/v1/turns/${encodeURIComponent(activeTurn.id)}/interrupt`, {
+        method: "POST",
+        body: "{}",
+      });
+      setNotice("已请求停止当前任务");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const attachImages = async (files: FileList | null) => {
@@ -309,111 +677,264 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
 
   const sessionAction = async (action: "rename" | "fork" | "delete" | "export") => {
     if (!selectedId) return;
-    if (action === "rename") {
-      const title = prompt("输入新的会话名称", selectedThread?.title || "");
-      if (!title?.trim()) return;
-      const updated = await request<ThreadRecord>(`/v1/threads/${selectedId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ title: title.trim() }),
+    try {
+      if (action === "rename") {
+        const title = prompt("输入新的会话名称", selectedThread?.title || "");
+        if (!title?.trim()) return;
+        const updated = await request<ThreadRecord>(`/v1/threads/${selectedId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title: title.trim() }),
+        });
+        setThreads((current) => current.map((thread) => thread.id === updated.id ? updated : thread));
+        return;
+      }
+      if (action === "fork") {
+        const forked = await request<ThreadRecord>(`/v1/threads/${selectedId}/fork`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        setThreads((current) => [forked, ...current]);
+        selectThread(forked.id);
+        return;
+      }
+      if (action === "export") {
+        const exported = await request<{ filename: string; content: string }>(
+          `/v1/threads/${selectedId}/export?format=markdown`,
+        );
+        const blob = new Blob([exported.content], { type: "text/markdown" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = exported.filename;
+        link.click();
+        URL.revokeObjectURL(link.href);
+        return;
+      }
+      if (!confirm("删除这个会话？此操作不能撤销。")) return;
+      await request(`/v1/threads/${selectedId}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirmed: true }),
       });
-      setThreads((current) => current.map((thread) => thread.id === updated.id ? updated : thread));
-      return;
+      setThreads((current) => current.filter((thread) => thread.id !== selectedId));
+      selectThread(threads.find((thread) => thread.id !== selectedId)?.id || "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
-    if (action === "fork") {
-      const forked = await request<ThreadRecord>(`/v1/threads/${selectedId}/fork`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      setThreads((current) => [forked, ...current]);
-      setSelectedId(forked.id);
-      return;
-    }
-    if (action === "export") {
-      const exported = await request<{ filename: string; content: string }>(
-        `/v1/threads/${selectedId}/export?format=markdown`,
-      );
-      const blob = new Blob([exported.content], { type: "text/markdown" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = exported.filename;
-      link.click();
-      URL.revokeObjectURL(link.href);
-      return;
-    }
-    if (!confirm("删除这个会话？此操作不能撤销。")) return;
-    await request(`/v1/threads/${selectedId}`, {
-      method: "DELETE",
-      body: JSON.stringify({ confirmed: true }),
-    });
-    setThreads((current) => current.filter((thread) => thread.id !== selectedId));
-    setSelectedId(threads.find((thread) => thread.id !== selectedId)?.id || "");
   };
 
-  const visibleEvents = useMemo(
-    () => events.filter((event) => !["llm.chunk", "runtime.event_appended"].includes(event.type)),
-    [events],
-  );
+  const timelineEntries = useMemo<TimelineEntry[]>(() => {
+    const toolId = (item: TurnItem) => textValue(
+      item.tool_call_id || item.payload.tool_use_id || item.payload.tool_call_id || item.payload.id,
+    );
+    const calls = new Map<string, TurnItem>();
+    const results = new Map<string, TurnItem>();
+    const progress = new Map<string, RuntimeEvent>();
+    for (const item of items) {
+      const id = toolId(item);
+      if (!id) continue;
+      if (item.kind === "tool_call") calls.set(id, item);
+      if (item.kind === "tool_result") results.set(id, item);
+    }
+    for (const event of events) {
+      const id = textValue(event.payload.tool_use_id || event.payload.tool_call_id);
+      if (!id) continue;
+      if (event.type === "tool.call_started" && !calls.has(id)) {
+        calls.set(id, syntheticToolItem(event, "tool_call"));
+      }
+      if (["tool.call_finished", "tool.call_failed"].includes(event.type) && !results.has(id)) {
+        if (event.type === "tool.call_failed" && event.payload.terminal === false) continue;
+        results.set(id, syntheticToolItem(event, "tool_result"));
+      }
+      if (event.type === "tool.call_progress") progress.set(id, event);
+    }
+    const resolvedPermissionIds = new Set(
+      events
+        .filter((event) => ["permission.granted", "permission.denied", "permission.resolved"].includes(event.type))
+        .map((event) => textValue(event.payload.tool_use_id || event.payload.permission_id))
+        .filter(Boolean),
+    );
+    const resolvedPlanRuns = new Set(
+      events
+        .filter((event) => event.type === "plan.resolved")
+        .map((event) => textValue(event.payload.run_id || event.turn_id))
+        .filter(Boolean),
+    );
+    const resolvedRecoveryRuns = new Set(
+      events
+        .filter((event) => event.type === "recovery.resolved")
+        .map((event) => textValue(event.payload.run_id || event.turn_id))
+        .filter(Boolean),
+    );
+    const assistantTurns = new Set(
+      items
+        .filter((item) => item.kind === "message" && textValue(item.payload.role) === "assistant" && messageContent(item.payload.content).trim())
+        .map((item) => item.turn_id)
+        .filter(Boolean),
+    );
+    const userTextByTurn = new Map(
+      items
+        .filter((item) => item.kind === "message" && textValue(item.payload.role) === "user")
+        .map((item) => [item.turn_id, messageContent(item.payload.content)]),
+    );
+    const resultPriority: Record<string, number> = { "turn.finished": 1, "run.finished": 2, "run.outcome": 3 };
+    const preferredResultSeq = new Map<string, number>();
+    for (const event of events) {
+      if (!(event.type in resultPriority)) continue;
+      const runId = textValue(event.payload.run_id || event.turn_id);
+      if (!runId) continue;
+      const previousSeq = preferredResultSeq.get(runId);
+      const previous = previousSeq === undefined ? undefined : events.find((candidate) => candidate.seq === previousSeq);
+      if (!previous || resultPriority[event.type] >= resultPriority[previous.type]) preferredResultSeq.set(runId, event.seq);
+    }
+    const entries: TimelineEntry[] = [];
+    for (const item of items) {
+      if (["tool_call", "tool_result"].includes(item.kind)) continue;
+      entries.push({ kind: "item", key: `item:${item.id}`, timestamp: item.created_at, item });
+    }
+    for (const [id, call] of calls) {
+      const result = results.get(id);
+      entries.push({
+        kind: "tool",
+        key: `tool:${id}`,
+        timestamp: call.created_at,
+        turnId: call.turn_id,
+        call,
+        result,
+        progress: progress.get(id),
+      });
+    }
+    for (const [id, result] of results) {
+      if (calls.has(id)) continue;
+      entries.push({
+        kind: "tool",
+        key: `tool:${id}`,
+        timestamp: result.created_at,
+        turnId: result.turn_id,
+        result,
+        progress: progress.get(id),
+      });
+    }
+    for (const event of events) {
+      const eventRunId = textValue(event.payload.run_id || event.turn_id);
+      if (event.type === "task.profiled" && (
+        textValue(taskProfile(event).intent) === "answer"
+        || isSimpleProductQuestion(userTextByTurn.get(eventRunId) || "")
+      )) continue;
+      if (event.type === "permission.requested" && resolvedPermissionIds.has(textValue(event.payload.tool_use_id || event.payload.permission_id))) continue;
+      if (event.type === "plan.ready" && resolvedPlanRuns.has(eventRunId)) continue;
+      if (event.type === "recovery.available" && resolvedRecoveryRuns.has(eventRunId)) continue;
+      if (event.type === "user_question.asked" && event.turn_id && event.turn_id !== activeTurn?.id) continue;
+      if (event.type in resultPriority && assistantTurns.has(eventRunId)) continue;
+      if (event.type in resultPriority && eventRunId && preferredResultSeq.get(eventRunId) !== event.seq) continue;
+      if (!showTimelineEvent(event)) continue;
+      entries.push({
+        kind: "event",
+        key: `event:${event.seq}`,
+        timestamp: event.ts,
+        event,
+      });
+    }
+    const sorted = entries.sort((left, right) => {
+      const timeOrder = left.timestamp.localeCompare(right.timestamp);
+      if (timeOrder !== 0) return timeOrder;
+      return left.key.localeCompare(right.key);
+    });
+    return groupToolEntries(sorted);
+  }, [activeTurn?.id, events, items]);
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline || timelineEntries.length === 0) return;
+    const firstLoad = previousTimelineSize.current === 0;
+    const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 140;
+    if (firstLoad || nearBottom) {
+      window.requestAnimationFrame(() => {
+        timeline.scrollTop = timeline.scrollHeight;
+      });
+    }
+    previousTimelineSize.current = timelineEntries.length;
+  }, [timelineEntries]);
   const tokenUsage = turns.reduce(
     (total, turn) => total + Number(turn.usage.input_tokens || 0) + Number(turn.usage.output_tokens || 0),
     0,
   );
+  const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace";
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><span className="rook">♜</span><div><b>CodeRook</b><small>local coding agent</small></div></div>
-        <button className="new-thread" onClick={() => void createThread()}>＋ 新任务</button>
-        <div className="section-title"><span>会话</span><span>{threads.length}</span></div>
+    <div className={`app-shell ${drawer ? "inspector-open" : ""}`}>
+      <aside className={`sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
+        <div className="workspace-head"><span className="app-mark"><Icon name="rook" size={18} /></span><div><b>CodeRook</b><small>{workspaceName}</small></div><button className="mobile-sidebar-close" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)}>×</button></div>
+        <button className="new-thread" onClick={beginDraft}><Icon name="plus" size={15} /><span>新建任务</span></button>
+        <nav className="workspace-nav" aria-label="工作区工具">
+          <button className={drawer === "files" ? "active" : ""} onClick={() => { setInspectorFile(""); setDrawer(drawer === "files" ? null : "files"); setMobileSidebarOpen(false); }}><Icon name="files" size={15} /><span>文件</span></button>
+          <button className={drawer === "changes" ? "active" : ""} onClick={() => { setDrawer(drawer === "changes" ? null : "changes"); setMobileSidebarOpen(false); }}><Icon name="changes" size={15} /><span>变更</span></button>
+          <button className={drawer === "models" ? "active" : ""} onClick={() => { setDrawer(drawer === "models" ? null : "models"); setMobileSidebarOpen(false); }}><Icon name="models" size={15} /><span>模型</span></button>
+          <button className={drawer === "advanced" ? "active" : ""} onClick={() => { setDrawer(drawer === "advanced" ? null : "advanced"); setMobileSidebarOpen(false); }}><Icon name="settings" size={15} /><span>设置</span></button>
+        </nav>
+        <div className="section-title"><span>最近任务</span><span>{threads.length}</span></div>
         <nav className="sessions">
           {threads.map((thread) => (
             <button
               className={`session ${thread.id === selectedId ? "selected" : ""}`}
               key={thread.id}
-              onClick={() => setSelectedId(thread.id)}
+              onClick={() => selectThread(thread.id)}
             >
               <span>{thread.title || "未命名任务"}</span>
-              <small>{thread.status} · {displayTime(thread.updated_at)}</small>
+              <small><i className={`session-status ${thread.status}`} />{statusLabels[thread.status] || thread.status} <em>· {displayTime(thread.updated_at)}</em></small>
             </button>
           ))}
           {!threads.length && <p className="empty">还没有会话。直接在右侧描述任务即可。</p>}
         </nav>
-        <div className="side-actions">
-          <button onClick={() => setDrawer("files")}>文件</button>
-          <button onClick={() => setDrawer("changes")}>变更</button>
-          <button onClick={() => setDrawer("models")}>模型</button>
-          <button onClick={() => setDrawer("advanced")}>高级</button>
-        </div>
+        <div className="sidebar-foot"><span className="connection-dot" />本机 Core 已连接<small>0.2 beta</small></div>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <div><strong>{selectedThread?.title || "欢迎使用 CodeRook"}</strong><small title={workspace}>{workspace.split(/[\\/]/).pop()}</small></div>
+          <button className="mobile-sidebar-toggle" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Icon name="menu" size={18} /></button>
+          <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || "新任务"}</strong></div>
           <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabels[phase] || "正在工作" : "就绪"}</div>
           <div className="session-menu">
-            <button disabled={!selectedId} onClick={() => void sessionAction("rename")}>重命名</button>
-            <button disabled={!selectedId} onClick={() => void sessionAction("fork")}>Fork</button>
-            <button disabled={!selectedId} onClick={() => void sessionAction("export")}>导出</button>
-            <button disabled={!selectedId} onClick={() => void sessionAction("delete")}>删除</button>
+            <button title="重命名" aria-label="重命名" disabled={!selectedId} onClick={() => void sessionAction("rename")}><Icon name="edit" size={16} /></button>
+            <button title="Fork 会话" aria-label="Fork 会话" disabled={!selectedId} onClick={() => void sessionAction("fork")}><Icon name="fork" size={16} /></button>
+            <button title="导出" aria-label="导出" disabled={!selectedId} onClick={() => void sessionAction("export")}><Icon name="download" size={16} /></button>
+            <button className="danger-action" title="删除" aria-label="删除" disabled={!selectedId} onClick={() => void sessionAction("delete")}><Icon name="trash" size={16} /></button>
           </div>
         </header>
 
-        <section className="timeline">
-          {!visibleEvents.length && !items.length && (
+        <section className="timeline" ref={timelineRef}>
+          {!timelineEntries.length && (
             <div className="welcome-card">
-              <span className="welcome-icon">♜</span>
-              <h1>把代码任务交给我</h1>
-              <p>我会先理解仓库，再按权限执行修改、验证结果，并把 Diff 和恢复入口交给你。</p>
+              <span className="welcome-kicker">CODEROOK · LOCAL AGENT</span>
+              <h1>今天想完成什么？</h1>
+              <p>描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。</p>
               <div className="suggestions">
-                <button onClick={() => setComposer("解释这个仓库的核心架构和数据流")}>理解当前项目</button>
-                <button onClick={() => setComposer("检查当前改动，找出最可能的缺陷")}>审查当前改动</button>
-                <button onClick={() => setComposer("运行最相关的测试并修复失败")}>修复测试失败</button>
+                <button onClick={() => setComposer("解释这个仓库的核心架构和数据流")}><span><b>理解代码库</b><small>梳理架构、模块与关键数据流</small></span><Icon name="arrow" size={16} /></button>
+                <button onClick={() => setComposer("检查当前改动，找出最可能的缺陷")}><span><b>审查当前改动</b><small>检查风险、缺陷与验证缺口</small></span><Icon name="arrow" size={16} /></button>
+                <button onClick={() => setComposer("运行最相关的测试并修复失败")}><span><b>修复测试失败</b><small>定位问题、修改代码并重新验证</small></span><Icon name="arrow" size={16} /></button>
               </div>
             </div>
           )}
-          {visibleEvents.map((event) => (
+          {timelineEntries.map((entry) => entry.kind === "item" ? (
+            <TurnItemCard key={entry.key} item={entry.item} />
+          ) : entry.kind === "tool" ? (
+            <TurnToolCard
+              key={entry.key}
+              call={entry.call}
+              result={entry.result}
+              progress={entry.progress}
+              onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
+              onRetry={(prompt) => { setComposer(prompt); setNotice("重试建议已放入输入框，可修改后发送"); }}
+            />
+          ) : entry.kind === "tool_group" ? (
+            <ToolActivityGroup
+              key={entry.key}
+              tools={entry.tools}
+              onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
+              onRetry={(prompt) => { setComposer(prompt); setNotice("重试建议已放入输入框，可修改后发送"); }}
+            />
+          ) : (
             <EventCard
-              key={event.seq}
-              event={event}
+              key={entry.key}
+              event={entry.event}
               threadId={selectedId}
               onError={setError}
               onNotice={setNotice}
@@ -435,32 +956,33 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={activeTurn ? "输入纠偏消息，Enter 立即送达…" : "描述任务，@ 引用文件，! 运行命令…"}
-            rows={3}
+            placeholder={activeTurn ? "输入纠偏消息…" : "向 CodeRook 提问或描述任务"}
+            rows={1}
           />
           <div className="composer-bar">
-            <div className="mode-switch">
-              {(["act", "plan", "review"] as RunMode[]).map((value) => (
-                <button type="button" className={mode === value ? "active" : ""} onClick={() => setMode(value)} key={value}>{value.toUpperCase()}</button>
-              ))}
-              <button type="button" onClick={() => setDrawer("files")}>@ 文件</button>
-              <label className="attach-button">图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
-              {activeTurn && <button type="button" className={queueMode ? "active" : ""} onClick={() => setQueueMode((current) => !current)}>{queueMode ? `QUEUE ${queuedMessages.length}` : "STEER"}</button>}
+            <div className="composer-tools">
+              <button type="button" className="context-button" onClick={() => setDrawer("files")} title="添加文件上下文"><Icon name="plus" size={16} /></button>
+              <label className="mode-select"><select aria-label="运行模式" value={mode} onChange={(event) => setMode(event.target.value as RunMode)}><option value="act">执行</option><option value="plan">规划</option><option value="review">审查</option></select></label>
+              <label className="attach-button" title="添加图片"><Icon name="image" size={15} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
+              {activeTurn && <button type="button" className={`queue-toggle ${queueMode ? "active" : ""}`} onClick={() => setQueueMode((current) => !current)}>{queueMode ? `排队 ${queuedMessages.length}` : "纠偏"}</button>}
             </div>
             <div className="composer-meta">
-              <span>ASK</span><span>ctx {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
-              {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}>停止</button>}
-              <button className="send" disabled={!composer.trim() || sending}>{activeTurn ? "纠偏" : "发送"} ↑</button>
+              <span>上下文 {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
+              {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}><Icon name="stop" size={13} />停止</button>}
+              <button className="send" aria-label={activeTurn ? "发送纠偏" : "发送任务"} title={activeTurn ? "发送纠偏" : "发送任务"} disabled={!composer.trim() || sending}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
         </form>
       </main>
+
+      {mobileSidebarOpen && <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)} />}
 
       {drawer && (
         <DrawerPanel
           drawer={drawer}
           threadId={selectedId}
           workspace={workspace}
+          initialFile={inspectorFile}
           onClose={() => setDrawer(null)}
           onReference={(path) => {
             setComposer((current) => `${current}${current ? " " : ""}@${path} `);
@@ -470,6 +992,155 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         />
       )}
     </div>
+  );
+}
+
+function TurnItemCard({ item }: { item: TurnItem }): ReactElement {
+  const payload = item.payload;
+  if (item.kind === "message") {
+    const role = textValue(payload.role) === "user" ? "user" : "assistant";
+    return (
+      <article className={`message-card ${role}`}>
+        <div className="message-meta"><b>{role === "user" ? "你" : "CodeRook"}</b><time>{displayTime(item.created_at)}</time></div>
+        <div className="message-content">
+          {role === "assistant"
+            ? <MarkdownText content={messageContent(payload.content)} />
+            : messageContent(payload.content)}
+        </div>
+      </article>
+    );
+  }
+  return <></>;
+}
+
+type ToolCardInfo = {
+  failed: boolean;
+  running: boolean;
+  params: Record<string, unknown>;
+  presentation: Record<string, unknown>;
+  title: string;
+  subject: string;
+  output: string;
+  elapsedMs: number;
+  locations: string[];
+  retryPrompt: string;
+  semanticAction: string;
+};
+
+function toolCardInfo(call?: TurnItem, result?: TurnItem, progress?: RuntimeEvent): ToolCardInfo {
+  const callPayload = call?.payload || {};
+  const resultPayload = result?.payload || {};
+  const rawPresentation = resultPayload.presentation || progress?.payload.presentation || callPayload.presentation;
+  const presentation = rawPresentation && typeof rawPresentation === "object" ? rawPresentation as Record<string, unknown> : {};
+  const toolName = textValue(resultPayload.tool_name || callPayload.tool_name || presentation.title || "工具");
+  const failed = Boolean(resultPayload.is_error || resultPayload.error_message || resultPayload.error_class) || ["error", "failed"].includes(textValue(resultPayload.status));
+  const running = !result;
+  const rawParams = callPayload.params;
+  const params = rawParams && typeof rawParams === "object" ? rawParams as Record<string, unknown> : {};
+  const semanticAction = inferToolAction(toolName, params, presentation);
+  const subject = textValue(presentation.subject || presentation.command || params.command || params.path || params.query);
+  const output = textValue(presentation.summary || resultPayload.error_message || resultPayload.output || resultPayload.result || progress?.payload.output_tail);
+  const state = failed ? "failed" : running ? "running" : "succeeded";
+  const title = toolActionLabel(toolName, params, state, semanticAction);
+  const elapsedMs = Number(resultPayload.elapsed_ms || progress?.payload.elapsed_ms || presentation.elapsed_ms || 0);
+  const rawLocations = presentation.locations;
+  const locations = Array.isArray(rawLocations)
+    ? rawLocations.map(textValue).filter(Boolean)
+    : textValue(params.path) ? [textValue(params.path)] : [];
+  const target = locations[0] || subject;
+  const retryPrompt = `请先诊断失败原因，再重试“${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? `（${target}）` : ""}。不要原样重复已经失败的调用。`;
+  return { failed, running, params, presentation, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction };
+}
+
+function TurnToolCard({
+  call,
+  result,
+  progress,
+  nested = false,
+  onOpenLocation,
+  onRetry,
+}: {
+  call?: TurnItem;
+  result?: TurnItem;
+  progress?: RuntimeEvent;
+  nested?: boolean;
+  onOpenLocation(path: string): void;
+  onRetry(prompt: string): void;
+}): ReactElement {
+  const info = toolCardInfo(call, result, progress);
+  const { failed, running, params, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction } = info;
+  const elapsed = toolElapsed(elapsedMs);
+  const openableLocation = ["read_file", "edit_code"].includes(semanticAction) ? locations[0] : "";
+  const hasDetails = Object.keys(params).length > 0 || Boolean(output);
+  const failureExcerpt = output.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || "操作未完成";
+  const summary = (
+    <>
+      {["run_command", "run_tests"].includes(semanticAction)
+        ? <span className={`tool-kind-icon ${failed ? "failed" : ""}`}><Icon name="terminal" size={13} /></span>
+        : <span className="tool-status">{failed ? "×" : running ? "◌" : "✓"}</span>}
+      <b>{title}</b>
+      {locations[0]
+        ? openableLocation
+          ? <button className="tool-location" type="button" title={`打开 ${openableLocation}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenLocation(openableLocation); }}>{openableLocation}</button>
+          : <code>{locations[0]}</code>
+        : subject && <code>{subject}</code>}
+      {elapsed && <small>{elapsed}</small>}
+      {hasDetails && <span className="tool-chevron" />}
+    </>
+  );
+  return (
+    <article className={`tool-item ${nested ? "nested" : ""} ${failed ? "failed" : ""} ${running ? "running" : ""}`}>
+      {hasDetails ? (
+        <details>
+          <summary className="tool-item-head">{summary}</summary>
+          <div className="tool-detail">
+            {Object.keys(params).length > 0 && <><small>输入</small><pre>{textValue(params)}</pre></>}
+            {output && <><small>{failed ? "错误" : "输出"}</small><pre>{output}</pre></>}
+            {failed && <div className="tool-recovery-actions"><span title={output}>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>修改后重试</button><button type="button" onClick={() => void browserBridge.copyText(output || textValue(params))}>复制错误</button></div></div>}
+          </div>
+        </details>
+      ) : <div className="tool-item-head">{summary}</div>}
+      {failed && !hasDetails && <div className="tool-recovery-actions always-visible"><span>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>修改后重试</button></div></div>}
+    </article>
+  );
+}
+
+function ToolActivityGroup({
+  tools,
+  onOpenLocation,
+  onRetry,
+}: {
+  tools: ToolTimelineEntry[];
+  onOpenLocation(path: string): void;
+  onRetry(prompt: string): void;
+}): ReactElement {
+  const infos = tools.map((tool) => toolCardInfo(tool.call, tool.result, tool.progress));
+  const failedCount = infos.filter((info) => info.failed).length;
+  const runningCount = infos.filter((info) => info.running).length;
+  const [open, setOpen] = useState(false);
+  const elapsedMs = infos.reduce((total, info) => total + Math.max(0, info.elapsedMs), 0);
+  const actions = new Set(infos.map((info) => info.semanticAction).filter(Boolean));
+  let summary = runningCount ? `正在执行 ${tools.length} 个操作` : `执行了 ${tools.length} 个操作`;
+  if ([...actions].every((action) => ["read_file", "browse_files", "search_code", "git"].includes(action))) summary = runningCount ? "正在检查工作区" : "检查了工作区";
+  else if (actions.size === 1 && actions.has("run_command")) summary = runningCount ? `正在运行 ${tools.length} 个命令` : `运行了 ${tools.length} 个命令`;
+  else if (actions.has("edit_code") && actions.size === 1) summary = runningCount ? "正在修改代码" : "修改了代码";
+  else if (actions.size === 1 && actions.has("run_tests")) summary = runningCount ? "正在运行验证" : "运行了验证";
+  return (
+    <details className={`tool-activity ${failedCount ? "failed" : ""} ${runningCount ? "running" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="tool-activity-head">
+        {actions.size === 1 && (actions.has("run_command") || actions.has("run_tests"))
+          ? <span className="tool-kind-icon"><Icon name="terminal" size={13} /></span>
+          : <span className="tool-status">{failedCount ? "×" : runningCount ? "◌" : "✓"}</span>}
+        <b>{summary}</b>
+        <span className="tool-chevron" />
+        {failedCount > 0 && <span className="tool-failed-count">{failedCount} 失败</span>}
+        {runningCount > 0 && <span className="tool-running-count">进行中</span>}
+        <small>{toolElapsed(elapsedMs)}</small>
+      </summary>
+      <div className="tool-activity-body">
+        {tools.map((tool) => <TurnToolCard key={tool.key} call={tool.call} result={tool.result} progress={tool.progress} nested onOpenLocation={onOpenLocation} onRetry={onRetry} />)}
+      </div>
+    </details>
   );
 }
 
@@ -490,12 +1161,15 @@ function EventCard({
   const isPermission = event.type === "permission.requested";
   const isPlan = event.type === "plan.ready";
   const isQuestion = event.type === "user_question.asked";
-  const isResult = ["run.outcome", "turn.finished"].includes(event.type);
+  const isTaskProfile = event.type === "task.profiled";
+  const isResult = ["run.outcome", "run.finished", "turn.finished", "turn.failed", "turn.interrupted"].includes(event.type);
   const isRecovery = event.type === "recovery.available";
   const [answer, setAnswer] = useState("");
+  const [responded, setResponded] = useState(false);
   const post = async (path: string, payload: Record<string, unknown>, success: string) => {
     try {
       await request(path, { method: "POST", body: JSON.stringify(payload) });
+      setResponded(true);
       onNotice(success);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
@@ -503,35 +1177,54 @@ function EventCard({
   };
   const toolId = textValue(event.payload.tool_use_id || event.payload.permission_id);
   const questionId = textValue(event.payload.question_id);
+  if (isTaskProfile) {
+    const profile = taskProfile(event);
+    const summary = textValue(profile.user_summary).trim();
+    return (
+      <details className="intent-activity">
+        <summary><b>{taskProfileTitle(profile)}</b><span className="tool-chevron" /></summary>
+        {summary && <p>{summary}</p>}
+      </details>
+    );
+  }
+  if (isResult) {
+    const status = textValue(event.payload.status || event.payload.outcome).toLowerCase();
+    const failed = ["failed", "error", "incomplete", "interrupted", "cancelled"].includes(status);
+    return (
+      <article className={`result-inline ${failed ? "failed" : ""}`}>
+        <span>{failed ? "本轮未完成" : "本轮完成"}</span>
+        {detail && <small>{detail}</small>}
+        <div><button onClick={onOpenChanges}>查看变更</button><button onClick={() => void browserBridge.copyText(detail || eventTitle(event))}>复制</button></div>
+      </article>
+    );
+  }
   return (
     <article className={`event-card ${event.type.replaceAll(".", "-")}`}>
-      <div className="event-icon">{isResult ? "✓" : isPermission || isPlan || isQuestion ? "?" : "●"}</div>
+      <div className="event-icon">{isPermission || isPlan || isQuestion ? "?" : "●"}</div>
       <div className="event-body">
         <div className="event-head"><b>{eventTitle(event)}</b><time>{displayTime(event.ts)}</time></div>
         {detail && <pre>{detail}</pre>}
-        {isPermission && toolId && (
+        {responded && <div className="card-resolved">已处理</div>}
+        {!responded && isPermission && toolId && (
           <div className="card-actions">
             <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once" }, "已允许本次操作")}>本次允许</button>
             <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session" }, "本会话已允许")}>本会话允许</button>
             <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once" }, "已拒绝")}>拒绝</button>
           </div>
         )}
-        {isPlan && event.turn_id && (
+        {!responded && isPlan && event.turn_id && (
           <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder="可选：说明希望怎样修改计划" /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, "已要求修改计划")}>要求修改</button></div><div className="card-actions">
               <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, "计划已批准")}>批准计划</button>
               <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, "计划已取消")}>取消</button>
             </div></>
         )}
-        {isQuestion && questionId && (
+        {!responded && isQuestion && questionId && (
           <div className="answer-row">
             <input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder="输入回答" />
-            <button onClick={() => void post(`/v1/questions/${questionId}`, { answer }, "回答已送达")}>回答</button>
+            <button disabled={!answer.trim()} onClick={() => void post(`/v1/questions/${questionId}`, { answer }, "回答已送达")}>回答</button>
           </div>
         )}
-        {isResult && (
-          <div className="card-actions"><button onClick={onOpenChanges}>查看变更</button><button onClick={() => void browserBridge.copyText(detail || eventTitle(event))}>复制结果</button></div>
-        )}
-        {isRecovery && (
+        {!responded && isRecovery && (
           <div className="card-actions"><button onClick={() => void post(`/v1/threads/${threadId}/turns`, { content: "Continue from the last durable recovery point. Re-check uncertain file or command state before making any modification.", mode: "act" }, "已从安全位置继续")}>从安全位置继续</button><button onClick={onOpenChanges}>查看中断前变更</button></div>
         )}
       </div>
@@ -543,6 +1236,7 @@ function DrawerPanel({
   drawer,
   threadId,
   workspace,
+  initialFile,
   onClose,
   onReference,
   onError,
@@ -550,14 +1244,15 @@ function DrawerPanel({
   drawer: Exclude<Drawer, null>;
   threadId: string;
   workspace: string;
+  initialFile: string;
   onClose(): void;
   onReference(path: string): void;
   onError(value: string): void;
 }): ReactElement {
   return (
     <aside className="drawer">
-      <header><div><small>{workspace}</small><h2>{drawer === "files" ? "工作区文件" : drawer === "changes" ? "Change Center" : drawer === "models" ? "模型与 Provider" : "高级能力"}</h2></div><button onClick={onClose}>×</button></header>
-      {drawer === "files" && <FilesPanel onReference={onReference} onError={onError} />}
+      <header><div><span className="panel-eyebrow">INSPECTOR</span><h2>{drawer === "files" ? "工作区文件" : drawer === "changes" ? "变更审查" : drawer === "models" ? "模型与 Provider" : "设置与能力"}</h2><small title={workspace}>{workspace.split(/[\\/]/).filter(Boolean).pop()}</small></div><button aria-label="关闭检查器" onClick={onClose}>×</button></header>
+      {drawer === "files" && <FilesPanel initialFile={initialFile} onReference={onReference} onError={onError} />}
       {drawer === "changes" && <ChangesPanel threadId={threadId} onError={onError} />}
       {drawer === "models" && <ModelsPanel onError={onError} />}
       {drawer === "advanced" && <AdvancedPanel threadId={threadId} onError={onError} />}
@@ -565,17 +1260,34 @@ function DrawerPanel({
   );
 }
 
-function FilesPanel({ onReference, onError }: { onReference(path: string): void; onError(value: string): void }): ReactElement {
+function FilesPanel({ initialFile, onReference, onError }: { initialFile: string; onReference(path: string): void; onError(value: string): void }): ReactElement {
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<{ path: string; content: string; binary: boolean } | null>(null);
   useEffect(() => {
+    if (!initialFile) return;
+    request<{ path: string; content: string; binary: boolean }>(`/v1/workspace/file?path=${encodeURIComponent(initialFile)}`)
+      .then(setPreview)
+      .catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
+  }, [initialFile, onError]);
+  useEffect(() => {
+    const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      request<{ entries: WorkspaceEntry[] }>(`/v1/workspace/files?query=${encodeURIComponent(query)}`)
+      request<{ entries: WorkspaceEntry[] }>(
+        `/v1/workspace/files?query=${encodeURIComponent(query)}`,
+        { signal: controller.signal },
+      )
         .then((result) => setEntries(result.entries))
-        .catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
+        .catch((reason: unknown) => {
+          if (!controller.signal.aborted) {
+            onError(reason instanceof Error ? reason.message : String(reason));
+          }
+        });
     }, 150);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [onError, query]);
   const open = async (entry: WorkspaceEntry) => {
     if (entry.kind === "directory") return;
@@ -594,17 +1306,28 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
   const [context, setContext] = useState<Record<string, unknown>>({});
   const [commitMessage, setCommitMessage] = useState("chore: apply CodeRook changes");
   const [loading, setLoading] = useState(true);
-  const load = useCallback(() => {
+  const [loadError, setLoadError] = useState("");
+  const load = useCallback((signal?: AbortSignal) => {
     setLoading(true);
+    setLoadError("");
     Promise.all([
-      request<DiffPayload>("/v1/workspace/diff?scope=all"),
-      threadId ? request<Record<string, unknown>>(`/v1/threads/${threadId}/context`) : Promise.resolve({}),
+      request<DiffPayload>("/v1/workspace/diff?scope=all", { signal }),
+      threadId ? request<Record<string, unknown>>(`/v1/threads/${threadId}/context`, { signal }) : Promise.resolve({}),
     ])
       .then(([nextDiff, nextContext]) => { setDiff(nextDiff); setContext(nextContext); })
-      .catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setLoading(false));
+      .catch((reason: unknown) => {
+        if (signal?.aborted) return;
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setLoadError(message);
+        onError(message);
+      })
+      .finally(() => { if (!signal?.aborted) setLoading(false); });
   }, [onError, threadId]);
-  useEffect(load, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
   const files = diff?.files || [];
   const checkpoints = (context.checkpoints || []) as Array<Record<string, unknown>>;
   const stageAll = async () => {
@@ -632,7 +1355,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
       load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className="panel-toolbar"><span>{loading ? "正在读取…" : `${files.length} 个变更文件`}</span><button onClick={load}>刷新</button><button disabled={!files.length || !threadId} onClick={() => void stageAll()}>Stage 全部</button></div>{!files.length && !loading ? <p className="empty">工作区没有未提交变更。</p> : files.map((file, index) => <details className="diff-file" key={`${textValue(file.path)}-${index}`} open={index === 0}><summary><b>{textValue(file.path)}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>)}{textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>创建本地 Commit</button><small>不会自动 push，也不会运行仓库 hooks。</small></div>}{checkpoints.length > 0 && <div className="checkpoints"><h3>恢复点</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{textValue(checkpoint.status)}</small></button>)}</div>}</div>;
+  return <div className="panel-content"><div className="panel-toolbar"><span>{loading ? "正在读取…" : `${files.length} 个变更文件`}</span><button disabled={loading} onClick={() => load()}>刷新</button><button disabled={!files.length || !threadId || loading} onClick={() => void stageAll()}>Stage 全部</button></div>{loadError && <div className="panel-error"><b>无法读取变更</b><p>{loadError}</p><button onClick={() => load()}>重试</button></div>}{!loadError && !files.length && !loading ? <p className="empty">工作区没有未提交变更。</p> : files.map((file, index) => <details className="diff-file" key={`${textValue(file.path)}-${index}`} open={index === 0}><summary><b>{textValue(file.path)}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>)}{textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>创建本地 Commit</button><small>不会自动 push，也不会运行仓库 hooks。</small></div>}{checkpoints.length > 0 && <div className="checkpoints"><h3>恢复点</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{textValue(checkpoint.status)}</small></button>)}</div>}</div>;
 }
 
 function ModelsPanel({ onError }: { onError(value: string): void }): ReactElement {
@@ -641,14 +1364,15 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState("");
   const load = useCallback(() => request<ProviderCatalog>("/v1/providers").then((value) => { setCatalog(value); const preset = value.presets[0]; if (preset) { setPresetId((current) => current || preset.id); setModel((current) => current || preset.models[0] || ""); } }).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason))), [onError]);
   useEffect(() => { void load(); }, [load]);
   const preset = catalog?.presets.find((item) => item.id === presetId);
-  const selectPreset = (value: string) => { setPresetId(value); const selected = catalog?.presets.find((item) => item.id === value); setModel(selected?.models[0] || ""); setApiKey(""); };
+  const selectPreset = (value: string) => { setPresetId(value); const selected = catalog?.presets.find((item) => item.id === value); setModel(selected?.models[0] || ""); setApiKey(""); setValidationError(""); };
   const save = async (event: FormEvent) => {
-    event.preventDefault(); setSaving(true);
+    event.preventDefault(); setSaving(true); setValidationError("");
     try { await request("/v1/providers", { method: "POST", body: JSON.stringify({ route_id: presetId, preset_id: presetId, model, api_key: apiKey || undefined, activate: true, update: catalog?.routes.some((route) => route.id === presetId) }) }); setApiKey(""); await load(); }
-    catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setValidationError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setSaving(false); }
   };
   const routeAction = async (routeId: string, action: "activate" | "delete") => {
@@ -662,7 +1386,7 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? "模型已就绪" : "需要配置模型"}</b><p>{catalog?.readiness.reason}</p></div><form className="provider-form" onSubmit={(event) => void save(event)}><label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? " · 本地" : ""}</option>)}</select></label><label>模型<input value={model} onChange={(event) => setModel(event.target.value)} list="provider-models" /></label><datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>{preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="只发送到本地 Core，不写入浏览器" /></label>}<div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div><button className="primary" disabled={!model || saving}>{saving ? "正在验证…" : "Doctor 验证并启用"}</button></form><h3>已配置路由</h3>{catalog?.routes.map((route) => { const routeId = textValue(route.id); const active = catalog.active_route_id === route.id; return <div className="route-row" key={routeId}><div><b>{routeId}</b><small>{textValue(route.model)}</small></div><div className="route-actions"><span>{active ? "当前" : textValue(route.credential_source)}</span>{!active && <button onClick={() => void routeAction(routeId, "activate")}>启用</button>}<button onClick={() => void routeAction(routeId, "delete")}>删除</button></div></div>; })}</div>;
+  return <div className="panel-content"><div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? "模型已就绪" : "需要配置模型"}</b><p>{readinessReason(catalog?.readiness.reason)}</p></div>{validationError && <div className="panel-error provider-validation-error"><b>模型验证未通过</b><p>{validationError}</p><button onClick={() => setValidationError("")}>知道了</button></div>}<form className="provider-form" onSubmit={(event) => void save(event)}><label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? " · 本地" : ""}</option>)}</select></label><label>模型<input value={model} onChange={(event) => { setModel(event.target.value); setValidationError(""); }} list="provider-models" /></label><datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>{preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setValidationError(""); }} placeholder="只发送到本地 Core，不写入浏览器" /></label>}<div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div><button className="primary" disabled={!model || saving}>{saving ? "正在验证…" : "Doctor 验证并启用"}</button></form><h3>已配置路由</h3>{catalog?.routes.map((route) => { const routeId = textValue(route.id); const active = catalog.active_route_id === route.id; return <div className="route-row" key={routeId}><div><b>{routeId}</b><small>{textValue(route.model)}</small></div><div className="route-actions"><span>{active ? "当前" : textValue(route.credential_source)}</span>{!active && <button onClick={() => void routeAction(routeId, "activate")}>启用</button>}<button onClick={() => void routeAction(routeId, "delete")}>删除</button></div></div>; })}</div>;
 }
 
 function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {

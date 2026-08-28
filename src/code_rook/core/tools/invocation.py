@@ -15,6 +15,7 @@ from code_rook.core.bus.events import (
     PermissionRequestedEvent,
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
+    ToolCallProgressEvent,
     ToolCallStartedEvent,
 )
 from code_rook.core.events.bus import EventBus
@@ -232,10 +233,12 @@ async def invoke_tool(
         ).model_dump(mode="json")
         if resolved_call is not None
         else {
-            "schema_version": 2,
+            "schema_version": 3,
             "kind": "generic",
+            "action": "generic",
             "title_key": "tool.generic",
             "status": "running",
+            "supports_live_output": False,
         }
     )
 
@@ -256,8 +259,32 @@ async def invoke_tool(
         )
     )
 
+    # 返回本次工具调用从进入管线起累计的毫秒数
     def elapsed() -> int:
         return int((time.monotonic() - t0) * 1000)
+
+    last_progress_at = 0.0
+
+    # 以每秒一次的上限广播 4KB 输出尾部，避免长命令淹没持久事件流
+    async def publish_progress(output_tail: str, total_bytes: int) -> None:
+        nonlocal last_progress_at
+        now = time.monotonic()
+        if now - last_progress_at < 1.0:
+            return
+        last_progress_at = now
+        await bus.publish(
+            ToolCallProgressEvent(
+                run_id=run_id,
+                tool_use_id=tool_call.id,
+                tool_name=tool_call.name,
+                elapsed_ms=elapsed(),
+                output_tail=output_tail[-4096:],
+                total_bytes=total_bytes,
+                step=step,
+                presentation=pending_presentation,
+                ts=_now(),
+            )
+        )
 
     if tool is None:
         return await _fail(
@@ -416,7 +443,7 @@ async def invoke_tool(
                 if execution_tool.timeout_s is None
                 else execution_tool.timeout_s
             )
-            with tool_invocation(tool_call.id):
+            with tool_invocation(tool_call.id, progress=publish_progress):
                 if effective_timeout > 0:
                     result = await asyncio.wait_for(
                         execution_tool.invoke(dict(invoke_params)),

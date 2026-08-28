@@ -7,6 +7,7 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy
 from code_rook.core.tools.errors import RateLimitedError
+from code_rook.core.tools.execution_metadata import report_tool_progress
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
 
@@ -58,6 +59,17 @@ class _AlwaysFails(BaseTool):
 
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         return ToolResult(content="permanent error", is_error=True, error_type=self._error_type)
+
+
+class _ProgressTool(BaseTool):
+    name = "progress"
+    description = "reports bounded live output"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}}
+
+    # 发布一次运行中输出后正常完成
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        await report_tool_progress("building 1/2", 12)
+        return ToolResult(content="done")
 
 
 # --- helper ------------------------------------------------------------------
@@ -180,6 +192,22 @@ async def test_failed_event_has_valid_error_class(monkeypatch: pytest.MonkeyPatc
     for e in events:
         if e.type == "tool.call_failed":  # type: ignore[attr-defined]
             assert e.error_class in valid_classes  # type: ignore[attr-defined]
+
+
+# 功能：验证工具运行中输出通过有界 progress 事件到达前端且不制造额外结果
+# 设计：自定义工具在同一调用上下文报告一次尾部，断言事件顺序为 started、progress、finished
+async def test_tool_progress_is_emitted_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    result, events = await _run(_ProgressTool(), monkeypatch=monkeypatch)
+
+    assert result.content == "done"
+    assert [event.type for event in events] == [
+        "tool.call_started",
+        "tool.call_progress",
+        "tool.call_finished",
+    ]
+    progress = events[1]
+    assert progress.output_tail == "building 1/2"
+    assert progress.total_bytes == 12
 
 
 # 功能：验证未声明幂等性的工具遇到 runtime_error 时只执行一次

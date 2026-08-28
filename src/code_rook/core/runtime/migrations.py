@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -177,6 +177,13 @@ def _apply_v4(connection: sqlite3.Connection) -> None:
     )
 
 
+# 修复早期 Web 候选版误把兼容 runtime event 行标记为 schema 3 的历史数据
+def _apply_v5(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "UPDATE runtime_events SET schema_version = 1 WHERE schema_version = 3"
+    )
+
+
 # 将 runtime 数据库迁移到当前 schema 版本
 def migrate_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,3 +209,7 @@ def migrate_database(path: Path) -> None:
         if version == 3:
             _apply_v4(connection)
             connection.execute("PRAGMA user_version = 4")
+            version = 4
+        if version == 4:
+            _apply_v5(connection)
+            connection.execute("PRAGMA user_version = 5")

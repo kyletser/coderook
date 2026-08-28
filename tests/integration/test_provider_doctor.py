@@ -210,6 +210,41 @@ async def test_provider_doctor_probes_declared_parallel_tools(
     assert result.to_receipt(route).route_digest == route.validation_digest()
 
 
+# 功能：验证普通 OpenAI 兼容工具探测不发送仅部分 Provider 支持的并行控制字段
+# 设计：捕获基础与工具请求并返回真实 SSE 形状，锁定 Doctor 与运行时一致的 auto 工具选择和有界余量
+async def test_provider_doctor_uses_minimal_openai_tool_probe() -> None:
+    requests: list[dict[str, object]] = []
+
+    # 根据请求是否携带工具返回对应的完整流式终态
+    async def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        body = (
+            _tool_sse("openai_chat", (_TOOL_ONE,))
+            if "tools" in payload
+            else _normal_sse("openai_chat")
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            text=body,
+        )
+
+    route = _route(supports_tools=True, supports_parallel_tools=False)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await ProviderDoctor(client=client).check(
+            route,
+            CredentialResolution(value="doctor-secret", source="file"),
+        )
+
+    assert result.status == "ok"
+    assert requests[0]["max_tokens"] == 64
+    assert requests[1]["max_tokens"] == 128
+    assert requests[1]["tool_choice"] == "auto"
+    assert "parallel_tool_calls" not in requests[1]
+
+
 # 功能：验证 route 声明图片能力时三种协议都发送微型内存图片并要求正常终态
 # 设计：两次请求均返回正常 SSE，再检查第二次请求含 data URI 或 base64 image block
 @pytest.mark.parametrize(

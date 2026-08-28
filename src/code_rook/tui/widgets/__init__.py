@@ -227,3 +227,15 @@ def _tool_action_text(
     label = tr(f"tool.action.{action_key}.{state}", locale, tool=tool_name)
     target = _tool_target(tool_name, params, locale=locale)
     return f"{label} {target}".rstrip()
+
+
+# 生成工具失败后的终态文案，避免错误卡仍显示“正在执行”
+def _tool_failure_text(
+    tool_name: str,
+    params: dict[str, Any],
+    *,
+    locale: str = "zh-CN",
+) -> str:
+    label = tr("tool.action.failed", locale)
+    target = _tool_target(tool_name, params, locale=locale)
+    return f"{label} {target}".rstrip()

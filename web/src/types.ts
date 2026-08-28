@@ -24,6 +24,7 @@ export interface TurnItem {
   turn_id: string;
   kind: string;
   payload: Record<string, unknown>;
+  tool_call_id?: string | null;
   created_at: string;
 }
 

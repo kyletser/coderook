@@ -13,6 +13,7 @@ from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.presentation import build_tool_presentation
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import (
     ApprovalRequirement,
@@ -20,6 +21,8 @@ from code_rook.core.tools.spec import (
     ToolActionSpec,
     ToolCapability,
     ToolCatalogError,
+    ToolPresentationAction,
+    ToolPresentationKind,
     ToolSpec,
 )
 
@@ -203,3 +206,40 @@ def test_default_action_families_declare_legacy_policy_aliases(tmp_path: Path) -
     for (tool_name, action), alias in expected.items():
         resolved = registry.resolve_call(tool_name, {"action": action})
         assert alias in resolved.permission_scope.aliases
+
+
+# 功能：验证 action-family 生成跨前端一致的语义动作、位置和实时输出能力
+# 设计：使用真实 Runner Catalog 覆盖 File、Bash、Run 三类展示，避免 Web/TUI 再按工具名各自猜测
+def test_presentation_exposes_shared_semantic_activity(tmp_path: Path) -> None:
+    registry = AgentRunner(
+        CodeRookConfig(),
+        workspace_root=tmp_path,
+    )._build_registry(TaskManager(tmp_path / ".tasks"))
+
+    file_call = registry.resolve_call("File", {"action": "read", "path": "README.md"})
+    file_view = build_tool_presentation(
+        file_call,
+        {"action": "read", "path": "README.md"},
+        None,
+    )
+    bash_call = registry.resolve_call("Bash", {"action": "run", "command": "git status"})
+    bash_view = build_tool_presentation(
+        bash_call,
+        {"action": "run", "command": "git status"},
+        None,
+    )
+    run_call = registry.resolve_call("Run", {"action": "tests", "command": "pytest -q"})
+    run_view = build_tool_presentation(
+        run_call,
+        {"action": "tests", "command": "pytest -q"},
+        None,
+    )
+
+    assert file_view.action == ToolPresentationAction.READ_FILE
+    assert file_view.kind == ToolPresentationKind.READ
+    assert file_view.locations == ("README.md",)
+    assert bash_view.action == ToolPresentationAction.RUN_COMMAND
+    assert bash_view.command == "git status"
+    assert bash_view.supports_live_output is True
+    assert run_view.action == ToolPresentationAction.RUN_TESTS
+    assert run_view.kind == ToolPresentationKind.TERMINAL

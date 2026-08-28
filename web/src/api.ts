@@ -4,7 +4,30 @@ let csrfToken = "";
 
 async function decodeError(response: Response): Promise<string> {
   try {
-    const payload = (await response.json()) as { error?: string };
+    const payload = (await response.json()) as {
+      error?: string;
+      code?: string;
+      category?: string;
+      message?: string;
+      provider_status?: number;
+    };
+    if (payload.code === "provider_validation_failed") {
+      const categoryLabels: Record<string, string> = {
+        credential: "API Key 无效或被 Provider 拒绝",
+        tls: "TLS 证书或安全连接失败",
+        schema: "Provider 不接受当前请求格式",
+        model: "Provider 不支持这个模型 ID",
+        network: "无法连接 Provider",
+        streaming: "Provider 没有返回流式响应",
+        termination: "Provider 响应没有正常结束",
+        capability: "模型能力验证失败",
+      };
+      const detail = payload.message === "declared tool capability probe failed"
+        ? "工具调用兼容性验证失败"
+        : categoryLabels[payload.category || ""] || payload.message || "模型验证失败";
+      const upstream = payload.provider_status ? `（Provider HTTP ${payload.provider_status}）` : "";
+      return `${detail}${upstream}。API Key 不会被清空，可以修改模型或重试。`;
+    }
     return payload.error || `${response.status} ${response.statusText}`;
   } catch {
     return `${response.status} ${response.statusText}`;

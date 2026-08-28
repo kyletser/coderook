@@ -39,6 +39,14 @@ _LONG_RE = re.compile(
     r"complete all|migration|resume)"
 )
 _FILE_RE = re.compile(r"(?:[A-Za-z]:[\\/])?[\w.@+() -]+(?:[\\/][\w.@+() -]+)*\.[A-Za-z0-9]{1,10}")
+_CONVERSATION_RE = re.compile(
+    r"(?i)(你好|您好|你是谁|你是什么模型|什么模型|具体型号|你能做什么|你能干什么|"
+    r"你会什么|有什么功能|怎么使用|如何使用|"
+    r"who are you|what model|hello|how do i use|what can you do)"
+)
+_CODE_CONTEXT_RE = re.compile(
+    r"(?i)(代码|文件|函数|类|模块|仓库|项目|报错|测试|code|file|function|class|module|repo|project|error|test)"
+)
 
 _SCOPE_RANK = {
     TaskScope.READ_ONLY: 0,
@@ -119,6 +127,16 @@ class TaskStrategyRouter:
         external = bool(_EXTERNAL_RE.search(goal))
         multi = bool(_MULTI_RE.search(goal))
         files = sorted(set(_FILE_RE.findall(goal)))
+        conversational = bool(_CONVERSATION_RE.search(goal)) and not (
+            mutate
+            or shell
+            or external
+            or multi
+            or files
+            or _CODE_CONTEXT_RE.search(goal)
+        )
+        if conversational:
+            signals.append("conversation_answer")
         if read:
             signals.append("read_intent")
         if mutate:
@@ -141,7 +159,9 @@ class TaskStrategyRouter:
         if preset_id == "minimal":
             signals.append("minimal_preset")
 
-        if _REFACTOR_RE.search(goal):
+        if conversational:
+            intent = TaskIntent.ANSWER
+        elif _REFACTOR_RE.search(goal):
             intent = TaskIntent.REFACTOR
         elif _TEST_RE.search(goal) and not mutate:
             intent = TaskIntent.TEST
@@ -183,8 +203,8 @@ class TaskStrategyRouter:
         else:
             scope = TaskScope.SINGLE_FILE
 
-        clear = read or mutate or shell or external
-        confidence = 0.92 if clear else 0.55
+        clear = read or mutate or shell or external or conversational
+        confidence = 0.96 if conversational else 0.92 if clear else 0.55
         if read and mutate:
             confidence = 0.78
         delegation_allowed = (
@@ -192,6 +212,8 @@ class TaskStrategyRouter:
         )
         if runtime_mode == RuntimeMode.PLAN or not clear:
             strategy = TaskStrategy.PLAN_FIRST
+        elif conversational:
+            strategy = TaskStrategy.DIRECT
         elif delegation_allowed:
             strategy = TaskStrategy.DELEGATE
         elif scope in {TaskScope.MULTI_FILE, TaskScope.REPOSITORY}:
@@ -210,7 +232,7 @@ class TaskStrategyRouter:
             delegation_allowed=delegation_allowed,
             deliverable=_deliverable_for(intent),
             success_criteria=_success_criteria_for(intent, risk),
-            user_summary=_user_summary_for(strategy, scope, risk),
+            user_summary=_user_summary_for(intent, strategy, scope, risk, goal),
         ).with_digest()
 
     # 将模型语义分类与规则安全底座合并，风险和范围只允许提高
@@ -241,7 +263,9 @@ class TaskStrategyRouter:
             delegation_allowed=delegation_allowed,
             deliverable=model.deliverable or rules.deliverable,
             success_criteria=model.success_criteria or rules.success_criteria,
-            user_summary=model.user_summary or _user_summary_for(strategy, scope, risk),
+            user_summary=model.user_summary
+            or rules.user_summary
+            or _user_summary_for(model.intent, strategy, scope, risk),
         ).with_digest()
 
     # 使用无工具短输出请求处理规则无法判断的语义歧义
@@ -329,6 +353,7 @@ class TaskStrategyRouter:
 # 返回任务类型对应的默认可交付结果说明
 def _deliverable_for(intent: TaskIntent) -> str:
     return {
+        TaskIntent.ANSWER: "直接回答用户问题",
         TaskIntent.EXPLAIN: "基于代码证据的解释",
         TaskIntent.INSPECT: "带定位依据的审查结论",
         TaskIntent.FIX: "可审查的修复与验证结果",
@@ -352,14 +377,27 @@ def _success_criteria_for(intent: TaskIntent, risk: TaskRisk) -> tuple[str, ...]
 
 # 生成时间线中展示的一句话执行策略说明
 def _user_summary_for(
+    intent: TaskIntent,
     strategy: TaskStrategy,
     scope: TaskScope,
     risk: TaskRisk,
+    goal: str = "",
 ) -> str:
+    normalized_goal = " ".join(goal.split())
+    target = normalized_goal[:42] + ("…" if len(normalized_goal) > 42 else "")
+    subject = f"围绕“{target}”" if target else "围绕当前任务"
+    if intent == TaskIntent.ANSWER:
+        return "直接回答，不执行工具。"
     if strategy == TaskStrategy.DELEGATE:
-        return "先验证任务能否安全拆分，再决定是否并行委派。"
+        return f"{subject}确认可独立验收的子任务，再决定是否并行处理。"
     if strategy == TaskStrategy.PLAN_FIRST:
-        return "先只读定位并形成计划，计划生效后再修改。"
+        if intent == TaskIntent.REFACTOR:
+            return f"{subject}梳理依赖和兼容边界，确认计划后再重构。"
+        if intent == TaskIntent.MULTI_FILE_CHANGE:
+            return f"{subject}定位跨文件依赖，确认修改顺序后再实施。"
+        return f"{subject}先定位相关实现，确认计划后再修改。"
     if scope == TaskScope.READ_ONLY or risk == TaskRisk.READ:
-        return "直接阅读相关代码并给出有证据的结论。"
-    return "直接处理明确范围，并在结束前验证变更。"
+        return f"{subject}读取相关实现，并基于实际证据回答。"
+    if intent == TaskIntent.TEST:
+        return f"{subject}运行相关验证，定位失败后给出可复现结论。"
+    return f"{subject}直接处理明确范围，并在结束前验证变更。"

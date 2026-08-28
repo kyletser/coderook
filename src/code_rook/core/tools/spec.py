@@ -44,6 +44,19 @@ class ToolPresentationKind(StrEnum):
     WEB = "web"
 
 
+class ToolPresentationAction(StrEnum):
+    GENERIC = "generic"
+    RUN_COMMAND = "run_command"
+    RUN_TESTS = "run_tests"
+    READ_FILE = "read_file"
+    BROWSE_FILES = "browse_files"
+    SEARCH_CODE = "search_code"
+    EDIT_CODE = "edit_code"
+    GIT = "git"
+    WEB = "web"
+    WORKER = "worker"
+
+
 class ToolPresentationSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

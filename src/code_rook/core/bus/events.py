@@ -144,6 +144,19 @@ class ToolCallStartedEvent(BaseModel):
     ts: str
 
 
+class ToolCallProgressEvent(BaseModel):
+    type: Literal["tool.call_progress"] = "tool.call_progress"
+    run_id: str
+    tool_use_id: str
+    tool_name: str
+    elapsed_ms: int = Field(ge=0)
+    output_tail: str = ""
+    total_bytes: int = Field(default=0, ge=0)
+    step: int = 0
+    presentation: dict[str, Any] | None = None
+    ts: str
+
+
 class ToolCallFinishedEvent(BaseModel):
     type: Literal["tool.call_finished"] = "tool.call_finished"
     run_id: str
@@ -705,6 +718,7 @@ Event = Annotated[
     | AgentDecisionEvent
     | AgentStuckEvent
     | ToolCallStartedEvent
+    | ToolCallProgressEvent
     | ToolCallFinishedEvent
     | ToolCallFailedEvent
     | LlmRequestPreparedEvent

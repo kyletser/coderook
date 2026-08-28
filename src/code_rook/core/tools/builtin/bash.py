@@ -20,6 +20,7 @@ from code_rook.core.sandbox.planner import (
     spawn_sandboxed_shell,
 )
 from code_rook.core.tools.base import BaseTool, ToolResult
+from code_rook.core.tools.execution_metadata import report_tool_progress
 
 _DEFAULT_TIMEOUT = 60
 _READ_CHUNK_BYTES = 64 * 1024
@@ -54,6 +55,10 @@ async def _read_bounded_output(
         if room <= 0:
             return bytes(output), True
         output.extend(chunk[:room])
+        await report_tool_progress(
+            _decode_shell_output(bytes(output[-4096:])),
+            len(output),
+        )
         if len(chunk) > room:
             return bytes(output), True
     return bytes(output), False

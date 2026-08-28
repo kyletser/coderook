@@ -13,6 +13,7 @@ from code_rook.core.runtime.migrations import (
     _apply_v1,
     _apply_v2,
     _apply_v3,
+    _apply_v4,
 )
 from code_rook.core.runtime.models import (
     ThreadRecord,
@@ -215,6 +216,49 @@ def test_v4_migration_adds_session_facade_record_schema(tmp_path: Path) -> None:
     assert store.schema_version() == CURRENT_SCHEMA_VERSION
     assert facade.schema_version == 1
     assert "schema_version" in columns
+
+
+# 功能：验证早期 Web 候选版误写为 schema 3 的 runtime event 能在升级后继续回放
+# 设计：直接构造 v4 数据库及兼容旧事件，启动 RuntimeStore 后核对版本归一化与正文无损
+def test_v5_migration_repairs_legacy_runtime_event_marker(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-v4-events.db"
+    now = _now().isoformat()
+    connection = sqlite3.connect(path)
+    _apply_v1(connection)
+    _apply_v2(connection)
+    _apply_v3(connection)
+    _apply_v4(connection)
+    connection.execute("PRAGMA user_version = 4")
+    connection.execute(
+        """
+        INSERT INTO runtime_threads (
+            id, title, workspace, status, default_route_id,
+            created_at, updated_at, schema_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("thread-v4", "legacy event", str(tmp_path), "idle", None, now, now, 1),
+    )
+    connection.execute(
+        "INSERT INTO runtime_event_counters (thread_id, next_seq) VALUES (?, ?)",
+        ("thread-v4", 2),
+    )
+    connection.execute(
+        """
+        INSERT INTO runtime_events (
+            thread_id, turn_id, seq, type, payload_json, ts, schema_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("thread-v4", None, 1, "legacy.event", '{"value":1}', now, 3),
+    )
+    connection.commit()
+    connection.close()
+
+    store = RuntimeStore(path)
+    events = store.list_events("thread-v4")
+
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
+    assert events[0].schema_version == 1
+    assert events[0].payload == {"value": 1}
 
 
 # 功能：验证 thread 和 turn 可无损写入并读取

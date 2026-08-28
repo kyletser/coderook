@@ -7,6 +7,7 @@ import pytest
 
 from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.strategy import (
+    TaskIntent,
     TaskRisk,
     TaskStrategy,
     TaskStrategyRouter,
@@ -69,6 +70,34 @@ async def test_hybrid_router_skips_model_for_clear_shell_risk() -> None:
     assert profile.risk == TaskRisk.SHELL
     assert profile.confidence >= 0.75
     provider.chat.assert_not_called()
+
+
+# 功能：验证普通产品问答会直接响应且不会暴露任何代码执行工具
+# 设计：覆盖模型身份和能力询问的真实表达，避免措辞变化再次误入规划流程
+@pytest.mark.parametrize(
+    "goal",
+    ["你是什么模型", "具体型号呢", "你能干什么", "你有什么功能"],
+)
+def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) -> None:
+    profile = TaskStrategyRouter().classify_rules(goal)
+
+    assert profile.intent == TaskIntent.ANSWER
+    assert profile.strategy == TaskStrategy.DIRECT
+    assert profile.model_tool_allowlist() == frozenset()
+    assert profile.confidence >= 0.95
+
+
+# 功能：验证编码任务画像会按具体意图和用户目标生成不同的执行说明
+# 设计：对比修复与解释任务的标题素材，防止所有任务退化成同一段固定模板
+def test_task_profile_summary_mentions_current_goal_and_intent() -> None:
+    router = TaskStrategyRouter()
+
+    fix_profile = router.classify_rules("修复登录失败并补充测试")
+    explain_profile = router.classify_rules("解释认证流程")
+
+    assert "修复登录失败并补充测试" in fix_profile.user_summary
+    assert "解释认证流程" in explain_profile.user_summary
+    assert fix_profile.user_summary != explain_profile.user_summary
 
 
 # 功能：验证歧义任务只调用一次结构化分类并产生带摘要的冻结画像

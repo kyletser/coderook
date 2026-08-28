@@ -269,9 +269,9 @@ def test_capability_kernel_resolves_nearest_scope_and_disposes_cleanup() -> None
     assert kernel.resolve("registry", "tools", session_scope) == "global"
 
 
-# 功能：验证非空 Session 的 Preset 摘要是冻结事实且发生漂移时不能加载
-# 设计：用合法 standard 元数据替换为 minimal ID 但保留旧摘要，模拟历史工具集被静默切换
-def test_session_rejects_preset_digest_drift() -> None:
+# 功能：验证历史 Session 的冻结 Preset 摘要发生版本漂移后仍可读取
+# 设计：保留旧摘要模拟升级后的历史会话，断言读取层保留事实而把继续执行的拒绝交给 Runner
+def test_session_preserves_historical_preset_digest_drift() -> None:
     payload = {
         "schema_version": 3,
         "id": "sess-preset",
@@ -285,8 +285,10 @@ def test_session_rejects_preset_digest_drift() -> None:
         "preset_digest": STANDARD_PRESET.digest,
     }
 
-    with pytest.raises(ValueError, match="preset digest"):
-        Session.from_dict(payload)
+    session = Session.from_dict(payload)
+
+    assert session.preset_id == MINIMAL_PRESET.id
+    assert session.preset_digest == STANDARD_PRESET.digest
 
 
 # 功能：验证 Tool Program 允许 sequence 内后续调用引用前序结果

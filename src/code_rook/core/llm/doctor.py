@@ -288,6 +288,7 @@ def _request(
             f"Call {', '.join(expected)} exactly once with value doctor in one response. "
             "Do not answer text."
         )
+    token_limit = 128 if expected else 64
 
     if route.wire_format == "anthropic_messages":
         content: object = prompt
@@ -305,7 +306,7 @@ def _request(
             ]
         payload: dict[str, object] = {
             "model": route.model,
-            "max_tokens": 16,
+            "max_tokens": token_limit,
             "stream": True,
             "messages": [{"role": "user", "content": content}],
         }
@@ -332,14 +333,15 @@ def _request(
         payload = {
             "model": route.model,
             "input": input_value,
-            "max_output_tokens": 16,
+            "max_output_tokens": token_limit,
             "store": False,
             "stream": True,
         }
         if expected:
             payload["tools"] = _wire_tools(route, expected)
             payload["tool_choice"] = "required"
-            payload["parallel_tool_calls"] = kind == "parallel_tools"
+            if kind == "parallel_tools":
+                payload["parallel_tool_calls"] = True
         return headers, payload, expected
 
     user_content: object = prompt
@@ -355,12 +357,15 @@ def _request(
         "model": route.model,
         "messages": [{"role": "user", "content": user_content}],
         "stream": True,
-        ("max_completion_tokens" if route.provider == "openai" else "max_tokens"): 16,
+        (
+            "max_completion_tokens" if route.provider == "openai" else "max_tokens"
+        ): token_limit,
     }
     if expected:
         payload["tools"] = _wire_tools(route, expected)
-        payload["tool_choice"] = "required"
-        payload["parallel_tool_calls"] = kind == "parallel_tools"
+        payload["tool_choice"] = "auto"
+        if kind == "parallel_tools":
+            payload["parallel_tool_calls"] = True
     return headers, payload, expected
 
 

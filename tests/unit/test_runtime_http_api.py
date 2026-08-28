@@ -10,6 +10,8 @@ import pytest
 from code_rook.core.api import HttpApiServer
 from code_rook.core.api.auth import bearer_authorized, is_loopback_host, validate_api_binding
 from code_rook.core.authority import RuntimeMode
+from code_rook.core.configuration import ConfigurationValidationError
+from code_rook.core.llm.doctor import ProviderDoctorResult
 from code_rook.core.receipts.builder import build_turn_receipt
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
@@ -157,6 +159,22 @@ class _FakeRuntimeApi:
         return {"scope": scope, "path": path, "files": []}
 
 
+class _ProviderFailureApi(_FakeRuntimeApi):
+    # 用脱敏 Doctor 结果模拟 Provider 配置校验失败
+    async def save_provider(self, payload: dict[str, Any]) -> dict[str, object]:
+        assert payload["model"] == "deepseek-v4-flash"
+        raise ConfigurationValidationError(
+            ProviderDoctorResult(
+                status="error",
+                category="schema",
+                route_id="deepseek",
+                message="declared tool capability probe failed",
+                credential_source="keyring",
+                http_status=400,
+            )
+        )
+
+
 # 启动随机端口 HTTP API 并返回 server 与 base URL
 async def _start_server(
     tmp_path: Path,
@@ -263,6 +281,35 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             response = await client.post("/v1/turns/turn-1/interrupt")
             assert response.status_code == 200
             assert response.json()["status"] == "interrupted"
+    finally:
+        await server.stop()
+
+
+# 功能：验证 Provider Doctor 校验失败通过 HTTP 422 返回脱敏结构而不是通用 500
+# 设计：让 fake service 抛出真实 ConfigurationValidationError，并检查前端恢复所需的分类与上游状态码
+async def test_http_provider_validation_failure_is_actionable(tmp_path: Path) -> None:
+    service = _ProviderFailureApi(tmp_path)
+    server = HttpApiServer("127.0.0.1", 0, "test-token", service)  # type: ignore[arg-type]
+    host, port = await server.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://{host}:{port}",
+            timeout=2.0,
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            response = await client.post(
+                "/v1/providers",
+                json={"model": "deepseek-v4-flash"},
+            )
+
+        assert response.status_code == 422
+        assert response.json() == {
+            "error": "provider validation failed",
+            "code": "provider_validation_failed",
+            "category": "schema",
+            "message": "declared tool capability probe failed",
+            "provider_status": 400,
+        }
     finally:
         await server.stop()
 

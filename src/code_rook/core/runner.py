@@ -561,6 +561,14 @@ class AgentRunner:
                     provider = create_llm_provider(self._config.llm)
                 if route_binding is not None:
                     receipt = route_binding.receipt
+                    context.runtime_context = (
+                        context.runtime_context.rstrip()
+                        + "\n\n## Active Model\n"
+                        + f"Configured model: {receipt.model}\n"
+                        + f"Route: {receipt.route_id}\n"
+                        + "When the user asks which model is active, answer from this runtime "
+                        + "identity instead of inspecting configuration files."
+                    )
                     await bus.publish(
                         LlmRouteSelectedEvent(
                             run_id=run_id,

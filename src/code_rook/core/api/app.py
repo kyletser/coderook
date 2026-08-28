@@ -26,6 +26,7 @@ from code_rook.core.artifacts.image import ImageArtifactInput
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.compatibility import HTTP_API_VERSION
+from code_rook.core.configuration import ConfigurationValidationError
 from code_rook.core.runtime.store import RecordNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,19 @@ class HttpApiServer:
             await self._send_json(writer, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except RecordNotFoundError as exc:
             await self._send_json(writer, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except ConfigurationValidationError as exc:
+            result = exc.result
+            await self._send_json(
+                writer,
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                {
+                    "error": "provider validation failed",
+                    "code": "provider_validation_failed",
+                    "category": result.category,
+                    "message": result.message,
+                    "provider_status": result.http_status,
+                },
+            )
         except HandlerError as exc:
             await self._send_json(writer, HTTPStatus.CONFLICT, {"error": str(exc)})
         except (ConnectionError, BrokenPipeError):
@@ -223,7 +237,7 @@ class HttpApiServer:
     # 判断请求是否属于公开静态 Web 壳资源而不是受保护 API
     def _is_static_path(self, path: str) -> bool:
         return (
-            path in {"/", "/index.html", "/manifest.webmanifest"}
+            path in {"/", "/index.html", "/manifest.webmanifest", "/favicon.svg"}
             or path.startswith("/assets/")
         )
 

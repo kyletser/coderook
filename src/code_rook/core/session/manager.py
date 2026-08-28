@@ -38,6 +38,7 @@ from code_rook.core.bus.events import (
     SessionWaitingForInputEvent,
     SkillInvokedEvent,
 )
+from code_rook.core.capabilities import CapabilityStability
 from code_rook.core.checkpoints import CheckpointError, CheckpointStore
 from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.events.bus import EventBus
@@ -190,6 +191,35 @@ class SessionManager:
         self._skill_loader = SkillLoader(self._workspace)
         self._artifact_store = ArtifactStore(workspace / ".coderook" / "artifacts")
         self._rehydrate()
+
+    # 将升级后发生摘要漂移的稳定 Preset 自动迁移到当前定义，避免历史会话无法继续使用
+    def _refresh_stable_preset(self, session: Session) -> None:
+        preset = get_agent_preset(session.preset_id)
+        if session.preset_digest == preset.digest:
+            return
+        if preset.stability != CapabilityStability.STABLE:
+            raise HandlerError(
+                INVALID_PARAMS,
+                "experimental session preset changed; fork the session before continuing",
+            )
+        previous_digest = session.preset_digest
+        session.preset_digest = preset.digest
+        session.updated_at = _now()
+        self._store.write_meta(session)
+        self._store.append_session_event(
+            session.id,
+            event_type="session.preset_migrated",
+            payload={
+                "preset_id": preset.id,
+                "previous_digest": previous_digest,
+                "preset_digest": preset.digest,
+            },
+        )
+        logger.info(
+            "migrated stable session preset sid=%s preset=%s",
+            session.id,
+            preset.id,
+        )
 
     # 完成 Goal run 后持久化有限继续决策并发布可回放的 typed 事件
     async def _finish_goal_run(
@@ -441,9 +471,15 @@ class SessionManager:
             if Path(session.workspace).resolve() != self._workspace:
                 continue
             if session.status == "active":
-                if self._store.has_damaged_ledger(session.id):
-                    self._store.recover_incomplete_tail(session.id)
-                session.status = "interrupted"
+                if session.run_ids:
+                    if self._store.has_damaged_ledger(session.id):
+                        self._store.recover_incomplete_tail(session.id)
+                    session.status = "interrupted"
+                else:
+                    session.status = "waiting_for_input"
+                self._store.write_meta(session)
+            elif session.status == "interrupted" and not session.run_ids:
+                session.status = "waiting_for_input"
                 self._store.write_meta(session)
             if session.status == "interrupted":
                 self._pending_recoveries.add(session.id)
@@ -660,6 +696,7 @@ class SessionManager:
         async with lock:
             if session.status == "closed":
                 raise HandlerError(SESSION_CLOSED, "session already closed")
+            self._refresh_stable_preset(session)
             pending_plan = await self._load_pending_plan(sid)
             if pending_plan is not None:
                 raise HandlerError(

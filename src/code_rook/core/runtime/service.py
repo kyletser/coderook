@@ -384,11 +384,14 @@ class RuntimeService:
 
     # 同步创建或更新 session 的 thread 与兼容 facade
     def _sync_session_sync(self, session: Session) -> ThreadRecord:
+        status = _SESSION_TO_THREAD_STATUS[session.status]
+        if session.status == "active" and not session.run_ids:
+            status = ThreadStatus.IDLE
         thread = ThreadRecord(
             id=session.id,
             title=session.title,
             workspace=self._workspace,
-            status=_SESSION_TO_THREAD_STATUS[session.status],
+            status=status,
             created_at=_parse_time(session.created_at),
             updated_at=_parse_time(session.updated_at),
         )
@@ -555,6 +558,8 @@ class RuntimeService:
                 payload={
                     "tool_name": payload["tool_name"],
                     "params": payload["params"],
+                    "operation_id": payload.get("operation_id", ""),
+                    "presentation": payload.get("presentation") or {},
                 },
                 created_at=ts,
             )

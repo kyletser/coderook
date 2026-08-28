@@ -527,6 +527,16 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
                 group.add_tool(tc_block)
         app._pending_tool_blocks[tool_use_id] = tc_block
 
+    elif t == "tool.call_progress":
+        tool_use_id = str(event.get("tool_use_id", ""))
+        elapsed_ms = int(event.get("elapsed_ms") or 0)
+        output_tail = str(event.get("output_tail") or "")
+        if tool_use_id in app._pending_tool_blocks:
+            app._pending_tool_blocks[tool_use_id].set_progress(
+                output_tail,
+                elapsed_ms,
+            )
+
     elif t == "tool.call_finished":
         tool_use_id = str(event.get("tool_use_id", ""))
         elapsed_ms = int(event.get("elapsed_ms") or 0)
@@ -553,18 +563,6 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
                 is_error=True,
                 presentation=presentation,
             )
-        category = escape(str(event.get("failure_category") or event.get("error_class") or "tool"))
-        action = (
-            "检查权限或修改命令后重试"
-            if _locale(app) == "zh-CN"
-            else "Check permission or adjust the command, then retry"
-        )
-        app._append(
-            Static(
-                f"[yellow]{category}[/yellow]  [dim]{action}[/dim]",
-                classes="log-line",
-            )
-        )
 
 
 # 处理上下文压缩、权限审批、LSP 诊断与日志等杂项事件
