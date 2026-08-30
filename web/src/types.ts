@@ -5,6 +5,7 @@ export interface ThreadRecord {
   title: string;
   workspace: string;
   status: string;
+  turn_count?: number;
   created_at: string;
   updated_at: string;
 }

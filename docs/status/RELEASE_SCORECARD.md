@@ -1,13 +1,13 @@
 # CodeRook 发布评分卡
 
-**更新时间**：2026-08-27
+**更新时间**：2026-08-30
 
-**代码锚点**：`main@8ff3402` + 当前未提交的 CodeRook Web 候选工作树
+**代码锚点**：本文件所在 Git commit；检出后用 `git rev-parse HEAD` 获取精确 SHA
 
 候选状态：**NO-GO（不是 v1.0.0 Release Candidate）**
 
-当前 Web 改造尚未形成一个已提交、由 required CI 验证的候选 commit。本文只区分当前代码事实和仍需
-外部执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本为
+CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经进入候选代码。本文只区分当前代码事实和
+仍需外部执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本为
 `0.2.0b1`（产品候选名 `0.2.0-beta.1`），未创建相应 tag 或 `v1.0.0` tag。
 
 ## 1. 当前代码事实
@@ -68,7 +68,7 @@
 - Capability Kernel 已实际承载 workspace 级 Provider/MCP/Hooks/Worker Backend 和 session 级 Tool
   Registry；文本、工具成功与权限拒绝三个 keyless Golden Replay 固定验证重开后的 Ledger 顺序和模型
   消息投影。
-- Runtime SQLite 当前数据库 schema 为 v4，公开 Thread/Turn/Item/Event/Facade 逐行 schema 仍为 1；
+- Runtime SQLite 当前数据库 schema 为 v6，公开 Thread/Turn/Item/Event/Facade 逐行 schema 仍为 1；
   未来数据库/逐行版本和外键损坏失败关闭。Runtime Doctor 严格区分只读 inspect 与显式 repair，并分别
   报告备份、迁移收据、fallback credential 和 Route Catalog 状态；repair 不猜测损坏内容。
 - `feature_flags` 把 Goal、基础子 Agent、Skills、MCP Tools、Memory 和 Change Center 标为 stable；Tool Program、ACP Worker backend、Fleet、
@@ -81,18 +81,18 @@
 
 ## 2. 当前验证边界
 
-未提交工作树上的局部或完整本机结果只用于改造验收，不能提升为发布候选证据。真正的候选 commit 仍须
-从头连续运行 Ruff、品牌、公开仓库、Windows/Linux Mypy、全量 pytest、协议检查、build 和 wheel smoke，
-并取得同一 SHA 的 required CI。本文不长期保存易失真的测试总数，也不把工作树或局部检查写成“当前
-提交全绿”；本轮本机结果由交付记录说明，候选状态只看下表。
+本文件所在候选必须从头连续运行 Ruff、品牌、公开仓库、Windows/Linux Mypy、全量 pytest、协议检查、
+build 和 wheel smoke。本文不长期保存易失真的测试总数；本机结果由提交交付记录说明。仓库级 GitHub
+Actions 当前按维护者要求关闭，因此不存在同一 SHA 的远端 required gate 结果；重新启用并取得成功前，
+不能把 workflow 文件存在写成远端 CI 已通过。
 
 ## 3. v1.0.0 硬门禁
 
 | 门禁 | 要求 | 当前结果 |
 |---|---:|---|
-| 最终候选本地门禁 | Ruff、品牌、公开仓库、双平台 Mypy、全量 pytest、协议、build、wheel smoke 连续通过 | **尚无最终候选连续结果** |
-| Required CI | `Required Ubuntu gate` 对候选 commit 通过 | **尚无候选 commit 结果** |
-| P0/P1 | 已知 P0/P1 为 0 | **未提交工作树已独立复核清零；尚无候选 commit 绑定审计** |
+| 最终候选本地门禁 | Ruff、品牌、公开仓库、双平台 Mypy、全量 pytest、协议、build、wheel smoke 连续通过 | **每次推送前执行；精确结果见该提交交付记录，稳定 tag 前仍须重新运行** |
+| Required CI | `Required Ubuntu gate` 对候选 commit 通过 | **仓库级 Actions 当前关闭，没有当前候选结果** |
+| P0/P1 | 已知 P0/P1 为 0 | **持续产品审计中；尚未形成最终独立清零报告** |
 | 总体 pass@1 | 内建 50 任务 ≥80% | **未运行真实模型候选集** |
 | 多文件 pass@1 | ≥75% | **未运行** |
 | 只读 pass@1 | ≥90% | **未运行** |

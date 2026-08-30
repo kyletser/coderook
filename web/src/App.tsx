@@ -476,6 +476,10 @@ export function appendRuntimeEvent(
   return next.length > MAX_CACHED_EVENTS ? next.slice(-MAX_CACHED_EVENTS) : next;
 }
 
+export function preferredThreadId(threads: ThreadRecord[]): string {
+  return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
+}
+
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
@@ -540,7 +544,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setThreads(result);
     if (!initializedSelection.current) {
       initializedSelection.current = true;
-      setSelectedId(result[0]?.id || "");
+      setSelectedId(preferredThreadId(result));
     }
   }, []);
 
@@ -636,6 +640,21 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       && queueLoadVersions.current[threadId] === version
     ) setQueuedMessages(loaded);
   }, []);
+
+  useEffect(() => {
+    const reconcile = () => {
+      if (document.visibilityState === "hidden") return;
+      void refreshThreads().catch(() => undefined);
+      void refreshActiveModel().catch(() => undefined);
+      if (selectedIdRef.current) void loadThread(selectedIdRef.current).catch(() => undefined);
+    };
+    window.addEventListener("focus", reconcile);
+    document.addEventListener("visibilitychange", reconcile);
+    return () => {
+      window.removeEventListener("focus", reconcile);
+      document.removeEventListener("visibilitychange", reconcile);
+    };
+  }, [loadThread, refreshActiveModel, refreshThreads]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -1788,9 +1807,9 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     return request<Record<string, unknown>>(endpoint).then(setData).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
   }, [endpoint, onError, tab, threadId]);
   useEffect(() => { void load(); }, [load]);
-  const mutate = async (path: string, payload: Record<string, unknown>) => {
-    try { await request(path, { method: "POST", body: JSON.stringify(payload) }); await load(); }
-    catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  const mutate = async (path: string, payload: Record<string, unknown>): Promise<boolean> => {
+    try { await request(path, { method: "POST", body: JSON.stringify(payload) }); await load(); return true; }
+    catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); return false; }
   };
   const goals = (data.goals || []) as Array<Record<string, unknown>>;
   const workers = (data.workers || []) as Array<Record<string, unknown>>;
@@ -1875,11 +1894,11 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   return <div className="panel-content"><div className="advanced-tabs">{(["goals", "workers", "skills", "mcp", "memory"] as const).map((name) => <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>{name}</button>)}</div>
-    {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => { event.preventDefault(); void mutate("/v1/goals", { session_id: threadId, objective, start: false }); setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{textValue(goal.status)}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{goal.status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>恢复</button>}<button className="danger" onClick={() => void mutate(`/v1/goals/${goal.id}/clear`, {})}>取消</button></div></section>)}</div>}
+    {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => { const status = textValue(goal.status); const nonterminal = ["active", "paused", "blocked"].includes(status); return <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{status}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>{nonterminal ? "恢复" : "重新开启"}</button>}{nonterminal && <button className="danger" onClick={() => void mutate(`/v1/goals/${goal.id}/clear`, {})}>取消</button>}</div></section>; })}</div>}
     {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{status}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>跟进</button><button onClick={() => void mutate(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, { session_id: threadId })}>取消 Worker</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>审查并应用</button>}</div></section>; })}</div>}
     {tab === "skills" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => void installSkill(event)}><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder="工作区内 Skill 文件或目录" /><button disabled={!skillSource.trim()}>预览安装</button></form>{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">暂无 Skill。安装必须先预览文件与 digest，再明确确认。</p>}</div>}
     {tab === "mcp" && <div className="advanced-list">{servers.map((server) => <section key={textValue(server.name)}><div><b>{textValue(server.name)}</b><span className={server.status === "connected" ? "stable" : "labs"}>{textValue(server.status)}</span></div><p>{textValue(server.transport)} · {textValue(server.tool_count)} tools</p>{server.error ? <small>{textValue(server.error)}</small> : null}</section>)}{!servers.length && <p className="empty">没有配置 MCP Tool Server。</p>}</div>}
-    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={(event) => { event.preventDefault(); void mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId }); setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={async () => { if (!confirm("删除这条记忆？")) return; try { await request(`/v1/memories/${memory.id}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }}>删除</button></div></section>)}</div>}
+    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId })) setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={async () => { if (!confirm("删除这条记忆？")) return; try { await request(`/v1/memories/${memory.id}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }}>删除</button></div></section>)}</div>}
     <div className="labs-note"><b>Labs 已隐藏</b><p>Fleet、Workflow、ACP、Hooks 和 Tool Program 不进入默认 Web 导航。</p></div>
   </div>;
 }

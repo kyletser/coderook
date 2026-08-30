@@ -146,12 +146,14 @@ def _load_datetime(value: str) -> datetime:
 # 将数据库行还原为 ThreadRecord
 def _thread_from_row(row: sqlite3.Row) -> ThreadRecord:
     _require_current_record_schema(row["schema_version"], "thread")
+    columns = set(row.keys())
     return ThreadRecord(
         id=row["id"],
         title=row["title"],
         workspace=row["workspace"],
         status=row["status"],
         default_route_id=row["default_route_id"],
+        turn_count=int(row["turn_count"]) if "turn_count" in columns else 0,
         created_at=_load_datetime(row["created_at"]),
         updated_at=_load_datetime(row["updated_at"]),
         schema_version=row["schema_version"],
@@ -322,7 +324,13 @@ class RuntimeStore:
     def get_thread(self, thread_id: str) -> ThreadRecord:
         with connect_database(self.path) as connection:
             row = connection.execute(
-                "SELECT * FROM runtime_threads WHERE id = ?",
+                """
+                SELECT runtime_threads.*,
+                       (SELECT COUNT(*) FROM runtime_turns
+                        WHERE runtime_turns.thread_id = runtime_threads.id) AS turn_count
+                FROM runtime_threads
+                WHERE runtime_threads.id = ?
+                """,
                 (thread_id,),
             ).fetchone()
         if row is None:
@@ -333,7 +341,13 @@ class RuntimeStore:
     def list_threads(self) -> list[ThreadRecord]:
         with connect_database(self.path) as connection:
             rows = connection.execute(
-                "SELECT * FROM runtime_threads ORDER BY updated_at DESC, id"
+                """
+                SELECT runtime_threads.*,
+                       (SELECT COUNT(*) FROM runtime_turns
+                        WHERE runtime_turns.thread_id = runtime_threads.id) AS turn_count
+                FROM runtime_threads
+                ORDER BY updated_at DESC, id
+                """
             ).fetchall()
         records: list[ThreadRecord] = []
         for row in rows:

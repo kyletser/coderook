@@ -6,10 +6,11 @@ import {
   eventBelongsToThread,
   modelContentFor,
   parentWorkspacePath,
+  preferredThreadId,
   resultStatusIsFailure,
   workspacePathIsDirectoryError,
 } from "./App";
-import type { RuntimeEvent } from "./types";
+import type { RuntimeEvent, ThreadRecord } from "./types";
 
 describe("Web task submission", () => {
   it("keeps the visible shell command separate from the model instruction", () => {
@@ -29,6 +30,24 @@ describe("Web task submission", () => {
   it("rejects events emitted by a previously selected thread", () => {
     expect(eventBelongsToThread("thread-b", "thread-a")).toBe(false);
     expect(eventBelongsToThread("thread-b", "thread-b")).toBe(true);
+  });
+
+  it("restores the newest non-empty thread before a newer unused draft", () => {
+    const base = {
+      title: "",
+      workspace: "C:/repo",
+      status: "idle",
+      created_at: "2026-08-30T00:00:00Z",
+      updated_at: "2026-08-30T00:00:00Z",
+    };
+    const threads: ThreadRecord[] = [
+      { ...base, id: "empty-new", turn_count: 0 },
+      { ...base, id: "used", turn_count: 2 },
+    ];
+
+    expect(preferredThreadId(threads)).toBe("used");
+    expect(preferredThreadId([threads[0]])).toBe("empty-new");
+    expect(preferredThreadId([])).toBe("");
   });
 
   it("navigates to the parent workspace directory without escaping root", () => {

@@ -4,12 +4,12 @@ Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据
 [功能架构](../reference/FUNCTIONAL_ARCHITECTURE.md)和[发布评分卡](RELEASE_SCORECARD.md)。项目仍是
 `0.2.0-beta.1` 候选工作树，不能把代码路径、workflow 或测试 fixture 写成公开发行成绩。
 
-## Now：形成候选 commit
+## Now：稳定当前 Beta 候选
 
 - 完成最终 P0/P1 清零审计，重点复核显式 credential overlay、跨 session 事件/审批、Worker handoff、
   Goal 预算、审计降级和进程树取消。
-- 在最终合并工作树从头连续运行完整本地门禁，并让单个 `Required Ubuntu gate` 对同一候选 commit
-  稳定通过；不恢复 cron/nightly 或三平台 push matrix。
+- 在每次推送前从头连续运行完整本地门禁。仓库级 GitHub Actions 当前按维护者要求关闭；准备公开预发行
+  时只恢复单个 `Required Ubuntu gate` 并绑定同一候选 commit，不恢复 cron/nightly 或三平台 push matrix。
 - 运行 80×24、100×30、140×40 三种尺寸与中英文产品矩阵，覆盖 onboarding、Provider、权限、结果卡、
   Change Center、rewind、session 切换、Goal、Worker 与附件；修复后重新跑完整矩阵。
 - 对 Web 的 1280×720、1920×1080 和 390×844 做中英文人工验收，覆盖一次性登录、SSE 重连、

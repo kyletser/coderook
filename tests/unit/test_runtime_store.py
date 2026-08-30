@@ -162,6 +162,8 @@ def test_turn_pagination_returns_recent_pages_in_chronological_order(
 
     assert [turn.id for turn in latest] == ["turn-3", "turn-4", "turn-5"]
     assert [turn.id for turn in older] == ["turn-1", "turn-2"]
+    assert store.get_thread("thread-pages").turn_count == 5
+    assert store.list_threads()[0].turn_count == 5
 
 
 # 功能：验证较新 runtime schema 不会被旧版 daemon 静默降级或覆盖
@@ -385,7 +387,7 @@ def test_thread_and_turn_roundtrip(tmp_path: Path) -> None:
     store.create_thread(thread)
     store.create_turn(turn)
 
-    assert store.get_thread(thread.id) == thread
+    assert store.get_thread(thread.id) == thread.model_copy(update={"turn_count": 1})
     assert store.get_turn(turn.id) == turn
 
 

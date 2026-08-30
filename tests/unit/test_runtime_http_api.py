@@ -37,6 +37,7 @@ class _FakeRuntimeApi:
             title="HTTP",
             workspace=str(workspace),
             status=ThreadStatus.RUNNING,
+            turn_count=1,
             created_at=_now(),
             updated_at=_now(),
         )
@@ -308,6 +309,7 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             response = await client.get("/v1/threads")
             assert response.status_code == 200
             assert response.json()[0]["id"] == "thread-1"
+            assert response.json()[0]["turn_count"] == 1
 
             response = await client.post(
                 "/v1/threads",

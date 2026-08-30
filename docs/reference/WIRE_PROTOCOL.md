@@ -3590,6 +3590,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": null,
           "title": "Default Route Id"
         },
+        "turn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        },
         "created_at": {
           "format": "date-time",
           "title": "Created At",
@@ -3719,6 +3725,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": null,
           "title": "Default Route Id"
         },
+        "turn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        },
         "created_at": {
           "format": "date-time",
           "title": "Created At",
@@ -3846,6 +3858,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Default Route Id"
+        },
+        "turn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
         },
         "created_at": {
           "format": "date-time",
@@ -3979,6 +3997,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": null,
           "title": "Default Route Id"
         },
+        "turn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        },
         "created_at": {
           "format": "date-time",
           "title": "Created At",
@@ -4102,6 +4126,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           ],
           "default": null,
           "title": "Default Route Id"
+        },
+        "turn_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
         },
         "created_at": {
           "format": "date-time",

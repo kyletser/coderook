@@ -560,6 +560,7 @@ class RuntimeService:
             title=session.title,
             workspace=self._workspace,
             status=status,
+            turn_count=len(session.run_ids),
             created_at=_parse_time(session.created_at),
             updated_at=_parse_time(session.updated_at),
         )

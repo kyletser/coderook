@@ -58,6 +58,7 @@ class ThreadRecord(BaseModel):
     workspace: str = Field(min_length=1)
     status: ThreadStatus = ThreadStatus.IDLE
     default_route_id: str | None = None
+    turn_count: int = Field(default=0, ge=0)
     created_at: datetime
     updated_at: datetime
     schema_version: Literal[1] = 1

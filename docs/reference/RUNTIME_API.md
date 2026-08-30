@@ -32,7 +32,7 @@ uv run coderook-core
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `GET` | `/v1/threads` | 列出 durable threads |
+| `GET` | `/v1/threads` | 列出 durable threads；摘要包含 `turn_count`，供客户端优先恢复非空会话 |
 | `POST` | `/v1/threads` | 创建 thread，body: `{"title":"...","mode":"chat"}` |
 | `GET` | `/v1/threads/{id}` | 读取单个 durable thread |
 | `PATCH` | `/v1/threads/{id}` | 更新标题或归档，body: `{"title":"...","archived":true}` |
@@ -40,7 +40,10 @@ uv run coderook-core
 | `POST` | `/v1/threads/{id}/fork` | 创建独立会话 fork |
 | `GET` | `/v1/threads/{id}/export` | 导出 markdown/json 正文 |
 | `GET` | `/v1/threads/{id}/context` | 上下文与 checkpoint 摘要 |
-| `GET` | `/v1/threads/{id}/turns` | 列出 thread 的 durable turns |
+| `GET` | `/v1/threads/{id}/turns` | 列出 durable turns；支持 `limit=1..100` 与 `before={turn_id}` 向前分页 |
+| `GET/POST` | `/v1/threads/{id}/queue` | 读取或追加 TUI/Web 共享的持久后续消息队列 |
+| `DELETE` | `/v1/threads/{id}/queue/{message}` | 删除尚未开始派发的队列消息 |
+| `POST` | `/v1/threads/{id}/queue/{message}/retry` | 重试 daemon 中断后需确认的队列消息 |
 | `POST` | `/v1/threads/{id}/turns` | 启动 turn；支持 mode 与图片 attachments |
 | `POST` | `/v1/threads/{id}/turns/{turn}/plan` | 批准、修改或取消当前 Plan Ticket |
 | `GET` | `/v1/turns/{id}` | 读取单个 durable turn |
@@ -84,6 +87,9 @@ Accept: text/event-stream
 每条事件包含 durable `id`（即 thread 内递增 `seq`）、事件类型和完整 JSON data。断线后将
 最后收到的 id 作为 `after_seq`，或通过 `Last-Event-ID` header 重连；服务只返回严格大于该
 游标的事件，因此不会重复已确认事件，也不会跳过已提交事件。
+
+首次打开长会话时可以在 `after_seq=0` 的同时传 `tail=1..5000`，只回放当前高水位前最近一段事件；
+后续重连必须传最后确认的非零 `after_seq`，此时 Core 忽略 `tail` 并严格从游标续接，避免断线窗口丢事件。
 
 `run.finished` schema 1 已增加可选 `outcome`、`failure_category`、`changes`、`verification` 和
 `result_summary`。当前 Runner 会填写统一 outcome、稳定失败分类和有界结果摘要；`changes` 与

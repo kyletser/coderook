@@ -395,9 +395,11 @@ Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来�
   推理与工具详情，`@file` 仅建立有界路径引用，`!command` 仍进入权限和 Sandbox 管线；
 - `web/` + `src/code_rook/web/static/`：React/Vite 源码与打包静态 SPA。Web 使用与 TUI 相同的 durable
   thread/event/receipt、Plan、权限、Recovery、Provider 与 Change Center 语义。会话首屏读取最近 30 个
-  Turn，旧记录用 `before` 游标分页；首次 SSE 最多回放 5,000 条近期事件，页面存活期间从最后确认的
+  Turn，旧记录用 `before` 游标分页；Thread 摘要携带 `turn_count`，首次打开优先恢复最近的非空会话，
+  只有全部为空时才复用最近草稿。首次 SSE 最多回放 5,000 条近期事件，页面存活期间从最后确认的
   `seq` 无损续接，避免长会话首开无界加载。Core 持久消息队列让 TUI/Web 共用 queue/dispatching/blocked
-  状态；会话切换使用请求版本阻止旧响应覆盖新状态。结果行读取 Turn Receipt，Change Center 可按文件
+  状态；会话切换使用请求版本阻止旧响应覆盖新状态，浏览器重新获得焦点时会与 Core 对账会话、模型和
+  当前 Turn。结果行读取 Turn Receipt，Change Center 可按文件
   选择 Stage。浏览器只调用 Core API，不读取 runtime.db、Ledger、凭据文件或未经过 WorkspaceBoundary
   的路径。API Key 只作为一次配置请求 body 交给 Core，不写入 Web Storage。PlatformBridge 隔离通知、
   剪贴板和外部打开能力，便于后续嵌入桌面壳；当前不包含 Electron/Tauri；
