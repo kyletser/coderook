@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, FormEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
 import { bootstrap, request, streamEvents } from "./api";
 import { browserBridge } from "./platform";
@@ -48,9 +48,69 @@ type TimelineEntry =
   | { kind: "tool_group"; key: string; timestamp: string; tools: ToolTimelineEntry[] }
   | { kind: "event"; key: string; timestamp: string; event: RuntimeEvent };
 type IconName = "rook" | "menu" | "plus" | "files" | "changes" | "models" | "settings" | "edit" | "fork" | "download" | "trash" | "arrow" | "arrowUp" | "image" | "stop" | "terminal";
+type ProductDialogOptions = {
+  title: string;
+  description?: string;
+  detail?: string;
+  input?: "text" | "multiline";
+  initialValue?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  cancelLabel?: string | null;
+  danger?: boolean;
+};
+type PendingProductDialog = ProductDialogOptions & { resolve(value: string | null): void };
+type ProductDialogController = (options: ProductDialogOptions) => Promise<string | null>;
 
 const TURN_PAGE_SIZE = 30;
 const MAX_CACHED_EVENTS = 5000;
+const ProductDialogContext = createContext<ProductDialogController | null>(null);
+
+function ProductDialogLayer({ pending, onResolve }: { pending: PendingProductDialog; onResolve(value: string | null): void }): ReactElement {
+  const [value, setValue] = useState(pending.initialValue || "");
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const hasInput = Boolean(pending.input);
+  const canConfirm = !hasInput || Boolean(value.trim());
+  useEffect(() => { inputRef.current?.focus(); inputRef.current?.select(); }, []);
+  const finish = (confirmed: boolean) => onResolve(confirmed ? (hasInput ? value.trim() : "confirmed") : null);
+  return <div className="product-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finish(false); }}>
+    <form ref={formRef} className="product-dialog" role="dialog" aria-modal="true" aria-labelledby="product-dialog-title" onSubmit={(event) => { event.preventDefault(); if (canConfirm) finish(true); }} onKeyDown={(event) => {
+      if (event.key === "Escape") { finish(false); return; }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(formRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), textarea:not(:disabled)") || []);
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }}>
+      <header><div><small>CODEROOK</small><h2 id="product-dialog-title">{pending.title}</h2></div><button type="button" aria-label="关闭" onClick={() => finish(false)}>×</button></header>
+      {pending.description && <p>{pending.description}</p>}
+      {pending.detail && <pre>{pending.detail}</pre>}
+      {pending.input === "text" && <input ref={(node) => { inputRef.current = node; }} value={value} placeholder={pending.placeholder} onChange={(event) => setValue(event.target.value)} />}
+      {pending.input === "multiline" && <textarea ref={(node) => { inputRef.current = node; }} value={value} placeholder={pending.placeholder} onChange={(event) => setValue(event.target.value)} />}
+      <footer>{pending.cancelLabel !== null && <button type="button" onClick={() => finish(false)}>{pending.cancelLabel || "取消"}</button>}<button className={pending.danger ? "danger" : "primary"} disabled={!canConfirm}>{pending.confirmLabel || "确认"}</button></footer>
+    </form>
+  </div>;
+}
+
+function ProductDialogProvider({ children }: { children: ReactNode }): ReactElement {
+  const [pending, setPending] = useState<PendingProductDialog | null>(null);
+  const open = useCallback<ProductDialogController>((options) => new Promise((resolve) => setPending({ ...options, resolve })), []);
+  const close = (value: string | null) => {
+    const current = pending;
+    setPending(null);
+    current?.resolve(value);
+  };
+  return <ProductDialogContext.Provider value={open}>{children}{pending && <ProductDialogLayer pending={pending} onResolve={close} />}</ProductDialogContext.Provider>;
+}
+
+function useProductDialog(): ProductDialogController {
+  const controller = useContext(ProductDialogContext);
+  if (!controller) throw new Error("ProductDialogProvider is missing");
+  return controller;
+}
 
 const iconPaths: Record<IconName, string> = {
   rook: "M7 3h2v3h2V3h2v3h2V3h2v5l-2 2v8h2v3H5v-3h2v-8L5 8V3h2m2 7v8h6v-8H9Z",
@@ -481,6 +541,7 @@ export function preferredThreadId(threads: ThreadRecord[]): string {
 }
 
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
+  const dialog = useProductDialog();
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -969,9 +1030,16 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     if (!selectedId) return;
     try {
       if (action === "rename") {
-        const title = prompt("输入新的会话名称", selectedThread?.title || "");
+        const title = await dialog({
+          title: "重命名会话",
+          description: "名称会同步到使用同一 Core 的 TUI 与 Web。",
+          input: "text",
+          initialValue: selectedThread?.title || "",
+          placeholder: "输入新的会话名称",
+          confirmLabel: "保存名称",
+        });
         if (!title?.trim()) return;
-        const updated = await request<ThreadRecord>(`/v1/threads/${selectedId}`, {
+        const updated = await request<ThreadRecord>(`/v1/threads/${encodeURIComponent(selectedId)}`, {
           method: "PATCH",
           body: JSON.stringify({ title: title.trim() }),
         });
@@ -979,7 +1047,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         return;
       }
       if (action === "fork") {
-        const forked = await request<ThreadRecord>(`/v1/threads/${selectedId}/fork`, {
+        const forked = await request<ThreadRecord>(`/v1/threads/${encodeURIComponent(selectedId)}/fork`, {
           method: "POST",
           body: JSON.stringify({}),
         });
@@ -989,7 +1057,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       }
       if (action === "export") {
         const exported = await request<{ filename: string; content: string }>(
-          `/v1/threads/${selectedId}/export?format=markdown`,
+          `/v1/threads/${encodeURIComponent(selectedId)}/export?format=markdown`,
         );
         const blob = new Blob([exported.content], { type: "text/markdown" });
         const link = document.createElement("a");
@@ -999,8 +1067,13 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         URL.revokeObjectURL(link.href);
         return;
       }
-      if (!confirm("删除这个会话？此操作不能撤销。")) return;
-      await request(`/v1/threads/${selectedId}`, {
+      if (!await dialog({
+        title: "删除会话",
+        description: `将永久删除“${selectedThread?.title || "未命名任务"}”及其本地执行记录，此操作不能撤销。`,
+        confirmLabel: "永久删除",
+        danger: true,
+      })) return;
+      await request(`/v1/threads/${encodeURIComponent(selectedId)}`, {
         method: "DELETE",
         body: JSON.stringify({ confirmed: true }),
       });
@@ -1701,6 +1774,7 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
 }
 
 function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
+  const dialog = useProductDialog();
   const [diff, setDiff] = useState<DiffPayload | null>(null);
   const [context, setContext] = useState<Record<string, unknown>>({});
   const [commitMessage, setCommitMessage] = useState("chore: apply CodeRook changes");
@@ -1748,16 +1822,27 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
     if (!threadId || !diff?.state_digest || !commitMessage.trim()) return;
     try {
       const result = await request<{ commit: string }>("/v1/workspace/commit", { method: "POST", body: JSON.stringify({ thread_id: threadId, message: commitMessage, expected_digest: diff.state_digest, confirmed: true }) });
-      alert(`本地提交已创建：${result.commit.slice(0, 12)}`);
+      await dialog({
+        title: "本地提交已创建",
+        description: `Commit ${result.commit.slice(0, 12)} 已写入当前仓库，没有自动 push。`,
+        confirmLabel: "知道了",
+        cancelLabel: null,
+      });
       load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   const rewind = async (checkpoint: Record<string, unknown>) => {
     try {
       const id = textValue(checkpoint.checkpoint_id);
-      const preview = await request<Record<string, unknown>>(`/v1/threads/${threadId}/checkpoints/${id}/preview`);
-      if (!confirm(`恢复 ${textValue(preview.paths)}？当前冲突：${textValue(preview.conflicts || "无")}`)) return;
-      await request(`/v1/threads/${threadId}/checkpoints/${id}/rewind`, { method: "POST", body: JSON.stringify({ confirmed: true, expected_digest: preview.state_digest, run_id: context.checkpoint_run_id }) });
+      const preview = await request<Record<string, unknown>>(`/v1/threads/${encodeURIComponent(threadId)}/checkpoints/${encodeURIComponent(id)}/preview`);
+      if (!await dialog({
+        title: "恢复 Checkpoint",
+        description: "恢复会改写下列工作区文件，请先确认目标和冲突。",
+        detail: `文件：${textValue(preview.paths)}\n冲突：${textValue(preview.conflicts || "无")}`,
+        confirmLabel: "确认恢复",
+        danger: true,
+      })) return;
+      await request(`/v1/threads/${encodeURIComponent(threadId)}/checkpoints/${encodeURIComponent(id)}/rewind`, { method: "POST", body: JSON.stringify({ confirmed: true, expected_digest: preview.state_digest, run_id: context.checkpoint_run_id }) });
       load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
@@ -1765,6 +1850,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
 }
 
 function ModelsPanel({ onError }: { onError(value: string): void }): ReactElement {
+  const dialog = useProductDialog();
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [presetId, setPresetId] = useState("deepseek");
   const [model, setModel] = useState("");
@@ -1784,7 +1870,12 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
   const routeAction = async (routeId: string, action: "activate" | "delete") => {
     try {
       if (action === "delete") {
-        if (!confirm(`删除路由 ${routeId} 及其受管凭据？`)) return;
+        if (!await dialog({
+          title: "删除模型路由",
+          description: `将删除路由“${routeId}”及其由 CodeRook 管理的凭据。环境变量中的密钥不会被修改。`,
+          confirmLabel: "删除路由",
+          danger: true,
+        })) return;
         await request(`/v1/providers/${encodeURIComponent(routeId)}`, { method: "DELETE", body: JSON.stringify({ confirmed: true, delete_credential: true }) });
       } else {
         await request(`/v1/providers/${encodeURIComponent(routeId)}/activate`, { method: "POST", body: "{}" });
@@ -1796,6 +1887,7 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
 }
 
 function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
+  const dialog = useProductDialog();
   const [tab, setTab] = useState<"goals" | "workers" | "skills" | "mcp" | "memory">("goals");
   const [data, setData] = useState<Record<string, unknown>>({});
   const [objective, setObjective] = useState("");
@@ -1818,7 +1910,13 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const memories = (data.memories || []) as Array<Record<string, unknown>>;
   const memorySettings = (data.settings || {}) as Record<string, unknown>;
   const workerFollowup = async (workerId: string) => {
-    const message = prompt("向 Worker 发送后续指令");
+    const message = await dialog({
+      title: "向 Worker 发送后续指令",
+      description: "指令只会发送给当前会话中的这个 Worker。",
+      input: "multiline",
+      placeholder: "说明下一步要调查、修改或验证什么",
+      confirmLabel: "发送指令",
+    });
     if (!message?.trim()) return;
     await mutate(`/v1/workers/${encodeURIComponent(workerId)}/followup`, {
       session_id: threadId,
@@ -1834,7 +1932,12 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       const files = (preview.changed_files || []) as string[];
       const digest = textValue(preview.state_digest);
       const summary = files.length ? files.join("\n") : "没有可应用的文件";
-      if (!digest || !confirm(`审查 Worker 变更：\n\n${summary}\n\n确认审查通过？`)) return;
+      if (!digest || !await dialog({
+        title: "审查 Worker 变更",
+        description: "确认这些文件属于 Worker 的 Write Claim，且验证证据满足任务要求。",
+        detail: summary,
+        confirmLabel: "审查通过",
+      })) return;
       await request(`/v1/workers/${encodeURIComponent(workerId)}/review`, {
         method: "POST",
         body: JSON.stringify({
@@ -1844,7 +1947,11 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
           expected_digest: digest,
         }),
       });
-      if (!confirm("审查已通过。是否将这批变更应用到主工作区？")) { await load(); return; }
+      if (!await dialog({
+        title: "应用到主工作区",
+        description: "审查已通过。下一步会把 Worker Worktree 中的变更应用到当前工作区，但不会自动提交或 push。",
+        confirmLabel: "应用变更",
+      })) { await load(); return; }
       await request(`/v1/workers/${encodeURIComponent(workerId)}/apply`, {
         method: "POST",
         body: JSON.stringify({ session_id: threadId, expected_digest: digest, confirmed: true }),
@@ -1863,7 +1970,13 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       });
       const preview = (previewResult.preview || {}) as Record<string, unknown>;
       const files = ((preview.files || []) as string[]).join("\n");
-      if (!previewResult.confirmation_required || !confirm(`安装 Skill：${textValue(preview.name)}\nDigest：${textValue(preview.digest)}\n\n${files}\n\n确认安装到当前项目？`)) return;
+      if (!previewResult.confirmation_required) throw new Error("Skill 安装预览缺少确认门禁");
+      if (!await dialog({
+        title: `安装 Skill：${textValue(preview.name)}`,
+        description: `Digest：${textValue(preview.digest)}。安装范围仅限当前项目。`,
+        detail: files || "预览没有包含文件",
+        confirmLabel: "确认安装",
+      })) return;
       await request("/v1/skills/install", {
         method: "POST",
         body: JSON.stringify({ source, scope: "project", trust: "untrusted", confirmed: true, overwrite: Boolean(preview.overwrite) }),
@@ -1873,7 +1986,14 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   const editMemory = async (memory: Record<string, unknown>) => {
-    const body = prompt("编辑记忆内容", textValue(memory.body));
+    const body = await dialog({
+      title: "编辑项目记忆",
+      description: "该内容会在后续相关任务中参与本地记忆检索。",
+      input: "multiline",
+      initialValue: textValue(memory.body),
+      placeholder: "输入需要保留的项目事实",
+      confirmLabel: "保存记忆",
+    });
     if (!body?.trim() || body.trim() === textValue(memory.body).trim()) return;
     try {
       await request(`/v1/memories/${encodeURIComponent(textValue(memory.id))}`, {
@@ -1882,6 +2002,36 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       });
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const deleteMemory = async (memory: Record<string, unknown>) => {
+    if (!await dialog({
+      title: "删除项目记忆",
+      description: `将永久删除“${textValue(memory.name)}”，后续任务不再检索这条内容。`,
+      confirmLabel: "删除记忆",
+      danger: true,
+    })) return;
+    try {
+      await request(`/v1/memories/${encodeURIComponent(textValue(memory.id))}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) });
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const cancelWorker = async (workerId: string) => {
+    if (!await dialog({
+      title: "取消 Worker",
+      description: "将停止这个 Worker 及其受管进程；已经产生的 Worktree 变更仍可检查。",
+      confirmLabel: "停止 Worker",
+      danger: true,
+    })) return;
+    await mutate(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, { session_id: threadId });
+  };
+  const clearGoal = async (goal: Record<string, unknown>) => {
+    if (!await dialog({
+      title: "取消 Goal",
+      description: `将停止“${textValue(goal.objective)}”的后续自动轮次，已有会话和代码变更会保留。`,
+      confirmLabel: "取消 Goal",
+      danger: true,
+    })) return;
+    await mutate(`/v1/goals/${encodeURIComponent(textValue(goal.id))}/clear`, {});
   };
   const toggleMemoryAuto = async () => {
     const autoSave = textValue(memorySettings.auto_save) === "off" ? "prompt" : "off";
@@ -1894,11 +2044,11 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   return <div className="panel-content"><div className="advanced-tabs">{(["goals", "workers", "skills", "mcp", "memory"] as const).map((name) => <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>{name}</button>)}</div>
-    {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => { const status = textValue(goal.status); const nonterminal = ["active", "paused", "blocked"].includes(status); return <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{status}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>{nonterminal ? "恢复" : "重新开启"}</button>}{nonterminal && <button className="danger" onClick={() => void mutate(`/v1/goals/${goal.id}/clear`, {})}>取消</button>}</div></section>; })}</div>}
-    {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{status}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>跟进</button><button onClick={() => void mutate(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, { session_id: threadId })}>取消 Worker</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>审查并应用</button>}</div></section>; })}</div>}
+    {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => { const status = textValue(goal.status); const nonterminal = ["active", "paused", "blocked"].includes(status); return <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{status}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>{nonterminal ? "恢复" : "重新开启"}</button>}{nonterminal && <button className="danger" onClick={() => void clearGoal(goal)}>取消</button>}</div></section>; })}</div>}
+    {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{status}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>跟进</button><button onClick={() => void cancelWorker(workerId)}>取消 Worker</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>审查并应用</button>}</div></section>; })}</div>}
     {tab === "skills" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => void installSkill(event)}><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder="工作区内 Skill 文件或目录" /><button disabled={!skillSource.trim()}>预览安装</button></form>{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">暂无 Skill。安装必须先预览文件与 digest，再明确确认。</p>}</div>}
     {tab === "mcp" && <div className="advanced-list">{servers.map((server) => <section key={textValue(server.name)}><div><b>{textValue(server.name)}</b><span className={server.status === "connected" ? "stable" : "labs"}>{textValue(server.status)}</span></div><p>{textValue(server.transport)} · {textValue(server.tool_count)} tools</p>{server.error ? <small>{textValue(server.error)}</small> : null}</section>)}{!servers.length && <p className="empty">没有配置 MCP Tool Server。</p>}</div>}
-    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId })) setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={async () => { if (!confirm("删除这条记忆？")) return; try { await request(`/v1/memories/${memory.id}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) }); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }}>删除</button></div></section>)}</div>}
+    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId })) setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={() => void deleteMemory(memory)}>删除</button></div></section>)}</div>}
     <div className="labs-note"><b>Labs 已隐藏</b><p>Fleet、Workflow、ACP、Hooks 和 Tool Program 不进入默认 Web 导航。</p></div>
   </div>;
 }
@@ -1912,5 +2062,5 @@ export function App(): ReactElement {
   }, []);
   if (fatal) return <div className="fatal"><span>♜</span><h1>无法连接本地 CodeRook Core</h1><p>{fatal}</p><p>请重新运行 <code>coderook web</code> 获取一次性启动链接。</p></div>;
   if (!ready) return <div className="loading"><span>♜</span><p>正在连接本地工作区…</p></div>;
-  return <AppShell initialWorkspace={workspace} />;
+  return <ProductDialogProvider><AppShell initialWorkspace={workspace} /></ProductDialogProvider>;
 }
