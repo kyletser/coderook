@@ -184,6 +184,46 @@ async def test_durable_queue_dispatches_next_turn_and_clears_record(
     await manager.cancel_all()
 
 
+# 功能：验证队列派发撞上同会话竞争时自动延期而不是错误进入 blocked
+# 设计：替换 send_message 让首次调用稳定返回 SESSION_BUSY、第二次成功，核对延期事件与最终清理
+async def test_durable_queue_defers_transient_session_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = EventBus()
+    runtime = RuntimeService(RuntimeStore(tmp_path / "runtime.db"), Path.cwd(), bus=bus)
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: _Runner(),
+        bus,
+        runtime_service=runtime,
+    )
+    session = await manager.create("chat")
+    attempts = 0
+
+    # 首次模拟另一前端抢先持有会话，随后允许同一队列记录继续
+    async def send_after_busy(*_args: object, **kwargs: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise HandlerError(SESSION_BUSY, "session busy")
+        return str(kwargs["run_id"])
+
+    monkeypatch.setattr(manager, "send_message", send_after_busy)
+    await manager.queue_message(session.id, "continue")
+    for _ in range(100):
+        if not await manager.list_queued_messages(session.id):
+            break
+        await asyncio.sleep(0.01)
+
+    assert attempts == 2
+    assert await manager.list_queued_messages(session.id) == []
+    events = await runtime.list_events(session.id, after_seq=0, limit=100)
+    assert any(event.type == "queue.message_deferred" for event in events)
+    assert not any(event.type == "queue.message_blocked" for event in events)
+    await manager.cancel_all()
+
+
 # 功能：验证 session_start、message_submit、turn_start、session_stop 接入真实会话生命周期
 # 设计：共享一个 HookManager 贯穿 create/send/close，使用内存回调核对稳定事件顺序
 async def test_session_lifecycle_emits_hooks_v2(tmp_path: Path) -> None:

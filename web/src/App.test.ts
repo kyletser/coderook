@@ -6,6 +6,8 @@ import {
   eventBelongsToThread,
   modelContentFor,
   parentWorkspacePath,
+  resultStatusIsFailure,
+  workspacePathIsDirectoryError,
 } from "./App";
 import type { RuntimeEvent } from "./types";
 
@@ -54,5 +56,34 @@ describe("Web task submission", () => {
     };
 
     expect(appendRuntimeEvent(appendRuntimeEvent([], event), event)).toEqual([event]);
+  });
+
+  it("bounds long-session event memory while preserving the newest cursor", () => {
+    const events: RuntimeEvent[] = Array.from({ length: 5000 }, (_, index) => ({
+      thread_id: "thread-1",
+      seq: index + 1,
+      type: "tool.call_progress",
+      payload: {},
+      ts: "2026-08-30T00:00:00Z",
+    }));
+    const latest: RuntimeEvent = { ...events[0], seq: 5001 };
+
+    const bounded = appendRuntimeEvent(events, latest);
+
+    expect(bounded).toHaveLength(5000);
+    expect(bounded[0].seq).toBe(2);
+    expect(bounded.at(-1)?.seq).toBe(5001);
+  });
+
+  it("recognizes directory preview errors so the file drawer can browse them", () => {
+    expect(workspacePathIsDirectoryError(new Error("workspace path is not a file"))).toBe(true);
+    expect(workspacePathIsDirectoryError(new Error("workspace path does not exist"))).toBe(false);
+  });
+
+  it("never presents incomplete model termination as a successful result", () => {
+    expect(resultStatusIsFailure("completed")).toBe(false);
+    expect(resultStatusIsFailure("incomplete")).toBe(true);
+    expect(resultStatusIsFailure("length")).toBe(true);
+    expect(resultStatusIsFailure("transport_error")).toBe(true);
   });
 });

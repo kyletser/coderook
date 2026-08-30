@@ -739,10 +739,25 @@ class RuntimeApiService:
         result = await self._artifact_store.read(sha256, offset=offset, limit=limit)
         return result.model_dump(mode="json")
 
-    # 列出指定 thread 的 durable turns
-    async def list_turns(self, thread_id: str) -> list[TurnRecord]:
+    # 列出指定 thread 的全部或游标前最近一页 durable turns
+    async def list_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int | None = None,
+        before_turn_id: str | None = None,
+    ) -> list[TurnRecord]:
         await self._runtime.get_thread(thread_id)
-        return await self._runtime.list_turns(thread_id)
+        return await self._runtime.list_turns(
+            thread_id,
+            limit=limit,
+            before_turn_id=before_turn_id,
+        )
+
+    # 返回指定 thread 当前已提交事件高水位
+    async def latest_event_seq(self, thread_id: str) -> int:
+        await self._runtime.get_thread(thread_id)
+        return await self._runtime.latest_event_seq(thread_id)
 
     # 读取单个 durable turn
     async def get_turn(self, turn_id: str) -> TurnRecord:

@@ -37,6 +37,20 @@ export interface RuntimeEvent {
   ts: string;
 }
 
+export interface TurnReceipt {
+  turn_id: string;
+  status: string;
+  outcome?: string | null;
+  cost?: number | string;
+  result_summary?: string | null;
+  failure_category?: string | null;
+  files_changed: string[];
+  changes: Array<{ path: string; additions?: number | null; deletions?: number | null }>;
+  verification: Array<Record<string, unknown>>;
+  route?: Record<string, unknown> | null;
+  unavailable: string[];
+}
+
 export interface ProviderCatalog {
   active_route_id: string | null;
   readiness: {

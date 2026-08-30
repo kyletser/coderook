@@ -27,6 +27,7 @@ from code_rook.core.runtime.store import (
     DuplicateTerminalResultError,
     IncompleteToolCallError,
     InvalidTurnTransitionError,
+    QueuedMessageDispatchingError,
     RuntimeStore,
     ToolCallNotFoundError,
 )
@@ -107,6 +108,12 @@ def test_durable_message_queue_survives_restart_and_requires_retry(
     claimed = reopened.claim_next_queued_message("thread-queue", now)
     assert claimed is not None
     assert claimed.status == "dispatching"
+    with pytest.raises(QueuedMessageDispatchingError, match="already dispatching"):
+        reopened.delete_queued_message("thread-queue", "queue-1")
+    reopened.defer_queued_message("thread-queue", "queue-1", now)
+    assert reopened.list_queued_messages("thread-queue")[0].status == "queued"
+    claimed = reopened.claim_next_queued_message("thread-queue", now)
+    assert claimed is not None
     assert reopened.recover_queued_messages(now) == 1
     blocked = reopened.list_queued_messages("thread-queue")[0]
     assert blocked.status == "blocked"
@@ -116,6 +123,45 @@ def test_durable_message_queue_survives_restart_and_requires_retry(
     assert reopened.list_queued_messages("thread-queue")[0].status == "queued"
     reopened.delete_queued_message("thread-queue", "queue-1")
     assert reopened.list_queued_messages("thread-queue") == []
+
+
+# 功能：验证长会话 Turn 分页返回游标前紧邻记录且维持正序
+# 设计：写入五个稳定时间与 ID 的 Turn，分别读取最新页和上一页，覆盖倒序查询再正序展示的边界
+def test_turn_pagination_returns_recent_pages_in_chronological_order(
+    tmp_path: Path,
+) -> None:
+    store = RuntimeStore(tmp_path / "runtime.db")
+    now = _now()
+    store.create_thread(
+        ThreadRecord(
+            id="thread-pages",
+            title="Pages",
+            workspace=str(tmp_path),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    for index in range(1, 6):
+        created = now + timedelta(minutes=index)
+        store.create_turn(
+            TurnRecord(
+                id=f"turn-{index}",
+                thread_id="thread-pages",
+                status=TurnStatus.RUNNING,
+                created_at=created,
+                updated_at=created,
+            )
+        )
+
+    latest = store.list_turns("thread-pages", limit=3)
+    older = store.list_turns(
+        "thread-pages",
+        limit=2,
+        before_turn_id="turn-3",
+    )
+
+    assert [turn.id for turn in latest] == ["turn-3", "turn-4", "turn-5"]
+    assert [turn.id for turn in older] == ["turn-1", "turn-2"]
 
 
 # 功能：验证较新 runtime schema 不会被旧版 daemon 静默降级或覆盖

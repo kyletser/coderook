@@ -25,6 +25,7 @@
 }
 
 * { box-sizing: border-box; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 html, body, #root { width: 100%; height: 100%; }
 body { margin: 0; min-width: 320px; overflow: hidden; background: var(--bg); }
 button, input, textarea, select { font: inherit; }
@@ -102,6 +103,8 @@ button:disabled { cursor: default; opacity: .38; }
 .session-menu .danger-action:hover:not(:disabled) { color: var(--danger); background: rgba(255,155,155,.08); }
 
 .timeline { min-height: 0; overflow: auto; padding: 34px max(28px, calc((100% - 780px) / 2)) 30px; scrollbar-color: #303138 transparent; scrollbar-width: thin; }
+.history-loader { display: block; margin: 0 auto 18px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 10.5px; }
+.history-loader:hover:not(:disabled) { border-color: var(--faint); color: var(--text); }
 .welcome-card { width: min(100%, 690px); margin: clamp(42px, 10vh, 96px) auto 0; text-align: left; }
 .welcome-kicker { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
 .welcome-kicker::before { content: ""; width: 18px; height: 1px; background: var(--accent); }
@@ -187,6 +190,9 @@ button:disabled { cursor: default; opacity: .38; }
 .provider-validation-error { margin-bottom: 14px; }
 .diff-file { overflow: hidden; margin: 7px 0; border: 1px solid #292a31; border-radius: 8px; }
 .diff-file summary { display: flex; justify-content: space-between; gap: 10px; padding: 9px 10px; background: #18191e; cursor: pointer; font-size: 10.5px; }
+.diff-select { display: inline-flex; align-items: center; cursor: pointer; }
+.diff-select input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.diff-file summary b { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-file summary span { color: #82d4aa; font-size: 9.5px; }
 .diff-file pre { max-height: 440px; margin: 0; border: 0; border-radius: 0; }
 .readiness { padding: 11px; border: 1px solid #4b422c; border-radius: 9px; background: #201d15; }
@@ -345,9 +351,12 @@ body { background: #f1f1ee; color: var(--text); }
 .result-inline { width: min(100%, 760px); min-height: 26px; display: flex; align-items: center; gap: 8px; margin: 1px auto 7px; padding: 3px 5px; color: #8a8b85; font-size: 10px; }
 .result-inline > span { color: #6f706a; font-weight: 520; }
 .result-inline.failed > span { color: #a24e54; }
-.result-inline > small { min-width: 0; overflow: hidden; color: #9b9b95; text-overflow: ellipsis; white-space: nowrap; }
-.result-inline > div { display: flex; gap: 9px; margin-left: auto; opacity: 0; transition: opacity .12s ease; }
-.result-inline:hover > div, .result-inline:focus-within > div { opacity: 1; }
+.result-inline > small { min-width: 0; flex: 1; overflow: hidden; color: #9b9b95; text-overflow: ellipsis; white-space: nowrap; }
+.result-evidence { display: flex; flex: none; gap: 7px; }
+.result-evidence em { color: #777872; font-style: normal; white-space: nowrap; }
+.result-evidence em.failed { color: #a24e54; }
+.result-inline > .result-actions { display: flex; flex: none; gap: 9px; opacity: 0; transition: opacity .12s ease; }
+.result-inline:hover > .result-actions, .result-inline:focus-within > .result-actions { opacity: 1; }
 .result-inline button { padding: 0; border: 0; background: transparent; color: #777872; font-size: 9.5px; }
 .result-inline button:hover { color: #38393e; text-decoration: underline; text-underline-offset: 2px; }
 .event-card + .event-card { border-color: #ecece8; }
@@ -502,6 +511,6 @@ body { background: #f1f1ee; color: var(--text); }
   .mode-switch button { padding-inline: 6px; }
   .mode-switch button:nth-child(4), .attach-button { font-size: 0; }
   .composer-meta > span { display: none; }
-  .result-inline > div { opacity: 1; }
+  .result-inline > .result-actions { opacity: 1; }
   .drawer { inset: 0; width: 100%; }
 }

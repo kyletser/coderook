@@ -75,6 +75,10 @@ class RecordAlreadyExistsError(RuntimeStoreError):
     pass
 
 
+class QueuedMessageDispatchingError(RuntimeStoreError):
+    pass
+
+
 class InvalidTurnTransitionError(RuntimeStoreError):
     pass
 
@@ -462,6 +466,28 @@ class RuntimeStore:
         if cursor.rowcount == 0:
             raise RecordNotFoundError(f"queued message not found: {message_id}")
 
+    # 将竞争中尚未启动的领取记录无损退回队首
+    def defer_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        ts: datetime,
+    ) -> None:
+        with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
+            cursor = connection.execute(
+                """
+                UPDATE runtime_message_queue
+                SET status = 'queued', error = '', updated_at = ?
+                WHERE thread_id = ? AND id = ? AND status = 'dispatching'
+                """,
+                (_dump_datetime(ts), thread_id, message_id),
+            )
+        if cursor.rowcount == 0:
+            raise RecordNotFoundError(
+                f"dispatching queued message not found: {message_id}"
+            )
+
     # 将用户确认重试的 blocked 消息重新放回可领取状态
     def retry_queued_message(
         self,
@@ -484,15 +510,45 @@ class RuntimeStore:
                 f"blocked queued message not found: {message_id}"
             )
 
-    # 删除已经完成或由用户取消的排队消息
-    def delete_queued_message(self, thread_id: str, message_id: str) -> None:
+    # 删除队列记录，仅允许 Core 完成路径清理正在派发的消息
+    def delete_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        allow_dispatching: bool = False,
+    ) -> None:
         with connect_database(self.path) as connection:
             self._require_thread_schema(connection, thread_id)
-            cursor = connection.execute(
-                "DELETE FROM runtime_message_queue WHERE thread_id = ? AND id = ?",
-                (thread_id, message_id),
-            )
+            if allow_dispatching:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM runtime_message_queue
+                    WHERE thread_id = ? AND id = ?
+                    """,
+                    (thread_id, message_id),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM runtime_message_queue
+                    WHERE thread_id = ? AND id = ? AND status != 'dispatching'
+                    """,
+                    (thread_id, message_id),
+                )
+            existing = None
+            if cursor.rowcount == 0:
+                existing = connection.execute(
+                    """
+                    SELECT status FROM runtime_message_queue
+                    WHERE thread_id = ? AND id = ?
+                    """,
+                    (thread_id, message_id),
+                ).fetchone()
         if cursor.rowcount == 0:
+            if existing is not None and existing["status"] == "dispatching":
+                raise QueuedMessageDispatchingError(
+                    f"queued message is already dispatching: {message_id}"
+                )
             raise RecordNotFoundError(f"queued message not found: {message_id}")
 
     # daemon 重启时把执行结果不确定的领取记录转为需用户确认的 blocked 状态
@@ -616,17 +672,71 @@ class RuntimeStore:
             raise RecordNotFoundError(f"turn not found: {turn_id}")
         return _turn_from_row(row)
 
-    # 按创建时间列出 thread 的全部 turn
-    def list_turns(self, thread_id: str) -> list[TurnRecord]:
+    # 按创建时间列出 thread 的全部或指定游标前最近一页 turn
+    def list_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int | None = None,
+        before_turn_id: str | None = None,
+    ) -> list[TurnRecord]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
         with connect_database(self.path) as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM runtime_turns
-                WHERE thread_id = ?
-                ORDER BY created_at, id
-                """,
-                (thread_id,),
-            ).fetchall()
+            if limit is None and before_turn_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM runtime_turns
+                    WHERE thread_id = ?
+                    ORDER BY created_at, id
+                    """,
+                    (thread_id,),
+                ).fetchall()
+            else:
+                cursor_created_at = None
+                cursor_id = None
+                if before_turn_id is not None:
+                    cursor = connection.execute(
+                        """
+                        SELECT created_at, id FROM runtime_turns
+                        WHERE thread_id = ? AND id = ?
+                        """,
+                        (thread_id, before_turn_id),
+                    ).fetchone()
+                    if cursor is None:
+                        raise RecordNotFoundError(
+                            f"turn not found in thread: {before_turn_id}"
+                        )
+                    cursor_created_at = str(cursor["created_at"])
+                    cursor_id = str(cursor["id"])
+                if cursor_created_at is None:
+                    rows = connection.execute(
+                        """
+                        SELECT * FROM runtime_turns
+                        WHERE thread_id = ?
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ?
+                        """,
+                        (thread_id, limit or 100),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT * FROM runtime_turns
+                        WHERE thread_id = ?
+                          AND (created_at < ? OR (created_at = ? AND id < ?))
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT ?
+                        """,
+                        (
+                            thread_id,
+                            cursor_created_at,
+                            cursor_created_at,
+                            cursor_id,
+                            limit or 100,
+                        ),
+                    ).fetchall()
+                rows = list(reversed(rows))
         records: list[TurnRecord] = []
         for row in rows:
             try:

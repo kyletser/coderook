@@ -72,6 +72,7 @@ class _FakeRuntimeApi:
         self.display_content: str | None = None
         self.permission_response: tuple[str, str] | None = None
         self.queue: list[dict[str, object]] = []
+        self.turn_query: tuple[int | None, str | None] | None = None
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
@@ -172,6 +173,18 @@ class _FakeRuntimeApi:
         self.steering = content
         return self.turn
 
+    # 返回 fake turn 页并记录 HTTP 查询参数
+    async def list_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int | None = None,
+        before_turn_id: str | None = None,
+    ) -> list[TurnRecord]:
+        assert thread_id == self.thread.id
+        self.turn_query = (limit, before_turn_id)
+        return [self.turn]
+
     # 返回严格大于 cursor 的连续事件
     async def list_events(
         self,
@@ -181,6 +194,11 @@ class _FakeRuntimeApi:
     ) -> list[RuntimeEventRecord]:
         assert thread_id == self.thread.id
         return [event for event in self.events if event.seq > after_seq][:limit]
+
+    # 返回 fake 事件高水位供首次有界回放计算游标
+    async def latest_event_seq(self, thread_id: str) -> int:
+        assert thread_id == self.thread.id
+        return self.events[-1].seq
 
     # 返回 turn items
     async def list_items(self, turn_id: str) -> list[TurnItemRecord]:
@@ -334,6 +352,13 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             assert response.status_code == 202
             assert response.json()["mode"] == "plan"
             assert service.display_content == "!pytest"
+
+            response = await client.get(
+                "/v1/threads/thread-1/turns?limit=31&before=turn-cursor"
+            )
+            assert response.status_code == 200
+            assert response.json()[0]["id"] == "turn-1"
+            assert service.turn_query == (31, "turn-cursor")
 
             response = await client.post(
                 "/v1/turns/turn-1/steer",
@@ -562,5 +587,24 @@ async def test_sse_reconnect_resumes_after_durable_cursor(tmp_path: Path) -> Non
         resumed = await _read_sse_ids(f"{base_url}/v1/threads/thread-1/events?after_seq=2", 1)
         assert first == [1, 2]
         assert resumed == [3]
+    finally:
+        await server.stop()
+
+
+# 功能：验证首次 SSE 可只读取近期窗口且已有游标重连绝不因 tail 跳过事件
+# 设计：同一三事件流分别从零游标 tail=1 和非零游标 tail=1 读取，区分首屏优化与可靠续接
+async def test_sse_tail_only_limits_initial_history(tmp_path: Path) -> None:
+    server, _service, base_url = await _start_server(tmp_path)
+    try:
+        recent = await _read_sse_ids(
+            f"{base_url}/v1/threads/thread-1/events?after_seq=0&tail=1",
+            1,
+        )
+        resumed = await _read_sse_ids(
+            f"{base_url}/v1/threads/thread-1/events?after_seq=1&tail=1",
+            1,
+        )
+        assert recent == [3]
+        assert resumed == [2]
     finally:
         await server.stop()

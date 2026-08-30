@@ -507,7 +507,17 @@ class HttpApiServer:
             return HTTPStatus.OK, await self._service.delete_thread(match.group(1))
         match = _THREAD_TURNS.fullmatch(path)
         if request.method == "GET" and match:
-            return HTTPStatus.OK, await self._service.list_turns(match.group(1))
+            query = parse_qs(urlsplit(request.target).query)
+            raw_limit = query.get("limit", [""])[0]
+            limit = int(raw_limit) if raw_limit else None
+            if limit is not None and not (1 <= limit <= 100):
+                raise ValueError("limit must be between 1 and 100")
+            before_turn_id = query.get("before", [None])[0]
+            return HTTPStatus.OK, await self._service.list_turns(
+                match.group(1),
+                limit=limit,
+                before_turn_id=before_turn_id,
+            )
         if request.method == "POST" and match:
             body = _json_object(request.body)
             content = body.get("content")
@@ -821,6 +831,14 @@ class HttpApiServer:
         if cursor < 0:
             raise ValueError("after_seq must be non-negative")
         await self._service.ensure_thread(match.group(1))
+        raw_tail = query.get("tail", [""])[0]
+        if raw_tail:
+            tail = int(raw_tail)
+            if not (1 <= tail <= 5000):
+                raise ValueError("tail must be between 1 and 5000")
+            if cursor == 0:
+                latest = await self._service.latest_event_seq(match.group(1))
+                cursor = max(0, latest - tail)
         writer.write(
             (
                 "HTTP/1.1 200 OK\r\n"

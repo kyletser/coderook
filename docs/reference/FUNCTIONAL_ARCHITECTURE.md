@@ -394,8 +394,11 @@ Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来�
   `run.phase_changed` 阶段，底栏展示 mode、权限、Sandbox、上下文、成本和 queue；`Ctrl+O` 渐进展开
   推理与工具详情，`@file` 仅建立有界路径引用，`!command` 仍进入权限和 Sandbox 管线；
 - `web/` + `src/code_rook/web/static/`：React/Vite 源码与打包静态 SPA。Web 使用与 TUI 相同的 durable
-  thread/event/receipt、Plan、权限、Recovery、Provider 与 Change Center 语义；页面刷新后从最后
-  `seq` 重放。浏览器只调用 Core API，不读取 runtime.db、Ledger、凭据文件或未经过 WorkspaceBoundary
+  thread/event/receipt、Plan、权限、Recovery、Provider 与 Change Center 语义。会话首屏读取最近 30 个
+  Turn，旧记录用 `before` 游标分页；首次 SSE 最多回放 5,000 条近期事件，页面存活期间从最后确认的
+  `seq` 无损续接，避免长会话首开无界加载。Core 持久消息队列让 TUI/Web 共用 queue/dispatching/blocked
+  状态；会话切换使用请求版本阻止旧响应覆盖新状态。结果行读取 Turn Receipt，Change Center 可按文件
+  选择 Stage。浏览器只调用 Core API，不读取 runtime.db、Ledger、凭据文件或未经过 WorkspaceBoundary
   的路径。API Key 只作为一次配置请求 body 交给 Core，不写入 Web Storage。PlatformBridge 隔离通知、
   剪贴板和外部打开能力，便于后续嵌入桌面壳；当前不包含 Electron/Tauri；
 - `core/change_center.py`：`state_digest` 是绑定 scope、canonical visible payload、精确 symbolic ref/commit、

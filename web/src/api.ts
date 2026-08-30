@@ -65,9 +65,11 @@ export async function streamEvents(
   afterSeq: number,
   signal: AbortSignal,
   onEvent: (event: RuntimeEvent) => void,
+  tail?: number,
 ): Promise<number> {
+  const tailQuery = tail && afterSeq === 0 ? `&tail=${tail}` : "";
   const response = await fetch(
-    `/v1/threads/${encodeURIComponent(threadId)}/events?after_seq=${afterSeq}`,
+    `/v1/threads/${encodeURIComponent(threadId)}/events?after_seq=${afterSeq}${tailQuery}`,
     { credentials: "same-origin", signal },
   );
   if (!response.ok || !response.body) throw new Error(await decodeError(response));

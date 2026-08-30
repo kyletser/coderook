@@ -9,6 +9,7 @@ import type {
   RuntimeEvent,
   ThreadRecord,
   TurnItem,
+  TurnReceipt,
   TurnRecord,
   WorkspaceEntry,
 } from "./types";
@@ -31,6 +32,7 @@ type QueuedMessage = {
   status: "queued" | "dispatching" | "blocked";
   error: string;
 };
+type ThreadContext = { estimated_tokens?: number };
 type ToolTimelineEntry = {
   kind: "tool";
   key: string;
@@ -46,6 +48,9 @@ type TimelineEntry =
   | { kind: "tool_group"; key: string; timestamp: string; tools: ToolTimelineEntry[] }
   | { kind: "event"; key: string; timestamp: string; event: RuntimeEvent };
 type IconName = "rook" | "menu" | "plus" | "files" | "changes" | "models" | "settings" | "edit" | "fork" | "download" | "trash" | "arrow" | "arrowUp" | "image" | "stop" | "terminal";
+
+const TURN_PAGE_SIZE = 30;
+const MAX_CACHED_EVENTS = 5000;
 
 const iconPaths: Record<IconName, string> = {
   rook: "M7 3h2v3h2V3h2v3h2V3h2v5l-2 2v8h2v3H5v-3h2v-8L5 8V3h2m2 7v8h6v-8H9Z",
@@ -392,6 +397,10 @@ function eventDetail(event: RuntimeEvent): string {
   return "";
 }
 
+export function resultStatusIsFailure(status: string): boolean {
+  return !["completed", "success", "succeeded"].includes(status.trim().toLowerCase());
+}
+
 function taskProfile(event: RuntimeEvent): Record<string, unknown> {
   const profile = event.payload.profile;
   return profile && typeof profile === "object" && !Array.isArray(profile)
@@ -453,12 +462,18 @@ export function activeFileMention(value: string, caret: number): ActiveFileMenti
   return { query, start: safeCaret - query.length - 1, end: safeCaret };
 }
 
+export function workspacePathIsDirectoryError(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return message.toLowerCase().includes("workspace path is not a file");
+}
+
 export function appendRuntimeEvent(
   current: RuntimeEvent[],
   event: RuntimeEvent,
 ): RuntimeEvent[] {
   if (current.some((item) => item.seq === event.seq)) return current;
-  return [...current, event];
+  const next = [...current, event].sort((left, right) => left.seq - right.seq);
+  return next.length > MAX_CACHED_EVENTS ? next.slice(-MAX_CACHED_EVENTS) : next;
 }
 
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
@@ -482,11 +497,18 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const [queueMode, setQueueMode] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [activeModel, setActiveModel] = useState("未配置模型");
+  const [sessionsReady, setSessionsReady] = useState(false);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [hasOlderTurns, setHasOlderTurns] = useState(false);
+  const [loadingOlderTurns, setLoadingOlderTurns] = useState(false);
+  const [contextTokens, setContextTokens] = useState(0);
   const [composerCaret, setComposerCaret] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<WorkspaceEntry[]>([]);
   const [fileSuggestionIndex, setFileSuggestionIndex] = useState(0);
   const cursors = useRef<Record<string, number>>({});
   const eventCache = useRef<Record<string, RuntimeEvent[]>>({});
+  const threadLoadVersions = useRef<Record<string, number>>({});
+  const queueLoadVersions = useRef<Record<string, number>>({});
   const initializedSelection = useRef(false);
   const composerDrafts = useRef<Record<string, string>>({});
   const attachmentDrafts = useRef<Record<string, ImageAttachment[]>>({});
@@ -495,6 +517,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const timelineRef = useRef<HTMLElement | null>(null);
   const previousTimelineSize = useRef(0);
+  const pendingHistoryScroll = useRef<{ height: number; top: number } | null>(null);
   selectedIdRef.current = selectedId;
   const selectedThread = threads.find((thread) => thread.id === selectedId);
   const activeTurn = [...turns].reverse().find((turn) =>
@@ -523,7 +546,8 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
 
   useEffect(() => {
     void refreshThreads()
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setSessionsReady(true));
   }, [refreshThreads]);
 
   useEffect(() => {
@@ -553,33 +577,64 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     };
   }, [fileMention?.query, fileReferences.length]);
 
-  const loadThread = useCallback(async (threadId: string, signal?: AbortSignal) => {
-    const [loadedTurns, loadedQueue] = await Promise.all([
-      request<TurnRecord[]>(
-        `/v1/threads/${encodeURIComponent(threadId)}/turns`,
-        { signal },
-      ),
-      request<QueuedMessage[]>(
-        `/v1/threads/${encodeURIComponent(threadId)}/queue`,
-        { signal },
-      ),
-    ]);
-    const loadedItems = await Promise.all(
-      loadedTurns.map((turn) =>
-        request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`, { signal }),
-      ),
-    );
-    if (signal?.aborted || selectedIdRef.current !== threadId) return;
-    setTurns(loadedTurns);
-    setItems(loadedItems.flat());
-    setQueuedMessages(loadedQueue);
+  const loadThread = useCallback(async (
+    threadId: string,
+    signal?: AbortSignal,
+    showLoading = false,
+  ) => {
+    const version = (threadLoadVersions.current[threadId] || 0) + 1;
+    threadLoadVersions.current[threadId] = version;
+    if (showLoading && selectedIdRef.current === threadId) setThreadLoading(true);
+    try {
+      const [turnPage, loadedQueue, loadedContext] = await Promise.all([
+        request<TurnRecord[]>(
+          `/v1/threads/${encodeURIComponent(threadId)}/turns?limit=${TURN_PAGE_SIZE + 1}`,
+          { signal },
+        ),
+        request<QueuedMessage[]>(
+          `/v1/threads/${encodeURIComponent(threadId)}/queue`,
+          { signal },
+        ),
+        request<ThreadContext>(
+          `/v1/threads/${encodeURIComponent(threadId)}/context`,
+          { signal },
+        ),
+      ]);
+      const loadedTurns = turnPage.slice(-TURN_PAGE_SIZE);
+      const loadedItems = await Promise.all(
+        loadedTurns.map((turn) =>
+          request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`, { signal }),
+        ),
+      );
+      if (
+        signal?.aborted
+        || selectedIdRef.current !== threadId
+        || threadLoadVersions.current[threadId] !== version
+      ) return;
+      setTurns(loadedTurns);
+      setItems(loadedItems.flat());
+      setQueuedMessages(loadedQueue);
+      setHasOlderTurns(turnPage.length > TURN_PAGE_SIZE);
+      setContextTokens(Number(loadedContext.estimated_tokens || 0));
+    } finally {
+      if (
+        showLoading
+        && selectedIdRef.current === threadId
+        && threadLoadVersions.current[threadId] === version
+      ) setThreadLoading(false);
+    }
   }, []);
 
   const loadQueue = useCallback(async (threadId: string) => {
+    const version = (queueLoadVersions.current[threadId] || 0) + 1;
+    queueLoadVersions.current[threadId] = version;
     const loaded = await request<QueuedMessage[]>(
       `/v1/threads/${encodeURIComponent(threadId)}/queue`,
     );
-    if (selectedIdRef.current === threadId) setQueuedMessages(loaded);
+    if (
+      selectedIdRef.current === threadId
+      && queueLoadVersions.current[threadId] === version
+    ) setQueuedMessages(loaded);
   }, []);
 
   useEffect(() => {
@@ -589,6 +644,9 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       setEvents([]);
       setQueuedMessages([]);
       setPhase("idle");
+      setThreadLoading(false);
+      setHasOlderTurns(false);
+      setContextTokens(0);
       return;
     }
     const controller = new AbortController();
@@ -602,7 +660,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       (event) => event.type === "run.phase_changed",
     );
     setPhase(textValue(cachedPhase?.payload.phase) || "idle");
-    void loadThread(selectedId, controller.signal)
+    void loadThread(selectedId, controller.signal, true)
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
           setError(reason instanceof Error ? reason.message : String(reason));
@@ -645,6 +703,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
                 void browserBridge.notify("CodeRook", eventTitle(event));
               }
             },
+            cursors.current[selectedId] ? undefined : MAX_CACHED_EVENTS,
           );
           cursors.current[selectedId] = cursor;
         } catch (reason) {
@@ -679,12 +738,15 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     attachmentDrafts.current[currentKey] = attachments;
     fileReferenceDrafts.current[currentKey] = fileReferences;
     setSelectedId(threadId);
+    setQueueMode(false);
     setComposer(composerDrafts.current[nextKey] || "");
     setAttachments(attachmentDrafts.current[nextKey] || []);
     setFileReferences(fileReferenceDrafts.current[nextKey] || []);
     setQueuedMessages([]);
     setTurns([]);
     setItems([]);
+    setHasOlderTurns(false);
+    setContextTokens(0);
     const cachedEvents = eventCache.current[threadId] || [];
     setEvents(cachedEvents);
     const cachedPhase = [...cachedEvents].reverse().find(
@@ -706,7 +768,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const content = composer.trim();
-    if (!content || sending) return;
+    if (!content || sending || !sessionsReady || threadLoading) return;
     setSending(true);
     setError("");
     try {
@@ -804,6 +866,54 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     }
   };
 
+  const loadOlderTurns = async () => {
+    if (!selectedId || loadingOlderTurns || !hasOlderTurns || turns.length === 0) return;
+    const threadId = selectedId;
+    const version = threadLoadVersions.current[threadId] || 0;
+    const before = turns[0].id;
+    const timeline = timelineRef.current;
+    pendingHistoryScroll.current = timeline
+      ? { height: timeline.scrollHeight, top: timeline.scrollTop }
+      : null;
+    setLoadingOlderTurns(true);
+    try {
+      const turnPage = await request<TurnRecord[]>(
+        `/v1/threads/${encodeURIComponent(threadId)}/turns?limit=${TURN_PAGE_SIZE + 1}&before=${encodeURIComponent(before)}`,
+      );
+      const olderTurns = turnPage.slice(-TURN_PAGE_SIZE);
+      const olderItems = await Promise.all(
+        olderTurns.map((turn) =>
+          request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`),
+        ),
+      );
+      if (
+        selectedIdRef.current !== threadId
+        || threadLoadVersions.current[threadId] !== version
+      ) {
+        pendingHistoryScroll.current = null;
+        return;
+      }
+      setTurns((current) => {
+        const byId = new Map([...olderTurns, ...current].map((turn) => [turn.id, turn]));
+        return [...byId.values()].sort((left, right) => {
+          const timeOrder = left.created_at.localeCompare(right.created_at);
+          return timeOrder || left.id.localeCompare(right.id);
+        });
+      });
+      setItems((current) => {
+        const byId = new Map([...olderItems.flat(), ...current].map((item) => [item.id, item]));
+        return [...byId.values()];
+      });
+      setHasOlderTurns(turnPage.length > TURN_PAGE_SIZE);
+      if (olderTurns.length === 0) pendingHistoryScroll.current = null;
+    } catch (reason) {
+      pendingHistoryScroll.current = null;
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (selectedIdRef.current === threadId) setLoadingOlderTurns(false);
+    }
+  };
+
   const cancel = async () => {
     if (!activeTurn) return;
     try {
@@ -895,7 +1005,9 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       if (item.kind === "tool_call") calls.set(id, item);
       if (item.kind === "tool_result") results.set(id, item);
     }
+    const loadedTurnIds = new Set(turns.map((turn) => turn.id));
     for (const event of events) {
+      if (event.turn_id && !loadedTurnIds.has(event.turn_id)) continue;
       const id = textValue(event.payload.tool_use_id || event.payload.tool_call_id);
       if (!id) continue;
       if (event.type === "tool.call_started" && !calls.has(id)) {
@@ -923,12 +1035,6 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       events
         .filter((event) => event.type === "recovery.resolved")
         .map((event) => textValue(event.payload.run_id || event.turn_id))
-        .filter(Boolean),
-    );
-    const assistantTurns = new Set(
-      items
-        .filter((item) => item.kind === "message" && textValue(item.payload.role) === "assistant" && messageContent(item.payload.content).trim())
-        .map((item) => item.turn_id)
         .filter(Boolean),
     );
     const userTextByTurn = new Map(
@@ -984,7 +1090,6 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       if (event.type === "plan.ready" && resolvedPlanRuns.has(eventRunId)) continue;
       if (event.type === "recovery.available" && resolvedRecoveryRuns.has(eventRunId)) continue;
       if (event.type === "user_question.asked" && event.turn_id && event.turn_id !== activeTurn?.id) continue;
-      if (event.type in resultPriority && assistantTurns.has(eventRunId)) continue;
       if (event.type in resultPriority && eventRunId && preferredResultSeq.get(eventRunId) !== event.seq) continue;
       if (!showTimelineEvent(event)) continue;
       entries.push({
@@ -1000,11 +1105,20 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       return left.key.localeCompare(right.key);
     });
     return groupToolEntries(sorted);
-  }, [activeTurn?.id, events, items]);
+  }, [activeTurn?.id, events, items, turns]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline || timelineEntries.length === 0) return;
+    const historyScroll = pendingHistoryScroll.current;
+    if (historyScroll) {
+      pendingHistoryScroll.current = null;
+      window.requestAnimationFrame(() => {
+        timeline.scrollTop = historyScroll.top + timeline.scrollHeight - historyScroll.height;
+      });
+      previousTimelineSize.current = timelineEntries.length;
+      return;
+    }
     const firstLoad = previousTimelineSize.current === 0;
     const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 140;
     if (firstLoad || nearBottom) {
@@ -1014,10 +1128,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     }
     previousTimelineSize.current = timelineEntries.length;
   }, [timelineEntries]);
-  const tokenUsage = turns.reduce(
-    (total, turn) => total + Number(turn.usage.input_tokens || 0) + Number(turn.usage.output_tokens || 0),
-    0,
-  );
+  const tokenUsage = contextTokens;
   const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace";
 
   return (
@@ -1063,6 +1174,14 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         </header>
 
         <section className="timeline" ref={timelineRef}>
+          {hasOlderTurns && timelineEntries.length > 0 && (
+            <button
+              type="button"
+              className="history-loader"
+              disabled={loadingOlderTurns}
+              onClick={() => void loadOlderTurns()}
+            >{loadingOlderTurns ? "正在加载…" : "加载更早记录"}</button>
+          )}
           {!timelineEntries.length && (
             <div className="welcome-card">
               <span className="welcome-kicker">CODEROOK · LOCAL AGENT</span>
@@ -1113,7 +1232,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               <span>{message.status === "dispatching" ? "正在发送" : message.status === "blocked" ? "需要处理" : `排队 ${index + 1}`}</span>
               <p title={message.display_content}>{message.display_content}</p>
               {message.status === "blocked" && <button type="button" onClick={() => void queueAction(message, "retry")}>重试</button>}
-              <button type="button" aria-label="移除排队消息" onClick={() => void queueAction(message, "remove")}>×</button>
+              {message.status !== "dispatching" && <button type="button" aria-label="移除排队消息" onClick={() => void queueAction(message, "remove")}>×</button>}
               {message.error && <small>{message.error}</small>}
             </div>)}
           </div>}
@@ -1170,7 +1289,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={activeTurn ? "输入纠偏消息…" : "向 CodeRook 提问或描述任务"}
+            placeholder={threadLoading ? "正在恢复会话…" : activeTurn ? "输入纠偏消息…" : "向 CodeRook 提问或描述任务"}
             rows={1}
           />
           <div className="composer-bar">
@@ -1183,7 +1302,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
             <div className="composer-meta">
               <span>上下文 {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
               {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}><Icon name="stop" size={13} />停止</button>}
-              <button className="send" aria-label={activeTurn ? "发送纠偏" : "发送任务"} title={activeTurn ? "发送纠偏" : "发送任务"} disabled={!composer.trim() || sending}><Icon name="arrowUp" size={16} /></button>
+              <button className="send" aria-label={activeTurn ? "发送纠偏" : "发送任务"} title={activeTurn ? "发送纠偏" : "发送任务"} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
         </form>
@@ -1403,15 +1522,7 @@ function EventCard({
     );
   }
   if (isResult) {
-    const status = textValue(event.payload.status || event.payload.outcome).toLowerCase();
-    const failed = ["failed", "error", "incomplete", "interrupted", "cancelled"].includes(status);
-    return (
-      <article className={`result-inline ${failed ? "failed" : ""}`}>
-        <span>{failed ? "本轮未完成" : "本轮完成"}</span>
-        {detail && <small>{detail}</small>}
-        <div><button onClick={onOpenChanges}>查看变更</button><button onClick={() => void browserBridge.copyText(detail || eventTitle(event))}>复制</button></div>
-      </article>
-    );
+    return <ResultCard event={event} detail={detail} onOpenChanges={onOpenChanges} />;
   }
   return (
     <article className={`event-card ${event.type.replaceAll(".", "-")}`}>
@@ -1443,6 +1554,43 @@ function EventCard({
           <div className="card-actions"><button onClick={() => void post(`/v1/threads/${threadId}/turns`, { content: "Continue from the last durable recovery point. Re-check uncertain file or command state before making any modification.", mode: "act" }, "已从安全位置继续")}>从安全位置继续</button><button onClick={onOpenChanges}>查看中断前变更</button></div>
         )}
       </div>
+    </article>
+  );
+}
+
+function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; detail: string; onOpenChanges(): void }): ReactElement {
+  const [receipt, setReceipt] = useState<TurnReceipt | null>(null);
+  const turnId = event.turn_id || textValue(event.payload.run_id);
+  useEffect(() => {
+    if (!turnId) return;
+    const controller = new AbortController();
+    request<TurnReceipt>(`/v1/turns/${encodeURIComponent(turnId)}/receipt`, { signal: controller.signal })
+      .then(setReceipt)
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [turnId]);
+  const status = textValue(receipt?.outcome || receipt?.status || event.payload.status || event.payload.outcome || "failed");
+  const failed = resultStatusIsFailure(status);
+  const changes = receipt?.changes || [];
+  const changedFiles = receipt?.files_changed?.length || changes.length;
+  const additions = changes.reduce((total, change) => total + Number(change.additions || 0), 0);
+  const deletions = changes.reduce((total, change) => total + Number(change.deletions || 0), 0);
+  const verification = receipt?.verification || [];
+  const verificationFailed = verification.some((item) => ["failed", "error", "timeout"].includes(textValue(item.status).toLowerCase()));
+  const model = textValue(receipt?.route?.model);
+  const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
+  const summary = textValue(receipt?.result_summary || receipt?.failure_category || detail).trim();
+  const copied = [failed ? "本轮未完成" : "本轮完成", summary, changedFiles ? `${changedFiles} 个文件 +${additions}/-${deletions}` : "", verification.length ? `${verification.length} 项验证` : ""].filter(Boolean).join(" · ");
+  return (
+    <article className={`result-inline ${failed ? "failed" : ""}`}>
+      <span>{failed ? "本轮未完成" : "本轮完成"}</span>
+      {summary && <small>{summary}</small>}
+      <div className="result-evidence">
+        {changedFiles > 0 && <em>{changedFiles} 个文件 · +{additions} / -{deletions}</em>}
+        {verification.length > 0 && <em className={verificationFailed ? "failed" : ""}>{verificationFailed ? "验证失败" : `${verification.length} 项验证通过`}</em>}
+        {model && <em>{model}{cost ? ` · ${cost}` : ""}</em>}
+      </div>
+      <div className="result-actions"><button onClick={onOpenChanges}>查看变更</button><button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>复制结果</button></div>
     </article>
   );
 }
@@ -1484,7 +1632,15 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
     if (!initialFile) return;
     request<{ path: string; content: string; binary: boolean }>(`/v1/workspace/file?path=${encodeURIComponent(initialFile)}`)
       .then(setPreview)
-      .catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
+      .catch((reason: unknown) => {
+        if (workspacePathIsDirectoryError(reason)) {
+          setPreview(null);
+          setCurrentPath(initialFile);
+          setQuery("");
+          return;
+        }
+        onError(reason instanceof Error ? reason.message : String(reason));
+      });
   }, [initialFile, onError]);
   useEffect(() => {
     const controller = new AbortController();
@@ -1531,6 +1687,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
   const [commitMessage, setCommitMessage] = useState("chore: apply CodeRook changes");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const load = useCallback((signal?: AbortSignal) => {
     setLoading(true);
     setLoadError("");
@@ -1538,7 +1695,11 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
       request<DiffPayload>("/v1/workspace/diff?scope=all", { signal }),
       threadId ? request<Record<string, unknown>>(`/v1/threads/${threadId}/context`, { signal }) : Promise.resolve({}),
     ])
-      .then(([nextDiff, nextContext]) => { setDiff(nextDiff); setContext(nextContext); })
+      .then(([nextDiff, nextContext]) => {
+        setDiff(nextDiff);
+        setContext(nextContext);
+        setSelectedPaths((nextDiff.files || []).map((file) => textValue(file.path)).filter(Boolean));
+      })
       .catch((reason: unknown) => {
         if (signal?.aborted) return;
         const message = reason instanceof Error ? reason.message : String(reason);
@@ -1554,12 +1715,14 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
   }, [load]);
   const files = diff?.files || [];
   const checkpoints = (context.checkpoints || []) as Array<Record<string, unknown>>;
-  const stageAll = async () => {
+  const stageSelected = async () => {
     if (!threadId || !diff?.state_digest) return;
-    const paths = files.map((file) => textValue(file.path)).filter(Boolean);
+    const paths = selectedPaths.filter(Boolean);
+    if (!paths.length) return;
     try {
       const staged = await request<DiffPayload>("/v1/workspace/stage", { method: "POST", body: JSON.stringify({ thread_id: threadId, paths, expected_digest: diff.state_digest, confirmed: true }) });
       setDiff(staged);
+      setSelectedPaths([]);
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   const commit = async () => {
@@ -1579,7 +1742,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
       load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className="panel-toolbar"><span>{loading ? "正在读取…" : `${files.length} 个变更文件`}</span><button disabled={loading} onClick={() => load()}>刷新</button><button disabled={!files.length || !threadId || loading} onClick={() => void stageAll()}>Stage 全部</button></div>{loadError && <div className="panel-error"><b>无法读取变更</b><p>{loadError}</p><button onClick={() => load()}>重试</button></div>}{!loadError && !files.length && !loading ? <p className="empty">工作区没有未提交变更。</p> : files.map((file, index) => <details className="diff-file" key={`${textValue(file.path)}-${index}`} open={index === 0}><summary><b>{textValue(file.path)}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>)}{textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>创建本地 Commit</button><small>不会自动 push，也不会运行仓库 hooks。</small></div>}{checkpoints.length > 0 && <div className="checkpoints"><h3>恢复点</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{textValue(checkpoint.status)}</small></button>)}</div>}</div>;
+  return <div className="panel-content"><div className="panel-toolbar"><span>{loading ? "正在读取…" : `${files.length} 个变更文件`}</span><button disabled={loading} onClick={() => load()}>刷新</button><button disabled={!selectedPaths.length || !threadId || loading} onClick={() => void stageSelected()}>Stage 选中{selectedPaths.length ? ` (${selectedPaths.length})` : ""}</button></div>{loadError && <div className="panel-error"><b>无法读取变更</b><p>{loadError}</p><button onClick={() => load()}>重试</button></div>}{!loadError && !files.length && !loading ? <p className="empty">工作区没有未提交变更。</p> : files.map((file, index) => { const path = textValue(file.path); const checked = selectedPaths.includes(path); return <details className="diff-file" key={`${path}-${index}`} open={index === 0}><summary><label className="diff-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked} onChange={() => setSelectedPaths((current) => checked ? current.filter((item) => item !== path) : [...current, path])} /><span className="sr-only">选择 {path}</span></label><b>{path}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>; })}{textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>创建本地 Commit</button><small>不会自动 push，也不会运行仓库 hooks。</small></div>}{checkpoints.length > 0 && <div className="checkpoints"><h3>恢复点</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{textValue(checkpoint.status)}</small></button>)}</div>}</div>;
 }
 
 function ModelsPanel({ onError }: { onError(value: string): void }): ReactElement {

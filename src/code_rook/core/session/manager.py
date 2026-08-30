@@ -50,6 +50,7 @@ from code_rook.core.presets import get_agent_preset
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import QueuedMessageRecord, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
+from code_rook.core.runtime.store import QueuedMessageDispatchingError
 from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
@@ -720,12 +721,18 @@ class SessionManager:
         self._get_session(sid)
         if self._runtime is None:
             raise HandlerError(INVALID_PARAMS, "durable message queue is unavailable")
-        await self._runtime.remove_queued_message(
-            sid,
-            message_id,
-            reason="cancelled_by_user",
-            ts=datetime.now(UTC),
-        )
+        try:
+            await self._runtime.remove_queued_message(
+                sid,
+                message_id,
+                reason="cancelled_by_user",
+                ts=datetime.now(UTC),
+            )
+        except QueuedMessageDispatchingError as exc:
+            raise HandlerError(
+                INVALID_PARAMS,
+                "message is already running; stop the active turn instead",
+            ) from exc
 
     # 将中断或启动失败的 blocked 消息重新排入队列
     async def retry_queued_message(self, sid: str, message_id: str) -> None:
@@ -800,11 +807,12 @@ class SessionManager:
                 )
             except HandlerError as exc:
                 if exc.code == SESSION_BUSY:
-                    await runtime.block_queued_message(
+                    await runtime.defer_queued_message(
                         record,
-                        "session became busy before queued message dispatch",
                         datetime.now(UTC),
                     )
+                    wakeup.set()
+                    continue
                 else:
                     await runtime.block_queued_message(
                         record,

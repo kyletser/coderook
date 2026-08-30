@@ -266,6 +266,29 @@ class RuntimeService:
             )
             await self._publish_runtime_event(event)
 
+    # 将会话竞争中尚未启动的消息退回队列并广播延期状态
+    async def defer_queued_message(
+        self,
+        record: QueuedMessageRecord,
+        ts: datetime,
+    ) -> None:
+        async with self._write_lock:
+            await self._run_persistent_write(
+                self._store.defer_queued_message,
+                record.thread_id,
+                record.id,
+                ts,
+            )
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=record.thread_id,
+                turn_id=None,
+                event_type="queue.message_deferred",
+                payload={"queue_id": record.id, "status": "queued"},
+                ts=ts,
+            )
+            await self._publish_runtime_event(event)
+
     # 将用户确认重试的 blocked 消息恢复为 queued 并广播状态
     async def retry_queued_message(
         self,
@@ -304,6 +327,7 @@ class RuntimeService:
                 self._store.delete_queued_message,
                 thread_id,
                 message_id,
+                reason == "dispatched",
             )
             event = await self._run_persistent_write(
                 self._store.append_event,
@@ -346,9 +370,20 @@ class RuntimeService:
     async def list_threads(self) -> list[ThreadRecord]:
         return await asyncio.to_thread(self._store.list_threads)
 
-    # 异步列出 thread 的全部 turn
-    async def list_turns(self, thread_id: str) -> list[TurnRecord]:
-        return await asyncio.to_thread(self._store.list_turns, thread_id)
+    # 异步列出 thread 的全部或游标前最近一页 turn
+    async def list_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int | None = None,
+        before_turn_id: str | None = None,
+    ) -> list[TurnRecord]:
+        return await asyncio.to_thread(
+            self._store.list_turns,
+            thread_id,
+            limit=limit,
+            before_turn_id=before_turn_id,
+        )
 
     # 异步查询指定游标和高水位之间的 runtime 事件
     async def list_events(
