@@ -221,20 +221,39 @@ async def _run_async(
     finished = asyncio.Event()
     exit_code = 0
     finished_event: dict[str, Any] = {}
+    early_events: list[dict[str, Any]] = []
 
-    async def on_event(event: dict[str, Any]) -> None:
+    # 统一处理已确认归属的事件：分发给打印机并捕获本 run 的 finished 结果
+    async def _process_owned_event(event: dict[str, Any]) -> None:
         nonlocal exit_code, finished_event
         if text_printer is not None:
             await text_printer.handle(event)
         if stream_printer is not None:
             await stream_printer.handle(event)
-        if event.get("type") == "run.finished":
+        if event.get("type") == "run.finished" and str(
+            event.get("run_id", "")
+        ) == (run_id or ""):
             finished_event = dict(event)
             exit_code = _run_finished_exit_code(
                 str(event.get("status", "")),
                 str(event["reason"]) if event.get("reason") else None,
             )
             finished.set()
+
+    async def on_event(event: dict[str, Any]) -> None:
+        event_run_id = str(event.get("run_id", ""))
+        if run_id is None:
+            # daemon 是共享长寿命进程：global 订阅会收到其他并发 run 的事件；
+            # 本 run 的早期事件可能先于 agent.run 响应到达，先缓冲，拿到 run_id 后回放
+            if event_run_id:
+                early_events.append(event)
+            else:
+                await _process_owned_event(event)
+            return
+        # 缺 run_id 的事件无法归属，仅透传；带 run_id 但不匹配的一律丢弃
+        if not _event_belongs_to_run(event, run_id):
+            return
+        await _process_owned_event(event)
 
     client.on_event(on_event)
     loop_task = asyncio.create_task(client.run_event_loop())
@@ -269,6 +288,10 @@ async def _run_async(
             },
         )
         run_id = str(started["run_id"])
+        for buffered in early_events:
+            if _event_belongs_to_run(buffered, run_id):
+                await _process_owned_event(buffered)
+        early_events.clear()
     except IpcError as e:
         print(f"error: {e}", file=sys.stderr)
         loop_task.cancel()
@@ -327,6 +350,12 @@ async def _run_async(
 
     await client.close()
     return exit_code
+
+
+# 判断带运行归属的事件是否属于当前 run；无 run_id 的全局状态事件允许透传
+def _event_belongs_to_run(event: dict[str, Any], run_id: str) -> bool:
+    event_run_id = str(event.get("run_id", ""))
+    return not event_run_id or event_run_id == run_id
 
 
 # 执行 coderook run --goal "..." 命令

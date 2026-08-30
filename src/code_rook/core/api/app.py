@@ -46,6 +46,15 @@ _TURN_ACTION = re.compile(r"/v1/turns/([^/]+)/(interrupt|steer)")
 _TURN_READ = re.compile(r"/v1/turns/([^/]+)/(items|receipt)")
 _TURN_GET = re.compile(r"/v1/turns/([^/]+)")
 _PERMISSION_RESPONSE = re.compile(r"/v1/permissions/([^/]+)")
+# Web 端决策词表到 PermissionManager 词表的翻译表；manager 另有 always_allow_pattern 仅 TUI 使用
+_HTTP_PERMISSION_DECISIONS = {
+    "allow_once": "allow_once",
+    "allow_session": "session_allow",
+    "allow_always": "always_allow",
+    "deny_once": "deny_once",
+    "deny_session": "session_deny",
+    "deny_always": "always_deny",
+}
 _QUESTION_RESPONSE = re.compile(r"/v1/questions/([^/]+)")
 _PROVIDER_ACTION = re.compile(r"/v1/providers/([^/]+)/(activate)")
 _PROVIDER_READ = re.compile(r"/v1/providers/([^/]+)")
@@ -157,6 +166,8 @@ class HttpApiServer:
     ) -> None:
         self._clients.add(writer)
         streaming = False
+        failed = False
+        headers_sent = [False]
         try:
             request = await self._read_request(reader)
             path = urlsplit(request.target).path
@@ -193,20 +204,28 @@ class HttpApiServer:
                 return
             if request.method == "GET" and _THREAD_EVENTS.fullmatch(path):
                 streaming = True
-                await self._stream_events(reader, writer, request)
+                await self._stream_events(reader, writer, request, headers_sent)
                 return
             status, payload = await self._dispatch(request)
             await self._send_json(writer, status, payload)
         except asyncio.IncompleteReadError:
             return
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError, KeyError) as exc:
-            await self._send_json(writer, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            failed = True
+            await self._send_json_guarded(
+                writer, headers_sent, HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+            )
         except RecordNotFoundError as exc:
-            await self._send_json(writer, HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            failed = True
+            await self._send_json_guarded(
+                writer, headers_sent, HTTPStatus.NOT_FOUND, {"error": str(exc)}
+            )
         except ConfigurationValidationError as exc:
+            failed = True
             result = exc.result
-            await self._send_json(
+            await self._send_json_guarded(
                 writer,
+                headers_sent,
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 {
                     "error": "provider validation failed",
@@ -217,24 +236,43 @@ class HttpApiServer:
                 },
             )
         except HandlerError as exc:
-            await self._send_json(writer, HTTPStatus.CONFLICT, {"error": str(exc)})
+            failed = True
+            await self._send_json_guarded(
+                writer, headers_sent, HTTPStatus.CONFLICT, {"error": str(exc)}
+            )
         except (ConnectionError, BrokenPipeError):
             return
         except Exception:
+            failed = True
             logger.exception("HTTP API request failed")
-            await self._send_json(
+            await self._send_json_guarded(
                 writer,
+                headers_sent,
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"error": "internal server error"},
             )
         finally:
             self._clients.discard(writer)
-            if not streaming or not writer.is_closing():
+            # SSE 流中途失败时也必须关闭连接：否则异常分支留下的半开连接永不回收
+            if failed or not streaming or not writer.is_closing():
                 writer.close()
             try:
                 await writer.wait_closed()
             except (ConnectionError, BrokenPipeError):
                 pass
+
+    # 安全发送失败响应，SSE 头已发出时只关闭连接而不写入第二个 HTTP 响应
+    async def _send_json_guarded(
+        self,
+        writer: asyncio.StreamWriter,
+        headers_sent: list[bool],
+        status: HTTPStatus,
+        payload: dict[str, object],
+    ) -> None:
+        if headers_sent[0]:
+            logger.error("HTTP API stream failed mid-response; closing without extra response")
+            return
+        await self._send_json(writer, status, payload)
 
     # 判断请求是否属于公开静态 Web 壳资源而不是受保护 API
     def _is_static_path(self, path: str) -> bool:
@@ -692,6 +730,8 @@ class HttpApiServer:
                 "deny_once", "deny_session", "deny_always",
             }:
                 raise ValueError("invalid permission decision")
+            # Web 词表与 PermissionManager 词表不同构，必须在此翻译，否则会静默变成拒绝
+            decision = _HTTP_PERMISSION_DECISIONS[decision]
             raw_hunks = body.get("selected_hunks")
             if raw_hunks is not None and not (
                 isinstance(raw_hunks, list)
@@ -822,6 +862,7 @@ class HttpApiServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         request: _HttpRequest,
+        headers_sent: list[bool],
     ) -> None:
         match = _THREAD_EVENTS.fullmatch(urlsplit(request.target).path)
         assert match is not None
@@ -849,6 +890,7 @@ class HttpApiServer:
                 "Connection: keep-alive\r\n\r\n"
             ).encode("ascii")
         )
+        headers_sent[0] = True
         await writer.drain()
         last_heartbeat = time.monotonic()
         disconnected = asyncio.create_task(reader.read(1), name="api-sse-disconnect")

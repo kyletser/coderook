@@ -347,6 +347,10 @@ class RuntimeService:
                 ts,
             )
 
+    # 返回持久消息队列中仍有记录的 thread 集合（只读，异步包装）
+    async def thread_ids_with_queued_messages(self) -> set[str]:
+        return await asyncio.to_thread(self._store.thread_ids_with_queued_messages)
+
     # 异步查询 thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:
         return await asyncio.to_thread(self._store.get_thread, thread_id)

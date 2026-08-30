@@ -23,8 +23,7 @@ def test_command_pattern_key_builds_from_first_command() -> None:
 
 
 # 功能：通配符前缀命中合法尾参命令，但拒绝命令串接/重定向注入
-# 设计：这是 W3.2 的核心安全契约——用首 token 解析而非纯 fnmatch，
-#      `uv run pytest; rm -rf /` 不得命中 `uv run pytest*` 前缀
+# 设计：用合法参数和串接攻击对照，验证首 token 解析优于纯 fnmatch
 def test_pattern_matches_legal_args_but_rejects_injection() -> None:
     assert matches_command_pattern("uv run pytest -k x", "uv run pytest*")
     assert matches_command_pattern("git status --short", "git status*")
@@ -46,3 +45,27 @@ def test_pattern_requires_leading_alignment() -> None:
 def test_pattern_without_wildcard_requires_exact() -> None:
     assert matches_command_pattern("git status", "git status")
     assert not matches_command_pattern("git status --short", "git status")
+
+# 功能：换行串接的命令不得命中前缀模式，换行与 CR 都是命令分隔符
+# 设计：使用 shlex 曾误判为普通空白的换行攻击样本验证结构性拦截
+def test_pattern_rejects_newline_chained_commands() -> None:
+    assert not matches_command_pattern("echo hello\nrm -rf ~", "echo hello*")
+    assert not matches_command_pattern("echo hello\r\ncat ~/.ssh/id", "echo hello*")
+    assert matches_command_pattern("echo hello", "echo hello*")
+
+
+# 功能：单引号外的命令替换（$()、反引号、${}）不得命中前缀模式
+# 设计：对比可执行替换与单引号字面量，兼顾阻断攻击和正常 commit 消息
+def test_pattern_rejects_unquoted_substitution() -> None:
+    assert not matches_command_pattern("git status $(rm -rf ~)", "git status*")
+    assert not matches_command_pattern("git status `rm -rf ~`", "git status*")
+    assert not matches_command_pattern("git status ${VAR}", "git status*")
+    assert matches_command_pattern("git commit -m '$(not expanded)'", "git commit*")
+
+
+# 功能：含换行或命令替换的命令不生成 always-allow 前缀模式键
+# 设计：从源头阻断"存储可被利用的键"，用空键返回值验证调用方不会落盘危险模式
+def test_command_pattern_key_refuses_structural_risk() -> None:
+    assert command_pattern_key("echo hi\nrm -rf ~") == ""
+    assert command_pattern_key("echo $(x)") == ""
+    assert command_pattern_key("uv run pytest -q") == "uv run pytest -q*"

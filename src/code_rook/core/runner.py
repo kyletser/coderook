@@ -108,6 +108,29 @@ class _NullAsyncContext:
         return None
 
 
+class _ScopedEventHandlers:
+    # 初始化一次 run 使用的事件处理器集合，但延迟到进入上下文后订阅
+    def __init__(self, bus: EventBus, handlers: list[EventHandler]) -> None:
+        self._bus = bus
+        self._handlers = list(handlers)
+
+    # 订阅初始处理器并返回自身，确保后续异常由退出路径统一清理
+    async def __aenter__(self) -> _ScopedEventHandlers:
+        for handler in self._handlers:
+            self._bus.subscribe(handler)
+        return self
+
+    # 逆序注销本 run 的全部处理器，覆盖成功、失败和取消路径
+    async def __aexit__(self, *args: object) -> None:
+        for handler in reversed(self._handlers):
+            self._bus.unsubscribe(handler)
+
+    # 在运行期间追加处理器并立即订阅，使其纳入同一退出清理范围
+    def subscribe(self, handler: EventHandler) -> None:
+        self._handlers.append(handler)
+        self._bus.subscribe(handler)
+
+
 # 从冻结路由和权限快照生成模型请求可引用的执行契约元数据
 def _request_metadata(
     route: ResolvedRoute | None,
@@ -420,8 +443,6 @@ class AgentRunner:
         )
 
         bus = self._bus if self._bus is not None else EventBus()
-        for h in self._extra_handlers:
-            bus.subscribe(h)
 
         context = ExecutionContext(
             run_id=run_id,
@@ -507,12 +528,14 @@ class AgentRunner:
             if session is not None and store is not None
             else None
         )
+        scoped_handlers = _ScopedEventHandlers(bus, self._extra_handlers)
         async with (
             EventWriter(
                 run_path / "events.jsonl",
                 audit_health=self._audit_health,
             ) as writer,
             ledger_bridge if ledger_bridge is not None else _NullAsyncContext() as active_ledger,
+            scoped_handlers,
         ):
             writer.subscribe(bus)
             if isinstance(active_ledger, SessionLedgerBridge):
@@ -522,6 +545,11 @@ class AgentRunner:
             # 根据可信工具与验证事件发布唯一阶段信号，TUI 不再自行猜测运行状态
             async def publish_runtime_phase(event: object) -> None:
                 nonlocal tracked_phase
+                # 共享 daemon bus 上可能存在本 run 之外（含历史 run 泄漏期）的事件，
+                # 非本 run 事件一律忽略，防止死 run 的 phase 事件污染实时流与台账
+                event_run_id = getattr(event, "run_id", None)
+                if event_run_id is not None and event_run_id != run_id:
+                    return
                 phase: Literal["exploring", "executing", "verifying"] | None = None
                 summary = ""
                 if isinstance(event, (VerificationCompletedEvent, VerificationFailedEvent)):
@@ -557,7 +585,7 @@ class AgentRunner:
                     )
                 )
 
-            bus.subscribe(publish_runtime_phase)
+            scoped_handlers.subscribe(publish_runtime_phase)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
             await bus.publish(
                 RunPhaseChangedEvent(
@@ -1072,7 +1100,6 @@ class AgentRunner:
                     ts=_now(),
                 )
             )
-
         if session is not None and store is not None:
             store.recover_incomplete_tail(session.id)
 

@@ -370,6 +370,30 @@ async def test_extra_handlers_receive_events(tmp_path: Path) -> None:
     assert len(secondary) > 0
 
 
+# 功能：验证 run 在启动事件阶段被取消时仍会注销 extra handler，不污染共享 daemon EventBus
+# 设计：处理器首次收到 run.started 即触发取消，随后检查共享总线订阅集合已恢复为空
+async def test_extra_handlers_are_unsubscribed_when_start_is_cancelled(tmp_path: Path) -> None:
+    bus = EventBus()
+
+    # 在首个启动事件处取消 run，制造最早的异常退出窗口
+    async def cancel_on_start(event: BaseModel) -> None:
+        if getattr(event, "type", "") == "run.started":
+            raise asyncio.CancelledError()
+
+    runner = AgentRunner(
+        _config(),
+        bus=bus,
+        provider=_EndTurnProvider(),  # type: ignore[arg-type]
+        extra_handlers=[cancel_on_start],
+        runs_dir=tmp_path,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run("goal")
+
+    assert cancel_on_start not in bus._subscribers  # type: ignore[attr-defined]
+
+
 # 功能：验证 config.agent.max_steps 被正确传递给 AgentLoop，控制 LLM 调用次数上限
 # 设计：用 LoopingProvider 的调用次数反推 max_steps 是否生效，不依赖内部状态检查，从行为角度验证配置传递
 async def test_config_max_steps_passed_to_loop(tmp_path: Path) -> None:

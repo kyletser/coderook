@@ -18,6 +18,7 @@ from code_rook.core.llm.types import (
     UsageStats,
     completion_status_from_reason,
 )
+from code_rook.core.llm.wire import merge_consecutive_user_messages
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-4-6": 200_000,
@@ -140,6 +141,8 @@ class AnthropicProvider:
         thinking: str | None = None,
     ) -> LlmResponse:
         resolved_model = model or self._model
+        # 内部注入（图片/steering/续跑）会产生连续 user 消息，Anthropic Messages API 硬拒角色交替
+        messages = merge_consecutive_user_messages(messages)
         await bus.publish(
             LlmModelSelectedEvent(run_id=run_id, model=resolved_model, strategy="static", ts=_now())
         )
@@ -229,7 +232,10 @@ class AnthropicProvider:
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_create: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         window = self._context_window or _context_window(resolved_model)
-        context_pct = usage.input_tokens / window
+        # Anthropic 的 input_tokens 不含缓存命中/写入部分；真实上下文占用必须三者相加，
+        # 否则开启 prompt cache 后 context_pct 崩塌、自动压缩永不触发直至溢出
+        context_tokens = usage.input_tokens + cache_read + cache_create
+        context_pct = context_tokens / window
 
         await bus.publish(
             LlmUsageEvent(

@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from rich.markup import render
@@ -207,6 +208,7 @@ async def test_permission_decision_leaves_no_duplicate_summary() -> None:
     app = PermissionTimelineHarness("127.0.0.1", 9999)
     async with app.run_test(size=(100, 24)) as pilot:
         await pilot.pause()
+        app._client = AsyncMock()  # type: ignore[assignment]
         app._handle_event(
             {
                 "type": "permission.requested",
@@ -227,6 +229,40 @@ async def test_permission_decision_leaves_no_duplicate_summary() -> None:
 
         assert len(app.query(PermissionSelect)) == 0
         assert len(app.query(PermissionBlock)) == 0
+        app._client.send_command.assert_awaited_once()  # type: ignore[union-attr]
+
+
+# 功能：验证 Core 断线时审批发送失败会保留选择器和摘要块，允许重连后重新决策
+# 设计：不注入 IPC client 直接触发真实处理器，断言两个审批控件均未被提前移除
+async def test_permission_decision_stays_visible_when_disconnected() -> None:
+    class PermissionTimelineHarness(CodeRookTuiApp):
+        # 跳过真实 Core 连接并聚焦主输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = PermissionTimelineHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        app._handle_event(
+            {
+                "type": "permission.requested",
+                "run_id": "run-1",
+                "tool_use_id": "tool-disconnected",
+                "tool_name": "bash",
+                "param_preview": "command='git status'",
+                "params": {"command": "git status"},
+            }
+        )
+        await pilot.pause()
+        select = app.query_one(PermissionSelect)
+
+        await app.on_permission_select_decided(
+            PermissionSelect.Decided(select, "tool-disconnected", "allow_once")
+        )
+        await pilot.pause()
+
+        assert len(app.query(PermissionSelect)) == 1
+        assert len(app.query(PermissionBlock)) == 1
 
 
 async def test_permission_panel_keyboard_navigation_and_escape() -> None:

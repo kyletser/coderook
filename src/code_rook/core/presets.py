@@ -31,14 +31,24 @@ class AgentPreset(BaseModel):
     @property
     def digest(self) -> str:
         payload = self.model_dump(mode="json")
-        return hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        return _preset_digest(payload)
+
+
+# 对集合来源字段排序后计算 canonical JSON 的 SHA-256，保证摘要跨进程稳定
+def _preset_digest(payload: dict[str, object]) -> str:
+    canonical = dict(payload)
+    for field in ("authority_ceiling", "tool_allowlist"):
+        value = canonical.get(field)
+        if isinstance(value, list):
+            canonical[field] = sorted(value)
+    return hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 STANDARD_PRESET = AgentPreset(

@@ -121,6 +121,10 @@ async def test_session_bootstrap_prunes_only_stale_unused_empty_sessions(
         async def recover_queued_messages(self, *_args: object) -> int:
             return 0
 
+        # 返回空的持久队列 thread 集合，允许安全执行过期会话清理
+        async def thread_ids_with_queued_messages(self) -> set[str]:
+            return set()
+
         # 记录自动剪枝对应的 Runtime thread
         async def delete_session(self, session_id: str) -> None:
             self.deleted.append(session_id)
@@ -146,6 +150,49 @@ async def test_session_bootstrap_prunes_only_stale_unused_empty_sessions(
     assert {session.id for session in sessions} == {"sess-named", "sess-fresh"}
     assert runtime.deleted == ["sess-stale"]
     assert not store.session_dir("sess-stale").exists()
+
+
+# 功能：验证持久队列查询失败时跳过空会话清理，避免误删仍有 queued/blocked 消息的用户资产
+# 设计：让队列保护查询抛出数据库故障，同时构造过期空会话，断言文件和 Runtime 均未删除
+async def test_session_prune_fails_closed_when_queue_lookup_fails(tmp_path: Path) -> None:
+    class _Runtime:
+        # 初始化被删除的 Runtime thread 记录
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        # 接受会话投影启动而不修改 fixture
+        async def bootstrap_sessions(self, *_args: object) -> None:
+            return None
+
+        # 返回无遗留队列领取，保持启动流程继续
+        async def recover_queued_messages(self, *_args: object) -> int:
+            return 0
+
+        # 模拟队列数据库暂时不可用
+        async def thread_ids_with_queued_messages(self) -> set[str]:
+            raise RuntimeError("queue database unavailable")
+
+        # 记录任何不应发生的 Runtime 删除
+        async def delete_session(self, session_id: str) -> None:
+            self.deleted.append(session_id)
+
+    store = SessionStore(tmp_path / "sessions")
+    old = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    stale = Session("sess-queued-unknown", "chat", "interrupted", "", old, old)
+    store.write_meta(stale)
+    runtime = _Runtime()
+    manager = SessionManager(
+        store,
+        lambda: _Runner(),
+        EventBus(),
+        runtime_service=runtime,  # type: ignore[arg-type]
+    )
+
+    sessions = await manager.list_sessions(include_closed=True)
+
+    assert [session.id for session in sessions] == ["sess-queued-unknown"]
+    assert runtime.deleted == []
+    assert store.session_dir("sess-queued-unknown").exists()
 
 
 # 功能：验证 Core 持久队列会自动创建下一 Turn 并在完成后移除消息
@@ -180,7 +227,10 @@ async def test_durable_queue_dispatches_next_turn_and_clears_record(
         item.get("role") == "user" and item.get("content") == "internal queued prompt"
         for item in messages
     )
-    assert queued.id in manager.get_session(session.id).run_ids
+    assert any(
+        run_id.startswith(f"{queued.id}-")
+        for run_id in manager.get_session(session.id).run_ids
+    )
     await manager.cancel_all()
 
 

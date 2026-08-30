@@ -177,6 +177,11 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
                 if await _cancel_active_run(client, printer):
                     print("\n[cancelling current run...]")
                 continue
+            except (IpcError, OSError, ConnectionError) as send_error:
+                # 断连后 send 以 IpcError 完成而非裸 CancelledError；必须退出 REPL，
+                # 否则用户消息被无限吞进死连接
+                print(f"error: connection lost: {send_error}", file=sys.stderr)
+                return 1
 
         print(f"\n[session saved: resume with `coderook chat --resume {session_id}`]")
     except IpcError as e:

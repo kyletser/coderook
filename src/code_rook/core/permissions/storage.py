@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from code_rook.core.authority import AuthorityProfile
 
 _DEFAULT_POLICY_PATH = Path("~/.coderook/policy.toml")
 _CURRENT_POLICY_SCHEMA_VERSION = 1
+# 键只允许命令模式中真实出现的字符；禁止引号/等号/井号/方括号/换行以防手写 TOML 解析被注入
+_SAFE_POLICY_KEY = re.compile(r"^[A-Za-z0-9_.:/@%^+\*\- ]+$")
 
 
 class PolicyStoreError(ValueError):
     pass
+
+
+# 校验 [always] 键是否安全可序列化，防止命令 token 注入额外 TOML 行
+def _ensure_safe_key(key: str) -> str:
+    if not _SAFE_POLICY_KEY.match(key):
+        raise PolicyStoreError(f"refusing to persist unsafe policy key: {key!r}")
+    return key
 
 
 # 读取 policy meta 版本并阻断旧版 daemon 覆盖未来格式，缺失版本按兼容 v0 处理
@@ -61,6 +71,9 @@ def load_policy_file(path: Path | None = None) -> dict[str, str]:
         if in_always and "=" in stripped and not stripped.startswith("#"):
             k, _, v = stripped.partition("=")
             k = k.strip()
+            # 历史版本可能写入过含注入字符的键，读取时跳过不安全键（防升级放大既有污染）
+            if not _SAFE_POLICY_KEY.match(k):
+                continue
             v = v.strip().strip('"')
             if v in ("allow", "deny"):
                 result[k] = v
@@ -115,5 +128,6 @@ def save_policy_file(
         lines.extend(("[authority]", f'profile = "{profile.value}"', ""))
     lines.append("[always]")
     for tool, decision in sorted(always.items()):
+        _ensure_safe_key(tool)
         lines.append(f'{tool} = "{decision}"')
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")

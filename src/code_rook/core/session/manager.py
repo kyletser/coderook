@@ -432,6 +432,10 @@ class SessionManager:
     # 删除超过保留期且从未使用的无标题会话，避免首启列表长期堆积
     async def _prune_stale_empty_sessions(self) -> None:
         cutoff = datetime.now(UTC) - _EMPTY_SESSION_RETENTION
+        # 持久队列仍有消息（含 blocked）的会话是用户资产，绝不参与 prune
+        queued_thread_ids = await self._queued_thread_ids_guard()
+        if queued_thread_ids is None:
+            return
         stale_ids: list[str] = []
         for session in tuple(self._sessions.values()):
             if (
@@ -440,6 +444,8 @@ class SessionManager:
                 or session.title.strip() not in {"", "Untitled"}
                 or self._locks[session.id].locked()
             ):
+                continue
+            if session.id in queued_thread_ids:
                 continue
             try:
                 updated_at = datetime.fromisoformat(
@@ -476,6 +482,19 @@ class SessionManager:
             await self._bus.publish(
                 SessionDeletedEvent(session_id=session_id, ts=_now())
             )
+
+    # 读取仍有持久消息的 thread；查询失败返回 None，使清理流程失败关闭
+    async def _queued_thread_ids_guard(self) -> set[str] | None:
+        if self._runtime is None:
+            return set()
+        try:
+            return await self._runtime.thread_ids_with_queued_messages()
+        except Exception:
+            logger.warning(
+                "queued thread lookup failed; stale session prune skipped",
+                exc_info=True,
+            )
+            return None
 
     # 从磁盘恢复会话索引；active 表示 daemon 在一次 run 中退出，恢复为 interrupted
     def _rehydrate(self) -> None:
@@ -796,11 +815,14 @@ class SessionManager:
                 if wakeup.is_set():
                     continue
                 return
+            # 每次派发铸全新 run_id：崩溃恢复后 retry 不能复用旧 id，否则
+            # create_turn 主键冲突使该消息永久不可重试，且 run 目录可安全做路径组件
+            dispatch_run_id = f"{record.id}-{uuid.uuid4().hex[:8]}"
             try:
                 await self.send_message(
                     sid,
                     record.content,
-                    run_id=record.id,
+                    run_id=dispatch_run_id,
                     runtime_mode=record.mode,
                     attachments=record.attachments,
                     display_content=record.display_content,

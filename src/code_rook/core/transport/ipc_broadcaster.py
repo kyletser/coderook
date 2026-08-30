@@ -18,6 +18,10 @@ from code_rook.core.trace.writer import TraceWriter
 
 logger = logging.getLogger(__name__)
 
+# 单订阅写缓冲高水位（字节）：超过即视为挂起/慢速消费者并剔除，
+# 防止一个被 SIGSTOP/休眠的客户端借 await drain() 冻结整个 EventBus
+_SLOW_CONSUMER_BUFFER_BYTES = 4 * 1024 * 1024
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -191,7 +195,23 @@ class IpcEventBroadcaster:
         try:
             envelope = EventPushEnvelope(event=event_dict)
             sub.writer.write(envelope.model_dump_json().encode() + b"\n")
-            await sub.writer.drain()
+            # 事件推送绝不 await drain：publish 顺序经过每个订阅者，一个挂起客户端的
+            # drain 会无限阻塞整个 EventBus（agent run 卡死、事件持久化延迟）。
+            # 改为写缓冲高水位检测，超限即判定为慢消费者并由调用方剔除
+            buffer_size = (
+                sub.writer.transport.get_write_buffer_size()
+                if sub.writer.transport is not None
+                else 0
+            )
+            if isinstance(buffer_size, int) and buffer_size > _SLOW_CONSUMER_BUFFER_BYTES:
+                logger.warning(
+                    "slow IPC consumer dropped sub_id=%s buffer_bytes=%d",
+                    sub.sub_id,
+                    buffer_size,
+                )
+                # 仅移除订阅会留下看似存活但永远收不到完成事件的客户端，必须用 EOF 触发重连
+                sub.writer.close()
+                return False
             if self._trace is not None:
                 client_id = str(sub.writer.get_extra_info("peername", "<unknown>"))
                 self._trace.emit(

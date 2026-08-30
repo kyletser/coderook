@@ -15,12 +15,19 @@ from code_rook.core.runtime.models import RuntimeEventRecord
 from code_rook.core.transport.ipc_broadcaster import IpcEventBroadcaster
 
 
-def _make_writer(*, drain_raises: Exception | None = None) -> asyncio.StreamWriter:
+# 构造可控制写失败和缓冲水位的 StreamWriter 测试替身
+def _make_writer(
+    *,
+    drain_raises: Exception | None = None,
+    buffer_size: int = 0,
+) -> asyncio.StreamWriter:
+    # 事件推送不再 await drain（防慢消费者冻结 EventBus），写失败改为注入在 write 上
     writer = MagicMock(spec=asyncio.StreamWriter)
+    writer.transport.get_write_buffer_size.return_value = buffer_size
     if drain_raises is not None:
-        writer.drain = AsyncMock(side_effect=drain_raises)
+        writer.write = MagicMock(side_effect=drain_raises)
     else:
-        writer.drain = AsyncMock()
+        writer.write = MagicMock()
     return cast(asyncio.StreamWriter, writer)
 
 
@@ -132,8 +139,7 @@ async def test_unsubscribe_by_id_enforces_writer_ownership() -> None:
 
 
 # 功能：验证写入失败（ConnectionResetError）后订阅自动移除，下次 handle 不再尝试写入
-# 设计：drain() 抛出 ConnectionResetError 触发死连接清理；断言第二次 handle 时 write 未被调用；
-#       第一次 write 在 drain 前已执行，call_count==1 是预期行为而非被测点
+# 设计：让 write 抛出 ConnectionResetError，断言后续事件不再尝试投递
 async def test_dead_connection_removed_after_failure() -> None:
     broadcaster = IpcEventBroadcaster()
     writer = _make_writer(drain_raises=ConnectionResetError())
@@ -146,6 +152,22 @@ async def test_dead_connection_removed_after_failure() -> None:
 
     writer.write.reset_mock()  # type: ignore[attr-defined]
     await broadcaster.handle(event)  # no subscribers remain
+    writer.write.assert_not_called()  # type: ignore[attr-defined]
+
+
+# 功能：验证慢消费者超过写缓冲阈值后连接被关闭，而不是留下永远等不到完成事件的活连接
+# 设计：让 transport 直接报告超限水位，发布单个事件后同时断言 close 调用和订阅撤销
+async def test_slow_consumer_is_closed_and_unsubscribed() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer(buffer_size=4 * 1024 * 1024 + 1)
+    sub_id = broadcaster.subscribe(writer, topics=["run.*"])
+
+    await broadcaster.handle(_run_started())
+
+    writer.close.assert_called_once()  # type: ignore[attr-defined]
+    assert not broadcaster.owns_subscription(writer, sub_id)
+    writer.write.reset_mock()  # type: ignore[attr-defined]
+    await broadcaster.handle(_run_started())
     writer.write.assert_not_called()  # type: ignore[attr-defined]
 
 

@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC
 from pathlib import Path
 from typing import Any, cast
@@ -2639,38 +2640,74 @@ class CoreApp:
         except NotImplementedError:
             logger.warning("signal handlers are not supported by this event loop")
 
-        await shutdown.wait()
+        try:
+            await shutdown.wait()
+        finally:
+            # Ctrl+C/取消路径（Windows 无信号 handler 时 asyncio.run 会直接取消主任务）
+            # 也必须完整拆除，否则子进程/MCP/SSE 客户端被遗弃
+            await self._teardown(server)
 
+    # 有序拆除所有子系统，单步失败后继续，保证一次 Ctrl+C 能完成全部清理
+    async def _teardown(self, server: SocketServer) -> None:
         logger.info("shutting down")
-        if self._http_api is not None:
-            await self._http_api.stop()
-        if self._fleet is not None:
-            await self._fleet.shutdown()
+        entry_steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
+            ("http_api", None if self._http_api is None else self._http_api.stop),
+            ("socket_server", server.stop),
+        ]
+        for name, step in entry_steps:
+            if step is None:
+                continue
+            try:
+                await step()
+            except Exception:
+                logger.exception("teardown step failed: %s", name)
+        # 先阻断新子 Agent 注册，再取消会话和关闭 Worker，避免退出阶段产生新后台任务
         if self._subagent_registry is not None:
             self._subagent_registry.begin_shutdown()
-        if self._sessions is not None:
-            await self._sessions.cancel_all()
-        if self._runtime_api is not None:
-            await self._runtime_api.close()
+        steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
+            ("fleet", None if self._fleet is None else self._fleet.shutdown),
+            (
+                "sessions_cancel",
+                None if self._sessions is None else self._sessions.cancel_all,
+            ),
+            ("runtime_api", None if self._runtime_api is None else self._runtime_api.close),
+        ]
+        for name, step in steps:
+            if step is None:
+                continue
+            try:
+                await step()
+            except Exception:
+                logger.exception("teardown step failed: %s", name)
         for run_task in list(self._running_runs):
             run_task.cancel()
         if self._running_runs:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
         if self._runtime is not None:
-            await self._runtime.drain_pending_writes()
-        if self._mcp_manager is not None:
-            await self._mcp_manager.stop_all()
-        await self._background_registry.cancel_all()
-        if self._subagent_registry is not None:
-            await self._subagent_registry.cancel_all()
-        await self._worker_backends.close()
-        if self._hooks is not None:
-            await self._hooks.close()
-        await self._persistent_shell_pool.aclose_all()
-        await self._process_supervisor.close()
-        await server.stop()
-        if self._trace is not None:
-            await self._trace.stop()
+            try:
+                await self._runtime.drain_pending_writes()
+            except Exception:
+                logger.exception("teardown step failed: runtime_drain")
+        late_steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
+            ("mcp", None if self._mcp_manager is None else self._mcp_manager.stop_all),
+            ("background_registry", self._background_registry.cancel_all),
+            (
+                "subagent_registry",
+                None if self._subagent_registry is None else self._subagent_registry.cancel_all,
+            ),
+            ("worker_backends", self._worker_backends.close),
+            ("hooks", None if self._hooks is None else self._hooks.close),
+            ("persistent_shells", self._persistent_shell_pool.aclose_all),
+            ("process_supervisor", self._process_supervisor.close),
+            ("trace", None if self._trace is None else self._trace.stop),
+        ]
+        for name, step in late_steps:
+            if step is None:
+                continue
+            try:
+                await step()
+            except Exception:
+                logger.exception("teardown step failed: %s", name)
         self._capability_kernel.dispose_scope(self._capability_scope)
         if self._daemon_lock is not None:
             self._daemon_lock.release()

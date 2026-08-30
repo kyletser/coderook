@@ -20,6 +20,7 @@ from code_rook.core.llm.types import (
     UsageStats,
     completion_status_from_reason,
 )
+from code_rook.core.llm.wire import merge_consecutive_user_messages
 
 _DEFAULT_CONTEXT_WINDOW = 1_050_000
 
@@ -212,6 +213,8 @@ class OpenAIResponsesProvider:
         thinking: str | None = None,
     ) -> LlmResponse:
         resolved_model = model or self._model
+        # 与 Anthropic 同理：连续 user 消息在请求组装处归一，内部注入不再打断角色交替
+        messages = merge_consecutive_user_messages(messages)
         await bus.publish(
             LlmModelSelectedEvent(
                 run_id=run_id,

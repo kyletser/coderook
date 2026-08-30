@@ -217,3 +217,27 @@ async def test_socket_server_refuses_non_loopback_bind() -> None:
     server = SocketServer("0.0.0.0", _free_port())
     with pytest.raises(SystemExit, match="non-loopback"):
         await server.start()
+
+
+# 功能：超过 StreamReader limit（64MB）的超大帧返回结构化 INVALID_REQUEST 错误而不是裸断连
+# 设计：发送略超 limit 的未认证帧，覆盖 readline 抛 ValueError 的真实路径
+async def test_oversize_frame_returns_structured_error() -> None:
+    port = _free_port()
+    server = SocketServer("127.0.0.1", port, broadcaster=None)  # type: ignore[arg-type]
+    await server.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"x" * (64 * 1024 * 1024 + 16) + b"\n")
+        await writer.drain()
+
+        raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        message: dict[str, Any] = json.loads(raw)
+        assert message["error"]["code"] == -32600
+        assert "too large" in message["error"]["message"]
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except (ConnectionError, OSError):
+            pass
+    finally:
+        await server.stop()

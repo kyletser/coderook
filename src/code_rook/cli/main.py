@@ -10,6 +10,7 @@ from code_rook.cli.commands.cancel import cmd_cancel
 from code_rook.cli.commands.chat import cmd_chat
 from code_rook.cli.commands.configure import cmd_configure, print_llm_status
 from code_rook.cli.commands.core import (
+    CoreLaunchError,
     cmd_core_restart,
     cmd_core_start,
     cmd_core_status,
@@ -75,6 +76,10 @@ def main() -> int:
     except CredentialStoreError as exc:
         print(f"credential store error: {exc.safe_message}", file=sys.stderr)
         return 2
+    except CoreLaunchError as exc:
+        # ensure_core_running 的失败消息面向用户，避免裸 traceback 直接抛给调用方
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令

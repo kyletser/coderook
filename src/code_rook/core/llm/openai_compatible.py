@@ -23,6 +23,7 @@ from code_rook.core.llm.types import (
     UsageStats,
     completion_status_from_reason,
 )
+from code_rook.core.llm.wire import merge_consecutive_user_messages
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ class OpenAICompatibleProvider:
         payload: dict[str, object] = {
             "model": resolved_model,
             "messages": _to_openai_messages(
-                messages,
+                merge_consecutive_user_messages(messages),
                 system or _SYSTEM_PROMPT,
                 include_reasoning=effective_thinking != "off",
             ),

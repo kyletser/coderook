@@ -411,6 +411,7 @@ class PermissionManager:
         if session_mode.mode != "interactive":
             if (
                 not outside_cwd
+                and not windows_shell_requires_approval
                 and session_mode.mode == "allow_list"
                 and bool(
                     {tool_name, *scope.lookup_keys}
@@ -420,6 +421,9 @@ class PermissionManager:
                 return True, "headless_allow_list"
             if session_mode.mode == "fail_fast":
                 return False, "headless_fail_fast"
+            if windows_shell_requires_approval:
+                # Windows 无真实 OS 沙箱，allow-list 也不得静默执行 shell，保持强制审批不变式
+                return False, "headless_unsandboxed_shell"
             return False, "headless_deny"
 
         # ASK 路径（来自 OUTSIDE_CWD 强制 ASK，或 default=ASK）
@@ -536,12 +540,24 @@ class PermissionManager:
         *,
         prefix_key: str = "",
     ) -> bool:
-        allow = decision in ("allow_once", "always_allow", "always_allow_pattern")
+        allow = decision in (
+            "allow_once",
+            "always_allow",
+            "always_allow_pattern",
+            "session_allow",
+        )
         if decision == "always_allow_pattern":
             if not prefix_key:
                 return False
             self._store_always(prefix_key, "allow", session_id)
             return True
+        if decision == "session_allow":
+            # 会话级 allow 只写内存 session 缓存，不落 policy.toml，避免跨会话放大授权
+            self._session_always[(session_id, permission_key)] = "allow"
+            return True
+        if decision == "session_deny":
+            self._session_always[(session_id, permission_key)] = "deny"
+            return False
         if decision == "always_allow":
             self._store_always(permission_key, "allow", session_id)
         elif decision == "always_deny":

@@ -182,15 +182,19 @@ def ensure_core_running(
     )
 
 
+# 判断指定 PID 的进程是否仍在运行（Windows 用 OpenProcess，access denied 也算存活）
 def _pid_exists(pid: int) -> bool:
     if os.name == "nt":
         import ctypes
 
         process_query_limited_information = 0x1000
         windll = getattr(ctypes, "windll", None)
-        if windll is None:
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if windll is None or win_dll is None:
             return False
-        kernel32 = windll.kernel32
+        # 必须以 use_last_error=True 创建：windll 共享的 ctypes 私有错误副本不会
+        # 被 kernel32 调用填充，get_last_error() 恒为 0，会把活的提权 daemon 误判为已退出
+        kernel32 = win_dll("kernel32", use_last_error=True)
         handle = kernel32.OpenProcess(
             process_query_limited_information,
             False,
@@ -199,7 +203,9 @@ def _pid_exists(pid: int) -> bool:
         if handle:
             kernel32.CloseHandle(handle)
             return True
-        get_last_error = getattr(ctypes, "get_last_error", lambda: 0)
+        get_last_error = getattr(ctypes, "get_last_error", None)
+        if get_last_error is None:
+            return False
         return int(get_last_error()) == 5  # access denied still means the PID exists
     try:
         os.kill(pid, 0)
@@ -320,7 +326,8 @@ def cmd_core_start(config: CodeRookConfig, *, env_file: Path | None = None) -> N
         started = ensure_core_running(config, env_file=env_file)
     except CoreLaunchError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return
+        # 启动失败必须以非零码退出，否则包装 CLI 的脚本无法感知 daemon 未启动
+        raise SystemExit(1) from exc
 
     if started:
         pid = _running_pid()
@@ -346,6 +353,7 @@ def cmd_core_restart(config: CodeRookConfig, *, env_file: Path | None = None) ->
         started = ensure_core_running(config, env_file=env_file)
     except CoreLaunchError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return
+        # 与 start 保持一致：重启失败同样必须以非零码退出
+        raise SystemExit(1) from exc
     action = "restarted" if stopped else ("started" if started else "already running")
     print(f"{action}  pid={_running_pid()}  ({config.host}:{config.port})")

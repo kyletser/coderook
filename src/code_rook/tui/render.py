@@ -331,6 +331,12 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "run.started":
         run_id = str(event.get("run_id", ""))
         app._active_run_id = run_id
+        # daemon 主动发起的 run（队列自动派发/Web 发起/goal 续跑）不经 _begin_message，
+        # 必须在此同步 busy 状态，否则状态栏显示 ready 且 Ctrl+C 取消静默无效
+        if not app._busy:
+            app._busy = True
+            app._update_header("running")
+            app._update_status_bar()
         app._current_steps.pop(run_id, None)
         app._cancel_requested = False
         app._cancel_armed = False

@@ -235,7 +235,9 @@ async def test_windows_job_object_kills_descendant_tree() -> None:
         ["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
         check=True,
         capture_output=True,
-        text=True,
     )
+    # tasklist 在中文 Windows 输出 GBK，按 UTF-8 text 解码会在读线程抛 UnicodeDecodeError，
+    # 因此按字节捕获并用 errors="replace" 在本进程解码；判定只关心 ASCII 的 PID 数字
+    tasklist_text = tasklist.stdout.decode(errors="replace")
 
-    assert f'"{child_pid}"' not in tasklist.stdout
+    assert f'"{child_pid}"' not in tasklist_text

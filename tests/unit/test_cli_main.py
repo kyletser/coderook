@@ -8,9 +8,20 @@ from pathlib import Path
 import pytest
 
 from code_rook.cli import main as cli_main
+from code_rook.cli.commands.run import _event_belongs_to_run
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.tui import __main__ as tui_main
+
+
+# 功能：验证 headless run 只接收自身事件，同时允许无归属的全局状态事件
+# 设计：直接覆盖匹配、其他 run 和缺失 run_id 三种输入，锁定早期缓冲回放的过滤规则
+def test_headless_run_event_ownership_filter() -> None:
+    assert _event_belongs_to_run({"type": "run.started", "run_id": "run-1"}, "run-1")
+    assert not _event_belongs_to_run(
+        {"type": "tool.call_started", "run_id": "run-2"}, "run-1"
+    )
+    assert _event_belongs_to_run({"type": "core.status"}, "run-1")
 
 
 # 功能：验证 CLI 在 Windows 管道场景主动把 stdout 和 stderr 切换为 UTF-8

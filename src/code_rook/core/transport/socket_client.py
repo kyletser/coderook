@@ -139,9 +139,11 @@ class SocketClient:
                     break
                 await self._dispatch(line)
         finally:
+            # 连接死亡时以 IpcError 完成挂起请求而不是 cancel()：裸 CancelledError 会与
+            # 调用方自身的取消不可区分，绕过前端的错误处理（busy 卡死、草稿丢失）
             for fut in self._pending.values():
                 if not fut.done():
-                    fut.cancel()
+                    fut.set_exception(IpcError(-1, "connection closed"))
             self._pending.clear()
 
     # 解析单行消息并路由到 pending future（RPC 响应）或 event handler（服务器推送）

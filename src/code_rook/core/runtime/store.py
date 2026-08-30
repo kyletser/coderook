@@ -580,6 +580,14 @@ class RuntimeStore:
             )
         return max(0, cursor.rowcount)
 
+    # 返回持久消息队列中仍有记录的 thread 集合，供启动期 prune 排除含用户消息的会话
+    def thread_ids_with_queued_messages(self) -> set[str]:
+        with connect_database(self.path) as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT thread_id FROM runtime_message_queue"
+            ).fetchall()
+        return {str(row["thread_id"]) for row in rows}
+
     # 新增或覆盖 session 兼容 facade 元数据
     def upsert_session_facade(self, record: SessionFacadeRecord) -> None:
         try:

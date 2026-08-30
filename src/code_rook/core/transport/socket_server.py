@@ -234,6 +234,11 @@ class SocketServer:
             except asyncio.LimitOverrunError:
                 await self._send(writer, make_error(None, INVALID_REQUEST, "Request too large"))
                 return
+            except ValueError:
+                # asyncio 在帧超限（含 limit_size 场景）时统一抛 ValueError 而非 LimitOverrunError，
+                # 不捕获会让超大帧变成无声断连，64MB 帧防护的预定的错误响应也发不出去
+                await self._send(writer, make_error(None, INVALID_REQUEST, "Request too large"))
+                return
 
             if not line:
                 return

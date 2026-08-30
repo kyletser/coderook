@@ -4249,25 +4249,24 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         decision = msg.decision
         log.info("permission decided tool_use_id=%s decision=%s", tool_use_id, decision)
         try:
+            # 先发送成功再拆除控件：发送失败时保留审批块并提示，避免决策被静默吞掉
+            if self._client is None:
+                raise RuntimeError("core connection is unavailable")
+            await self._client.send_command(
+                "permission.respond",
+                {
+                    "tool_use_id": tool_use_id,
+                    "decision": decision,
+                    "selected_hunks": msg.selected_hunks,
+                    "patch_plan_id": msg.patch_plan_id,
+                },
+            )
+            if isinstance(self._session_id, str):
+                self._connection.resolve_permission(self._session_id, tool_use_id)
             msg.widget.remove()
             perm_block = self._pending_permission_blocks.pop(tool_use_id, None)
             if perm_block is not None:
                 perm_block.remove()
-            if self._client is not None:
-                try:
-                    await self._client.send_command(
-                        "permission.respond",
-                        {
-                            "tool_use_id": tool_use_id,
-                            "decision": decision,
-                            "selected_hunks": msg.selected_hunks,
-                            "patch_plan_id": msg.patch_plan_id,
-                        },
-                    )
-                    if isinstance(self._session_id, str):
-                        self._connection.resolve_permission(self._session_id, tool_use_id)
-                except (IpcError, RuntimeError, OSError):
-                    pass
             if not self._pending_permission_blocks:
                 p = self._prompt()
                 if p is not None:
@@ -4275,6 +4274,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     p.read_only = False
                     p.border_title = tr("shell.connected", self._locale)
                     p.focus()
+        except (IpcError, RuntimeError, OSError) as permission_error:
+            # 发送失败：保留审批块与挂起状态，展示错误卡片，重连后可重新决策
+            self._show_safe_error(
+                "permission",
+                permission_error,
+                action="permission",
+            )
         except Exception:
             log.exception("on_permission_select_decided failed tool_use_id=%s", tool_use_id)
 

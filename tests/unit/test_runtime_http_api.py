@@ -384,6 +384,23 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             assert response.json()["accepted"] is True
             assert service.permission_response == ("tool-1", "allow_once")
 
+            # 功能：Web 决策词表在路由层翻译为 PermissionManager 词表
+            # 设计：allow_session 直传曾被 manager 判为拒绝且不落盘，用户无限重试；
+            # 用词表内每个 Web 决策逐个提交，断言翻译映射而不是 manager 收到原词
+            decisions = {
+                "allow_session": "session_allow",
+                "allow_always": "always_allow",
+                "deny_session": "session_deny",
+                "deny_always": "always_deny",
+                "deny_once": "deny_once",
+            }
+            for web_decision, manager_decision in decisions.items():
+                await client.post(
+                    "/v1/permissions/tool-1",
+                    json={"decision": web_decision},
+                )
+                assert service.permission_response == ("tool-1", manager_decision)
+
             response = await client.get(
                 "/v1/workspace/diff",
                 params={"scope": "unstaged", "path": "src"},

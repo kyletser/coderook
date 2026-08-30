@@ -105,7 +105,8 @@ async def test_runtime_replay_delivery_failure_rejects_high_water_ack() -> None:
     app = CoreApp()
     broadcaster = IpcEventBroadcaster()
     writer = _make_writer()
-    writer.drain = AsyncMock(side_effect=ConnectionResetError())
+    # 事件推送不再 await drain（防慢消费者冻结 EventBus），投递失败注入在 write 上
+    writer.write = MagicMock(side_effect=ConnectionResetError())
     broadcaster.subscribe(writer, ["run.*"], scope="global")
     app._broadcaster = broadcaster  # type: ignore[attr-defined]
     app._runtime = _Runtime()  # type: ignore[assignment]
@@ -118,8 +119,7 @@ async def test_runtime_replay_delivery_failure_rejects_high_water_ack() -> None:
     with pytest.raises(ConnectionError, match="replay delivery failed"):
         await app._subscribe_runtime_events(command, writer)  # type: ignore[attr-defined]
 
-    writer.write.reset_mock()  # type: ignore[attr-defined]
-    writer.drain = AsyncMock()
+    writer.write = MagicMock()
     await broadcaster.handle(
         RunStartedEvent(run_id="run-1", goal="test", ts="2026-08-24T00:00:00Z")
     )

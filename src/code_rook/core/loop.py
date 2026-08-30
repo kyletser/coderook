@@ -382,7 +382,14 @@ class AgentLoop:
         usage = response.usage
         if usage is None or usage.context_pct <= 0 or usage.input_tokens <= 0:
             return 0.0
-        estimated_capacity = usage.input_tokens / usage.context_pct
+        # Anthropic 的 input_tokens 不含缓存 token 而 context_pct 含；容量推算的分子
+        # 必须与 context_pct 同口径，否则会把窗口低估、投影占比虚高
+        context_tokens = (
+            usage.input_tokens
+            + usage.cache_read_input_tokens
+            + usage.cache_creation_input_tokens
+        )
+        estimated_capacity = context_tokens / usage.context_pct
         projected_input = estimate_messages_tokens(context.messages) + output_reserve_tokens
         return projected_input / max(1.0, estimated_capacity)
 
