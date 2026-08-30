@@ -667,6 +667,7 @@ class SessionManager:
         run_id: str | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
+        display_content: str | None = None,
     ) -> str:
         async with self._workspace_mutation_guard.turn():
             return await self._send_message(
@@ -675,6 +676,7 @@ class SessionManager:
                 run_id=run_id,
                 runtime_mode=runtime_mode,
                 attachments=attachments,
+                display_content=display_content,
             )
 
     # 追加 thread 并启动一次 agent run
@@ -686,6 +688,7 @@ class SessionManager:
         run_id: str | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
+        display_content: str | None = None,
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -918,7 +921,7 @@ class SessionManager:
                 )
 
                 if not session.title:
-                    session.title = content[:40]
+                    session.title = (display_content or content)[:40]
                 if run_id not in session.run_ids:
                     session.run_ids.append(run_id)
                 session.status = "active"
@@ -931,6 +934,7 @@ class SessionManager:
                         run_id,
                         ledger_content,
                         runtime_mode=runtime_mode,
+                        display_content=display_content,
                         route=(
                             resolved_route.receipt
                             if resolved_route is not None

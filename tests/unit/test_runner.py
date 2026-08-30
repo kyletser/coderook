@@ -279,6 +279,24 @@ async def test_runner_injects_repository_context_and_event(tmp_path: Path) -> No
     assert repository_event.used_chars <= repository_event.budget_chars  # type: ignore[attr-defined]
 
 
+# 功能：验证简单产品问答跳过仓库检索、历史上下文和工具目录，避免一次回答消耗完整 Coding Agent 提示
+# 设计：使用捕获 Provider 检查请求体和事件轨迹，确保仍走真实 AgentLoop 但只保留轻量身份提示
+async def test_runner_uses_lightweight_context_for_conversation_answer(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "large_context.py").write_text("class ProductCapability:\n    pass\n", encoding="utf-8")
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="可以帮助编程。"))
+
+    events = await _run(goal="你能干什么？", provider=provider, tmp_path=tmp_path)
+
+    assert not any(event.type == "context.repository" for event in events)  # type: ignore[attr-defined]
+    assert provider.tool_schemas == []
+    assert provider.messages == [{"role": "user", "content": "你能干什么？"}]
+    assert "Answer simple questions" in (provider.system or "")
+    assert "Repository Map" not in (provider.system or "")
+    assert len(provider.system or "") < 4_000
+
+
 # 功能：验证成功完成时发布 status=success 的 run.finished 事件
 # 设计：EndTurnProvider 触发最短成功路径，聚焦 runner 层对任何终止路径都能保证发布 finished 事件
 async def test_run_finished_event_published_on_success(tmp_path: Path) -> None:

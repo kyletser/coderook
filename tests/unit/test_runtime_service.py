@@ -106,6 +106,30 @@ async def test_runtime_projection_accepts_enriched_run_finished(tmp_path: Path) 
     ]
 
 
+# 功能：验证模型增强提示与用户可见输入分离，时间线不会泄露内部控制文本
+# 设计：用不同的 content 和 display_content 启动真实 Runtime turn，再读取首条持久消息核对展示值
+async def test_start_turn_persists_user_visible_content(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    session = Session(
+        id="sess-display-content",
+        mode="chat",
+        status="active",
+        title="test",
+        created_at="2026-08-24T00:00:00Z",
+        updated_at="2026-08-24T00:00:00Z",
+    )
+
+    await service.start_turn(
+        session,
+        "run-display-content",
+        "internal execution instruction",
+        display_content="!pytest -q",
+    )
+
+    items = await service.list_items("run-display-content")
+    assert items[0].payload == {"role": "user", "content": "!pytest -q"}
+
+
 # 功能：验证历史 session 与 run 索引可幂等导入 runtime
 # 设计：连续 bootstrap 同一 interrupted session，确认 thread/facade/turn 不重复且末次 run 保留中断态
 async def test_bootstrap_sessions_is_idempotent(tmp_path: Path) -> None:

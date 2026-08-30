@@ -413,6 +413,7 @@ class SessionSendMessageCommand(BaseModel):
     type: Literal["session.send_message"] = "session.send_message"
     session_id: str
     content: str
+    display_content: str | None = None
     runtime_mode: RuntimeMode = RuntimeMode.ACT
     attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
 

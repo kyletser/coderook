@@ -167,6 +167,9 @@ button:disabled { cursor: default; opacity: .38; }
 .panel-content { min-height: 0; overflow: auto; padding: 15px 17px 26px; scrollbar-color: #303138 transparent; scrollbar-width: thin; }
 .search, .provider-form input, .provider-form select { width: 100%; padding: 9px 10px; border: 1px solid #30313a; border-radius: 8px; outline: 0; background: #0e0f12; color: #e5e5e8; font-size: 11px; }
 .search:focus, .provider-form input:focus, .provider-form select:focus { border-color: #5d5f82; }
+.file-navigation { display: flex; align-items: center; gap: 9px; min-width: 0; margin-bottom: 8px; color: var(--muted); font-size: 10.5px; }
+.file-navigation button { width: 28px; height: 28px; padding: 0; border: 1px solid #33343d; border-radius: 8px; background: #1b1c22; color: inherit; }
+.file-navigation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-list { margin-top: 9px; }
 .file-list button { width: 100%; display: flex; justify-content: space-between; gap: 10px; padding: 8px 6px; border: 0; border-radius: 6px; background: transparent; color: #c1c2c8; text-align: left; font-size: 10.5px; }
 .file-list button:hover { background: var(--hover); }
@@ -394,6 +397,7 @@ body { background: #f1f1ee; color: var(--text); }
 .drawer header > button:hover { color: #24252a; background: #eeeeea; }
 .panel-content { background: #f8f8f6; }
 .search, .provider-form input, .provider-form select { border-color: #d8d8d3; background: #fff; color: #2f3035; }
+.file-navigation button { border-color: #d5d5d0; background: #fff; }
 .file-list button { color: #4e4f54; }
 .file-list button:hover { background: #ecece8; }
 .file-preview button, .panel-toolbar button { border-color: #d5d5d0; background: #fff; color: #666761; }

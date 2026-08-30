@@ -69,6 +69,7 @@ class _FakeRuntimeApi:
             for index in range(1, 4)
         ]
         self.steering = ""
+        self.display_content: str | None = None
         self.permission_response: tuple[str, str] | None = None
 
     @property
@@ -98,9 +99,12 @@ class _FakeRuntimeApi:
         content: str,
         mode: RuntimeMode,
         _attachments: object = None,
+        *,
+        display_content: str | None = None,
     ) -> TurnRecord:
         assert thread_id == self.thread.id
         assert content == "work"
+        self.display_content = display_content
         self.turn = self.turn.model_copy(update={"mode": mode})
         return self.turn
 
@@ -244,10 +248,15 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
 
             response = await client.post(
                 "/v1/threads/thread-1/turns",
-                json={"content": "work", "mode": "plan"},
+                json={
+                    "content": "work",
+                    "display_content": "!pytest",
+                    "mode": "plan",
+                },
             )
             assert response.status_code == 202
             assert response.json()["mode"] == "plan"
+            assert service.display_content == "!pytest"
 
             response = await client.post(
                 "/v1/turns/turn-1/steer",

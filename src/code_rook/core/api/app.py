@@ -469,6 +469,11 @@ class HttpApiServer:
             content = body.get("content")
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("content must be a non-empty string")
+            display_content = body.get("display_content")
+            if display_content is not None and (
+                not isinstance(display_content, str) or not display_content.strip()
+            ):
+                raise ValueError("display_content must be a non-empty string")
             mode = RuntimeMode(str(body.get("mode", RuntimeMode.ACT.value)))
             raw_attachments = body.get("attachments", [])
             if not isinstance(raw_attachments, list):
@@ -481,6 +486,7 @@ class HttpApiServer:
                 content,
                 mode,
                 attachments,
+                display_content=display_content,
             )
             return HTTPStatus.ACCEPTED, turn
         match = _TURN_ACTION.fullmatch(path)

@@ -633,6 +633,8 @@ class RuntimeApiService:
         content: str,
         mode: RuntimeMode,
         attachments: list[ImageArtifactInput] | None = None,
+        *,
+        display_content: str | None = None,
     ) -> TurnRecord:
         run_id = new_run_id()
         task = self._track(
@@ -642,6 +644,7 @@ class RuntimeApiService:
                 run_id=run_id,
                 runtime_mode=mode,
                 attachments=attachments,
+                display_content=display_content,
             ),
             name=f"api-turn:{run_id}",
         )

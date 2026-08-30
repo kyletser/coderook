@@ -22,7 +22,13 @@ type ImageAttachment = {
   height: number;
   name: string;
 };
-type QueuedMessage = { content: string; mode: RunMode };
+type QueuedMessage = {
+  content: string;
+  displayContent: string;
+  mode: RunMode;
+  attachments: ImageAttachment[];
+  fileReferences: string[];
+};
 type ToolTimelineEntry = {
   kind: "tool";
   key: string;
@@ -410,6 +416,30 @@ function isSimpleProductQuestion(value: string): boolean {
   return /(你好|您好|你是谁|什么模型|具体型号|你能做什么|你能干什么|你会什么|有什么功能|怎么使用|如何使用)/i.test(value);
 }
 
+export function modelContentFor(visibleContent: string, fileReferences: string[]): string {
+  const command = visibleContent.startsWith("!") && visibleContent.length > 1
+    ? visibleContent.slice(1).trim()
+    : "";
+  const base = command
+    ? `The user explicitly requested this exact shell command. Run it through the normal permission and sandbox tool pipeline, then report its exit status and important output without changing the command: ${command}`
+    : visibleContent;
+  const selected = fileReferences
+    .filter((path) => visibleContent.includes(`@${path}`))
+    .slice(0, 8);
+  if (!selected.length) return base;
+  return `${base}\n\nBounded file references selected by the user: ${JSON.stringify(selected)}. Read only the ranges needed for this task; do not inject entire files by default.`;
+}
+
+export function eventBelongsToThread(activeThreadId: string, streamThreadId: string): boolean {
+  return Boolean(activeThreadId) && activeThreadId === streamThreadId;
+}
+
+export function parentWorkspacePath(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/") || ".";
+}
+
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
@@ -426,12 +456,16 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const [sending, setSending] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [fileReferences, setFileReferences] = useState<string[]>([]);
   const [inspectorFile, setInspectorFile] = useState("");
   const [queueMode, setQueueMode] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const cursors = useRef<Record<string, number>>({});
   const initializedSelection = useRef(false);
   const composerDrafts = useRef<Record<string, string>>({});
+  const attachmentDrafts = useRef<Record<string, ImageAttachment[]>>({});
+  const fileReferenceDrafts = useRef<Record<string, string[]>>({});
+  const queueDrafts = useRef<Record<string, QueuedMessage[]>>({});
   const selectedIdRef = useRef("");
   const timelineRef = useRef<HTMLElement | null>(null);
   const previousTimelineSize = useRef(0);
@@ -506,6 +540,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
             cursors.current[selectedId] || 0,
             controller.signal,
             (event) => {
+              if (!eventBelongsToThread(selectedIdRef.current, selectedId)) return;
               cursors.current[selectedId] = Math.max(cursors.current[selectedId] || 0, event.seq);
               setEvents((current) =>
                 current.some((item) => item.seq === event.seq) ? current : [...current, event],
@@ -550,19 +585,27 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   }, []);
 
   const selectThread = useCallback((threadId: string) => {
-    composerDrafts.current[selectedId || "__new__"] = composer;
+    const currentKey = selectedId || "__new__";
+    const nextKey = threadId || "__new__";
+    composerDrafts.current[currentKey] = composer;
+    attachmentDrafts.current[currentKey] = attachments;
+    fileReferenceDrafts.current[currentKey] = fileReferences;
+    queueDrafts.current[currentKey] = queuedMessages;
+    cursors.current[threadId] = 0;
     setSelectedId(threadId);
-    setComposer(composerDrafts.current[threadId || "__new__"] || "");
+    setComposer(composerDrafts.current[nextKey] || "");
+    setAttachments(attachmentDrafts.current[nextKey] || []);
+    setFileReferences(fileReferenceDrafts.current[nextKey] || []);
+    setQueuedMessages(queueDrafts.current[nextKey] || []);
     setTurns([]);
     setItems([]);
     setEvents([]);
     setPhase("idle");
     previousTimelineSize.current = 0;
-    setQueuedMessages([]);
     setNotice("");
     setError("");
     setMobileSidebarOpen(false);
-  }, [composer, selectedId]);
+  }, [attachments, composer, fileReferences, queuedMessages, selectedId]);
 
   const beginDraft = useCallback(() => {
     selectThread("");
@@ -577,17 +620,30 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setSending(true);
     setError("");
     try {
+      const submitted = modelContentFor(content, fileReferences);
       if (activeTurn) {
         if (queueMode) {
-          setQueuedMessages((current) => [...current, { content, mode }]);
+          setQueuedMessages((current) => [...current, {
+            content: submitted,
+            displayContent: content,
+            mode,
+            attachments: [...attachments],
+            fileReferences: [...fileReferences],
+          }]);
           setComposer("");
           composerDrafts.current[selectedId || "__new__"] = "";
+          setAttachments([]);
+          setFileReferences([]);
           setNotice("消息已加入队列，将在当前任务结束后发送");
+          return;
+        }
+        if (attachments.length > 0) {
+          setError("运行中的纠偏暂不支持图片。请切换到“排队”发送，图片会随下一轮任务提交。");
           return;
         }
         await request(`/v1/turns/${encodeURIComponent(activeTurn.id)}/steer`, {
           method: "POST",
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content: submitted }),
         });
         setNotice("纠偏消息已送达当前任务");
       } else {
@@ -598,15 +654,13 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           return;
         }
         const threadId = selectedId || (await createThread());
-        const submitted = content.startsWith("!") && content.length > 1
-          ? `The user explicitly requested this exact shell command. Run it through the normal permission and sandbox tool pipeline, then report its exit status and important output without changing the command: ${content.slice(1).trim()}`
-          : content;
         const started = await request<TurnRecord>(
           `/v1/threads/${encodeURIComponent(threadId)}/turns`,
           {
             method: "POST",
             body: JSON.stringify({
               content: submitted,
+              display_content: content,
               mode,
               attachments: attachments.map(({ name: _name, ...attachment }) => attachment),
             }),
@@ -618,6 +672,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       setComposer("");
       composerDrafts.current[selectedId || "__new__"] = "";
       setAttachments([]);
+      setFileReferences([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -631,14 +686,21 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setSending(true);
     request<TurnRecord>(`/v1/threads/${encodeURIComponent(selectedId)}/turns`, {
       method: "POST",
-      body: JSON.stringify({ content: next.content, mode: next.mode }),
+      body: JSON.stringify({
+        content: next.content,
+        display_content: next.displayContent,
+        mode: next.mode,
+        attachments: next.attachments.map(({ name: _name, ...attachment }) => attachment),
+      }),
     }).then((started) => {
       setTurns((current) => [...current, started]);
       setQueuedMessages((current) => current.slice(1));
       void loadThread(selectedId);
     }).catch((reason: unknown) => {
       setQueuedMessages((current) => current.slice(1));
-      setComposer((current) => current || next.content);
+      setComposer((current) => current || next.displayContent);
+      setAttachments((current) => current.length ? current : next.attachments);
+      setFileReferences((current) => current.length ? current : next.fileReferences);
       setError(`队列消息发送失败，已恢复到输入框：${reason instanceof Error ? reason.message : String(reason)}`);
     }).finally(() => setSending(false));
   }, [activeTurn, loadThread, queuedMessages, selectedId, sending]);
@@ -946,7 +1008,10 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         </section>
 
         <form className="composer" onSubmit={(event) => void send(event)}>
-          {attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span key={attachment.sha256}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.sha256 !== attachment.sha256))}>×</button></span>)}</div>}
+          {(attachments.length > 0 || fileReferences.length > 0) && <div className="attachment-row">
+            {fileReferences.map((path) => <span key={`file:${path}`}>@{path}<button type="button" onClick={() => { setFileReferences((current) => current.filter((item) => item !== path)); setComposer((current) => current.replaceAll(`@${path}`, "").replace(/\s{2,}/g, " ")); }}>×</button></span>)}
+            {attachments.map((attachment) => <span key={attachment.sha256}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.sha256 !== attachment.sha256))}>×</button></span>)}
+          </div>}
           <textarea
             value={composer}
             onChange={(event) => setComposer(event.target.value)}
@@ -986,6 +1051,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           onClose={() => setDrawer(null)}
           onReference={(path) => {
             setComposer((current) => `${current}${current ? " " : ""}@${path} `);
+            setFileReferences((current) => current.includes(path) ? current : [...current, path]);
             setDrawer(null);
           }}
           onError={setError}
@@ -1263,6 +1329,7 @@ function DrawerPanel({
 function FilesPanel({ initialFile, onReference, onError }: { initialFile: string; onReference(path: string): void; onError(value: string): void }): ReactElement {
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
   const [query, setQuery] = useState("");
+  const [currentPath, setCurrentPath] = useState(".");
   const [preview, setPreview] = useState<{ path: string; content: string; binary: boolean } | null>(null);
   useEffect(() => {
     if (!initialFile) return;
@@ -1274,7 +1341,7 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       request<{ entries: WorkspaceEntry[] }>(
-        `/v1/workspace/files?query=${encodeURIComponent(query)}`,
+        `/v1/workspace/files?path=${encodeURIComponent(currentPath)}&query=${encodeURIComponent(query)}`,
         { signal: controller.signal },
       )
         .then((result) => setEntries(result.entries))
@@ -1288,9 +1355,13 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [onError, query]);
+  }, [currentPath, onError, query]);
   const open = async (entry: WorkspaceEntry) => {
-    if (entry.kind === "directory") return;
+    if (entry.kind === "directory") {
+      setCurrentPath(entry.path);
+      setQuery("");
+      return;
+    }
     try {
       const file = await request<{ path: string; content: string; binary: boolean }>(`/v1/workspace/file?path=${encodeURIComponent(entry.path)}`);
       setPreview(file);
@@ -1298,7 +1369,11 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
       onError(reason instanceof Error ? reason.message : String(reason));
     }
   };
-  return <div className="panel-content"><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件…" />{preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← 返回</button><button onClick={() => onReference(preview.path)}>引用 @</button></div><b>{preview.path}</b><pre>{preview.binary ? "二进制文件暂不显示" : preview.content}</pre></div> : <div className="file-list">{entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.path}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}</div>}</div>;
+  return <div className="panel-content">
+    {!preview && <div className="file-navigation"><button disabled={currentPath === "."} onClick={() => setCurrentPath(parentWorkspacePath(currentPath))}>←</button><span title={currentPath}>{currentPath === "." ? "工作区" : currentPath}</span></div>}
+    <input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件…" />
+    {preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← 返回</button><button onClick={() => onReference(preview.path)}>引用 @</button></div><b>{preview.path}</b><pre>{preview.binary ? "二进制文件暂不显示" : preview.content}</pre></div> : <div className="file-list">{entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.name}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}</div>}
+  </div>;
 }
 
 function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {

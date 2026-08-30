@@ -5929,6 +5929,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
 | `content` | `string` | yes |
+| `display_content` | `string | null` | no |
 | `runtime_mode` | `object` | no |
 | `attachments` | `array` | no |
 
@@ -6001,6 +6002,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "content": {
       "title": "Content",
       "type": "string"
+    },
+    "display_content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Content"
     },
     "runtime_mode": {
       "$ref": "#/$defs/RuntimeMode",

@@ -1152,6 +1152,7 @@ class CoreApp:
         run_id = await self._sessions.send_message(
             cmd.session_id,
             cmd.content,
+            display_content=cmd.display_content,
             runtime_mode=cmd.runtime_mode,
             attachments=cmd.attachments,
         )

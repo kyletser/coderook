@@ -134,6 +134,7 @@ class RuntimeService:
         content: str,
         *,
         runtime_mode: RuntimeMode | None = None,
+        display_content: str | None = None,
         route: RouteReceipt | None = None,
     ) -> TurnRecord:
         authority = (
@@ -149,6 +150,7 @@ class RuntimeService:
                 session,
                 run_id,
                 content,
+                display_content,
                 authority,
                 route,
             )
@@ -411,6 +413,7 @@ class RuntimeService:
         session: Session,
         run_id: str,
         content: str,
+        display_content: str | None,
         authority: AuthoritySnapshot,
         route: RouteReceipt | None,
     ) -> tuple[TurnRecord, RuntimeEventRecord]:
@@ -436,7 +439,7 @@ class RuntimeService:
                 id=f"{run_id}:user",
                 turn_id=run_id,
                 kind=TurnItemKind.MESSAGE,
-                payload={"role": "user", "content": content},
+                payload={"role": "user", "content": display_content or content},
                 created_at=now,
             ),
             event_type="turn.started",

@@ -13,6 +13,29 @@ from code_rook.core.llm.credentials import CredentialStore
 from code_rook.tui import __main__ as tui_main
 
 
+# 功能：验证 CLI 在 Windows 管道场景主动把 stdout 和 stderr 切换为 UTF-8
+# 设计：用记录 reconfigure 参数的最小流替换系统流，直接验证两个输出通道采用同一稳定编码
+def test_cli_configures_utf8_stdio(monkeypatch) -> None:
+    class _Stream:
+        # 初始化标准流重配置调用记录
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        # 记录 CLI 请求的编码和错误策略
+        def reconfigure(self, *, encoding: str, errors: str) -> None:
+            self.calls.append((encoding, errors))
+
+    stdout = _Stream()
+    stderr = _Stream()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    cli_main._configure_utf8_stdio()
+
+    assert stdout.calls == [("utf-8", "replace")]
+    assert stderr.calls == [("utf-8", "replace")]
+
+
 # 功能：验证无参数 coderook 直接进入 TUI 启动路径
 # 设计：替换 TUI 入口并固定 argv，确认 CLI 只委托一次且不重复执行旧状态迁移
 def test_no_arguments_launches_tui(

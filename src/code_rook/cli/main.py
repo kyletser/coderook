@@ -59,8 +59,17 @@ from code_rook.core.state_migration import migrate_legacy_state
 _PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
 
 
+# 将 CLI 标准输出统一为 UTF-8，避免 Windows 管道和脚本模式把中文编码为 GBK
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 # 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
 def main() -> int:
+    _configure_utf8_stdio()
     try:
         return _run_cli()
     except CredentialStoreError as exc:

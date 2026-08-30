@@ -67,7 +67,7 @@ from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
-from code_rook.core.strategy import TaskProfile, TaskStrategy, TaskStrategyRouter
+from code_rook.core.strategy import TaskIntent, TaskProfile, TaskStrategy, TaskStrategyRouter
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
@@ -79,6 +79,12 @@ from code_rook.core.trace.provider import TracingProvider
 from code_rook.core.trace.writer import TraceWriter
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
+
+_CONVERSATION_SYSTEM_PROMPT = (
+    "You are CodeRook, a local coding agent. Answer simple questions about your identity, "
+    "active model, capabilities, or usage directly and concisely. Do not inspect the repository, "
+    "claim actions you did not perform, or suggest tool calls unless the user asks for code work."
+)
 
 
 def _now() -> str:
@@ -352,12 +358,28 @@ class AgentRunner:
                 tool_whitelist = sorted(
                     requested_tools & set(agent_preset.tool_allowlist)
                 )
+        task_router = TaskStrategyRouter()
+        rule_profile = task_router.classify_rules(
+            goal,
+            runtime_mode=runtime_mode,
+            preset_id=agent_preset.id if agent_preset is not None else "standard",
+        )
+        simple_answer_profile = (
+            rule_profile
+            if self._config.agent.task_router != "llm_only"
+            and runtime_mode == RuntimeMode.ACT
+            and rule_profile.intent == TaskIntent.ANSWER
+            else None
+        )
         if session is not None and store is not None:
             run_path = store.runs_dir(session.id) / run_id
             history = store.read_messages(session.id)
             notes = store.read_notes(session.id)
         else:
             run_path = self._runs_dir / run_id
+            history = [{"role": "user", "content": goal}]
+            notes = ""
+        if simple_answer_profile is not None:
             history = [{"role": "user", "content": goal}]
             notes = ""
         run_path.mkdir(parents=True, exist_ok=True)
@@ -372,16 +394,19 @@ class AgentRunner:
         )
         workspace_trusted = turn_authority.workspace_trust == WorkspaceTrust.TRUSTED
 
-        global_ctx = load_context_file(Path("~/.coderook/context.md").expanduser())
-        project_ctx = load_project_instructions(self._workspace_boundary.root)
-        recalled = self._memory_store.search(goal, limit=5)
-        recalled_context = self._memory_store.format_context(recalled)
-        if recalled_context:
-            project_ctx = (
-                project_ctx.rstrip()
-                + "\n\n## Recalled Project Memories\n"
-                + recalled_context
-            ).strip()
+        global_ctx = ""
+        project_ctx = ""
+        if simple_answer_profile is None:
+            global_ctx = load_context_file(Path("~/.coderook/context.md").expanduser())
+            project_ctx = load_project_instructions(self._workspace_boundary.root)
+            recalled = self._memory_store.search(goal, limit=5)
+            recalled_context = self._memory_store.format_context(recalled)
+            if recalled_context:
+                project_ctx = (
+                    project_ctx.rstrip()
+                    + "\n\n## Recalled Project Memories\n"
+                    + recalled_context
+                ).strip()
 
         task_event_sink = (
             self._runtime.task_event_sink(session.id, run_id)
@@ -406,17 +431,32 @@ class AgentRunner:
             session_notes=notes,
             global_context=global_ctx,
             project_context=project_ctx,
-            runtime_context=build_runtime_context(self._workspace_boundary.root),
-            capability_context=build_capability_context(
-                self._skill_loader.list_for_execution(
-                    workspace_trusted=workspace_trusted
-                ),
-                self._agent_profile_loader.list_for_execution(
-                    workspace_trusted=workspace_trusted
-                ),
+            runtime_context=(
+                ""
+                if simple_answer_profile is not None
+                else build_runtime_context(self._workspace_boundary.root)
+            ),
+            capability_context=(
+                ""
+                if simple_answer_profile is not None
+                else build_capability_context(
+                    self._skill_loader.list_for_execution(
+                        workspace_trusted=workspace_trusted
+                    ),
+                    self._agent_profile_loader.list_for_execution(
+                        workspace_trusted=workspace_trusted
+                    ),
+                )
             ),
             persistent_goal_context=persistent_goal_context,
-            system_prompt_override=system_prompt_override,
+            system_prompt_override=(
+                system_prompt_override
+                or (
+                    _CONVERSATION_SYSTEM_PROMPT
+                    if simple_answer_profile is not None
+                    else None
+                )
+            ),
             runtime_mode=runtime_mode,
         )
         for image_block in initial_images or []:
@@ -435,20 +475,22 @@ class AgentRunner:
                 result="",
                 reason=prompt_decision.reason or "prompt_blocked_by_hook",
             )
-        repository_selection = await asyncio.to_thread(
-            self._repository_index.select_context,
-            goal,
-        )
-        context.repository_context = repository_selection.content
-        context.repository_context_metadata = {
-            "repository_hash": repository_selection.repository_hash,
-            "budget_chars": repository_selection.budget_chars,
-            "used_chars": repository_selection.used_chars,
-            "paths": list(repository_selection.paths),
-            "selection_reasons": list(repository_selection.reasons),
-            "cache_hits": repository_selection.cache_hits,
-            "parsed_files": repository_selection.parsed_files,
-        }
+        repository_selection = None
+        if simple_answer_profile is None:
+            repository_selection = await asyncio.to_thread(
+                self._repository_index.select_context,
+                goal,
+            )
+            context.repository_context = repository_selection.content
+            context.repository_context_metadata = {
+                "repository_hash": repository_selection.repository_hash,
+                "budget_chars": repository_selection.budget_chars,
+                "used_chars": repository_selection.used_chars,
+                "paths": list(repository_selection.paths),
+                "selection_reasons": list(repository_selection.reasons),
+                "cache_hits": repository_selection.cache_hits,
+                "parsed_files": repository_selection.parsed_files,
+            }
         transcript = (
             SessionTranscriptSink(store, session.id, run_id)
             if session is not None and store is not None
@@ -527,19 +569,20 @@ class AgentRunner:
                     ts=_now(),
                 )
             )
-            await bus.publish(
-                ContextRepositoryEvent(
-                    run_id=run_id,
-                    repository_hash=repository_selection.repository_hash,
-                    budget_chars=repository_selection.budget_chars,
-                    used_chars=repository_selection.used_chars,
-                    paths=list(repository_selection.paths),
-                    selection_reasons=list(repository_selection.reasons),
-                    cache_hits=repository_selection.cache_hits,
-                    parsed_files=repository_selection.parsed_files,
-                    ts=_now(),
+            if repository_selection is not None:
+                await bus.publish(
+                    ContextRepositoryEvent(
+                        run_id=run_id,
+                        repository_hash=repository_selection.repository_hash,
+                        budget_chars=repository_selection.budget_chars,
+                        used_chars=repository_selection.used_chars,
+                        paths=list(repository_selection.paths),
+                        selection_reasons=list(repository_selection.reasons),
+                        cache_hits=repository_selection.cache_hits,
+                        parsed_files=repository_selection.parsed_files,
+                        ts=_now(),
+                    )
                 )
-            )
 
             cancelled = False
             plan_approval_pending = False
@@ -606,7 +649,7 @@ class AgentRunner:
                             self._goal_service,
                             active_goal.id,
                         )
-                task_profile = await TaskStrategyRouter().classify(
+                task_profile = simple_answer_profile or await task_router.classify(
                     goal,
                     provider=provider if self._provider is None else None,
                     runtime_mode=runtime_mode,

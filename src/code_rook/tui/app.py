@@ -1286,14 +1286,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         event.text_area.record_history(content)
         visible_content = content
-        if content.startswith("!") and len(content) > 1:
-            command = content[1:].strip()
-            content = (
-                "The user explicitly requested this exact shell command. Run it through the "
-                "normal permission and sandbox tool pipeline, then report its exit status and "
-                f"important output without changing the command: {command}"
-            )
-        content = self._augment_file_references(content, visible_content)
+        content = self._prepare_model_content(visible_content)
         self._begin_message(
             event.text_area,
             content,
@@ -1486,6 +1479,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             + ". Read only the ranges needed for this task; do not inject entire files by default."
         )
 
+    # 将用户可见的 Shell 与文件引用语法转换为模型执行提示，同时保留原始展示文本
+    def _prepare_model_content(self, visible_content: str) -> str:
+        content = visible_content
+        if visible_content.startswith("!") and len(visible_content) > 1:
+            command = visible_content[1:].strip()
+            content = (
+                "The user explicitly requested this exact shell command. Run it through the "
+                "normal permission and sandbox tool pipeline, then report its exit status and "
+                f"important output without changing the command: {command}"
+            )
+        return self._augment_file_references(content, visible_content)
+
     # 在当前会话恢复等待输入后发送一条排队消息并刷新队列状态
     def _flush_queued_message(self) -> None:
         if self._busy or not self._queued_messages:
@@ -1493,9 +1498,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         prompt = self._prompt()
         if prompt is None or prompt.disabled:
             return
-        content = self._queued_messages.popleft()
+        visible_content = self._queued_messages.popleft()
+        content = self._prepare_model_content(visible_content)
         self._update_status_bar()
-        self._begin_message(prompt, content, self._input_runtime_mode)
+        self._begin_message(
+            prompt,
+            content,
+            self._input_runtime_mode,
+            visible_content=visible_content,
+        )
 
     # 统一进入一次用户或计划批准触发的 run，确保输入状态与 mode 同步切换
     def _begin_message(
@@ -1530,7 +1541,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_image_attachments.clear()
         self._refresh_attachment_strip()
         self.run_worker(
-            self._do_send_message(content, runtime_mode, attachments=attachments),
+            self._do_send_message(
+                content,
+                runtime_mode,
+                attachments=attachments,
+                display_content=shown,
+            ),
             name="send_message",
             exclusive=False,
         )
@@ -3962,7 +3978,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         *,
         attachments: list[dict[str, object]] | None = None,
+        display_content: str | None = None,
     ) -> None:
+        shown_content = display_content or content
         if self._client is None:
             for attachment in attachments or []:
                 if attachment not in self._pending_image_attachments:
@@ -3971,7 +3989,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._busy = False
             self._active_run_id = None
             self._restore_unsent_draft(
-                content,
+                shown_content,
                 tr("app.draft.reconnected", self._locale),
             )
             self._update_header("disconnected")
@@ -3983,6 +4001,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 "content": content,
                 "runtime_mode": runtime_mode.value,
             }
+            params["display_content"] = shown_content
             if attachments:
                 params["attachments"] = attachments
             await self._client.send_command(
@@ -3997,7 +4016,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._busy = False
             self._active_run_id = None
             restored = self._restore_unsent_draft(
-                content,
+                shown_content,
                 tr("app.draft.failed", self._locale),
             )
             state = "ready" if self._client is not None else "disconnected"
