@@ -294,7 +294,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._run_phase = "ready"
         self._run_phase_current = 0
         self._run_phase_total = 0
-        self._queued_messages: deque[str] = deque()
+        self._queued_message_count = 0
         self._details_expanded = False
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
@@ -1229,14 +1229,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if content.casefold().startswith(queue_prefixes):
                 queued = content.split(":", 1)[-1].split("：", 1)[-1].strip()
                 if queued:
-                    self._queued_messages.append(queued)
-                    self._append(
-                        Static(
-                            f"[bold blue]queue >[/bold blue] {escape(queued)}",
-                            classes="user-turn",
-                        )
+                    attachments = list(self._pending_image_attachments)
+                    self._pending_image_attachments.clear()
+                    self._refresh_attachment_strip()
+                    self.run_worker(
+                        self._do_queue_message(
+                            self._prepare_model_content(queued),
+                            queued,
+                            self._input_runtime_mode,
+                            attachments,
+                        ),
+                        name="queue_message",
+                        exclusive=False,
                     )
-                    self._update_status_bar()
                 return
             self._append(
                 Static(
@@ -1491,21 +1496,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
         return self._augment_file_references(content, visible_content)
 
-    # 在当前会话恢复等待输入后发送一条排队消息并刷新队列状态
+    # 在 Core 完成自动派发后刷新持久队列数量
     def _flush_queued_message(self) -> None:
-        if self._busy or not self._queued_messages:
+        if self._client is None or self._session_id is None:
             return
-        prompt = self._prompt()
-        if prompt is None or prompt.disabled:
-            return
-        visible_content = self._queued_messages.popleft()
-        content = self._prepare_model_content(visible_content)
-        self._update_status_bar()
-        self._begin_message(
-            prompt,
-            content,
-            self._input_runtime_mode,
-            visible_content=visible_content,
+        self.run_worker(
+            self._refresh_message_queue(),
+            name="refresh_message_queue",
+            exclusive=False,
         )
 
     # 统一进入一次用户或计划批准触发的 run，确保输入状态与 mode 同步切换
@@ -3860,6 +3858,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         await self._refresh_authority()
         await self._refresh_goal_state()
         await self._refresh_session_cost()
+        await self._refresh_message_queue()
         self._reconcile_session_state(state)
         self._restore_session_composer(session_id)
         self._update_header("running" if self._busy else "ready")
@@ -4024,6 +4023,66 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if not restored:
                 log.warning("unsent draft was not restored because prompt is non-empty")
             self._show_safe_error("submission", e, action="submission")
+
+    # 把后续消息提交到 Core 持久队列并保留图片与可见正文
+    async def _do_queue_message(
+        self,
+        content: str,
+        display_content: str,
+        runtime_mode: RuntimeMode,
+        attachments: list[dict[str, object]],
+    ) -> None:
+        if self._client is None or self._session_id is None:
+            for attachment in attachments:
+                if attachment not in self._pending_image_attachments:
+                    self._pending_image_attachments.append(attachment)
+            self._refresh_attachment_strip()
+            self._restore_unsent_draft(display_content, tr("app.draft.reconnected", self._locale))
+            return
+        try:
+            result = await self._client.send_command(
+                "session.queue_message",
+                {
+                    "session_id": self._session_id,
+                    "content": content,
+                    "display_content": display_content,
+                    "runtime_mode": runtime_mode.value,
+                    "attachments": attachments,
+                },
+            )
+            message = result.get("message", {})
+            if isinstance(message, dict):
+                self._append(
+                    Static(
+                        f"[bold blue]queue >[/bold blue] {escape(display_content)}",
+                        classes="user-turn",
+                    )
+                )
+            await self._refresh_message_queue()
+        except (IpcError, RuntimeError, OSError) as exc:
+            for attachment in attachments:
+                if attachment not in self._pending_image_attachments:
+                    self._pending_image_attachments.append(attachment)
+            self._refresh_attachment_strip()
+            self._restore_unsent_draft(display_content, tr("app.draft.failed", self._locale))
+            self._show_safe_error("submission", exc, action="submission")
+
+    # 从 Core 读取跨 TUI/Web 共用的权威队列状态
+    async def _refresh_message_queue(self) -> None:
+        if self._client is None or self._session_id is None:
+            self._queued_message_count = 0
+            self._update_status_bar()
+            return
+        try:
+            result = await self._client.send_command(
+                "session.list_queue",
+                {"session_id": self._session_id},
+            )
+        except (IpcError, RuntimeError, OSError):
+            return
+        messages = result.get("messages", [])
+        self._queued_message_count = len(messages) if isinstance(messages, list) else 0
+        self._update_status_bar()
 
     # 将用户运行中纠偏发送给当前活动 run
     async def _do_steer(self, run_id: str, content: str) -> None:
@@ -4543,11 +4602,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             sandbox_state = (
                 "Sandbox 不可用" if self._locale == "zh-CN" else "Sandbox unavailable"
             )
-        queue = (
-            f" · queue {len(self._queued_messages)}"
-            if self._queued_messages
-            else ""
-        )
+        queue = f" · queue {self._queued_message_count}" if self._queued_message_count else ""
         status_bar.update(
             f"[blue]{self._input_runtime_mode.value.upper()}[/blue] · "
             f"[magenta]{self._authority_preset}[/magenta] · {escape(sandbox_state)} · "
@@ -4574,6 +4629,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         try:
             self._run_evidence.consume(event)
             render_event(self, event)
+            if (
+                str(event.get("type", "")).startswith("queue.message_")
+                and event.get("session_id") == self._session_id
+            ):
+                self.call_later(self._refresh_message_queue)
             if (
                 event.get("type")
                 in {

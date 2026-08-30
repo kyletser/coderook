@@ -35,6 +35,8 @@ _MAX_BODY = 3 * 1024 * 1024
 _THREAD_TURNS = re.compile(r"/v1/threads/([^/]+)/turns")
 _THREAD_READ = re.compile(r"/v1/threads/([^/]+)")
 _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
+_THREAD_QUEUE = re.compile(r"/v1/threads/([^/]+)/queue")
+_THREAD_QUEUE_ITEM = re.compile(r"/v1/threads/([^/]+)/queue/([^/]+)(?:/(retry))?")
 _THREAD_ACTION = re.compile(r"/v1/threads/([^/]+)/(fork|export|context)")
 _THREAD_PLAN = re.compile(r"/v1/threads/([^/]+)/turns/([^/]+)/plan")
 _THREAD_CHECKPOINT = re.compile(
@@ -405,6 +407,48 @@ class HttpApiServer:
             )
         if match and match.group(2) == "context" and request.method == "GET":
             return HTTPStatus.OK, await self._service.thread_context(match.group(1))
+        queue_match = _THREAD_QUEUE.fullmatch(path)
+        if queue_match and request.method == "GET":
+            return HTTPStatus.OK, await self._service.list_queued_messages(
+                queue_match.group(1)
+            )
+        if queue_match and request.method == "POST":
+            body = _json_object(request.body)
+            content = body.get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("content must be a non-empty string")
+            raw_mode = str(body.get("mode", RuntimeMode.ACT.value))
+            try:
+                mode = RuntimeMode(raw_mode)
+            except ValueError as exc:
+                raise ValueError("invalid runtime mode") from exc
+            raw_attachments = body.get("attachments", [])
+            if not isinstance(raw_attachments, list):
+                raise ValueError("attachments must be a list")
+            attachments = [
+                ImageArtifactInput.model_validate(item) for item in raw_attachments
+            ]
+            display_content = body.get("display_content")
+            if display_content is not None and not isinstance(display_content, str):
+                raise ValueError("display_content must be a string")
+            return HTTPStatus.CREATED, await self._service.queue_message(
+                queue_match.group(1),
+                content,
+                mode,
+                attachments,
+                display_content=display_content,
+            )
+        queue_item_match = _THREAD_QUEUE_ITEM.fullmatch(path)
+        if queue_item_match and request.method == "DELETE" and not queue_item_match.group(3):
+            return HTTPStatus.OK, await self._service.remove_queued_message(
+                queue_item_match.group(1),
+                queue_item_match.group(2),
+            )
+        if queue_item_match and request.method == "POST" and queue_item_match.group(3):
+            return HTTPStatus.OK, await self._service.retry_queued_message(
+                queue_item_match.group(1),
+                queue_item_match.group(2),
+            )
         checkpoint_match = _THREAD_CHECKPOINT.fullmatch(path)
         if checkpoint_match and checkpoint_match.group(3) == "preview":
             if request.method != "GET":

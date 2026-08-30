@@ -1976,6 +1976,8 @@ async def test_plan_command_requires_review_before_act() -> None:
             params: dict[str, object],
         ) -> dict[str, object]:
             calls.append((method, params))
+            if method == "session.list_queue":
+                return {"messages": []}
             if method == "session.set_authority":
                 return {
                     "snapshot": {
@@ -2078,7 +2080,8 @@ async def test_plan_command_requires_review_before_act() -> None:
         await pilot.pause()
         await asyncio.gather(*scheduled)
 
-        assert calls[2] == (
+        plan_call = next(call for call in calls if call[0] == "plan.respond")
+        assert plan_call == (
             "plan.respond",
             {
                 "session_id": "sess-plan",
@@ -2087,12 +2090,15 @@ async def test_plan_command_requires_review_before_act() -> None:
                 "revision": "",
             },
         )
-        assert calls[3][0] == "session.set_authority"
-        assert calls[4][0] == "session.send_message"
-        assert calls[4][1]["runtime_mode"] == "act"
-        assert str(calls[4][1]["content"]).startswith("Implement the approved plan")
+        authority_call = next(call for call in calls if call[0] == "session.set_authority")
+        send_calls = [call for call in calls if call[0] == "session.send_message"]
+        assert authority_call[0] == "session.set_authority"
+        assert len(send_calls) == 2
+        act_call = send_calls[-1]
+        assert act_call[1]["runtime_mode"] == "act"
+        assert str(act_call[1]["content"]).startswith("Implement the approved plan")
         assert "Original user request:\ninspect authentication" in str(
-            calls[4][1]["content"]
+            act_call[1]["content"]
         )
 
 

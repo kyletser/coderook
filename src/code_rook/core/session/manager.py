@@ -48,7 +48,7 @@ from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.memory import MemoryStore
 from code_rook.core.presets import get_agent_preset
 from code_rook.core.runs import new_run_id
-from code_rook.core.runtime.models import TurnStatus
+from code_rook.core.runtime.models import QueuedMessageRecord, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
@@ -183,6 +183,10 @@ class SessionManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
         self._goal_continuations: dict[str, _GoalContinuation] = {}
+        self._queue_dispatch_tasks: dict[str, asyncio.Task[None]] = {}
+        self._queue_wakeups: dict[str, asyncio.Event] = {}
+        self._queue_recovered = False
+        self._queue_closing = False
         self._pending_plans: dict[str, _PendingPlan] = {}
         self._pending_plans_loaded: set[str] = set()
         self._pending_recoveries: set[str] = set()
@@ -413,6 +417,16 @@ class SessionManager:
             await self._runtime.bootstrap_sessions(sessions, turn_times)
             self._runtime_bootstrapped = True
             await self._prune_stale_empty_sessions()
+            if not self._queue_recovered:
+                recovered = await self._runtime.recover_queued_messages(datetime.now(UTC))
+                self._queue_recovered = True
+                if recovered:
+                    logger.warning(
+                        "marked %d interrupted queued messages for confirmation",
+                        recovered,
+                    )
+                for session_id in self._sessions:
+                    self._schedule_queue_dispatch(session_id)
 
     # 删除超过保留期且从未使用的无标题会话，避免首启列表长期堆积
     async def _prune_stale_empty_sessions(self) -> None:
@@ -657,6 +671,167 @@ class SessionManager:
     # 返回供 Change Center 与 rewind 使用的独占工作区变更上下文
     def workspace_mutation(self) -> Any:
         return self._workspace_mutation_guard.mutation()
+
+    # 持久化一条跨 TUI/Web 共享的后续消息并启动串行派发
+    async def queue_message(
+        self,
+        sid: str,
+        content: str,
+        *,
+        runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        attachments: list[ImageArtifactInput] | None = None,
+        display_content: str | None = None,
+    ) -> QueuedMessageRecord:
+        await self._ensure_runtime_sessions()
+        session = self._get_session(sid)
+        if session.status == "closed":
+            raise HandlerError(SESSION_CLOSED, "session already closed")
+        if self._runtime is None:
+            raise HandlerError(INVALID_PARAMS, "durable message queue is unavailable")
+        visible = (display_content or content).strip()
+        if not content.strip() or not visible:
+            raise HandlerError(INVALID_PARAMS, "queued message must not be blank")
+        now = datetime.now(UTC)
+        record = QueuedMessageRecord(
+            id=f"queue-{uuid.uuid4().hex}",
+            thread_id=sid,
+            content=content,
+            display_content=visible,
+            mode=runtime_mode,
+            attachments=attachments or [],
+            created_at=now,
+            updated_at=now,
+        )
+        await self._runtime.enqueue_message(record)
+        self._schedule_queue_dispatch(sid)
+        return record
+
+    # 返回指定会话的持久消息队列
+    async def list_queued_messages(self, sid: str) -> list[QueuedMessageRecord]:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        if self._runtime is None:
+            return []
+        return await self._runtime.list_queued_messages(sid)
+
+    # 删除一条尚未完成的排队消息
+    async def remove_queued_message(self, sid: str, message_id: str) -> None:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        if self._runtime is None:
+            raise HandlerError(INVALID_PARAMS, "durable message queue is unavailable")
+        await self._runtime.remove_queued_message(
+            sid,
+            message_id,
+            reason="cancelled_by_user",
+            ts=datetime.now(UTC),
+        )
+
+    # 将中断或启动失败的 blocked 消息重新排入队列
+    async def retry_queued_message(self, sid: str, message_id: str) -> None:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        if self._runtime is None:
+            raise HandlerError(INVALID_PARAMS, "durable message queue is unavailable")
+        await self._runtime.retry_queued_message(
+            sid,
+            message_id,
+            datetime.now(UTC),
+        )
+        self._schedule_queue_dispatch(sid)
+
+    # 为指定会话创建唯一队列消费任务并记录唤醒信号
+    def _schedule_queue_dispatch(self, sid: str) -> None:
+        if self._queue_closing or self._runtime is None or sid not in self._sessions:
+            return
+        wakeup = self._queue_wakeups.setdefault(sid, asyncio.Event())
+        wakeup.set()
+        existing = self._queue_dispatch_tasks.get(sid)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._dispatch_queued_messages(sid),
+            name=f"message-queue:{sid}",
+        )
+        self._queue_dispatch_tasks[sid] = task
+
+        # 回收消费任务，并在结束竞态中仍有新消息时重新启动
+        def cleanup(completed: asyncio.Task[None]) -> None:
+            current = self._queue_dispatch_tasks.get(sid)
+            if current is completed:
+                self._queue_dispatch_tasks.pop(sid, None)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    logger.error(
+                        "message queue dispatch failed sid=%s error_type=%s",
+                        sid,
+                        type(error).__name__,
+                    )
+            pending_wakeup = self._queue_wakeups.get(sid)
+            if pending_wakeup is not None and pending_wakeup.is_set():
+                self._schedule_queue_dispatch(sid)
+
+        task.add_done_callback(cleanup)
+
+    # 串行领取并执行消息，启动失败时保留为用户可见的 blocked 状态
+    async def _dispatch_queued_messages(self, sid: str) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            return
+        wakeup = self._queue_wakeups.setdefault(sid, asyncio.Event())
+        while sid in self._sessions:
+            wakeup.clear()
+            while self._locks[sid].locked():
+                await asyncio.sleep(0.05)
+            record = await runtime.claim_next_queued_message(sid, datetime.now(UTC))
+            if record is None:
+                if wakeup.is_set():
+                    continue
+                return
+            try:
+                await self.send_message(
+                    sid,
+                    record.content,
+                    run_id=record.id,
+                    runtime_mode=record.mode,
+                    attachments=record.attachments,
+                    display_content=record.display_content,
+                )
+            except HandlerError as exc:
+                if exc.code == SESSION_BUSY:
+                    await runtime.block_queued_message(
+                        record,
+                        "session became busy before queued message dispatch",
+                        datetime.now(UTC),
+                    )
+                else:
+                    await runtime.block_queued_message(
+                        record,
+                        str(exc),
+                        datetime.now(UTC),
+                    )
+                return
+            except Exception as exc:
+                logger.warning(
+                    "queued message could not start sid=%s queue_id=%s",
+                    sid,
+                    record.id,
+                    exc_info=True,
+                )
+                await runtime.block_queued_message(
+                    record,
+                    f"{type(exc).__name__}: {exc}",
+                    datetime.now(UTC),
+                )
+                return
+            await runtime.remove_queued_message(
+                sid,
+                record.id,
+                reason="dispatched",
+                ts=datetime.now(UTC),
+            )
+            wakeup.set()
 
     # 在工作区共享 Turn 门闩内处理用户消息
     async def send_message(
@@ -1202,6 +1377,16 @@ class SessionManager:
         return active.session_id
 
     async def cancel_all(self) -> None:
+        self._queue_closing = True
+        for wakeup in self._queue_wakeups.values():
+            wakeup.clear()
+        queue_tasks = [
+            task for task in self._queue_dispatch_tasks.values() if not task.done()
+        ]
+        for task in queue_tasks:
+            task.cancel()
+        if queue_tasks:
+            await asyncio.gather(*queue_tasks, return_exceptions=True)
         continuation_tasks = [
             continuation.task
             for continuation in self._goal_continuations.values()
@@ -1624,6 +1809,11 @@ class SessionManager:
                     {"session_id": sid, "reason": "deleted"},
                 )
             self._store.delete_session(sid)
+        queue_task = self._queue_dispatch_tasks.pop(sid, None)
+        self._queue_wakeups.pop(sid, None)
+        if queue_task is not None and not queue_task.done():
+            queue_task.cancel()
+            await asyncio.gather(queue_task, return_exceptions=True)
         self._sessions.pop(sid, None)
         self._locks.pop(sid, None)
         self._pending_plans.pop(sid, None)

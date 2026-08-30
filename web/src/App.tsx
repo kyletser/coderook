@@ -23,11 +23,13 @@ type ImageAttachment = {
   name: string;
 };
 type QueuedMessage = {
+  id: string;
   content: string;
-  displayContent: string;
+  display_content: string;
   mode: RunMode;
-  attachments: ImageAttachment[];
-  fileReferences: string[];
+  attachments: Omit<ImageAttachment, "name">[];
+  status: "queued" | "dispatching" | "blocked";
+  error: string;
 };
 type ToolTimelineEntry = {
   kind: "tool";
@@ -440,6 +442,25 @@ export function parentWorkspacePath(path: string): string {
   return parts.join("/") || ".";
 }
 
+export type ActiveFileMention = { query: string; start: number; end: number };
+
+export function activeFileMention(value: string, caret: number): ActiveFileMention | null {
+  const safeCaret = Math.max(0, Math.min(caret, value.length));
+  const before = value.slice(0, safeCaret);
+  const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+  if (!match) return null;
+  const query = match[1] || "";
+  return { query, start: safeCaret - query.length - 1, end: safeCaret };
+}
+
+export function appendRuntimeEvent(
+  current: RuntimeEvent[],
+  event: RuntimeEvent,
+): RuntimeEvent[] {
+  if (current.some((item) => item.seq === event.seq)) return current;
+  return [...current, event];
+}
+
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
@@ -460,13 +481,18 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const [inspectorFile, setInspectorFile] = useState("");
   const [queueMode, setQueueMode] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [activeModel, setActiveModel] = useState("未配置模型");
+  const [composerCaret, setComposerCaret] = useState(0);
+  const [fileSuggestions, setFileSuggestions] = useState<WorkspaceEntry[]>([]);
+  const [fileSuggestionIndex, setFileSuggestionIndex] = useState(0);
   const cursors = useRef<Record<string, number>>({});
+  const eventCache = useRef<Record<string, RuntimeEvent[]>>({});
   const initializedSelection = useRef(false);
   const composerDrafts = useRef<Record<string, string>>({});
   const attachmentDrafts = useRef<Record<string, ImageAttachment[]>>({});
   const fileReferenceDrafts = useRef<Record<string, string[]>>({});
-  const queueDrafts = useRef<Record<string, QueuedMessage[]>>({});
   const selectedIdRef = useRef("");
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const timelineRef = useRef<HTMLElement | null>(null);
   const previousTimelineSize = useRef(0);
   selectedIdRef.current = selectedId;
@@ -474,6 +500,16 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const activeTurn = [...turns].reverse().find((turn) =>
     ["running", "waiting", "waiting_permission", "waiting_input"].includes(turn.status),
   );
+  const fileMention = useMemo(
+    () => activeFileMention(composer, composerCaret),
+    [composer, composerCaret],
+  );
+
+  const refreshActiveModel = useCallback(async () => {
+    const catalog = await request<ProviderCatalog>("/v1/providers");
+    const active = catalog.routes.find((route) => route.id === catalog.active_route_id);
+    setActiveModel(textValue(active?.model) || "未配置模型");
+  }, []);
 
   const refreshThreads = useCallback(async () => {
     const result = await request<ThreadRecord[]>("/v1/threads");
@@ -490,11 +526,44 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, [refreshThreads]);
 
+  useEffect(() => {
+    void refreshActiveModel().catch(() => setActiveModel("模型状态未知"));
+  }, [drawer, refreshActiveModel]);
+
+  useEffect(() => {
+    if (!fileMention || fileReferences.length >= 8) {
+      setFileSuggestions([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      request<{ entries: WorkspaceEntry[] }>(
+        `/v1/workspace/files?query=${encodeURIComponent(fileMention.query)}&limit=12`,
+        { signal: controller.signal },
+      ).then((result) => {
+        setFileSuggestions(result.entries.filter((entry) => entry.kind === "file").slice(0, 8));
+        setFileSuggestionIndex(0);
+      }).catch(() => {
+        if (!controller.signal.aborted) setFileSuggestions([]);
+      });
+    }, 160);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [fileMention?.query, fileReferences.length]);
+
   const loadThread = useCallback(async (threadId: string, signal?: AbortSignal) => {
-    const loadedTurns = await request<TurnRecord[]>(
-      `/v1/threads/${encodeURIComponent(threadId)}/turns`,
-      { signal },
-    );
+    const [loadedTurns, loadedQueue] = await Promise.all([
+      request<TurnRecord[]>(
+        `/v1/threads/${encodeURIComponent(threadId)}/turns`,
+        { signal },
+      ),
+      request<QueuedMessage[]>(
+        `/v1/threads/${encodeURIComponent(threadId)}/queue`,
+        { signal },
+      ),
+    ]);
     const loadedItems = await Promise.all(
       loadedTurns.map((turn) =>
         request<TurnItem[]>(`/v1/turns/${encodeURIComponent(turn.id)}/items`, { signal }),
@@ -503,6 +572,14 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     if (signal?.aborted || selectedIdRef.current !== threadId) return;
     setTurns(loadedTurns);
     setItems(loadedItems.flat());
+    setQueuedMessages(loadedQueue);
+  }, []);
+
+  const loadQueue = useCallback(async (threadId: string) => {
+    const loaded = await request<QueuedMessage[]>(
+      `/v1/threads/${encodeURIComponent(threadId)}/queue`,
+    );
+    if (selectedIdRef.current === threadId) setQueuedMessages(loaded);
   }, []);
 
   useEffect(() => {
@@ -510,6 +587,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       setTurns([]);
       setItems([]);
       setEvents([]);
+      setQueuedMessages([]);
       setPhase("idle");
       return;
     }
@@ -517,8 +595,13 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     setError("");
     setTurns([]);
     setItems([]);
-    setEvents([]);
-    setPhase("idle");
+    const cachedEvents = eventCache.current[selectedId] || [];
+    setEvents(cachedEvents);
+    setQueuedMessages([]);
+    const cachedPhase = [...cachedEvents].reverse().find(
+      (event) => event.type === "run.phase_changed",
+    );
+    setPhase(textValue(cachedPhase?.payload.phase) || "idle");
     void loadThread(selectedId, controller.signal)
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) {
@@ -542,11 +625,16 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
             (event) => {
               if (!eventBelongsToThread(selectedIdRef.current, selectedId)) return;
               cursors.current[selectedId] = Math.max(cursors.current[selectedId] || 0, event.seq);
-              setEvents((current) =>
-                current.some((item) => item.seq === event.seq) ? current : [...current, event],
-              );
+              setEvents((current) => {
+                const next = appendRuntimeEvent(current, event);
+                eventCache.current[selectedId] = next;
+                return next;
+              });
               if (event.type === "run.phase_changed") {
                 setPhase(textValue(event.payload.phase) || "working");
+              }
+              if (event.type.startsWith("queue.message_")) {
+                void loadQueue(selectedId);
               }
               if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.outcome", "run.finished"].includes(event.type)) {
                 void refreshThreads();
@@ -571,7 +659,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       stopped = true;
       controller.abort();
     };
-  }, [loadThread, refreshThreads, selectedId]);
+  }, [loadQueue, loadThread, refreshThreads, selectedId]);
 
   const createThread = useCallback(async (): Promise<string> => {
     const created = await request<ThreadRecord>("/v1/threads", {
@@ -590,22 +678,24 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     composerDrafts.current[currentKey] = composer;
     attachmentDrafts.current[currentKey] = attachments;
     fileReferenceDrafts.current[currentKey] = fileReferences;
-    queueDrafts.current[currentKey] = queuedMessages;
-    cursors.current[threadId] = 0;
     setSelectedId(threadId);
     setComposer(composerDrafts.current[nextKey] || "");
     setAttachments(attachmentDrafts.current[nextKey] || []);
     setFileReferences(fileReferenceDrafts.current[nextKey] || []);
-    setQueuedMessages(queueDrafts.current[nextKey] || []);
+    setQueuedMessages([]);
     setTurns([]);
     setItems([]);
-    setEvents([]);
-    setPhase("idle");
+    const cachedEvents = eventCache.current[threadId] || [];
+    setEvents(cachedEvents);
+    const cachedPhase = [...cachedEvents].reverse().find(
+      (event) => event.type === "run.phase_changed",
+    );
+    setPhase(textValue(cachedPhase?.payload.phase) || "idle");
     previousTimelineSize.current = 0;
     setNotice("");
     setError("");
     setMobileSidebarOpen(false);
-  }, [attachments, composer, fileReferences, queuedMessages, selectedId]);
+  }, [attachments, composer, fileReferences, selectedId]);
 
   const beginDraft = useCallback(() => {
     selectThread("");
@@ -623,13 +713,19 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
       const submitted = modelContentFor(content, fileReferences);
       if (activeTurn) {
         if (queueMode) {
-          setQueuedMessages((current) => [...current, {
-            content: submitted,
-            displayContent: content,
-            mode,
-            attachments: [...attachments],
-            fileReferences: [...fileReferences],
-          }]);
+          await request<QueuedMessage>(
+            `/v1/threads/${encodeURIComponent(selectedId)}/queue`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                content: submitted,
+                display_content: content,
+                mode,
+                attachments: attachments.map(({ name: _name, ...attachment }) => attachment),
+              }),
+            },
+          );
+          await loadQueue(selectedId);
           setComposer("");
           composerDrafts.current[selectedId || "__new__"] = "";
           setAttachments([]);
@@ -680,30 +776,33 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     }
   };
 
-  useEffect(() => {
-    if (activeTurn || !selectedId || queuedMessages.length === 0 || sending) return;
-    const next = queuedMessages[0];
-    setSending(true);
-    request<TurnRecord>(`/v1/threads/${encodeURIComponent(selectedId)}/turns`, {
-      method: "POST",
-      body: JSON.stringify({
-        content: next.content,
-        display_content: next.displayContent,
-        mode: next.mode,
-        attachments: next.attachments.map(({ name: _name, ...attachment }) => attachment),
-      }),
-    }).then((started) => {
-      setTurns((current) => [...current, started]);
-      setQueuedMessages((current) => current.slice(1));
-      void loadThread(selectedId);
-    }).catch((reason: unknown) => {
-      setQueuedMessages((current) => current.slice(1));
-      setComposer((current) => current || next.displayContent);
-      setAttachments((current) => current.length ? current : next.attachments);
-      setFileReferences((current) => current.length ? current : next.fileReferences);
-      setError(`队列消息发送失败，已恢复到输入框：${reason instanceof Error ? reason.message : String(reason)}`);
-    }).finally(() => setSending(false));
-  }, [activeTurn, loadThread, queuedMessages, selectedId, sending]);
+  const chooseFileSuggestion = (entry: WorkspaceEntry) => {
+    if (!fileMention || entry.kind !== "file") return;
+    const insertion = `@${entry.path} `;
+    const next = `${composer.slice(0, fileMention.start)}${insertion}${composer.slice(fileMention.end)}`;
+    const nextCaret = fileMention.start + insertion.length;
+    setComposer(next);
+    setComposerCaret(nextCaret);
+    setFileReferences((current) => current.includes(entry.path) ? current : [...current, entry.path]);
+    setFileSuggestions([]);
+    window.requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+      composerInputRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
+  const queueAction = async (message: QueuedMessage, action: "remove" | "retry") => {
+    if (!selectedId) return;
+    try {
+      await request(
+        `/v1/threads/${encodeURIComponent(selectedId)}/queue/${encodeURIComponent(message.id)}${action === "retry" ? "/retry" : ""}`,
+        { method: action === "retry" ? "POST" : "DELETE", body: "{}" },
+      );
+      await loadQueue(selectedId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
 
   const cancel = async () => {
     if (!activeTurn) return;
@@ -953,6 +1052,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         <header className="topbar">
           <button className="mobile-sidebar-toggle" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Icon name="menu" size={18} /></button>
           <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || "新任务"}</strong></div>
+          <button className="active-model" type="button" title="切换模型" onClick={() => setDrawer("models")}><Icon name="models" size={13} />{activeModel}</button>
           <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabels[phase] || "正在工作" : "就绪"}</div>
           <div className="session-menu">
             <button title="重命名" aria-label="重命名" disabled={!selectedId} onClick={() => void sessionAction("rename")}><Icon name="edit" size={16} /></button>
@@ -1008,14 +1108,63 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         </section>
 
         <form className="composer" onSubmit={(event) => void send(event)}>
+          {queuedMessages.length > 0 && <div className="message-queue" aria-label="待发送消息">
+            {queuedMessages.map((message, index) => <div className={`queued-message ${message.status}`} key={message.id}>
+              <span>{message.status === "dispatching" ? "正在发送" : message.status === "blocked" ? "需要处理" : `排队 ${index + 1}`}</span>
+              <p title={message.display_content}>{message.display_content}</p>
+              {message.status === "blocked" && <button type="button" onClick={() => void queueAction(message, "retry")}>重试</button>}
+              <button type="button" aria-label="移除排队消息" onClick={() => void queueAction(message, "remove")}>×</button>
+              {message.error && <small>{message.error}</small>}
+            </div>)}
+          </div>}
           {(attachments.length > 0 || fileReferences.length > 0) && <div className="attachment-row">
             {fileReferences.map((path) => <span key={`file:${path}`}>@{path}<button type="button" onClick={() => { setFileReferences((current) => current.filter((item) => item !== path)); setComposer((current) => current.replaceAll(`@${path}`, "").replace(/\s{2,}/g, " ")); }}>×</button></span>)}
             {attachments.map((attachment) => <span key={attachment.sha256}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.sha256 !== attachment.sha256))}>×</button></span>)}
           </div>}
+          {fileSuggestions.length > 0 && <div className="file-mention-menu" role="listbox" aria-label="文件建议">
+            {fileSuggestions.map((entry, index) => <button
+              type="button"
+              role="option"
+              aria-selected={index === fileSuggestionIndex}
+              className={index === fileSuggestionIndex ? "selected" : ""}
+              key={entry.path}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => chooseFileSuggestion(entry)}
+            ><b>{entry.name}</b><small>{entry.path}</small></button>)}
+          </div>}
           <textarea
+            ref={composerInputRef}
             value={composer}
-            onChange={(event) => setComposer(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              setComposer(value);
+              setComposerCaret(event.target.selectionStart);
+              setFileReferences((current) => current.filter((path) => value.includes(`@${path}`)));
+            }}
+            onClick={(event) => setComposerCaret(event.currentTarget.selectionStart)}
+            onKeyUp={(event) => setComposerCaret(event.currentTarget.selectionStart)}
             onKeyDown={(event) => {
+              if (fileSuggestions.length > 0 && event.key === "ArrowDown") {
+                event.preventDefault();
+                setFileSuggestionIndex((current) => (current + 1) % fileSuggestions.length);
+                return;
+              }
+              if (fileSuggestions.length > 0 && event.key === "ArrowUp") {
+                event.preventDefault();
+                setFileSuggestionIndex((current) => (current - 1 + fileSuggestions.length) % fileSuggestions.length);
+                return;
+              }
+              if (fileSuggestions.length > 0 && ["Enter", "Tab"].includes(event.key)) {
+                event.preventDefault();
+                chooseFileSuggestion(fileSuggestions[fileSuggestionIndex]);
+                return;
+              }
+              if (event.key === "Escape" && fileSuggestions.length > 0) {
+                event.preventDefault();
+                setFileSuggestions([]);
+                return;
+              }
+              if (event.nativeEvent.isComposing) return;
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();

@@ -118,11 +118,18 @@ from code_rook.core.bus.commands import (
     SessionGetHistoryResult,
     SessionInfo,
     SessionListCommand,
+    SessionListQueueCommand,
+    SessionListQueueResult,
     SessionListResult,
+    SessionQueuedMessageActionResult,
+    SessionQueueMessageCommand,
+    SessionQueueMessageResult,
+    SessionRemoveQueuedMessageCommand,
     SessionRenameCommand,
     SessionRenameResult,
     SessionResumeCommand,
     SessionResumeResult,
+    SessionRetryQueuedMessageCommand,
     SessionRewindCommand,
     SessionRewindPreviewCommand,
     SessionRewindPreviewResult,
@@ -1157,6 +1164,58 @@ class CoreApp:
             attachments=cmd.attachments,
         )
         return SessionSendMessageResult(run_id=run_id)
+
+    # 将后续用户消息写入 Core 持久队列并返回权威记录
+    async def _session_queue_message_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionQueueMessageResult:
+        assert self._sessions is not None
+        cmd = SessionQueueMessageCommand.model_validate(params)
+        message = await self._sessions.queue_message(
+            cmd.session_id,
+            cmd.content,
+            display_content=cmd.display_content,
+            runtime_mode=cmd.runtime_mode,
+            attachments=cmd.attachments,
+        )
+        return SessionQueueMessageResult(message=message)
+
+    # 列出指定会话由全部前端共享的持久消息队列
+    async def _session_list_queue_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionListQueueResult:
+        assert self._sessions is not None
+        cmd = SessionListQueueCommand.model_validate(params)
+        messages = await self._sessions.list_queued_messages(cmd.session_id)
+        return SessionListQueueResult(messages=messages)
+
+    # 删除用户不再需要的排队消息
+    async def _session_remove_queued_message_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionQueuedMessageActionResult:
+        assert self._sessions is not None
+        cmd = SessionRemoveQueuedMessageCommand.model_validate(params)
+        await self._sessions.remove_queued_message(cmd.session_id, cmd.message_id)
+        return SessionQueuedMessageActionResult(
+            session_id=cmd.session_id,
+            message_id=cmd.message_id,
+        )
+
+    # 重新派发中断或启动失败的 blocked 排队消息
+    async def _session_retry_queued_message_handler(
+        self,
+        params: dict[str, Any],
+    ) -> SessionQueuedMessageActionResult:
+        assert self._sessions is not None
+        cmd = SessionRetryQueuedMessageCommand.model_validate(params)
+        await self._sessions.retry_queued_message(cmd.session_id, cmd.message_id)
+        return SessionQueuedMessageActionResult(
+            session_id=cmd.session_id,
+            message_id=cmd.message_id,
+        )
 
     # 返回指定会话从下一轮开始使用的权限快照
     async def _session_get_authority_handler(
@@ -2502,6 +2561,16 @@ class CoreApp:
         server.register("event.unsubscribe", self._unsubscribe_handler)
         server.register("session.create", self._session_create_handler)
         server.register("session.send_message", self._session_send_handler)
+        server.register("session.queue_message", self._session_queue_message_handler)
+        server.register("session.list_queue", self._session_list_queue_handler)
+        server.register(
+            "session.remove_queued_message",
+            self._session_remove_queued_message_handler,
+        )
+        server.register(
+            "session.retry_queued_message",
+            self._session_retry_queued_message_handler,
+        )
         server.register("session.get_authority", self._session_get_authority_handler)
         server.register("session.set_authority", self._session_set_authority_handler)
         server.register("session.get_history", self._session_history_handler)

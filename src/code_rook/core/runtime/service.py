@@ -23,6 +23,7 @@ from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.receipts.builder import build_turn_receipt
 from code_rook.core.receipts.models import TurnReceipt
 from code_rook.core.runtime.models import (
+    QueuedMessageRecord,
     RuntimeEventRecord,
     SessionFacadeRecord,
     ThreadRecord,
@@ -191,6 +192,136 @@ class RuntimeService:
     async def delete_session(self, session_id: str) -> None:
         async with self._write_lock:
             await self._run_persistent_write(self._store.delete_thread, session_id)
+
+    # 持久化跨前端共享的后续消息并广播队列变化
+    async def enqueue_message(self, record: QueuedMessageRecord) -> None:
+        async with self._write_lock:
+            await self._run_persistent_write(self._store.enqueue_message, record)
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=record.thread_id,
+                turn_id=None,
+                event_type="queue.message_added",
+                payload={
+                    "queue_id": record.id,
+                    "content": record.display_content,
+                    "mode": record.mode.value,
+                    "attachment_count": len(record.attachments),
+                    "status": record.status,
+                },
+                ts=record.created_at,
+            )
+            await self._publish_runtime_event(event)
+
+    # 查询指定 thread 的持久消息队列
+    async def list_queued_messages(self, thread_id: str) -> list[QueuedMessageRecord]:
+        return await asyncio.to_thread(self._store.list_queued_messages, thread_id)
+
+    # 原子领取队首消息并广播正在派发状态
+    async def claim_next_queued_message(
+        self,
+        thread_id: str,
+        ts: datetime,
+    ) -> QueuedMessageRecord | None:
+        async with self._write_lock:
+            record = await self._run_persistent_write(
+                self._store.claim_next_queued_message,
+                thread_id,
+                ts,
+            )
+            if record is None:
+                return None
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=thread_id,
+                turn_id=None,
+                event_type="queue.message_dispatching",
+                payload={"queue_id": record.id, "status": "dispatching"},
+                ts=ts,
+            )
+            await self._publish_runtime_event(event)
+            return record
+
+    # 将无法启动的排队消息保留为 blocked 并发布可恢复原因
+    async def block_queued_message(
+        self,
+        record: QueuedMessageRecord,
+        error: str,
+        ts: datetime,
+    ) -> None:
+        async with self._write_lock:
+            await self._run_persistent_write(
+                self._store.block_queued_message,
+                record.id,
+                error,
+                ts,
+            )
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=record.thread_id,
+                turn_id=None,
+                event_type="queue.message_blocked",
+                payload={"queue_id": record.id, "status": "blocked", "error": error},
+                ts=ts,
+            )
+            await self._publish_runtime_event(event)
+
+    # 将用户确认重试的 blocked 消息恢复为 queued 并广播状态
+    async def retry_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        ts: datetime,
+    ) -> None:
+        async with self._write_lock:
+            await self._run_persistent_write(
+                self._store.retry_queued_message,
+                thread_id,
+                message_id,
+                ts,
+            )
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=thread_id,
+                turn_id=None,
+                event_type="queue.message_retried",
+                payload={"queue_id": message_id, "status": "queued"},
+                ts=ts,
+            )
+            await self._publish_runtime_event(event)
+
+    # 移除完成或用户取消的排队消息并同步广播
+    async def remove_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        *,
+        reason: str,
+        ts: datetime,
+    ) -> None:
+        async with self._write_lock:
+            await self._run_persistent_write(
+                self._store.delete_queued_message,
+                thread_id,
+                message_id,
+            )
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=thread_id,
+                turn_id=None,
+                event_type="queue.message_removed",
+                payload={"queue_id": message_id, "reason": reason},
+                ts=ts,
+            )
+            await self._publish_runtime_event(event)
+
+    # daemon 启动时恢复崩溃窗口内尚未确认的队列领取记录
+    async def recover_queued_messages(self, ts: datetime) -> int:
+        async with self._write_lock:
+            return await self._run_persistent_write(
+                self._store.recover_queued_messages,
+                ts,
+            )
 
     # 异步查询 thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:

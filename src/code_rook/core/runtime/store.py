@@ -6,8 +6,9 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
+from code_rook.core.artifacts import ImageArtifactInput
 from code_rook.core.authority import SandboxCapability, ToolAction
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runtime.migrations import (
@@ -17,6 +18,7 @@ from code_rook.core.runtime.migrations import (
 )
 from code_rook.core.runtime.models import (
     RUNTIME_RECORD_SCHEMA_VERSION,
+    QueuedMessageRecord,
     RuntimeEventRecord,
     SessionFacadeRecord,
     ThreadRecord,
@@ -54,6 +56,7 @@ _TURN_TRANSITIONS = {
     TurnStatus.INTERRUPTED: set(),
 }
 logger = logging.getLogger(__name__)
+_IMAGE_ATTACHMENTS = TypeAdapter(list[ImageArtifactInput])
 
 
 class RuntimeStoreError(RuntimeError):
@@ -208,6 +211,25 @@ def _event_from_row(row: sqlite3.Row) -> RuntimeEventRecord:
     )
 
 
+# 将数据库行还原为跨前端共享的排队消息
+def _queued_message_from_row(row: sqlite3.Row) -> QueuedMessageRecord:
+    _require_current_record_schema(row["schema_version"], "queued message")
+    attachments = _IMAGE_ATTACHMENTS.validate_python(json.loads(row["attachments_json"]))
+    return QueuedMessageRecord(
+        id=row["id"],
+        thread_id=row["thread_id"],
+        content=row["content"],
+        display_content=row["display_content"],
+        mode=row["mode"],
+        attachments=attachments,
+        status=row["status"],
+        error=row["error"],
+        created_at=_load_datetime(row["created_at"]),
+        updated_at=_load_datetime(row["updated_at"]),
+        schema_version=row["schema_version"],
+    )
+
+
 class RuntimeStore:
     # 初始化并迁移 runtime SQLite 数据库
     def __init__(self, path: Path, *, migrate: bool = True) -> None:
@@ -329,6 +351,164 @@ class RuntimeStore:
             )
         if cursor.rowcount == 0:
             raise RecordNotFoundError(f"thread not found: {thread_id}")
+
+    # 持久化一条由 TUI 或 Web 提交的后续消息
+    def enqueue_message(self, record: QueuedMessageRecord) -> None:
+        try:
+            with connect_database(self.path) as connection:
+                self._require_thread_schema(connection, record.thread_id)
+                connection.execute(
+                    """
+                    INSERT INTO runtime_message_queue (
+                        id, thread_id, content, display_content, mode,
+                        attachments_json, status, error, created_at, updated_at,
+                        schema_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.thread_id,
+                        record.content,
+                        record.display_content,
+                        record.mode.value,
+                        json.dumps(
+                            [item.model_dump(mode="json") for item in record.attachments],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        record.status,
+                        record.error,
+                        _dump_datetime(record.created_at),
+                        _dump_datetime(record.updated_at),
+                        record.schema_version,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise RecordAlreadyExistsError(
+                f"queued message already exists: {record.id}"
+            ) from exc
+
+    # 按提交顺序列出指定 thread 的全部待处理消息
+    def list_queued_messages(self, thread_id: str) -> list[QueuedMessageRecord]:
+        with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
+            rows = connection.execute(
+                """
+                SELECT * FROM runtime_message_queue
+                WHERE thread_id = ?
+                ORDER BY created_at, id
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [_queued_message_from_row(row) for row in rows]
+
+    # 原子领取指定 thread 最早的一条可执行消息
+    def claim_next_queued_message(
+        self,
+        thread_id: str,
+        ts: datetime,
+    ) -> QueuedMessageRecord | None:
+        connection = open_database(self.path)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_thread_schema(connection, thread_id)
+            row = connection.execute(
+                """
+                SELECT * FROM runtime_message_queue
+                WHERE thread_id = ? AND status = 'queued'
+                ORDER BY created_at, id
+                LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            _require_current_record_schema(row["schema_version"], "queued message")
+            connection.execute(
+                """
+                UPDATE runtime_message_queue
+                SET status = 'dispatching', error = '', updated_at = ?
+                WHERE id = ?
+                """,
+                (_dump_datetime(ts), row["id"]),
+            )
+            claimed = connection.execute(
+                "SELECT * FROM runtime_message_queue WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            if claimed is None:
+                raise RuntimeStoreError("claimed queued message disappeared")
+            connection.commit()
+            return _queued_message_from_row(claimed)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    # 将领取失败的消息保留为可见 blocked 状态
+    def block_queued_message(self, message_id: str, error: str, ts: datetime) -> None:
+        with connect_database(self.path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runtime_message_queue
+                SET status = 'blocked', error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (error, _dump_datetime(ts), message_id),
+            )
+        if cursor.rowcount == 0:
+            raise RecordNotFoundError(f"queued message not found: {message_id}")
+
+    # 将用户确认重试的 blocked 消息重新放回可领取状态
+    def retry_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+        ts: datetime,
+    ) -> None:
+        with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
+            cursor = connection.execute(
+                """
+                UPDATE runtime_message_queue
+                SET status = 'queued', error = '', updated_at = ?
+                WHERE thread_id = ? AND id = ? AND status = 'blocked'
+                """,
+                (_dump_datetime(ts), thread_id, message_id),
+            )
+        if cursor.rowcount == 0:
+            raise RecordNotFoundError(
+                f"blocked queued message not found: {message_id}"
+            )
+
+    # 删除已经完成或由用户取消的排队消息
+    def delete_queued_message(self, thread_id: str, message_id: str) -> None:
+        with connect_database(self.path) as connection:
+            self._require_thread_schema(connection, thread_id)
+            cursor = connection.execute(
+                "DELETE FROM runtime_message_queue WHERE thread_id = ? AND id = ?",
+                (thread_id, message_id),
+            )
+        if cursor.rowcount == 0:
+            raise RecordNotFoundError(f"queued message not found: {message_id}")
+
+    # daemon 重启时把执行结果不确定的领取记录转为需用户确认的 blocked 状态
+    def recover_queued_messages(self, ts: datetime) -> int:
+        with connect_database(self.path) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runtime_message_queue
+                SET status = 'blocked',
+                    error = 'daemon restarted while this message was dispatching',
+                    updated_at = ?
+                WHERE status = 'dispatching'
+                """,
+                (_dump_datetime(ts),),
+            )
+        return max(0, cursor.rowcount)
 
     # 新增或覆盖 session 兼容 facade 元数据
     def upsert_session_facade(self, record: SessionFacadeRecord) -> None:

@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from code_rook.core.artifacts import ImageArtifactInput
 from code_rook.core.authority.models import (
     AuthorityProfile,
     AuthoritySnapshot,
@@ -139,4 +140,20 @@ class SessionFacadeRecord(BaseModel):
     thread_id: str = Field(min_length=1)
     mode: Literal["one_shot", "chat"]
     parent_thread_id: str | None = None
+    schema_version: Literal[1] = 1
+
+
+class QueuedMessageRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    display_content: str = Field(min_length=1)
+    mode: RuntimeMode = RuntimeMode.ACT
+    attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
+    status: Literal["queued", "dispatching", "blocked"] = "queued"
+    error: str = ""
+    created_at: datetime
+    updated_at: datetime
     schema_version: Literal[1] = 1

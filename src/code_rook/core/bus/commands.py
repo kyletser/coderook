@@ -14,6 +14,7 @@ from code_rook.core.authority import (
 from code_rook.core.compatibility import RuntimeCapabilitiesSnapshot
 from code_rook.core.goal.models import GoalContinueDecision, GoalRecord, GoalStatus
 from code_rook.core.runtime.models import (
+    QueuedMessageRecord,
     RuntimeEventRecord,
     ThreadRecord,
     TurnItemRecord,
@@ -420,6 +421,45 @@ class SessionSendMessageCommand(BaseModel):
 
 class SessionSendMessageResult(BaseModel):
     run_id: str
+
+
+class SessionQueueMessageCommand(BaseModel):
+    type: Literal["session.queue_message"] = "session.queue_message"
+    session_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    display_content: str | None = None
+    runtime_mode: RuntimeMode = RuntimeMode.ACT
+    attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
+
+
+class SessionQueueMessageResult(BaseModel):
+    message: QueuedMessageRecord
+
+
+class SessionListQueueCommand(BaseModel):
+    type: Literal["session.list_queue"] = "session.list_queue"
+    session_id: str = Field(min_length=1)
+
+
+class SessionListQueueResult(BaseModel):
+    messages: list[QueuedMessageRecord]
+
+
+class SessionRemoveQueuedMessageCommand(BaseModel):
+    type: Literal["session.remove_queued_message"] = "session.remove_queued_message"
+    session_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+
+
+class SessionRetryQueuedMessageCommand(BaseModel):
+    type: Literal["session.retry_queued_message"] = "session.retry_queued_message"
+    session_id: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+
+
+class SessionQueuedMessageActionResult(BaseModel):
+    session_id: str
+    message_id: str
 
 
 class SessionGetAuthorityCommand(BaseModel):
@@ -1132,6 +1172,10 @@ Command = Annotated[
     | RuntimeCapabilitiesCommand
     | SessionCreateCommand
     | SessionSendMessageCommand
+    | SessionQueueMessageCommand
+    | SessionListQueueCommand
+    | SessionRemoveQueuedMessageCommand
+    | SessionRetryQueuedMessageCommand
     | SessionGetAuthorityCommand
     | SessionSetAuthorityCommand
     | SessionGetHistoryCommand

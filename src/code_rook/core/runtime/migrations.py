@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -184,6 +184,31 @@ def _apply_v5(connection: sqlite3.Connection) -> None:
     )
 
 
+# 增加跨 TUI/Web 共用的持久消息队列
+def _apply_v6(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_message_queue (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL
+                REFERENCES runtime_threads(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            display_content TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            attachments_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            schema_version INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS runtime_message_queue_thread
+            ON runtime_message_queue(thread_id, created_at, id);
+        """
+    )
+
+
 # 将 runtime 数据库迁移到当前 schema 版本
 def migrate_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,3 +238,7 @@ def migrate_database(path: Path) -> None:
         if version == 4:
             _apply_v5(connection)
             connection.execute("PRAGMA user_version = 5")
+            version = 5
+        if version == 5:
+            _apply_v6(connection)
+            connection.execute("PRAGMA user_version = 6")

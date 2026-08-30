@@ -16,6 +16,7 @@ from code_rook.core.runtime.migrations import (
     _apply_v4,
 )
 from code_rook.core.runtime.models import (
+    QueuedMessageRecord,
     ThreadRecord,
     TurnItemKind,
     TurnItemRecord,
@@ -71,6 +72,50 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 
     assert first.schema_version() == CURRENT_SCHEMA_VERSION
     assert second.schema_version() == CURRENT_SCHEMA_VERSION
+
+
+# 功能：验证消息队列跨数据库重开、领取、中断恢复、重试与删除保持同一记录
+# 设计：用真实 SQLite 顺序走完整状态机，证明 Web/TUI 不依赖各自进程内存保存后续消息
+def test_durable_message_queue_survives_restart_and_requires_retry(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime.db"
+    store = RuntimeStore(path)
+    now = _now()
+    store.create_thread(
+        ThreadRecord(
+            id="thread-queue",
+            title="Queue",
+            workspace=str(tmp_path),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    record = QueuedMessageRecord(
+        id="queue-1",
+        thread_id="thread-queue",
+        content="internal prompt",
+        display_content="继续修复",
+        created_at=now,
+        updated_at=now,
+    )
+
+    store.enqueue_message(record)
+    reopened = RuntimeStore(path)
+    assert reopened.list_queued_messages("thread-queue") == [record]
+
+    claimed = reopened.claim_next_queued_message("thread-queue", now)
+    assert claimed is not None
+    assert claimed.status == "dispatching"
+    assert reopened.recover_queued_messages(now) == 1
+    blocked = reopened.list_queued_messages("thread-queue")[0]
+    assert blocked.status == "blocked"
+    assert "daemon restarted" in blocked.error
+
+    reopened.retry_queued_message("thread-queue", "queue-1", now)
+    assert reopened.list_queued_messages("thread-queue")[0].status == "queued"
+    reopened.delete_queued_message("thread-queue", "queue-1")
+    assert reopened.list_queued_messages("thread-queue") == []
 
 
 # 功能：验证较新 runtime schema 不会被旧版 daemon 静默降级或覆盖

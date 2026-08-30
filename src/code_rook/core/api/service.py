@@ -510,6 +510,48 @@ class RuntimeApiService:
         session = await self._sessions.create(mode=cast(SessionMode, mode), title=title)
         return await self._runtime.get_thread(session.id)
 
+    # 将浏览器提交的后续消息交给 Core 持久队列
+    async def queue_message(
+        self,
+        thread_id: str,
+        content: str,
+        mode: RuntimeMode,
+        attachments: list[ImageArtifactInput] | None = None,
+        *,
+        display_content: str | None = None,
+    ) -> dict[str, object]:
+        record = await self._sessions.queue_message(
+            thread_id,
+            content,
+            runtime_mode=mode,
+            attachments=attachments,
+            display_content=display_content,
+        )
+        return record.model_dump(mode="json")
+
+    # 返回当前 thread 在所有前端之间共享的持久消息队列
+    async def list_queued_messages(self, thread_id: str) -> list[dict[str, object]]:
+        records = await self._sessions.list_queued_messages(thread_id)
+        return [record.model_dump(mode="json") for record in records]
+
+    # 删除浏览器明确取消的排队消息
+    async def remove_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+    ) -> dict[str, object]:
+        await self._sessions.remove_queued_message(thread_id, message_id)
+        return {"thread_id": thread_id, "message_id": message_id, "removed": True}
+
+    # 重试处于 blocked 状态的排队消息
+    async def retry_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+    ) -> dict[str, object]:
+        await self._sessions.retry_queued_message(thread_id, message_id)
+        return {"thread_id": thread_id, "message_id": message_id, "retried": True}
+
     # 读取单个 durable thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:
         return await self._runtime.get_thread(thread_id)

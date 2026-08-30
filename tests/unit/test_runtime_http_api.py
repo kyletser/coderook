@@ -71,6 +71,7 @@ class _FakeRuntimeApi:
         self.steering = ""
         self.display_content: str | None = None
         self.permission_response: tuple[str, str] | None = None
+        self.queue: list[dict[str, object]] = []
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
@@ -86,6 +87,57 @@ class _FakeRuntimeApi:
         assert mode in {"chat", "one_shot"}
         self.thread = self.thread.model_copy(update={"title": title})
         return self.thread
+
+    # 模拟 Core 持久队列接收浏览器后续消息
+    async def queue_message(
+        self,
+        thread_id: str,
+        content: str,
+        mode: RuntimeMode,
+        attachments: object = None,
+        *,
+        display_content: str | None = None,
+    ) -> dict[str, object]:
+        assert thread_id == self.thread.id
+        record: dict[str, object] = {
+            "id": "queue-1",
+            "thread_id": thread_id,
+            "content": content,
+            "display_content": display_content or content,
+            "mode": mode.value,
+            "attachments": attachments or [],
+            "status": "queued",
+            "error": "",
+        }
+        self.queue.append(record)
+        return record
+
+    # 返回 fake 中当前排队消息
+    async def list_queued_messages(self, thread_id: str) -> list[dict[str, object]]:
+        assert thread_id == self.thread.id
+        return list(self.queue)
+
+    # 从 fake 队列删除指定消息
+    async def remove_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+    ) -> dict[str, object]:
+        assert thread_id == self.thread.id
+        self.queue = [item for item in self.queue if item["id"] != message_id]
+        return {"removed": True}
+
+    # 将 fake blocked 消息恢复为 queued
+    async def retry_queued_message(
+        self,
+        thread_id: str,
+        message_id: str,
+    ) -> dict[str, object]:
+        assert thread_id == self.thread.id
+        for item in self.queue:
+            if item["id"] == message_id:
+                item["status"] = "queued"
+        return {"retried": True}
 
     # 验证 fake thread 存在
     async def ensure_thread(self, thread_id: str) -> None:
@@ -245,6 +297,31 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             )
             assert response.status_code == 201
             assert response.json()["title"] == "Created"
+
+            response = await client.post(
+                "/v1/threads/thread-1/queue",
+                json={
+                    "content": "internal queued prompt",
+                    "display_content": "下一轮继续",
+                    "mode": "act",
+                },
+            )
+            assert response.status_code == 201
+            assert response.json()["display_content"] == "下一轮继续"
+            assert (await client.get("/v1/threads/thread-1/queue")).json()[0][
+                "id"
+            ] == "queue-1"
+            service.queue[0]["status"] = "blocked"
+            response = await client.post("/v1/threads/thread-1/queue/queue-1/retry")
+            assert response.status_code == 200
+            assert service.queue[0]["status"] == "queued"
+            response = await client.request(
+                "DELETE",
+                "/v1/threads/thread-1/queue/queue-1",
+                json={},
+            )
+            assert response.status_code == 200
+            assert service.queue == []
 
             response = await client.post(
                 "/v1/threads/thread-1/turns",

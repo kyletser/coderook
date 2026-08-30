@@ -117,6 +117,10 @@ async def test_session_bootstrap_prunes_only_stale_unused_empty_sessions(
         async def bootstrap_sessions(self, *_args: object) -> None:
             return None
 
+        # 返回无遗留队列领取，保持剪枝测试只关注空会话
+        async def recover_queued_messages(self, *_args: object) -> int:
+            return 0
+
         # 记录自动剪枝对应的 Runtime thread
         async def delete_session(self, session_id: str) -> None:
             self.deleted.append(session_id)
@@ -142,6 +146,42 @@ async def test_session_bootstrap_prunes_only_stale_unused_empty_sessions(
     assert {session.id for session in sessions} == {"sess-named", "sess-fresh"}
     assert runtime.deleted == ["sess-stale"]
     assert not store.session_dir("sess-stale").exists()
+
+
+# 功能：验证 Core 持久队列会自动创建下一 Turn 并在完成后移除消息
+# 设计：组合真实 RuntimeService、SQLite 与 SessionManager，仅用确定性 Runner 等待队列清空并核对 ledger 正文
+async def test_durable_queue_dispatches_next_turn_and_clears_record(
+    tmp_path: Path,
+) -> None:
+    bus = EventBus()
+    runtime = RuntimeService(RuntimeStore(tmp_path / "runtime.db"), Path.cwd(), bus=bus)
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: _Runner(),
+        bus,
+        runtime_service=runtime,
+    )
+    session = await manager.create("chat")
+
+    queued = await manager.queue_message(
+        session.id,
+        "internal queued prompt",
+        display_content="下一轮继续",
+    )
+    for _ in range(100):
+        if not await manager.list_queued_messages(session.id):
+            break
+        await asyncio.sleep(0.02)
+
+    assert await manager.list_queued_messages(session.id) == []
+    messages = store.read_messages(session.id)
+    assert any(
+        item.get("role") == "user" and item.get("content") == "internal queued prompt"
+        for item in messages
+    )
+    assert queued.id in manager.get_session(session.id).run_ids
+    await manager.cancel_all()
 
 
 # 功能：验证 session_start、message_submit、turn_start、session_stop 接入真实会话生命周期
@@ -797,6 +837,10 @@ async def test_goal_run_reservation_rolls_back_when_runtime_start_fails(
         async def bootstrap_sessions(self, *_args: object) -> None:
             return None
 
+        # 返回无遗留队列领取，保持失败点位于 runtime Turn 创建
+        async def recover_queued_messages(self, *_args: object) -> int:
+            return 0
+
         # 接受 session 创建投影
         async def sync_session(self, *_args: object) -> None:
             return None
@@ -862,6 +906,10 @@ async def test_goal_pause_during_turn_preparation_cancels_barrier_runner(
         # 接受 session bootstrap 而不产生额外状态
         async def bootstrap_sessions(self, *_args: object) -> None:
             return None
+
+        # 返回无遗留队列领取，保持测试聚焦 pause 竞态窗口
+        async def recover_queued_messages(self, *_args: object) -> int:
+            return 0
 
         # 接受 session 同步而不产生额外状态
         async def sync_session(self, *_args: object) -> None:
