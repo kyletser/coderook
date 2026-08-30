@@ -45,6 +45,9 @@ CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经�
   结果卡把 tool-use/length/incomplete 显示为不完整、cancelled 显示为中断，并保留 content-filtered 与
   transport-error 的独立失败语义；Plan approve/revise/cancel 使用 durable `plan.respond/plan.resolved`，
   重启不复活已解决审批；Labs Workflow 图、协议状态值、日志和第三方动态文本保留技术原文。
+- Web 的主时间线、Composer、工具/权限/恢复卡、文件/变更、Provider 与稳定管理面支持
+  `zh-CN` / `en-US` 即时切换；浅色为默认，并提供本地高对比偏好。模型回答、代码、日志和第三方动态
+  文本保持原文，语言与显示偏好只保存在浏览器。
 - Change Center 是全屏可聚焦 overlay，合并当前 diff 与 durable Receipt，支持 file/hunk、rename/mode 与
   opaque metadata 导航。`state_digest` 是绑定 scope、canonical visible payload、exact ref/commit、index、
   tracked/untracked 内容及 untracked mode 的审查令牌；不透明 tracked 内容必须有 old/new blob 长度与

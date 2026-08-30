@@ -401,6 +401,8 @@ Labs。非空 Session 不原地切换 Preset，TUI `/preset` 会创建保留来�
   状态；会话切换使用请求版本阻止旧响应覆盖新状态，浏览器重新获得焦点时会与 Core 对账会话、模型和
   当前 Turn。结果行读取 Turn Receipt，Change Center 可按文件选择 Stage；会话、Checkpoint、Provider、
   Worker、Skill、Goal 和 Memory 的破坏性或输入型动作使用统一产品对话框，不调用浏览器原生弹窗。
+  Web 界面语言和显示对比度由浏览器本地偏好控制，支持 `zh-CN` / `en-US` 与浅色 / 高对比；切换只
+  影响产品标签，不改写模型内容、代码、日志或持久任务事实。
   浏览器只调用 Core API，不读取 runtime.db、Ledger、凭据文件或未经过 WorkspaceBoundary
   的路径。API Key 只作为一次配置请求 body 交给 Core，不写入 Web Storage。PlatformBridge 隔离通知、
   剪贴板和外部打开能力，便于后续嵌入桌面壳；当前不包含 Electron/Tauri；

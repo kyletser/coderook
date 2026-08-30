@@ -61,10 +61,74 @@ type ProductDialogOptions = {
 };
 type PendingProductDialog = ProductDialogOptions & { resolve(value: string | null): void };
 type ProductDialogController = (options: ProductDialogOptions) => Promise<string | null>;
+export type WebLocale = "zh-CN" | "en-US";
+export type WebTheme = "light" | "high-contrast";
+type InterfacePreferences = {
+  locale: WebLocale;
+  setLocale(locale: WebLocale): void;
+  theme: WebTheme;
+  setTheme(theme: WebTheme): void;
+};
 
 const TURN_PAGE_SIZE = 30;
 const MAX_CACHED_EVENTS = 5000;
+const LOCALE_STORAGE_KEY = "coderook.web.locale";
+const THEME_STORAGE_KEY = "coderook.web.theme";
 const ProductDialogContext = createContext<ProductDialogController | null>(null);
+const InterfacePreferencesContext = createContext<InterfacePreferences | null>(null);
+
+export function resolveWebLocale(value: string | null | undefined): WebLocale {
+  return value?.toLowerCase().startsWith("en") ? "en-US" : "zh-CN";
+}
+
+function initialWebLocale(): WebLocale {
+  if (typeof window === "undefined") return "zh-CN";
+  return resolveWebLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY) || window.navigator.language);
+}
+
+export function resolveWebTheme(value: string | null | undefined): WebTheme {
+  return value === "high-contrast" ? "high-contrast" : "light";
+}
+
+function initialWebTheme(): WebTheme {
+  if (typeof window === "undefined") return "light";
+  return resolveWebTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+}
+
+let activeWebLocale = initialWebLocale();
+
+function tr(chinese: string, english: string): string {
+  return activeWebLocale === "en-US" ? english : chinese;
+}
+
+function InterfacePreferencesProvider({ children }: { children: ReactNode }): ReactElement {
+  const [locale, updateLocale] = useState<WebLocale>(activeWebLocale);
+  const [theme, updateTheme] = useState<WebTheme>(initialWebTheme);
+  const setLocale = useCallback((next: WebLocale) => {
+    activeWebLocale = next;
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
+    document.documentElement.lang = next;
+    updateLocale(next);
+  }, []);
+  const setTheme = useCallback((next: WebTheme) => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    document.documentElement.dataset.theme = next;
+    updateTheme(next);
+  }, []);
+  useEffect(() => {
+    activeWebLocale = locale;
+    document.documentElement.lang = locale;
+    document.documentElement.dataset.theme = theme;
+  }, [locale, theme]);
+  const value = useMemo(() => ({ locale, setLocale, theme, setTheme }), [locale, setLocale, theme, setTheme]);
+  return <InterfacePreferencesContext.Provider value={value}>{children}</InterfacePreferencesContext.Provider>;
+}
+
+function useInterfacePreferences(): InterfacePreferences {
+  const preferences = useContext(InterfacePreferencesContext);
+  if (!preferences) throw new Error("InterfacePreferencesProvider is missing");
+  return preferences;
+}
 
 function ProductDialogLayer({ pending, onResolve }: { pending: PendingProductDialog; onResolve(value: string | null): void }): ReactElement {
   const [value, setValue] = useState(pending.initialValue || "");
@@ -85,12 +149,12 @@ function ProductDialogLayer({ pending, onResolve }: { pending: PendingProductDia
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }}>
-      <header><div><small>CODEROOK</small><h2 id="product-dialog-title">{pending.title}</h2></div><button type="button" aria-label="关闭" onClick={() => finish(false)}>×</button></header>
+      <header><div><small>CODEROOK</small><h2 id="product-dialog-title">{pending.title}</h2></div><button type="button" aria-label={tr("关闭", "Close")} onClick={() => finish(false)}>×</button></header>
       {pending.description && <p>{pending.description}</p>}
       {pending.detail && <pre>{pending.detail}</pre>}
       {pending.input === "text" && <input ref={(node) => { inputRef.current = node; }} value={value} placeholder={pending.placeholder} onChange={(event) => setValue(event.target.value)} />}
       {pending.input === "multiline" && <textarea ref={(node) => { inputRef.current = node; }} value={value} placeholder={pending.placeholder} onChange={(event) => setValue(event.target.value)} />}
-      <footer>{pending.cancelLabel !== null && <button type="button" onClick={() => finish(false)}>{pending.cancelLabel || "取消"}</button>}<button className={pending.danger ? "danger" : "primary"} disabled={!canConfirm}>{pending.confirmLabel || "确认"}</button></footer>
+      <footer>{pending.cancelLabel !== null && <button type="button" onClick={() => finish(false)}>{pending.cancelLabel || tr("取消", "Cancel")}</button>}<button className={pending.danger ? "danger" : "primary"} disabled={!canConfirm}>{pending.confirmLabel || tr("确认", "Confirm")}</button></footer>
     </form>
   </div>;
 }
@@ -135,30 +199,53 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }): ReactElem
   return <svg aria-hidden="true" className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={iconPaths[name]} /></svg>;
 }
 
-const phaseLabels: Record<string, string> = {
-  understanding: "理解任务",
-  exploring: "探索代码",
-  planning: "规划方案",
-  waiting_confirmation: "等待确认",
-  executing: "执行修改",
-  verifying: "运行验证",
-  reviewing: "审查结果",
-  completed: "任务完成",
-  failed: "任务失败",
-  interrupted: "任务中断",
-};
+function phaseLabel(value: string): string {
+  const labels: Record<string, [string, string]> = {
+    understanding: ["理解任务", "Understanding"],
+    exploring: ["探索代码", "Exploring"],
+    planning: ["规划方案", "Planning"],
+    waiting_confirmation: ["等待确认", "Waiting for approval"],
+    executing: ["执行修改", "Making changes"],
+    verifying: ["运行验证", "Verifying"],
+    reviewing: ["审查结果", "Reviewing"],
+    completed: ["任务完成", "Completed"],
+    failed: ["任务失败", "Failed"],
+    interrupted: ["任务中断", "Interrupted"],
+  };
+  const label = labels[value];
+  return label ? tr(label[0], label[1]) : value;
+}
 
-const statusLabels: Record<string, string> = {
-  idle: "空闲",
-  running: "运行中",
-  interrupted: "待恢复",
-  failed: "失败",
-  archived: "已归档",
-};
+function statusLabel(value: string): string {
+  const labels: Record<string, [string, string]> = {
+    idle: ["空闲", "Idle"],
+    running: ["运行中", "Running"],
+    waiting: ["等待中", "Waiting"],
+    waiting_permission: ["等待权限", "Waiting for permission"],
+    waiting_input: ["等待输入", "Waiting for input"],
+    queued: ["已排队", "Queued"],
+    dispatching: ["发送中", "Dispatching"],
+    active: ["进行中", "Active"],
+    paused: ["已暂停", "Paused"],
+    paused_needs_confirmation: ["等待确认恢复", "Waiting for resume confirmation"],
+    blocked: ["受阻", "Blocked"],
+    completed: ["已完成", "Completed"],
+    succeeded: ["已完成", "Succeeded"],
+    cancelled: ["已取消", "Cancelled"],
+    interrupted: ["待恢复", "Recovery available"],
+    failed: ["失败", "Failed"],
+    archived: ["已归档", "Archived"],
+    connected: ["已连接", "Connected"],
+    disconnected: ["未连接", "Disconnected"],
+    applied: ["已应用", "Applied"],
+  };
+  const label = labels[value];
+  return label ? tr(label[0], label[1]) : value;
+}
 
 function displayTime(value: string): string {
   if (!value) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(activeWebLocale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -174,49 +261,50 @@ function textValue(value: unknown): string {
 
 function readinessReason(value: unknown): string {
   const reason = textValue(value);
-  const labels: Record<string, string> = {
-    "the remote route has credentials but has not passed a basic Doctor probe": "已保存凭据，但当前路由尚未通过 Doctor 验证。",
-    "the active route Doctor receipt is missing or stale": "当前路由的 Doctor 验证已缺失或过期。",
-    "no provider route is configured": "尚未配置可用的模型路由。",
-    "the active route credential is missing": "当前路由缺少 API Key。",
+  const labels: Record<string, [string, string]> = {
+    "the remote route has credentials but has not passed a basic Doctor probe": ["已保存凭据，但当前路由尚未通过 Doctor 验证。", "Credentials are saved, but this route has not passed Doctor."],
+    "the active route Doctor receipt is missing or stale": ["当前路由的 Doctor 验证已缺失或过期。", "The active route's Doctor result is missing or stale."],
+    "no provider route is configured": ["尚未配置可用的模型路由。", "No model route is configured."],
+    "the active route credential is missing": ["当前路由缺少 API Key。", "The active route is missing its API key."],
   };
-  return labels[reason] || reason;
+  const label = labels[reason];
+  return label ? tr(label[0], label[1]) : reason;
 }
 
 function fileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(reader.error || new Error("无法读取图片"));
+    reader.onerror = () => reject(reader.error || new Error(tr("无法读取图片", "Unable to read the image")));
     reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
     reader.readAsDataURL(file);
   });
 }
 
 function eventTitle(event: RuntimeEvent): string {
-  const presentation = event.payload.presentation as Record<string, unknown> | undefined;
-  if (presentation?.title) return textValue(presentation.title);
   if (event.type === "run.phase_changed") {
-    return phaseLabels[textValue(event.payload.phase)] || textValue(event.payload.phase);
+    return phaseLabel(textValue(event.payload.phase));
   }
   const names: Record<string, string> = {
-    "input.admitted": "你",
-    "task.profiled": "已理解",
-    "tool.call_started": "正在使用工具",
-    "tool.call_finished": "工具完成",
-    "llm.retry": "模型重试",
-    "context.compaction_committed": "上下文已整理",
-    "context.compacted": "上下文已整理",
-    "plan.ready": "执行计划",
-    "permission.requested": "需要权限",
-    "user_question.asked": "需要你的回答",
-    "recovery.available": "发现可恢复任务",
-    "run.outcome": "任务结果",
-    "run.finished": "任务结果",
-    "turn.finished": "本轮结束",
-    "turn.failed": "本轮未完成",
-    "turn.interrupted": "本轮已中断",
+    "input.admitted": tr("你", "You"),
+    "task.profiled": tr("已理解", "Task understood"),
+    "tool.call_started": tr("正在使用工具", "Using a tool"),
+    "tool.call_finished": tr("工具完成", "Tool completed"),
+    "llm.retry": tr("模型重试", "Retrying model"),
+    "context.compaction_committed": tr("上下文已整理", "Context compacted"),
+    "context.compacted": tr("上下文已整理", "Context compacted"),
+    "plan.ready": tr("执行计划", "Execution plan"),
+    "permission.requested": tr("需要权限", "Permission required"),
+    "user_question.asked": tr("需要你的回答", "Your answer is needed"),
+    "recovery.available": tr("发现可恢复任务", "Task recovery available"),
+    "run.outcome": tr("任务结果", "Task result"),
+    "run.finished": tr("任务结果", "Task result"),
+    "turn.finished": tr("本轮结束", "Turn finished"),
+    "turn.failed": tr("本轮未完成", "Turn incomplete"),
+    "turn.interrupted": tr("本轮已中断", "Turn interrupted"),
   };
-  return names[event.type] || event.type.replaceAll(".", " · ");
+  if (names[event.type]) return names[event.type];
+  const presentation = event.payload.presentation as Record<string, unknown> | undefined;
+  return presentation?.title ? textValue(presentation.title) : event.type.replaceAll(".", " · ");
 }
 
 function messageContent(value: unknown): string {
@@ -226,7 +314,7 @@ function messageContent(value: unknown): string {
     if (!block || typeof block !== "object") return textValue(block);
     const record = block as Record<string, unknown>;
     if (record.type === "text") return textValue(record.text);
-    if (record.type === "image") return "[图片]";
+    if (record.type === "image") return tr("[图片]", "[image]");
     return textValue(record);
   }).filter(Boolean).join("\n");
 }
@@ -302,41 +390,41 @@ function toolActionLabel(
   semanticAction = "",
 ): string {
   const labels: Record<string, string> = {
-    run_command: "运行命令",
-    run_tests: "运行验证",
-    read_file: "读取文件",
-    browse_files: "浏览文件",
-    search_code: "搜索代码",
-    edit_code: "修改代码",
-    git: "检查 Git",
-    web: "访问网络",
-    worker: "调用 Agent",
+    run_command: tr("运行命令", "Run command"),
+    run_tests: tr("运行验证", "Run checks"),
+    read_file: tr("读取文件", "Read file"),
+    browse_files: tr("浏览文件", "Browse files"),
+    search_code: tr("搜索代码", "Search code"),
+    edit_code: tr("修改代码", "Edit code"),
+    git: tr("检查 Git", "Inspect Git"),
+    web: tr("访问网络", "Access web"),
+    worker: tr("调用 Agent", "Run agent"),
   };
   const semantic = labels[semanticAction];
   if (semantic) {
-    if (semanticAction === "run_command") return state === "failed" ? "运行失败" : state === "running" ? "正在运行" : "已运行";
-    if (semanticAction === "run_tests") return state === "failed" ? "验证失败" : state === "running" ? "正在验证" : "已验证";
-    return state === "failed" ? `${semantic}失败` : state === "running" ? `正在${semantic}` : semantic;
+    if (semanticAction === "run_command") return state === "failed" ? tr("运行失败", "Command failed") : state === "running" ? tr("正在运行", "Running") : tr("已运行", "Command finished");
+    if (semanticAction === "run_tests") return state === "failed" ? tr("验证失败", "Checks failed") : state === "running" ? tr("正在验证", "Running checks") : tr("已验证", "Checks passed");
+    return state === "failed" ? tr(`${semantic}失败`, `${semantic} failed`) : state === "running" ? tr(`正在${semantic}`, `Running ${semantic.toLowerCase()}`) : semantic;
   }
   if (["Bash", "Run", "bash", "run"].includes(toolName)) {
-    return state === "failed" ? "命令执行失败" : state === "running" ? "正在运行命令" : "运行命令";
+    return state === "failed" ? tr("命令执行失败", "Command failed") : state === "running" ? tr("正在运行命令", "Running command") : tr("运行命令", "Run command");
   }
   if (["File", "file"].includes(toolName)) {
     const action = textValue(params.action);
     const labels: Record<string, string> = {
-      read: "读取文件",
-      list: "浏览文件",
-      write: "写入文件",
-      patch: "修改文件",
-      search: "搜索文件",
+      read: tr("读取文件", "Read file"),
+      list: tr("浏览文件", "Browse files"),
+      write: tr("写入文件", "Write file"),
+      patch: tr("修改文件", "Edit file"),
+      search: tr("搜索文件", "Search files"),
     };
-    const label = labels[action] || "处理文件";
-    return state === "failed" ? `${label}失败` : state === "running" ? `正在${label}` : label;
+    const label = labels[action] || tr("处理文件", "Process file");
+    return state === "failed" ? tr(`${label}失败`, `${label} failed`) : state === "running" ? tr(`正在${label}`, `Running ${label.toLowerCase()}`) : label;
   }
   if (["Git", "git"].includes(toolName)) {
-    return state === "failed" ? "Git 操作失败" : state === "running" ? "正在执行 Git 操作" : "Git 操作";
+    return state === "failed" ? tr("Git 操作失败", "Git operation failed") : state === "running" ? tr("正在执行 Git 操作", "Running Git operation") : tr("Git 操作", "Git operation");
   }
-  return state === "failed" ? `${toolName} 失败` : state === "running" ? `正在使用 ${toolName}` : `使用 ${toolName}`;
+  return state === "failed" ? tr(`${toolName} 失败`, `${toolName} failed`) : state === "running" ? tr(`正在使用 ${toolName}`, `Using ${toolName}`) : tr(`使用 ${toolName}`, `Use ${toolName}`);
 }
 
 function inferToolAction(
@@ -470,21 +558,22 @@ function taskProfile(event: RuntimeEvent): Record<string, unknown> {
 
 function taskProfileTitle(profile: Record<string, unknown>): string {
   const strategy = textValue(profile.strategy);
-  if (strategy === "delegate") return "评估任务拆分与并行执行";
+  if (strategy === "delegate") return tr("评估任务拆分与并行执行", "Evaluating safe parallel work");
   const intent = textValue(profile.intent);
   const titles: Record<string, string> = {
-    explain: "理解问题并整理回答",
-    inspect: "定位相关实现与证据",
-    fix: strategy === "plan_first" ? "定位根因并规划修复" : "定位问题并准备修复",
-    refactor: "梳理重构范围与兼容边界",
-    test: "确定验证范围与执行方式",
-    multi_file_change: "拆解跨文件改动与依赖",
+    explain: tr("理解问题并整理回答", "Understanding the question"),
+    inspect: tr("定位相关实现与证据", "Locating relevant code and evidence"),
+    fix: strategy === "plan_first" ? tr("定位根因并规划修复", "Finding the root cause and planning a fix") : tr("定位问题并准备修复", "Locating the issue and preparing a fix"),
+    refactor: tr("梳理重构范围与兼容边界", "Scoping the refactor and compatibility"),
+    test: tr("确定验证范围与执行方式", "Choosing the verification scope"),
+    multi_file_change: tr("拆解跨文件改动与依赖", "Mapping multi-file changes and dependencies"),
   };
-  return titles[intent] || "分析任务与执行方式";
+  return titles[intent] || tr("分析任务与执行方式", "Analyzing the task and execution strategy");
 }
 
-function isSimpleProductQuestion(value: string): boolean {
-  return /(你好|您好|你是谁|什么模型|具体型号|你能做什么|你能干什么|你会什么|有什么功能|怎么使用|如何使用)/i.test(value);
+export function isSimpleProductQuestion(value: string): boolean {
+  return /(你好|您好|你是谁|什么模型|具体型号|你能做什么|你能干什么|你会什么|有什么功能|怎么使用|如何使用)/i.test(value)
+    || /^\s*(hi|hello|who are you|what model (are you|is this)|what can you do|what do you do|how (do i|to) use (this|coderook))\s*[?!.]*\s*$/i.test(value);
 }
 
 export function modelContentFor(visibleContent: string, fileReferences: string[]): string {
@@ -542,6 +631,7 @@ export function preferredThreadId(threads: ThreadRecord[]): string {
 
 function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
   const dialog = useProductDialog();
+  const preferences = useInterfacePreferences();
   const [workspace] = useState(initialWorkspace);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -561,7 +651,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const [inspectorFile, setInspectorFile] = useState("");
   const [queueMode, setQueueMode] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
-  const [activeModel, setActiveModel] = useState("未配置模型");
+  const [activeModel, setActiveModel] = useState(tr("未配置模型", "No model configured"));
   const [sessionsReady, setSessionsReady] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
   const [hasOlderTurns, setHasOlderTurns] = useState(false);
@@ -596,8 +686,8 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const refreshActiveModel = useCallback(async () => {
     const catalog = await request<ProviderCatalog>("/v1/providers");
     const active = catalog.routes.find((route) => route.id === catalog.active_route_id);
-    setActiveModel(textValue(active?.model) || "未配置模型");
-  }, []);
+    setActiveModel(textValue(active?.model) || tr("未配置模型", "No model configured"));
+  }, [preferences.locale]);
 
   const refreshThreads = useCallback(async () => {
     const result = await request<ThreadRecord[]>("/v1/threads");
@@ -616,7 +706,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   }, [refreshThreads]);
 
   useEffect(() => {
-    void refreshActiveModel().catch(() => setActiveModel("模型状态未知"));
+    void refreshActiveModel().catch(() => setActiveModel(tr("模型状态未知", "Model status unavailable")));
   }, [drawer, refreshActiveModel]);
 
   useEffect(() => {
@@ -872,23 +962,23 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           composerDrafts.current[selectedId || "__new__"] = "";
           setAttachments([]);
           setFileReferences([]);
-          setNotice("消息已加入队列，将在当前任务结束后发送");
+          setNotice(tr("消息已加入队列，将在当前任务结束后发送", "Message queued and will be sent after the current task."));
           return;
         }
         if (attachments.length > 0) {
-          setError("运行中的纠偏暂不支持图片。请切换到“排队”发送，图片会随下一轮任务提交。");
+          setError(tr("运行中的纠偏暂不支持图片。请切换到“排队”发送，图片会随下一轮任务提交。", "Images cannot be attached to an active steer message. Switch to Queue to send them with the next task."));
           return;
         }
         await request(`/v1/turns/${encodeURIComponent(activeTurn.id)}/steer`, {
           method: "POST",
           body: JSON.stringify({ content: submitted }),
         });
-        setNotice("纠偏消息已送达当前任务");
+        setNotice(tr("纠偏消息已送达当前任务", "Steer message sent to the active task."));
       } else {
         const provider = await request<ProviderCatalog>("/v1/providers");
         if (!provider.readiness.local_ready) {
           setDrawer("models");
-          setNotice("先完成模型配置，当前输入已为你保留");
+          setNotice(tr("先完成模型配置，当前输入已为你保留", "Configure a model first. Your draft has been preserved."));
           return;
         }
         const threadId = selectedId || (await createThread());
@@ -1001,7 +1091,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         method: "POST",
         body: "{}",
       });
-      setNotice("已请求停止当前任务");
+      setNotice(tr("已请求停止当前任务", "Stop requested for the active task."));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1031,12 +1121,12 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     try {
       if (action === "rename") {
         const title = await dialog({
-          title: "重命名会话",
-          description: "名称会同步到使用同一 Core 的 TUI 与 Web。",
+          title: tr("重命名会话", "Rename session"),
+          description: tr("名称会同步到使用同一 Core 的 TUI 与 Web。", "The new name will be shared by TUI and Web through the same Core."),
           input: "text",
           initialValue: selectedThread?.title || "",
-          placeholder: "输入新的会话名称",
-          confirmLabel: "保存名称",
+          placeholder: tr("输入新的会话名称", "Enter a new session name"),
+          confirmLabel: tr("保存名称", "Save name"),
         });
         if (!title?.trim()) return;
         const updated = await request<ThreadRecord>(`/v1/threads/${encodeURIComponent(selectedId)}`, {
@@ -1068,9 +1158,9 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
         return;
       }
       if (!await dialog({
-        title: "删除会话",
-        description: `将永久删除“${selectedThread?.title || "未命名任务"}”及其本地执行记录，此操作不能撤销。`,
-        confirmLabel: "永久删除",
+        title: tr("删除会话", "Delete session"),
+        description: tr(`将永久删除“${selectedThread?.title || "未命名任务"}”及其本地执行记录，此操作不能撤销。`, `This permanently deletes “${selectedThread?.title || "Untitled task"}” and its local execution history. This cannot be undone.`),
+        confirmLabel: tr("永久删除", "Delete permanently"),
         danger: true,
       })) return;
       await request(`/v1/threads/${encodeURIComponent(selectedId)}`, {
@@ -1224,17 +1314,17 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
   const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace";
 
   return (
-    <div className={`app-shell ${drawer ? "inspector-open" : ""}`}>
+    <div className={`app-shell ${drawer ? "inspector-open" : ""}`} lang={preferences.locale}>
       <aside className={`sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
-        <div className="workspace-head"><span className="app-mark"><Icon name="rook" size={18} /></span><div><b>CodeRook</b><small>{workspaceName}</small></div><button className="mobile-sidebar-close" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)}>×</button></div>
-        <button className="new-thread" onClick={beginDraft}><Icon name="plus" size={15} /><span>新建任务</span></button>
-        <nav className="workspace-nav" aria-label="工作区工具">
-          <button className={drawer === "files" ? "active" : ""} onClick={() => { setInspectorFile(""); setDrawer(drawer === "files" ? null : "files"); setMobileSidebarOpen(false); }}><Icon name="files" size={15} /><span>文件</span></button>
-          <button className={drawer === "changes" ? "active" : ""} onClick={() => { setDrawer(drawer === "changes" ? null : "changes"); setMobileSidebarOpen(false); }}><Icon name="changes" size={15} /><span>变更</span></button>
-          <button className={drawer === "models" ? "active" : ""} onClick={() => { setDrawer(drawer === "models" ? null : "models"); setMobileSidebarOpen(false); }}><Icon name="models" size={15} /><span>模型</span></button>
-          <button className={drawer === "advanced" ? "active" : ""} onClick={() => { setDrawer(drawer === "advanced" ? null : "advanced"); setMobileSidebarOpen(false); }}><Icon name="settings" size={15} /><span>设置</span></button>
+        <div className="workspace-head"><span className="app-mark"><Icon name="rook" size={18} /></span><div><b>CodeRook</b><small>{workspaceName}</small></div><button className="mobile-sidebar-close" aria-label={tr("关闭导航", "Close navigation")} onClick={() => setMobileSidebarOpen(false)}>×</button></div>
+        <button className="new-thread" onClick={beginDraft}><Icon name="plus" size={15} /><span>{tr("新建任务", "New task")}</span></button>
+        <nav className="workspace-nav" aria-label={tr("工作区工具", "Workspace tools")}>
+          <button className={drawer === "files" ? "active" : ""} onClick={() => { setInspectorFile(""); setDrawer(drawer === "files" ? null : "files"); setMobileSidebarOpen(false); }}><Icon name="files" size={15} /><span>{tr("文件", "Files")}</span></button>
+          <button className={drawer === "changes" ? "active" : ""} onClick={() => { setDrawer(drawer === "changes" ? null : "changes"); setMobileSidebarOpen(false); }}><Icon name="changes" size={15} /><span>{tr("变更", "Changes")}</span></button>
+          <button className={drawer === "models" ? "active" : ""} onClick={() => { setDrawer(drawer === "models" ? null : "models"); setMobileSidebarOpen(false); }}><Icon name="models" size={15} /><span>{tr("模型", "Models")}</span></button>
+          <button className={drawer === "advanced" ? "active" : ""} onClick={() => { setDrawer(drawer === "advanced" ? null : "advanced"); setMobileSidebarOpen(false); }}><Icon name="settings" size={15} /><span>{tr("设置", "Settings")}</span></button>
         </nav>
-        <div className="section-title"><span>最近任务</span><span>{threads.length}</span></div>
+        <div className="section-title"><span>{tr("最近任务", "Recent tasks")}</span><span>{threads.length}</span></div>
         <nav className="sessions">
           {threads.map((thread) => (
             <button
@@ -1242,26 +1332,26 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               key={thread.id}
               onClick={() => selectThread(thread.id)}
             >
-              <span>{thread.title || "未命名任务"}</span>
-              <small><i className={`session-status ${thread.status}`} />{statusLabels[thread.status] || thread.status} <em>· {displayTime(thread.updated_at)}</em></small>
+              <span>{thread.title || tr("未命名任务", "Untitled task")}</span>
+              <small><i className={`session-status ${thread.status}`} />{statusLabel(thread.status)} <em>· {displayTime(thread.updated_at)}</em></small>
             </button>
           ))}
-          {!threads.length && <p className="empty">还没有会话。直接在右侧描述任务即可。</p>}
+          {!threads.length && <p className="empty">{tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")}</p>}
         </nav>
-        <div className="sidebar-foot"><span className="connection-dot" />本机 Core 已连接<small>0.2 beta</small></div>
+        <div className="sidebar-foot"><span className="connection-dot" />{tr("本机 Core 已连接", "Local Core connected")}<small>0.2 beta</small></div>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <button className="mobile-sidebar-toggle" aria-label="打开导航" onClick={() => setMobileSidebarOpen(true)}><Icon name="menu" size={18} /></button>
-          <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || "新任务"}</strong></div>
-          <button className="active-model" type="button" title="切换模型" onClick={() => setDrawer("models")}><Icon name="models" size={13} />{activeModel}</button>
-          <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabels[phase] || "正在工作" : "就绪"}</div>
+          <button className="mobile-sidebar-toggle" aria-label={tr("打开导航", "Open navigation")} onClick={() => setMobileSidebarOpen(true)}><Icon name="menu" size={18} /></button>
+          <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || tr("新任务", "New task")}</strong></div>
+          <button className="active-model" type="button" title={tr("切换模型", "Switch model")} onClick={() => setDrawer("models")}><Icon name="models" size={13} />{activeModel}</button>
+          <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabel(phase) || tr("正在工作", "Working") : tr("就绪", "Ready")}</div>
           <div className="session-menu">
-            <button title="重命名" aria-label="重命名" disabled={!selectedId} onClick={() => void sessionAction("rename")}><Icon name="edit" size={16} /></button>
-            <button title="Fork 会话" aria-label="Fork 会话" disabled={!selectedId} onClick={() => void sessionAction("fork")}><Icon name="fork" size={16} /></button>
-            <button title="导出" aria-label="导出" disabled={!selectedId} onClick={() => void sessionAction("export")}><Icon name="download" size={16} /></button>
-            <button className="danger-action" title="删除" aria-label="删除" disabled={!selectedId} onClick={() => void sessionAction("delete")}><Icon name="trash" size={16} /></button>
+            <button title={tr("重命名", "Rename")} aria-label={tr("重命名", "Rename")} disabled={!selectedId} onClick={() => void sessionAction("rename")}><Icon name="edit" size={16} /></button>
+            <button title={tr("Fork 会话", "Fork session")} aria-label={tr("Fork 会话", "Fork session")} disabled={!selectedId} onClick={() => void sessionAction("fork")}><Icon name="fork" size={16} /></button>
+            <button title={tr("导出", "Export")} aria-label={tr("导出", "Export")} disabled={!selectedId} onClick={() => void sessionAction("export")}><Icon name="download" size={16} /></button>
+            <button className="danger-action" title={tr("删除", "Delete")} aria-label={tr("删除", "Delete")} disabled={!selectedId} onClick={() => void sessionAction("delete")}><Icon name="trash" size={16} /></button>
           </div>
         </header>
 
@@ -1272,17 +1362,17 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               className="history-loader"
               disabled={loadingOlderTurns}
               onClick={() => void loadOlderTurns()}
-            >{loadingOlderTurns ? "正在加载…" : "加载更早记录"}</button>
+            >{loadingOlderTurns ? tr("正在加载…", "Loading…") : tr("加载更早记录", "Load earlier history")}</button>
           )}
           {!timelineEntries.length && (
             <div className="welcome-card">
               <span className="welcome-kicker">CODEROOK · LOCAL AGENT</span>
-              <h1>今天想完成什么？</h1>
-              <p>描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。</p>
+              <h1>{tr("今天想完成什么？", "What would you like to accomplish?")}</h1>
+              <p>{tr("描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。", "Describe a goal. CodeRook will understand the code, make changes, run checks, and leave a reviewable, recoverable result.")}</p>
               <div className="suggestions">
-                <button onClick={() => setComposer("解释这个仓库的核心架构和数据流")}><span><b>理解代码库</b><small>梳理架构、模块与关键数据流</small></span><Icon name="arrow" size={16} /></button>
-                <button onClick={() => setComposer("检查当前改动，找出最可能的缺陷")}><span><b>审查当前改动</b><small>检查风险、缺陷与验证缺口</small></span><Icon name="arrow" size={16} /></button>
-                <button onClick={() => setComposer("运行最相关的测试并修复失败")}><span><b>修复测试失败</b><small>定位问题、修改代码并重新验证</small></span><Icon name="arrow" size={16} /></button>
+                <button onClick={() => setComposer(tr("解释这个仓库的核心架构和数据流", "Explain this repository's core architecture and data flow"))}><span><b>{tr("理解代码库", "Understand the codebase")}</b><small>{tr("梳理架构、模块与关键数据流", "Map the architecture, modules, and key data flows")}</small></span><Icon name="arrow" size={16} /></button>
+                <button onClick={() => setComposer(tr("检查当前改动，找出最可能的缺陷", "Review the current changes and identify the most likely defects"))}><span><b>{tr("审查当前改动", "Review current changes")}</b><small>{tr("检查风险、缺陷与验证缺口", "Inspect risks, defects, and verification gaps")}</small></span><Icon name="arrow" size={16} /></button>
+                <button onClick={() => setComposer(tr("运行最相关的测试并修复失败", "Run the most relevant tests and fix any failures"))}><span><b>{tr("修复测试失败", "Fix failing tests")}</b><small>{tr("定位问题、修改代码并重新验证", "Locate the issue, edit the code, and verify again")}</small></span><Icon name="arrow" size={16} /></button>
               </div>
             </div>
           )}
@@ -1295,14 +1385,14 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               result={entry.result}
               progress={entry.progress}
               onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
-              onRetry={(prompt) => { setComposer(prompt); setNotice("重试建议已放入输入框，可修改后发送"); }}
+              onRetry={(prompt) => { setComposer(prompt); setNotice(tr("重试建议已放入输入框，可修改后发送", "A retry suggestion was placed in the composer. Edit it before sending.")); }}
             />
           ) : entry.kind === "tool_group" ? (
             <ToolActivityGroup
               key={entry.key}
               tools={entry.tools}
               onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
-              onRetry={(prompt) => { setComposer(prompt); setNotice("重试建议已放入输入框，可修改后发送"); }}
+              onRetry={(prompt) => { setComposer(prompt); setNotice(tr("重试建议已放入输入框，可修改后发送", "A retry suggestion was placed in the composer. Edit it before sending.")); }}
             />
           ) : (
             <EventCard
@@ -1315,16 +1405,16 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
             />
           ))}
           {notice && <div className="notice">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-          {error && <div className="error-card"><b>需要处理</b><p>{error}</p><button onClick={() => setError("")}>关闭</button></div>}
+          {error && <div className="error-card"><b>{tr("需要处理", "Action required")}</b><p>{error}</p><button onClick={() => setError("")}>{tr("关闭", "Close")}</button></div>}
         </section>
 
         <form className="composer" onSubmit={(event) => void send(event)}>
-          {queuedMessages.length > 0 && <div className="message-queue" aria-label="待发送消息">
+          {queuedMessages.length > 0 && <div className="message-queue" aria-label={tr("待发送消息", "Queued messages")}>
             {queuedMessages.map((message, index) => <div className={`queued-message ${message.status}`} key={message.id}>
-              <span>{message.status === "dispatching" ? "正在发送" : message.status === "blocked" ? "需要处理" : `排队 ${index + 1}`}</span>
+              <span>{message.status === "dispatching" ? tr("正在发送", "Sending") : message.status === "blocked" ? tr("需要处理", "Action required") : tr(`排队 ${index + 1}`, `Queued ${index + 1}`)}</span>
               <p title={message.display_content}>{message.display_content}</p>
-              {message.status === "blocked" && <button type="button" onClick={() => void queueAction(message, "retry")}>重试</button>}
-              {message.status !== "dispatching" && <button type="button" aria-label="移除排队消息" onClick={() => void queueAction(message, "remove")}>×</button>}
+              {message.status === "blocked" && <button type="button" onClick={() => void queueAction(message, "retry")}>{tr("重试", "Retry")}</button>}
+              {message.status !== "dispatching" && <button type="button" aria-label={tr("移除排队消息", "Remove queued message")} onClick={() => void queueAction(message, "remove")}>×</button>}
               {message.error && <small>{message.error}</small>}
             </div>)}
           </div>}
@@ -1332,7 +1422,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
             {fileReferences.map((path) => <span key={`file:${path}`}>@{path}<button type="button" onClick={() => { setFileReferences((current) => current.filter((item) => item !== path)); setComposer((current) => current.replaceAll(`@${path}`, "").replace(/\s{2,}/g, " ")); }}>×</button></span>)}
             {attachments.map((attachment) => <span key={attachment.sha256}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.sha256 !== attachment.sha256))}>×</button></span>)}
           </div>}
-          {fileSuggestions.length > 0 && <div className="file-mention-menu" role="listbox" aria-label="文件建议">
+          {fileSuggestions.length > 0 && <div className="file-mention-menu" role="listbox" aria-label={tr("文件建议", "File suggestions")}>
             {fileSuggestions.map((entry, index) => <button
               type="button"
               role="option"
@@ -1381,26 +1471,26 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={threadLoading ? "正在恢复会话…" : activeTurn ? "输入纠偏消息…" : "向 CodeRook 提问或描述任务"}
+            placeholder={threadLoading ? tr("正在恢复会话…", "Restoring session…") : activeTurn ? tr("输入纠偏消息…", "Steer the active task…") : tr("向 CodeRook 提问或描述任务", "Ask CodeRook or describe a task")}
             rows={1}
           />
           <div className="composer-bar">
             <div className="composer-tools">
-              <button type="button" className="context-button" onClick={() => setDrawer("files")} title="添加文件上下文"><Icon name="plus" size={16} /></button>
-              <label className="mode-select"><select aria-label="运行模式" value={mode} onChange={(event) => setMode(event.target.value as RunMode)}><option value="act">执行</option><option value="plan">规划</option><option value="review">审查</option></select></label>
-              <label className="attach-button" title="添加图片"><Icon name="image" size={15} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
-              {activeTurn && <button type="button" className={`queue-toggle ${queueMode ? "active" : ""}`} onClick={() => setQueueMode((current) => !current)}>{queueMode ? `排队 ${queuedMessages.length}` : "纠偏"}</button>}
+              <button type="button" className="context-button" onClick={() => setDrawer("files")} title={tr("添加文件上下文", "Add file context")}><Icon name="plus" size={16} /></button>
+              <label className="mode-select"><select aria-label={tr("运行模式", "Run mode")} value={mode} onChange={(event) => setMode(event.target.value as RunMode)}><option value="act">{tr("执行", "Act")}</option><option value="plan">{tr("规划", "Plan")}</option><option value="review">{tr("审查", "Review")}</option></select></label>
+              <label className="attach-button" title={tr("添加图片", "Attach images")}><Icon name="image" size={15} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
+              {activeTurn && <button type="button" className={`queue-toggle ${queueMode ? "active" : ""}`} onClick={() => setQueueMode((current) => !current)}>{queueMode ? tr(`排队 ${queuedMessages.length}`, `Queue ${queuedMessages.length}`) : tr("纠偏", "Steer")}</button>}
             </div>
             <div className="composer-meta">
-              <span>上下文 {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
-              {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}><Icon name="stop" size={13} />停止</button>}
-              <button className="send" aria-label={activeTurn ? "发送纠偏" : "发送任务"} title={activeTurn ? "发送纠偏" : "发送任务"} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
+              <span>{tr("上下文", "Context")} {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
+              {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}><Icon name="stop" size={13} />{tr("停止", "Stop")}</button>}
+              <button className="send" aria-label={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} title={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
         </form>
       </main>
 
-      {mobileSidebarOpen && <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setMobileSidebarOpen(false)} />}
+      {mobileSidebarOpen && <button className="sidebar-scrim" aria-label={tr("关闭导航", "Close navigation")} onClick={() => setMobileSidebarOpen(false)} />}
 
       {drawer && (
         <DrawerPanel
@@ -1427,7 +1517,7 @@ function TurnItemCard({ item }: { item: TurnItem }): ReactElement {
     const role = textValue(payload.role) === "user" ? "user" : "assistant";
     return (
       <article className={`message-card ${role}`}>
-        <div className="message-meta"><b>{role === "user" ? "你" : "CodeRook"}</b><time>{displayTime(item.created_at)}</time></div>
+        <div className="message-meta"><b>{role === "user" ? tr("你", "You") : "CodeRook"}</b><time>{displayTime(item.created_at)}</time></div>
         <div className="message-content">
           {role === "assistant"
             ? <MarkdownText content={messageContent(payload.content)} />
@@ -1458,7 +1548,7 @@ function toolCardInfo(call?: TurnItem, result?: TurnItem, progress?: RuntimeEven
   const resultPayload = result?.payload || {};
   const rawPresentation = resultPayload.presentation || progress?.payload.presentation || callPayload.presentation;
   const presentation = rawPresentation && typeof rawPresentation === "object" ? rawPresentation as Record<string, unknown> : {};
-  const toolName = textValue(resultPayload.tool_name || callPayload.tool_name || presentation.title || "工具");
+  const toolName = textValue(resultPayload.tool_name || callPayload.tool_name || presentation.title || tr("工具", "Tool"));
   const failed = Boolean(resultPayload.is_error || resultPayload.error_message || resultPayload.error_class) || ["error", "failed"].includes(textValue(resultPayload.status));
   const running = !result;
   const rawParams = callPayload.params;
@@ -1474,7 +1564,10 @@ function toolCardInfo(call?: TurnItem, result?: TurnItem, progress?: RuntimeEven
     ? rawLocations.map(textValue).filter(Boolean)
     : textValue(params.path) ? [textValue(params.path)] : [];
   const target = locations[0] || subject;
-  const retryPrompt = `请先诊断失败原因，再重试“${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? `（${target}）` : ""}。不要原样重复已经失败的调用。`;
+  const retryPrompt = tr(
+    `请先诊断失败原因，再重试“${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? `（${target}）` : ""}。不要原样重复已经失败的调用。`,
+    `Diagnose the failure, then retry “${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? ` (${target})` : ""}. Do not repeat the failed call unchanged.`,
+  );
   return { failed, running, params, presentation, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction };
 }
 
@@ -1498,7 +1591,7 @@ function TurnToolCard({
   const elapsed = toolElapsed(elapsedMs);
   const openableLocation = ["read_file", "edit_code"].includes(semanticAction) ? locations[0] : "";
   const hasDetails = Object.keys(params).length > 0 || Boolean(output);
-  const failureExcerpt = output.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || "操作未完成";
+  const failureExcerpt = output.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || tr("操作未完成", "Operation did not complete");
   const summary = (
     <>
       {["run_command", "run_tests"].includes(semanticAction)
@@ -1507,7 +1600,7 @@ function TurnToolCard({
       <b>{title}</b>
       {locations[0]
         ? openableLocation
-          ? <button className="tool-location" type="button" title={`打开 ${openableLocation}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenLocation(openableLocation); }}>{openableLocation}</button>
+          ? <button className="tool-location" type="button" title={tr(`打开 ${openableLocation}`, `Open ${openableLocation}`)} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenLocation(openableLocation); }}>{openableLocation}</button>
           : <code>{locations[0]}</code>
         : subject && <code>{subject}</code>}
       {elapsed && <small>{elapsed}</small>}
@@ -1520,13 +1613,13 @@ function TurnToolCard({
         <details>
           <summary className="tool-item-head">{summary}</summary>
           <div className="tool-detail">
-            {Object.keys(params).length > 0 && <><small>输入</small><pre>{textValue(params)}</pre></>}
-            {output && <><small>{failed ? "错误" : "输出"}</small><pre>{output}</pre></>}
-            {failed && <div className="tool-recovery-actions"><span title={output}>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>修改后重试</button><button type="button" onClick={() => void browserBridge.copyText(output || textValue(params))}>复制错误</button></div></div>}
+            {Object.keys(params).length > 0 && <><small>{tr("输入", "Input")}</small><pre>{textValue(params)}</pre></>}
+            {output && <><small>{failed ? tr("错误", "Error") : tr("输出", "Output")}</small><pre>{output}</pre></>}
+            {failed && <div className="tool-recovery-actions"><span title={output}>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>{tr("修改后重试", "Edit and retry")}</button><button type="button" onClick={() => void browserBridge.copyText(output || textValue(params))}>{tr("复制错误", "Copy error")}</button></div></div>}
           </div>
         </details>
       ) : <div className="tool-item-head">{summary}</div>}
-      {failed && !hasDetails && <div className="tool-recovery-actions always-visible"><span>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>修改后重试</button></div></div>}
+      {failed && !hasDetails && <div className="tool-recovery-actions always-visible"><span>{failureExcerpt}</span><div><button type="button" onClick={() => onRetry(retryPrompt)}>{tr("修改后重试", "Edit and retry")}</button></div></div>}
     </article>
   );
 }
@@ -1546,11 +1639,11 @@ function ToolActivityGroup({
   const [open, setOpen] = useState(false);
   const elapsedMs = infos.reduce((total, info) => total + Math.max(0, info.elapsedMs), 0);
   const actions = new Set(infos.map((info) => info.semanticAction).filter(Boolean));
-  let summary = runningCount ? `正在执行 ${tools.length} 个操作` : `执行了 ${tools.length} 个操作`;
-  if ([...actions].every((action) => ["read_file", "browse_files", "search_code", "git"].includes(action))) summary = runningCount ? "正在检查工作区" : "检查了工作区";
-  else if (actions.size === 1 && actions.has("run_command")) summary = runningCount ? `正在运行 ${tools.length} 个命令` : `运行了 ${tools.length} 个命令`;
-  else if (actions.has("edit_code") && actions.size === 1) summary = runningCount ? "正在修改代码" : "修改了代码";
-  else if (actions.size === 1 && actions.has("run_tests")) summary = runningCount ? "正在运行验证" : "运行了验证";
+  let summary = runningCount ? tr(`正在执行 ${tools.length} 个操作`, `Running ${tools.length} operations`) : tr(`执行了 ${tools.length} 个操作`, `Ran ${tools.length} operations`);
+  if ([...actions].every((action) => ["read_file", "browse_files", "search_code", "git"].includes(action))) summary = runningCount ? tr("正在检查工作区", "Inspecting the workspace") : tr("检查了工作区", "Inspected the workspace");
+  else if (actions.size === 1 && actions.has("run_command")) summary = runningCount ? tr(`正在运行 ${tools.length} 个命令`, `Running ${tools.length} commands`) : tr(`运行了 ${tools.length} 个命令`, `Ran ${tools.length} commands`);
+  else if (actions.has("edit_code") && actions.size === 1) summary = runningCount ? tr("正在修改代码", "Editing code") : tr("修改了代码", "Edited code");
+  else if (actions.size === 1 && actions.has("run_tests")) summary = runningCount ? tr("正在运行验证", "Running checks") : tr("运行了验证", "Ran checks");
   return (
     <details className={`tool-activity ${failedCount ? "failed" : ""} ${runningCount ? "running" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="tool-activity-head">
@@ -1559,8 +1652,8 @@ function ToolActivityGroup({
           : <span className="tool-status">{failedCount ? "×" : runningCount ? "◌" : "✓"}</span>}
         <b>{summary}</b>
         <span className="tool-chevron" />
-        {failedCount > 0 && <span className="tool-failed-count">{failedCount} 失败</span>}
-        {runningCount > 0 && <span className="tool-running-count">进行中</span>}
+        {failedCount > 0 && <span className="tool-failed-count">{failedCount} {tr("失败", "failed")}</span>}
+        {runningCount > 0 && <span className="tool-running-count">{tr("进行中", "running")}</span>}
         <small>{toolElapsed(elapsedMs)}</small>
       </summary>
       <div className="tool-activity-body">
@@ -1622,28 +1715,28 @@ function EventCard({
       <div className="event-body">
         <div className="event-head"><b>{eventTitle(event)}</b><time>{displayTime(event.ts)}</time></div>
         {detail && <pre>{detail}</pre>}
-        {responded && <div className="card-resolved">已处理</div>}
+        {responded && <div className="card-resolved">{tr("已处理", "Resolved")}</div>}
         {!responded && isPermission && toolId && (
           <div className="card-actions">
-            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once" }, "已允许本次操作")}>本次允许</button>
-            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session" }, "本会话已允许")}>本会话允许</button>
-            <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once" }, "已拒绝")}>拒绝</button>
+            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once" }, tr("已允许本次操作", "Allowed once"))}>{tr("本次允许", "Allow once")}</button>
+            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session" }, tr("本会话已允许", "Allowed for this session"))}>{tr("本会话允许", "Allow for session")}</button>
+            <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once" }, tr("已拒绝", "Denied"))}>{tr("拒绝", "Deny")}</button>
           </div>
         )}
         {!responded && isPlan && event.turn_id && (
-          <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder="可选：说明希望怎样修改计划" /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, "已要求修改计划")}>要求修改</button></div><div className="card-actions">
-              <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, "计划已批准")}>批准计划</button>
-              <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, "计划已取消")}>取消</button>
+          <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("可选：说明希望怎样修改计划", "Optional: explain how the plan should change")} /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, tr("已要求修改计划", "Plan revision requested"))}>{tr("要求修改", "Request changes")}</button></div><div className="card-actions">
+              <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, tr("计划已批准", "Plan approved"))}>{tr("批准计划", "Approve plan")}</button>
+              <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, tr("计划已取消", "Plan cancelled"))}>{tr("取消", "Cancel")}</button>
             </div></>
         )}
         {!responded && isQuestion && questionId && (
           <div className="answer-row">
-            <input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder="输入回答" />
-            <button disabled={!answer.trim()} onClick={() => void post(`/v1/questions/${questionId}`, { answer }, "回答已送达")}>回答</button>
+            <input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("输入回答", "Enter your answer")} />
+            <button disabled={!answer.trim()} onClick={() => void post(`/v1/questions/${questionId}`, { answer }, tr("回答已送达", "Answer sent"))}>{tr("回答", "Answer")}</button>
           </div>
         )}
         {!responded && isRecovery && (
-          <div className="card-actions"><button onClick={() => void post(`/v1/threads/${threadId}/turns`, { content: "Continue from the last durable recovery point. Re-check uncertain file or command state before making any modification.", mode: "act" }, "已从安全位置继续")}>从安全位置继续</button><button onClick={onOpenChanges}>查看中断前变更</button></div>
+          <div className="card-actions"><button onClick={() => void post(`/v1/threads/${threadId}/turns`, { content: "Continue from the last durable recovery point. Re-check uncertain file or command state before making any modification.", mode: "act" }, tr("已从安全位置继续", "Continuing from the safe recovery point"))}>{tr("从安全位置继续", "Continue safely")}</button><button onClick={onOpenChanges}>{tr("查看中断前变更", "View pre-interruption changes")}</button></div>
         )}
       </div>
     </article>
@@ -1672,17 +1765,17 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
   const model = textValue(receipt?.route?.model);
   const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
   const summary = textValue(receipt?.result_summary || receipt?.failure_category || detail).trim();
-  const copied = [failed ? "本轮未完成" : "本轮完成", summary, changedFiles ? `${changedFiles} 个文件 +${additions}/-${deletions}` : "", verification.length ? `${verification.length} 项验证` : ""].filter(Boolean).join(" · ");
+  const copied = [failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete"), summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
   return (
     <article className={`result-inline ${failed ? "failed" : ""}`}>
-      <span>{failed ? "本轮未完成" : "本轮完成"}</span>
+      <span>{failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete")}</span>
       {summary && <small>{summary}</small>}
       <div className="result-evidence">
-        {changedFiles > 0 && <em>{changedFiles} 个文件 · +{additions} / -{deletions}</em>}
-        {verification.length > 0 && <em className={verificationFailed ? "failed" : ""}>{verificationFailed ? "验证失败" : `${verification.length} 项验证通过`}</em>}
+        {changedFiles > 0 && <em>{tr(`${changedFiles} 个文件`, `${changedFiles} files`)} · +{additions} / -{deletions}</em>}
+        {verification.length > 0 && <em className={verificationFailed ? "failed" : ""}>{verificationFailed ? tr("验证失败", "Checks failed") : tr(`${verification.length} 项验证通过`, `${verification.length} checks passed`)}</em>}
         {model && <em>{model}{cost ? ` · ${cost}` : ""}</em>}
       </div>
-      <div className="result-actions"><button onClick={onOpenChanges}>查看变更</button><button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>复制结果</button></div>
+      <div className="result-actions"><button onClick={onOpenChanges}>{tr("查看变更", "View changes")}</button><button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>{tr("复制结果", "Copy result")}</button></div>
     </article>
   );
 }
@@ -1706,7 +1799,7 @@ function DrawerPanel({
 }): ReactElement {
   return (
     <aside className="drawer">
-      <header><div><span className="panel-eyebrow">INSPECTOR</span><h2>{drawer === "files" ? "工作区文件" : drawer === "changes" ? "变更审查" : drawer === "models" ? "模型与 Provider" : "设置与能力"}</h2><small title={workspace}>{workspace.split(/[\\/]/).filter(Boolean).pop()}</small></div><button aria-label="关闭检查器" onClick={onClose}>×</button></header>
+      <header><div><span className="panel-eyebrow">INSPECTOR</span><h2>{drawer === "files" ? tr("工作区文件", "Workspace files") : drawer === "changes" ? tr("变更审查", "Change review") : drawer === "models" ? tr("模型与 Provider", "Models and providers") : tr("设置与能力", "Settings and capabilities")}</h2><small title={workspace}>{workspace.split(/[\\/]/).filter(Boolean).pop()}</small></div><button aria-label={tr("关闭检查器", "Close inspector")} onClick={onClose}>×</button></header>
       {drawer === "files" && <FilesPanel initialFile={initialFile} onReference={onReference} onError={onError} />}
       {drawer === "changes" && <ChangesPanel threadId={threadId} onError={onError} />}
       {drawer === "models" && <ModelsPanel onError={onError} />}
@@ -1767,9 +1860,9 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
     }
   };
   return <div className="panel-content">
-    {!preview && <div className="file-navigation"><button disabled={currentPath === "."} onClick={() => setCurrentPath(parentWorkspacePath(currentPath))}>←</button><span title={currentPath}>{currentPath === "." ? "工作区" : currentPath}</span></div>}
-    <input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件…" />
-    {preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← 返回</button><button onClick={() => onReference(preview.path)}>引用 @</button></div><b>{preview.path}</b><pre>{preview.binary ? "二进制文件暂不显示" : preview.content}</pre></div> : <div className="file-list">{entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.name}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}</div>}
+    {!preview && <div className="file-navigation"><button disabled={currentPath === "."} onClick={() => setCurrentPath(parentWorkspacePath(currentPath))}>←</button><span title={currentPath}>{currentPath === "." ? tr("工作区", "Workspace") : currentPath}</span></div>}
+    <input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr("搜索文件…", "Search files…")} />
+    {preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← {tr("返回", "Back")}</button><button onClick={() => onReference(preview.path)}>{tr("引用", "Reference")} @</button></div><b>{preview.path}</b><pre>{preview.binary ? tr("二进制文件暂不显示", "Binary file preview is unavailable") : preview.content}</pre></div> : <div className="file-list">{entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.name}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}</div>}
   </div>;
 }
 
@@ -1823,9 +1916,9 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
     try {
       const result = await request<{ commit: string }>("/v1/workspace/commit", { method: "POST", body: JSON.stringify({ thread_id: threadId, message: commitMessage, expected_digest: diff.state_digest, confirmed: true }) });
       await dialog({
-        title: "本地提交已创建",
-        description: `Commit ${result.commit.slice(0, 12)} 已写入当前仓库，没有自动 push。`,
-        confirmLabel: "知道了",
+        title: tr("本地提交已创建", "Local commit created"),
+        description: tr(`Commit ${result.commit.slice(0, 12)} 已写入当前仓库，没有自动 push。`, `Commit ${result.commit.slice(0, 12)} was created in the current repository. Nothing was pushed.`),
+        confirmLabel: tr("知道了", "Done"),
         cancelLabel: null,
       });
       load();
@@ -1836,17 +1929,27 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
       const id = textValue(checkpoint.checkpoint_id);
       const preview = await request<Record<string, unknown>>(`/v1/threads/${encodeURIComponent(threadId)}/checkpoints/${encodeURIComponent(id)}/preview`);
       if (!await dialog({
-        title: "恢复 Checkpoint",
-        description: "恢复会改写下列工作区文件，请先确认目标和冲突。",
-        detail: `文件：${textValue(preview.paths)}\n冲突：${textValue(preview.conflicts || "无")}`,
-        confirmLabel: "确认恢复",
+        title: tr("恢复 Checkpoint", "Restore checkpoint"),
+        description: tr("恢复会改写下列工作区文件，请先确认目标和冲突。", "Restoring will rewrite the workspace files below. Review the target and conflicts first."),
+        detail: tr(`文件：${textValue(preview.paths)}\n冲突：${textValue(preview.conflicts || "无")}`, `Files: ${textValue(preview.paths)}\nConflicts: ${textValue(preview.conflicts || "none")}`),
+        confirmLabel: tr("确认恢复", "Restore checkpoint"),
         danger: true,
       })) return;
       await request(`/v1/threads/${encodeURIComponent(threadId)}/checkpoints/${encodeURIComponent(id)}/rewind`, { method: "POST", body: JSON.stringify({ confirmed: true, expected_digest: preview.state_digest, run_id: context.checkpoint_run_id }) });
       load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className="panel-toolbar"><span>{loading ? "正在读取…" : `${files.length} 个变更文件`}</span><button disabled={loading} onClick={() => load()}>刷新</button><button disabled={!selectedPaths.length || !threadId || loading} onClick={() => void stageSelected()}>Stage 选中{selectedPaths.length ? ` (${selectedPaths.length})` : ""}</button></div>{loadError && <div className="panel-error"><b>无法读取变更</b><p>{loadError}</p><button onClick={() => load()}>重试</button></div>}{!loadError && !files.length && !loading ? <p className="empty">工作区没有未提交变更。</p> : files.map((file, index) => { const path = textValue(file.path); const checked = selectedPaths.includes(path); return <details className="diff-file" key={`${path}-${index}`} open={index === 0}><summary><label className="diff-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked} onChange={() => setSelectedPaths((current) => checked ? current.filter((item) => item !== path) : [...current, path])} /><span className="sr-only">选择 {path}</span></label><b>{path}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>; })}{textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>创建本地 Commit</button><small>不会自动 push，也不会运行仓库 hooks。</small></div>}{checkpoints.length > 0 && <div className="checkpoints"><h3>恢复点</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{textValue(checkpoint.status)}</small></button>)}</div>}</div>;
+  return <div className="panel-content">
+    <div className="panel-toolbar"><span>{loading ? tr("正在读取…", "Loading…") : tr(`${files.length} 个变更文件`, `${files.length} changed files`)}</span><button disabled={loading} onClick={() => load()}>{tr("刷新", "Refresh")}</button><button disabled={!selectedPaths.length || !threadId || loading} onClick={() => void stageSelected()}>{tr("Stage 选中", "Stage selected")}{selectedPaths.length ? ` (${selectedPaths.length})` : ""}</button></div>
+    {loadError && <div className="panel-error"><b>{tr("无法读取变更", "Unable to load changes")}</b><p>{loadError}</p><button onClick={() => load()}>{tr("重试", "Retry")}</button></div>}
+    {!loadError && !files.length && !loading ? <p className="empty">{tr("工作区没有未提交变更。", "The workspace has no uncommitted changes.")}</p> : files.map((file, index) => {
+      const path = textValue(file.path);
+      const checked = selectedPaths.includes(path);
+      return <details className="diff-file" key={`${path}-${index}`} open={index === 0}><summary><label className="diff-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={checked} onChange={() => setSelectedPaths((current) => checked ? current.filter((item) => item !== path) : [...current, path])} /><span className="sr-only">{tr("选择", "Select")} {path}</span></label><b>{path}</b><span>+{textValue(file.additions || 0)} / -{textValue(file.deletions || 0)}</span></summary><pre>{textValue(file.patch || file.diff || file)}</pre></details>;
+    })}
+    {textValue(diff?.scope) === "staged" && <div className="commit-row"><input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} /><button onClick={() => void commit()}>{tr("创建本地 Commit", "Create local commit")}</button><small>{tr("不会自动 push，也不会运行仓库 hooks。", "Nothing will be pushed and repository hooks will not run.")}</small></div>}
+    {checkpoints.length > 0 && <div className="checkpoints"><h3>{tr("恢复点", "Checkpoints")}</h3>{checkpoints.map((checkpoint) => <button key={textValue(checkpoint.checkpoint_id)} onClick={() => void rewind(checkpoint)}><span>{textValue(checkpoint.label || checkpoint.checkpoint_id)}</span><small>{statusLabel(textValue(checkpoint.status))}</small></button>)}</div>}
+  </div>;
 }
 
 function ModelsPanel({ onError }: { onError(value: string): void }): ReactElement {
@@ -1871,9 +1974,9 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
     try {
       if (action === "delete") {
         if (!await dialog({
-          title: "删除模型路由",
-          description: `将删除路由“${routeId}”及其由 CodeRook 管理的凭据。环境变量中的密钥不会被修改。`,
-          confirmLabel: "删除路由",
+          title: tr("删除模型路由", "Delete model route"),
+          description: tr(`将删除路由“${routeId}”及其由 CodeRook 管理的凭据。环境变量中的密钥不会被修改。`, `This deletes route “${routeId}” and credentials managed by CodeRook. Environment variables will not be changed.`),
+          confirmLabel: tr("删除路由", "Delete route"),
           danger: true,
         })) return;
         await request(`/v1/providers/${encodeURIComponent(routeId)}`, { method: "DELETE", body: JSON.stringify({ confirmed: true, delete_credential: true }) });
@@ -1883,18 +1986,37 @@ function ModelsPanel({ onError }: { onError(value: string): void }): ReactElemen
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? "模型已就绪" : "需要配置模型"}</b><p>{readinessReason(catalog?.readiness.reason)}</p></div>{validationError && <div className="panel-error provider-validation-error"><b>模型验证未通过</b><p>{validationError}</p><button onClick={() => setValidationError("")}>知道了</button></div>}<form className="provider-form" onSubmit={(event) => void save(event)}><label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? " · 本地" : ""}</option>)}</select></label><label>模型<input value={model} onChange={(event) => { setModel(event.target.value); setValidationError(""); }} list="provider-models" /></label><datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>{preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setValidationError(""); }} placeholder="只发送到本地 Core，不写入浏览器" /></label>}<div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div><button className="primary" disabled={!model || saving}>{saving ? "正在验证…" : "Doctor 验证并启用"}</button></form><h3>已配置路由</h3>{catalog?.routes.map((route) => { const routeId = textValue(route.id); const active = catalog.active_route_id === route.id; return <div className="route-row" key={routeId}><div><b>{routeId}</b><small>{textValue(route.model)}</small></div><div className="route-actions"><span>{active ? "当前" : textValue(route.credential_source)}</span>{!active && <button onClick={() => void routeAction(routeId, "activate")}>启用</button>}<button onClick={() => void routeAction(routeId, "delete")}>删除</button></div></div>; })}</div>;
+  return <div className="panel-content">
+    <div className={`readiness ${catalog?.readiness.local_ready ? "ready" : "warning"}`}><b>{catalog?.readiness.local_ready ? tr("模型已就绪", "Model ready") : tr("需要配置模型", "Model setup required")}</b><p>{readinessReason(catalog?.readiness.reason)}</p></div>
+    {validationError && <div className="panel-error provider-validation-error"><b>{tr("模型验证未通过", "Model verification failed")}</b><p>{validationError}</p><button onClick={() => setValidationError("")}>{tr("知道了", "Dismiss")}</button></div>}
+    <form className="provider-form" onSubmit={(event) => void save(event)}>
+      <label>Provider<select value={presetId} onChange={(event) => selectPreset(event.target.value)}>{catalog?.presets.map((item) => <option key={item.id} value={item.id}>{item.name}{item.local ? tr(" · 本地", " · Local") : ""}</option>)}</select></label>
+      <label>{tr("模型", "Model")}<input value={model} onChange={(event) => { setModel(event.target.value); setValidationError(""); }} list="provider-models" /></label>
+      <datalist id="provider-models">{preset?.models.map((item) => <option key={item} value={item} />)}</datalist>
+      {preset?.credential_required && <label>API Key<input type="password" autoComplete="off" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setValidationError(""); }} placeholder={tr("只发送到本地 Core，不写入浏览器", "Sent only to the local Core and never stored in the browser")} /></label>}
+      <div className="capability-tags">{preset && Object.entries(preset.capabilities).filter(([, enabled]) => enabled).map(([name]) => <span key={name}>{name}</span>)}</div>
+      <button className="primary" disabled={!model || saving}>{saving ? tr("正在验证…", "Verifying…") : tr("Doctor 验证并启用", "Verify with Doctor and activate")}</button>
+    </form>
+    <h3>{tr("已配置路由", "Configured routes")}</h3>
+    {catalog?.routes.map((route) => {
+      const routeId = textValue(route.id);
+      const active = catalog.active_route_id === route.id;
+      return <div className="route-row" key={routeId}><div><b>{routeId}</b><small>{textValue(route.model)}</small></div><div className="route-actions"><span>{active ? tr("当前", "Active") : textValue(route.credential_source)}</span>{!active && <button onClick={() => void routeAction(routeId, "activate")}>{tr("启用", "Activate")}</button>}<button onClick={() => void routeAction(routeId, "delete")}>{tr("删除", "Delete")}</button></div></div>;
+    })}
+  </div>;
 }
 
 function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
   const dialog = useProductDialog();
-  const [tab, setTab] = useState<"goals" | "workers" | "skills" | "mcp" | "memory">("goals");
+  const preferences = useInterfacePreferences();
+  const [tab, setTab] = useState<"interface" | "goals" | "workers" | "skills" | "mcp" | "memory">("interface");
   const [data, setData] = useState<Record<string, unknown>>({});
   const [objective, setObjective] = useState("");
   const [memoryBody, setMemoryBody] = useState("");
   const [skillSource, setSkillSource] = useState("");
-  const endpoint = tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
+  const endpoint = tab === "interface" ? "" : tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
   const load = useCallback(() => {
+    if (tab === "interface") { setData({}); return Promise.resolve(); }
     if ((tab === "goals" || tab === "workers") && !threadId) { setData({}); return Promise.resolve(); }
     return request<Record<string, unknown>>(endpoint).then(setData).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
   }, [endpoint, onError, tab, threadId]);
@@ -1911,11 +2033,11 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const memorySettings = (data.settings || {}) as Record<string, unknown>;
   const workerFollowup = async (workerId: string) => {
     const message = await dialog({
-      title: "向 Worker 发送后续指令",
-      description: "指令只会发送给当前会话中的这个 Worker。",
+      title: tr("向 Worker 发送后续指令", "Send follow-up to worker"),
+      description: tr("指令只会发送给当前会话中的这个 Worker。", "This instruction is sent only to this worker in the current session."),
       input: "multiline",
-      placeholder: "说明下一步要调查、修改或验证什么",
-      confirmLabel: "发送指令",
+      placeholder: tr("说明下一步要调查、修改或验证什么", "Describe what to investigate, change, or verify next"),
+      confirmLabel: tr("发送指令", "Send instruction"),
     });
     if (!message?.trim()) return;
     await mutate(`/v1/workers/${encodeURIComponent(workerId)}/followup`, {
@@ -1931,12 +2053,12 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       });
       const files = (preview.changed_files || []) as string[];
       const digest = textValue(preview.state_digest);
-      const summary = files.length ? files.join("\n") : "没有可应用的文件";
+      const summary = files.length ? files.join("\n") : tr("没有可应用的文件", "No files are available to apply");
       if (!digest || !await dialog({
-        title: "审查 Worker 变更",
-        description: "确认这些文件属于 Worker 的 Write Claim，且验证证据满足任务要求。",
+        title: tr("审查 Worker 变更", "Review worker changes"),
+        description: tr("确认这些文件属于 Worker 的 Write Claim，且验证证据满足任务要求。", "Confirm these files are within the worker's write claim and the verification evidence satisfies the task."),
         detail: summary,
-        confirmLabel: "审查通过",
+        confirmLabel: tr("审查通过", "Approve review"),
       })) return;
       await request(`/v1/workers/${encodeURIComponent(workerId)}/review`, {
         method: "POST",
@@ -1948,9 +2070,9 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
         }),
       });
       if (!await dialog({
-        title: "应用到主工作区",
-        description: "审查已通过。下一步会把 Worker Worktree 中的变更应用到当前工作区，但不会自动提交或 push。",
-        confirmLabel: "应用变更",
+        title: tr("应用到主工作区", "Apply to main workspace"),
+        description: tr("审查已通过。下一步会把 Worker Worktree 中的变更应用到当前工作区，但不会自动提交或 push。", "Review passed. The worker worktree changes will be applied to the current workspace without committing or pushing."),
+        confirmLabel: tr("应用变更", "Apply changes"),
       })) { await load(); return; }
       await request(`/v1/workers/${encodeURIComponent(workerId)}/apply`, {
         method: "POST",
@@ -1970,12 +2092,12 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       });
       const preview = (previewResult.preview || {}) as Record<string, unknown>;
       const files = ((preview.files || []) as string[]).join("\n");
-      if (!previewResult.confirmation_required) throw new Error("Skill 安装预览缺少确认门禁");
+      if (!previewResult.confirmation_required) throw new Error(tr("Skill 安装预览缺少确认门禁", "The skill installation preview is missing its confirmation gate"));
       if (!await dialog({
-        title: `安装 Skill：${textValue(preview.name)}`,
-        description: `Digest：${textValue(preview.digest)}。安装范围仅限当前项目。`,
-        detail: files || "预览没有包含文件",
-        confirmLabel: "确认安装",
+        title: tr(`安装 Skill：${textValue(preview.name)}`, `Install skill: ${textValue(preview.name)}`),
+        description: tr(`Digest：${textValue(preview.digest)}。安装范围仅限当前项目。`, `Digest: ${textValue(preview.digest)}. The installation is limited to this project.`),
+        detail: files || tr("预览没有包含文件", "The preview contains no files"),
+        confirmLabel: tr("确认安装", "Install skill"),
       })) return;
       await request("/v1/skills/install", {
         method: "POST",
@@ -1987,12 +2109,12 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   };
   const editMemory = async (memory: Record<string, unknown>) => {
     const body = await dialog({
-      title: "编辑项目记忆",
-      description: "该内容会在后续相关任务中参与本地记忆检索。",
+      title: tr("编辑项目记忆", "Edit project memory"),
+      description: tr("该内容会在后续相关任务中参与本地记忆检索。", "This content may be retrieved locally in related future tasks."),
       input: "multiline",
       initialValue: textValue(memory.body),
-      placeholder: "输入需要保留的项目事实",
-      confirmLabel: "保存记忆",
+      placeholder: tr("输入需要保留的项目事实", "Enter a project fact to preserve"),
+      confirmLabel: tr("保存记忆", "Save memory"),
     });
     if (!body?.trim() || body.trim() === textValue(memory.body).trim()) return;
     try {
@@ -2005,9 +2127,9 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   };
   const deleteMemory = async (memory: Record<string, unknown>) => {
     if (!await dialog({
-      title: "删除项目记忆",
-      description: `将永久删除“${textValue(memory.name)}”，后续任务不再检索这条内容。`,
-      confirmLabel: "删除记忆",
+      title: tr("删除项目记忆", "Delete project memory"),
+      description: tr(`将永久删除“${textValue(memory.name)}”，后续任务不再检索这条内容。`, `This permanently deletes “${textValue(memory.name)}” so future tasks cannot retrieve it.`),
+      confirmLabel: tr("删除记忆", "Delete memory"),
       danger: true,
     })) return;
     try {
@@ -2017,18 +2139,18 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   };
   const cancelWorker = async (workerId: string) => {
     if (!await dialog({
-      title: "取消 Worker",
-      description: "将停止这个 Worker 及其受管进程；已经产生的 Worktree 变更仍可检查。",
-      confirmLabel: "停止 Worker",
+      title: tr("取消 Worker", "Cancel worker"),
+      description: tr("将停止这个 Worker 及其受管进程；已经产生的 Worktree 变更仍可检查。", "This stops the worker and its managed processes. Existing worktree changes remain available for review."),
+      confirmLabel: tr("停止 Worker", "Stop worker"),
       danger: true,
     })) return;
     await mutate(`/v1/workers/${encodeURIComponent(workerId)}/cancel`, { session_id: threadId });
   };
   const clearGoal = async (goal: Record<string, unknown>) => {
     if (!await dialog({
-      title: "取消 Goal",
-      description: `将停止“${textValue(goal.objective)}”的后续自动轮次，已有会话和代码变更会保留。`,
-      confirmLabel: "取消 Goal",
+      title: tr("取消 Goal", "Cancel goal"),
+      description: tr(`将停止“${textValue(goal.objective)}”的后续自动轮次，已有会话和代码变更会保留。`, `This stops future automatic turns for “${textValue(goal.objective)}”. Existing sessions and code changes are preserved.`),
+      confirmLabel: tr("取消 Goal", "Cancel goal"),
       danger: true,
     })) return;
     await mutate(`/v1/goals/${encodeURIComponent(textValue(goal.id))}/clear`, {});
@@ -2043,24 +2165,41 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
-  return <div className="panel-content"><div className="advanced-tabs">{(["goals", "workers", "skills", "mcp", "memory"] as const).map((name) => <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>{name}</button>)}</div>
-    {tab === "goals" && <div className="advanced-list"><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder="创建有界长任务 Goal" /><button disabled={!threadId || !objective.trim()}>创建</button></form>{goals.map((goal) => { const status = textValue(goal.status); const nonterminal = ["active", "paused", "blocked"].includes(status); return <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{status}</span></div><p>轮次 {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>暂停</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>{nonterminal ? "恢复" : "重新开启"}</button>}{nonterminal && <button className="danger" onClick={() => void clearGoal(goal)}>取消</button>}</div></section>; })}</div>}
-    {tab === "workers" && <div className="advanced-list">{workers.length === 0 && <p className="empty">当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。</p>}{workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{status}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? "只读" : "独立 Worktree"}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>跟进</button><button onClick={() => void cancelWorker(workerId)}>取消 Worker</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>审查并应用</button>}</div></section>; })}</div>}
-    {tab === "skills" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => void installSkill(event)}><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder="工作区内 Skill 文件或目录" /><button disabled={!skillSource.trim()}>预览安装</button></form>{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">暂无 Skill。安装必须先预览文件与 digest，再明确确认。</p>}</div>}
-    {tab === "mcp" && <div className="advanced-list">{servers.map((server) => <section key={textValue(server.name)}><div><b>{textValue(server.name)}</b><span className={server.status === "connected" ? "stable" : "labs"}>{textValue(server.status)}</span></div><p>{textValue(server.transport)} · {textValue(server.tool_count)} tools</p>{server.error ? <small>{textValue(server.error)}</small> : null}</section>)}{!servers.length && <p className="empty">没有配置 MCP Tool Server。</p>}</div>}
-    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>自动记忆：{textValue(memorySettings.auto_save) === "off" ? "已关闭" : "保存前询问"}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? "开启询问" : "关闭"}</button></div><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId })) setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder="添加项目记忆" /><button disabled={!memoryBody.trim()}>添加</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>编辑</button><button className="danger" onClick={() => void deleteMemory(memory)}>删除</button></div></section>)}</div>}
-    <div className="labs-note"><b>Labs 已隐藏</b><p>Fleet、Workflow、ACP、Hooks 和 Tool Program 不进入默认 Web 导航。</p></div>
+  const tabLabels = {
+    interface: tr("界面", "Interface"), goals: "Goals", workers: "Workers", skills: "Skills", mcp: "MCP", memory: tr("记忆", "Memory"),
+  };
+  return <div className="panel-content"><div className="advanced-tabs">{(["interface", "goals", "workers", "skills", "mcp", "memory"] as const).map((name) => <button className={tab === name ? "active" : ""} key={name} onClick={() => setTab(name)}>{tabLabels[name]}</button>)}</div>
+    {tab === "interface" && <div className="advanced-list interface-preferences">
+      <section><div><b>{tr("界面语言", "Interface language")}</b><span className="stable">{preferences.locale}</span></div><p>{tr("仅改变 CodeRook Web 的界面文案；模型回答、日志和代码内容保持原文。", "Changes only CodeRook Web labels. Model responses, logs, and code remain unchanged.")}</p><select aria-label={tr("界面语言", "Interface language")} value={preferences.locale} onChange={(event) => preferences.setLocale(event.target.value as WebLocale)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></section>
+      <section><div><b>{tr("显示对比度", "Display contrast")}</b><span className="stable">{preferences.theme === "light" ? tr("浅色", "Light") : tr("高对比", "High contrast")}</span></div><p>{tr("默认保持浅色产品界面；高对比模式加强文字、边框和焦点可见性。", "The default stays light. High contrast strengthens text, borders, and focus visibility.")}</p><select aria-label={tr("显示对比度", "Display contrast")} value={preferences.theme} onChange={(event) => preferences.setTheme(event.target.value as WebTheme)}><option value="light">{tr("浅色", "Light")}</option><option value="high-contrast">{tr("高对比", "High contrast")}</option></select></section>
+    </div>}
+    {tab === "goals" && <div className="advanced-list">
+      <form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder={tr("创建有界长任务 Goal", "Create a bounded long-running goal")} /><button disabled={!threadId || !objective.trim()}>{tr("创建", "Create")}</button></form>
+      {goals.map((goal) => { const status = textValue(goal.status); const nonterminal = ["active", "paused", "blocked"].includes(status); return <section key={textValue(goal.id)}><div><b>{textValue(goal.objective)}</b><span className="stable">{statusLabel(status)}</span></div><p>{tr("轮次", "Turns")} {textValue(goal.auto_turns_used || 0)} / {textValue(goal.max_auto_turns || 3)} · Token {textValue(goal.tokens_used || 0)} / {textValue(goal.token_budget || "∞")}</p><div className="card-actions">{status === "active" ? <button onClick={() => void mutate(`/v1/goals/${goal.id}/pause`, {})}>{tr("暂停", "Pause")}</button> : <button onClick={() => void mutate(`/v1/goals/${goal.id}/resume`, {})}>{nonterminal ? tr("恢复", "Resume") : tr("重新开启", "Restart")}</button>}{nonterminal && <button className="danger" onClick={() => void clearGoal(goal)}>{tr("取消", "Cancel")}</button>}</div></section>; })}
+    </div>}
+    {tab === "workers" && <div className="advanced-list">
+      {workers.length === 0 && <p className="empty">{tr("当前会话没有 Worker。符合独立验收和 Write Claim 条件时，Agent 才会委派。", "This session has no workers. CodeRook delegates only when tasks have independent acceptance criteria and non-overlapping write claims.")}</p>}
+      {workers.map((worker) => { const workerId = textValue(worker.worker_id || worker.id); const status = textValue(worker.status); return <section key={workerId}><div><b>{textValue(worker.description || workerId)}</b><span className="stable">{statusLabel(status)}</span></div><p>{textValue(worker.model)} · {textValue(worker.backend || "builtin")} · {worker.read_only ? tr("只读", "Read-only") : tr("独立 Worktree", "Isolated worktree")}</p><div className="card-actions">{["queued", "running", "waiting"].includes(status) && <><button onClick={() => void workerFollowup(workerId)}>{tr("跟进", "Follow up")}</button><button onClick={() => void cancelWorker(workerId)}>{tr("取消 Worker", "Cancel worker")}</button></>}{status === "completed" && !worker.read_only && worker.handoff_status !== "applied" && <button onClick={() => void workerReviewApply(workerId)}>{tr("审查并应用", "Review and apply")}</button>}</div></section>; })}
+    </div>}
+    {tab === "skills" && <div className="advanced-list"><form className="inline-create" onSubmit={(event) => void installSkill(event)}><input value={skillSource} onChange={(event) => setSkillSource(event.target.value)} placeholder={tr("工作区内 Skill 文件或目录", "Skill file or directory inside the workspace")} /><button disabled={!skillSource.trim()}>{tr("预览安装", "Preview installation")}</button></form>{skills.map((skill) => <section key={textValue(skill.name)}><div><b>{textValue(skill.name)}</b><span className="stable">{textValue(skill.trust)}</span></div><p>{textValue(skill.description)}</p><small>{textValue(skill.scope)} · {textValue(skill.integrity)}</small></section>)}{!skills.length && <p className="empty">{tr("暂无 Skill。安装必须先预览文件与 digest，再明确确认。", "No skills installed. Installation requires a file and digest preview followed by explicit confirmation.")}</p>}</div>}
+    {tab === "mcp" && <div className="advanced-list">{servers.map((server) => <section key={textValue(server.name)}><div><b>{textValue(server.name)}</b><span className={server.status === "connected" ? "stable" : "labs"}>{statusLabel(textValue(server.status))}</span></div><p>{textValue(server.transport)} · {textValue(server.tool_count)} tools</p>{server.error ? <small>{textValue(server.error)}</small> : null}</section>)}{!servers.length && <p className="empty">{tr("没有配置 MCP Tool Server。", "No MCP tool servers are configured.")}</p>}</div>}
+    {tab === "memory" && <div className="advanced-list"><div className="memory-settings"><span>{tr("自动记忆", "Automatic memory")}: {textValue(memorySettings.auto_save) === "off" ? tr("已关闭", "Off") : tr("保存前询问", "Ask before saving")}</span><button onClick={() => void toggleMemoryAuto()}>{textValue(memorySettings.auto_save) === "off" ? tr("开启询问", "Enable prompts") : tr("关闭", "Turn off")}</button></div><form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/memories", { name: memoryBody.slice(0, 40), body: memoryBody, memory_type: "project", source_session_id: threadId })) setMemoryBody(""); }}><input value={memoryBody} onChange={(event) => setMemoryBody(event.target.value)} placeholder={tr("添加项目记忆", "Add project memory")} /><button disabled={!memoryBody.trim()}>{tr("添加", "Add")}</button></form>{memories.map((memory) => <section key={textValue(memory.id)}><div><b>{textValue(memory.name)}</b><span className="stable">{memory.pinned ? "pinned" : textValue(memory.type)}</span></div><p>{textValue(memory.body)}</p><div className="card-actions"><button onClick={() => void editMemory(memory)}>{tr("编辑", "Edit")}</button><button className="danger" onClick={() => void deleteMemory(memory)}>{tr("删除", "Delete")}</button></div></section>)}</div>}
+    <div className="labs-note"><b>{tr("Labs 已隐藏", "Labs are hidden")}</b><p>{tr("Fleet、Workflow、ACP、Hooks 和 Tool Program 不进入默认 Web 导航。", "Fleet, Workflow, ACP, Hooks, and Tool Program are not shown in the default Web navigation.")}</p></div>
   </div>;
 }
 
-export function App(): ReactElement {
+function AppContent(): ReactElement {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState("");
   const [workspace, setWorkspace] = useState("");
   useEffect(() => {
     bootstrap().then((result) => { setWorkspace(result.workspace); setReady(true); }).catch((reason: unknown) => setFatal(reason instanceof Error ? reason.message : String(reason)));
   }, []);
-  if (fatal) return <div className="fatal"><span>♜</span><h1>无法连接本地 CodeRook Core</h1><p>{fatal}</p><p>请重新运行 <code>coderook web</code> 获取一次性启动链接。</p></div>;
-  if (!ready) return <div className="loading"><span>♜</span><p>正在连接本地工作区…</p></div>;
+  if (fatal) return <div className="fatal"><span>♜</span><h1>{tr("无法连接本地 CodeRook Core", "Unable to connect to the local CodeRook Core")}</h1><p>{fatal}</p><p>{tr("请重新运行", "Run")} <code>coderook web</code> {tr("获取一次性启动链接。", "again to get a new one-time launch link.")}</p></div>;
+  if (!ready) return <div className="loading"><span>♜</span><p>{tr("正在连接本地工作区…", "Connecting to the local workspace…")}</p></div>;
   return <ProductDialogProvider><AppShell initialWorkspace={workspace} /></ProductDialogProvider>;
+}
+
+export function App(): ReactElement {
+  return <InterfacePreferencesProvider><AppContent /></InterfacePreferencesProvider>;
 }

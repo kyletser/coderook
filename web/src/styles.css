@@ -217,7 +217,7 @@ button:disabled { cursor: default; opacity: .38; }
 .commit-row input { min-width: 0; padding: 7px; border: 1px solid #365246; border-radius: 6px; background: #0e1512; color: #eef1ef; font-size: 10px; }
 .commit-row button { border: 0; border-radius: 6px; background: #dfe5e1; color: #101411; font-size: 9.5px; font-weight: 700; }
 .commit-row small { grid-column: 1 / -1; color: #718078; font-size: 8.5px; }
-.advanced-tabs { display: grid; grid-template-columns: repeat(5,1fr); gap: 3px; margin-bottom: 12px; padding: 3px; border-radius: 8px; background: #0e0f12; }
+.advanced-tabs { display: grid; grid-template-columns: repeat(6,1fr); gap: 3px; margin-bottom: 12px; padding: 3px; border-radius: 8px; background: #0e0f12; }
 .advanced-tabs button { padding: 6px 3px; border: 0; border-radius: 6px; background: transparent; color: #777984; font-size: 9px; text-transform: capitalize; }
 .advanced-tabs button.active { background: #25262d; color: #d7d8ff; }
 .advanced-list { display: grid; gap: 7px; }
@@ -233,6 +233,7 @@ button:disabled { cursor: default; opacity: .38; }
 .inline-create { display: flex; gap: 6px; margin-bottom: 4px; }
 .inline-create input { flex: 1; min-width: 0; padding: 8px; border: 1px solid #30313a; border-radius: 7px; outline: 0; background: #0e0f12; color: var(--text); font-size: 10px; }
 .memory-settings { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #2e4238; border-radius: 8px; background: #15201a; color: #91aa9c; font-size: 9.5px; }
+.interface-preferences select { width: 100%; margin-top: 4px; padding: 8px 9px; border: 1px solid #30313a; border-radius: 7px; background: #0e0f12; color: var(--text); font-size: 10px; }
 .labs-note { margin-top: 16px; padding: 12px 2px; border-top: 1px solid var(--border-soft); color: #60626b; font-size: 9.5px; }
 .labs-note p { margin: 4px 0; }
 
@@ -451,6 +452,7 @@ body { background: #f1f1ee; color: var(--text); }
 .advanced-list button, .inline-create button, .memory-settings button { border-color: #d8d8d3; background: #f7f7f4; color: #66676c; }
 .inline-create input { border-color: #d8d8d3; background: #fff; color: #292a2f; }
 .memory-settings { border-color: #c5dbce; background: #f1f9f4; color: #537060; }
+.interface-preferences select { border-color: #d8d8d3; background: #fff; color: #292a2f; }
 .labs-note { border-color: #e1e1dc; color: #8a8a85; }
 .loading, .fatal { background: #f7f7f4; color: #6f7075; }
 .fatal h1 { color: #292a2f; }
@@ -481,6 +483,33 @@ body { background: #f1f1ee; color: var(--text); }
 .product-dialog > footer .danger { border-color: #b14b50; background: #b14b50; color: #fff; }
 .product-dialog > footer .primary:hover:not(:disabled) { background: #000; color: #fff; }
 .product-dialog > footer .danger:hover:not(:disabled) { border-color: #943b40; background: #943b40; color: #fff; }
+
+:root[data-theme="high-contrast"] {
+  --bg: #fff;
+  --canvas: #fff;
+  --border: #777;
+  --border-soft: #aaa;
+  --text: #000;
+  --text-secondary: #202020;
+  --muted: #3d3d3d;
+  --faint: #555;
+  --accent: #2420a8;
+  --accent-strong: #17127f;
+}
+:root[data-theme="high-contrast"] .sidebar,
+:root[data-theme="high-contrast"] .main,
+:root[data-theme="high-contrast"] .timeline,
+:root[data-theme="high-contrast"] .panel-content { background: #fff; }
+:root[data-theme="high-contrast"] .topbar,
+:root[data-theme="high-contrast"] .drawer > header { border-color: #888; background: #fff; }
+:root[data-theme="high-contrast"] .session.selected,
+:root[data-theme="high-contrast"] .workspace-nav,
+:root[data-theme="high-contrast"] .queued-message { background: #e8e8e8; }
+:root[data-theme="high-contrast"] button:focus-visible,
+:root[data-theme="high-contrast"] input:focus-visible,
+:root[data-theme="high-contrast"] textarea:focus-visible,
+:root[data-theme="high-contrast"] select:focus-visible,
+:root[data-theme="high-contrast"] summary:focus-visible { outline: 3px solid #17127f; outline-offset: 2px; }
 
 @media (max-width: 1180px) {
   .app-shell.inspector-open { grid-template-columns: 244px minmax(0,1fr); }

@@ -4,9 +4,12 @@ import {
   activeFileMention,
   appendRuntimeEvent,
   eventBelongsToThread,
+  isSimpleProductQuestion,
   modelContentFor,
   parentWorkspacePath,
   preferredThreadId,
+  resolveWebLocale,
+  resolveWebTheme,
   resultStatusIsFailure,
   workspacePathIsDirectoryError,
 } from "./App";
@@ -104,5 +107,18 @@ describe("Web task submission", () => {
     expect(resultStatusIsFailure("incomplete")).toBe(true);
     expect(resultStatusIsFailure("length")).toBe(true);
     expect(resultStatusIsFailure("transport_error")).toBe(true);
+  });
+
+  it("normalizes persisted interface preferences to supported values", () => {
+    expect(resolveWebLocale("en-GB")).toBe("en-US");
+    expect(resolveWebLocale("zh-TW")).toBe("zh-CN");
+    expect(resolveWebTheme("high-contrast")).toBe("high-contrast");
+    expect(resolveWebTheme("dark")).toBe("light");
+  });
+
+  it("keeps simple Chinese and English product questions out of the planning display", () => {
+    expect(isSimpleProductQuestion("你能做什么？")).toBe(true);
+    expect(isSimpleProductQuestion("What model are you? ")).toBe(true);
+    expect(isSimpleProductQuestion("Fix the model router tests")).toBe(false);
   });
 });
