@@ -43,7 +43,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "keyring>=25.0",
     "pathspec>=0.12",
-    "unidiff>=0.7,<0.8",
+    "unidiff>=0.7,<1.1",
 ]
 
 [project.urls]
