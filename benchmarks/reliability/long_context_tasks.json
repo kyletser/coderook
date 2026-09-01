@@ -2,6 +2,14 @@
   "schema_version": 1,
   "dataset": "coderook-long-context-v1",
   "description": "Synthetic frozen long-session scenarios; they are not real user data.",
+  "pilot_task_ids": [
+    "long-single-02",
+    "long-single-04",
+    "long-multi-02",
+    "long-multi-03",
+    "long-explain-02",
+    "long-repair-01"
+  ],
   "tasks": [
     {"id":"long-single-01","category":"single_file_fix","history_rounds":12,"path":"src/cache.py","constraints":["keep the public signature","do not add dependencies","run the focused test"],"stale_error":"old timeout no longer reproduces","large_output_chars":18000},
     {"id":"long-single-02","category":"single_file_fix","history_rounds":14,"path":"src/parser.py","constraints":["preserve Unicode input","reject partial JSON","keep error codes stable"],"stale_error":"obsolete syntax failure","large_output_chars":22000},

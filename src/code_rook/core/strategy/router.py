@@ -349,6 +349,23 @@ class TaskStrategyRouter:
             ).with_digest()
         raise ValueError(f"unknown delegation policy: {policy}")
 
+    # 为受控对照实验冻结执行策略且保持风险、范围和权限只收窄不扩大
+    def override_execution_strategy(
+        self,
+        profile: TaskProfile,
+        strategy: TaskStrategy,
+    ) -> TaskProfile:
+        delegation_allowed = profile.delegation_allowed and strategy == TaskStrategy.DELEGATE
+        return profile.model_copy(
+            update={
+                "strategy": strategy,
+                "delegation_allowed": delegation_allowed,
+                "signals": tuple((*profile.signals, f"experiment_strategy_{strategy.value}")),
+                "source": f"{profile.source}_experiment",
+                "digest": "",
+            }
+        ).with_digest()
+
 
 # 返回任务类型对应的默认可交付结果说明
 def _deliverable_for(intent: TaskIntent) -> str:

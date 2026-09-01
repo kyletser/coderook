@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from code_rook.benchmark.experiment import (
+    candidate_git_state,
+    configure_experiment_budget,
+    resolve_experiment_candidate,
+)
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.config import get_config
@@ -140,17 +145,30 @@ def _commit() -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
-# 运行三种压缩策略的两次完整对照并在组边界执行预算停止
-async def _run(args: argparse.Namespace) -> dict[str, Any]:
+# 按数据集声明的 Pilot 顺序选择任务并保持扩容时样本稳定
+def _select_tasks(dataset: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    tasks = list(dataset["tasks"])
+    by_id = {str(task["id"]): task for task in tasks}
+    pilot_ids = [str(value) for value in dataset.get("pilot_task_ids", [])]
+    ordered = [by_id[task_id] for task_id in pilot_ids if task_id in by_id]
+    ordered.extend(task for task in tasks if task not in ordered)
+    return ordered[:limit]
+
+
+# 运行三种压缩策略的完整对照并在组边界执行预算停止
+async def _run(
+    args: argparse.Namespace,
+    *,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
     dataset_bytes = args.dataset.read_bytes()
     dataset = json.loads(dataset_bytes)
-    tasks = dataset["tasks"]
-    if len(tasks) != 12:
-        raise SystemExit(f"expected 12 long-context scenarios, found {len(tasks)}")
+    all_tasks = dataset["tasks"]
+    if len(all_tasks) != 12:
+        raise SystemExit(f"expected 12 long-context scenarios, found {len(all_tasks)}")
+    tasks = _select_tasks(dataset, args.task_limit)
     config = get_config()
     resolved = RouteRegistry(config.llm, temperature_override=0.0).resolve()
-    if resolved.route.id != "legacy-anthropic" or resolved.route.model != "deepseek-v4-flash":
-        raise SystemExit("experiment requires route legacy-anthropic / deepseek-v4-flash")
     provider = _MeteredProvider(
         create_provider_for_route(resolved.route, resolved.credential),
         resolved.route.model,
@@ -194,6 +212,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     messages = _history(task)
                     started = time.perf_counter()
+                    input_tokens_before = provider.input_tokens
+                    output_tokens_before = provider.output_tokens
                     compactor = Compactor(
                         EventBus(),
                         store.session_dir(session_id),
@@ -254,6 +274,12 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                                 3,
                             ),
                             "probe_text": probe.text[:2_000],
+                            "model_input_tokens": (
+                                provider.input_tokens - input_tokens_before
+                            ),
+                            "model_output_tokens": (
+                                provider.output_tokens - output_tokens_before
+                            ),
                         }
                     )
                 completed_blocks.append(f"{strategy}:{repeat}")
@@ -276,6 +302,13 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             "median_input_reduction": (1.0 - ratios[len(ratios) // 2] if ratios else 0.0),
             "fallbacks": sum(bool(row["fallback_to_original"]) for row in selected),
             "duplicate_reads_removed": sum(int(row["deduplicated_reads"]) for row in selected),
+            "median_model_input_tokens": (
+                sorted(int(row["model_input_tokens"]) for row in selected)[
+                    len(selected) // 2
+                ]
+                if selected
+                else 0
+            ),
         }
     return {
         "schema_version": 1,
@@ -283,12 +316,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "synthetic_data": True,
         "commit": _commit(),
         "dataset_fingerprint": hashlib.sha256(dataset_bytes).hexdigest(),
-        "route": {
-            "id": resolved.route.id,
-            "model": resolved.route.model,
-            "wire_format": resolved.route.wire_format,
-            "temperature": resolved.route.temperature,
-        },
+        "route": candidate,
         "budget": {
             "limit_usd": args.max_cost_usd,
             "spent_usd": provider.cost_usd(),
@@ -309,41 +337,76 @@ def _markdown(report: dict[str, Any]) -> str:
         "",
         "> Dataset is synthetic and frozen; it is not presented as real user traffic.",
         "",
-        "| Strategy | Tasks | Pass@1 | Fact retention | Median token reduction | Fallbacks |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Strategy | Tasks | Recall pass | Fact retention | Median context reduction | Median model input | Fallbacks |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for strategy, summary in report["summaries"].items():
         lines.append(
             f"| {strategy} | {summary['tasks']} | {summary['pass_rate']:.1%} | "
             f"{summary['fact_retention_rate']:.1%} | "
-            f"{summary['median_input_reduction']:.1%} | {summary['fallbacks']} |"
+            f"{summary['median_input_reduction']:.1%} | "
+            f"{summary['median_model_input_tokens']} | {summary['fallbacks']} |"
         )
     lines.extend(["", "All repeats and failure samples remain in `report.json`."])
     return "\n".join(lines) + "\n"
 
 
-# 解析实验参数并写入原始 JSON 与聚合 Markdown
-def main() -> int:
+# 解析低成本 Pilot 和显式完整实验参数
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run long-context compaction ablations")
     parser.add_argument(
         "--dataset",
         type=Path,
         default=Path("benchmarks/reliability/long_context_tasks.json"),
     )
-    parser.add_argument("--repeats", type=int, default=2)
-    parser.add_argument("--max-cost-usd", type=float, default=35.0)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--task-limit", type=int, default=6)
+    parser.add_argument("--max-cost-usd", type=float, default=2.0)
+    parser.add_argument("--preflight", action="store_true")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path(".benchmark-results/reliability/compaction"),
     )
-    args = parser.parse_args()
+    return parser
+
+
+# 解析实验参数并在零调用预检通过后写入原始 JSON 与聚合 Markdown
+def main() -> int:
+    args = _parser().parse_args()
     if args.repeats < 1:
         raise SystemExit("--repeats must be positive")
+    if not 1 <= args.task_limit <= 12:
+        raise SystemExit("--task-limit must be between 1 and 12")
     if args.max_cost_usd <= 0 or args.max_cost_usd > 35:
         raise SystemExit("--max-cost-usd must be in (0, 35]")
-    report = asyncio.run(_run(args))
+    dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
+    selected = _select_tasks(dataset, args.task_limit)
+    try:
+        _resolved, candidate = resolve_experiment_candidate(
+            get_config(),
+            temperature=0.0,
+        )
+    except RuntimeError as exc:
+        raise SystemExit(f"experiment preflight failed: {exc}") from exc
+    git_state = candidate_git_state()
+    preflight = {
+        "candidate": candidate,
+        "git": git_state,
+        "task_ids": [task["id"] for task in selected],
+        "repeats": args.repeats,
+        "maximum_model_calls": len(selected) * args.repeats * 5,
+        "max_cost_usd": args.max_cost_usd,
+        "model_calls": False,
+    }
+    if args.preflight:
+        print(json.dumps(preflight, ensure_ascii=False, indent=2))
+        return 0 if git_state["working_tree_clean"] else 2
+    if not git_state["working_tree_clean"]:
+        raise SystemExit("experiment requires a clean Git working tree")
     args.output.mkdir(parents=True, exist_ok=True)
+    configure_experiment_budget(args.output, limit_usd=args.max_cost_usd)
+    report = asyncio.run(_run(args, candidate=candidate))
     (args.output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

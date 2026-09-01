@@ -10,6 +10,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from code_rook.benchmark.experiment import (
+    candidate_git_state,
+    configure_experiment_budget,
+    resolve_experiment_candidate,
+)
 from code_rook.core.config import get_config
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.factory import create_provider_for_route
@@ -62,8 +67,11 @@ def _parser() -> argparse.ArgumentParser:
         choices=("rules_only", "llm_only", "hybrid"),
         default=[],
     )
-    parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--max-cost-usd", type=float, default=35.0)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--task-limit", type=int, default=12)
+    parser.add_argument("--max-cost-usd", type=float, default=1.0)
+    parser.add_argument("--allow-model-calls", action="store_true")
+    parser.add_argument("--preflight", action="store_true")
     parser.add_argument(
         "--tasks",
         type=Path,
@@ -156,26 +164,54 @@ def _dataset_fingerprint(paths: list[Path]) -> str:
     return digest.hexdigest()
 
 
+# 按任务类别轮询选择小规模诊断样本，避免目录顺序造成类别偏置
+def _stratified_paths(paths: list[Path], limit: int) -> list[Path]:
+    groups: dict[str, list[Path]] = {}
+    for path in paths:
+        task = json.loads(path.read_text(encoding="utf-8"))
+        groups.setdefault(str(task["category"]), []).append(path)
+    selected: list[Path] = []
+    while len(selected) < limit:
+        advanced = False
+        for category in sorted(groups):
+            if groups[category] and len(selected) < limit:
+                selected.append(groups[category].pop(0))
+                advanced = True
+        if not advanced:
+            break
+    return selected
+
+
 # 运行完整方法与重复矩阵，在完整重复边界检查成本并保留所有原始结果
-async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    methods = args.method or ["rules_only", "llm_only", "hybrid"]
-    paths = sorted(args.tasks.glob("*.json"))
+async def _run(
+    args: argparse.Namespace,
+    *,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    methods = args.method or ["rules_only"]
+    all_paths = sorted(args.tasks.glob("*.json"))
+    if len(all_paths) != 50:
+        raise SystemExit(f"expected 50 frozen tasks, found {len(all_paths)}")
+    paths = _stratified_paths(all_paths, args.task_limit)
     tasks = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-    if len(tasks) != 50:
-        raise SystemExit(f"expected 50 frozen tasks, found {len(tasks)}")
     config = get_config()
     resolved = RouteRegistry(config.llm, temperature_override=0.0).resolve()
-    if resolved.route.id != "legacy-anthropic" or resolved.route.model != "deepseek-v4-flash":
-        raise SystemExit("experiment requires route legacy-anthropic / deepseek-v4-flash")
-    base_provider = create_provider_for_route(resolved.route, resolved.credential)
-    provider = _CountingProvider(base_provider, resolved.route.model)
+    uses_model = any(method != "rules_only" for method in methods)
+    provider = (
+        _CountingProvider(
+            create_provider_for_route(resolved.route, resolved.credential),
+            resolved.route.model,
+        )
+        if uses_model
+        else None
+    )
     router = TaskStrategyRouter()
     rows: list[dict[str, Any]] = []
     completed_blocks: list[str] = []
     last_block_cost = 0.0
     for method in methods:
         for repeat in range(1, args.repeats + 1):
-            spent = provider.cost_usd() or 0.0
+            spent = (provider.cost_usd() or 0.0) if provider is not None else 0.0
             if spent >= args.max_cost_usd or (
                 last_block_cost > 0 and spent + last_block_cost > args.max_cost_usd
             ):
@@ -200,7 +236,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                     }
                 )
             completed_blocks.append(f"{method}:{repeat}")
-            last_block_cost = max(0.0, (provider.cost_usd() or 0.0) - block_start_cost)
+            last_block_cost = max(
+                0.0,
+                ((provider.cost_usd() or 0.0) if provider is not None else 0.0)
+                - block_start_cost,
+            )
     summaries: dict[str, Any] = {}
     for method in methods:
         selected = [row for row in rows if row["method"] == method]
@@ -229,20 +269,16 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         }
     return {
         "schema_version": 1,
-        "experiment": "task-strategy-router",
+        "experiment": "task-strategy-router-diagnostic",
+        "effectiveness_claim": False,
         "commit": _commit(),
         "dataset_fingerprint": _dataset_fingerprint(paths),
-        "route": {
-            "id": resolved.route.id,
-            "model": resolved.route.model,
-            "wire_format": resolved.route.wire_format,
-            "temperature": resolved.route.temperature,
-        },
+        "route": candidate,
         "budget": {
             "limit_usd": args.max_cost_usd,
-            "spent_usd": provider.cost_usd(),
-            "input_tokens": provider.input_tokens,
-            "output_tokens": provider.output_tokens,
+            "spent_usd": provider.cost_usd() if provider is not None else 0.0,
+            "input_tokens": provider.input_tokens if provider is not None else 0,
+            "output_tokens": provider.output_tokens if provider is not None else 0,
         },
         "requested_repeats": args.repeats,
         "completed_blocks": completed_blocks,
@@ -254,7 +290,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
 # 将聚合指标和诚实门禁结果渲染为简洁 Markdown
 def _markdown(report: dict[str, Any]) -> str:
     lines = [
-        "# Task Strategy Router Experiment",
+        "# Task Strategy Router Category-Proxy Diagnostic",
         "",
         f"Commit: `{report['commit']}`",
         f"Dataset: `{report['dataset_fingerprint']}`",
@@ -271,6 +307,8 @@ def _markdown(report: dict[str, Any]) -> str:
         [
             "",
             "Numbers above are computed from every retained raw row; no best run is selected.",
+            "This is a routing diagnostic, not evidence that coding task outcomes improved.",
+            "Expected labels are benchmark-category proxies and must not be reported as user-intent accuracy.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -283,8 +321,46 @@ def main() -> int:
         raise SystemExit("--repeats must be positive")
     if args.max_cost_usd <= 0 or args.max_cost_usd > 35:
         raise SystemExit("--max-cost-usd must be in (0, 35]")
-    report = asyncio.run(_run(args))
+    if not 1 <= args.task_limit <= 50:
+        raise SystemExit("--task-limit must be between 1 and 50")
+    methods = args.method or ["rules_only"]
+    uses_model = any(method != "rules_only" for method in methods)
+    if uses_model and not args.allow_model_calls:
+        raise SystemExit(
+            "llm_only/hybrid diagnostics require explicit --allow-model-calls"
+        )
+    try:
+        _resolved, candidate = resolve_experiment_candidate(
+            get_config(),
+            temperature=0.0,
+        )
+    except RuntimeError as exc:
+        raise SystemExit(f"experiment preflight failed: {exc}") from exc
+    git_state = candidate_git_state()
+    preflight = {
+        "candidate": candidate,
+        "git": git_state,
+        "methods": methods,
+        "task_limit": args.task_limit,
+        "repeats": args.repeats,
+        "maximum_model_calls": (
+            args.task_limit
+            * args.repeats
+            * sum(method != "rules_only" for method in methods)
+        ),
+        "max_cost_usd": args.max_cost_usd,
+        "model_calls": False,
+        "effectiveness_claim": False,
+    }
+    if args.preflight:
+        print(json.dumps(preflight, ensure_ascii=False, indent=2))
+        return 0 if git_state["working_tree_clean"] else 2
+    if not git_state["working_tree_clean"]:
+        raise SystemExit("experiment requires a clean Git working tree")
     args.output.mkdir(parents=True, exist_ok=True)
+    if uses_model:
+        configure_experiment_budget(args.output, limit_usd=args.max_cost_usd)
+    report = asyncio.run(_run(args, candidate=candidate))
     (args.output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

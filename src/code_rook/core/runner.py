@@ -367,6 +367,7 @@ class AgentRunner:
         resolved_route_is_explicit: bool = False,
         initial_images: list[dict[str, object]] | None = None,
         persistent_goal_context: str = "",
+        strategy_override: TaskStrategy | None = None,
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         agent_preset = None
@@ -686,6 +687,11 @@ class AgentRunner:
                     method=self._config.agent.task_router,
                     delegation_policy=self._config.agent.delegation_policy,
                 )
+                if strategy_override is not None:
+                    task_profile = task_router.override_execution_strategy(
+                        task_profile,
+                        strategy_override,
+                    )
                 await bus.publish(
                     TaskProfiledEvent(
                         run_id=run_id,

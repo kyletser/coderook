@@ -158,6 +158,21 @@ async def test_single_policy_disables_delegation_without_lowering_risk() -> None
     assert profile.risk == TaskRisk.SHELL
 
 
+# 功能：验证实验单 Agent 基线可强制直接执行且不会保留委派能力
+# 设计：先生成真实跨文件画像再只覆盖执行策略，断言风险范围保持而权限收窄
+def test_experiment_direct_override_preserves_profile_and_disables_delegation() -> None:
+    router = TaskStrategyRouter()
+    profile = router.classify_rules("修改整个仓库的多个模块并运行测试")
+
+    overridden = router.override_execution_strategy(profile, TaskStrategy.DIRECT)
+
+    assert overridden.strategy == TaskStrategy.DIRECT
+    assert not overridden.delegation_allowed
+    assert overridden.risk == profile.risk
+    assert overridden.scope == profile.scope
+    assert overridden.digest != profile.digest
+
+
 # 功能：验证只读 TaskProfile 同时从 schema 和执行解析隐藏 File.write
 # 设计：注册含 read/write 的最小 family，检查模型目录后再直接尝试越权调用
 def test_read_profile_filters_family_actions_fail_closed() -> None:

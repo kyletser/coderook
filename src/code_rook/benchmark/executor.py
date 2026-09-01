@@ -27,6 +27,7 @@ from code_rook.core.llm.pricing import estimate_cost, resolve_pricing_quote
 from code_rook.core.llm.route_registry import RouteRegistry, RouteResolutionError
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.runner import AgentRunner
+from code_rook.core.strategy import TaskStrategy
 from code_rook.core.subagent import BackgroundTaskRegistry, WorkerStatus
 from code_rook.core.worktree import WorktreeBatchApplyItem, WorktreeManager
 
@@ -39,10 +40,12 @@ class CodeRookBenchmarkExecutor:
         *,
         temperature: float = 0.0,
         auto_apply_reviewed_workers: bool = False,
+        strategy_override: TaskStrategy | None = None,
     ) -> None:
         self._config = config
         self._temperature = temperature
         self._auto_apply_reviewed_workers = auto_apply_reviewed_workers
+        self._strategy_override = strategy_override
 
     # 在隔离工作区内运行当前 CodeRook Agent，并收集评分需要的最小事件指标
     async def execute(
@@ -144,6 +147,7 @@ class CodeRookBenchmarkExecutor:
                     tool_whitelist=task.allowed_tools,
                     resolved_route=resolved_route,
                     resolved_route_is_explicit=True,
+                    strategy_override=self._strategy_override,
                 ),
                 timeout=task.budgets.wall_time_s,
             )
