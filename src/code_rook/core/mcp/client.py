@@ -530,7 +530,7 @@ class McpClient:
                 try:
                     await writer.wait_closed()
                 except Exception:
-                    pass
+                    log.debug("MCP TCP writer close failed", exc_info=True)
         elif self._transport in {"streamable_http", "legacy_sse"} and self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None

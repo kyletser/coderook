@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from code_rook.benchmark.models import AgentExecution, BenchmarkTask
+from code_rook.benchmark.models import AgentExecution, BenchmarkTask, VerifierResult
 from code_rook.benchmark.runner import run_benchmark_verifiers
 from code_rook.core.bus.events import (
     ContextCompactedEvent,
@@ -75,10 +75,12 @@ class CodeRookBenchmarkExecutor:
         temperature: float | None = None
         diagnostic_durations_ms: list[int] = []
         process_usage: list[dict[str, object]] = []
+        first_edit_verifier: asyncio.Task[list[VerifierResult]] | None = None
 
         # 收集 token、step 和工具调用数量，不保存可能含敏感内容的事件正文
         async def capture(event: BaseModel) -> None:
             nonlocal approval_requests, compaction_count, first_edit_correct
+            nonlocal first_edit_verifier
             nonlocal retry_count, rollback_count, steps, tool_calls
             nonlocal model, route_id, wire_format
             nonlocal temperature
@@ -96,10 +98,10 @@ class CodeRookBenchmarkExecutor:
                 if self._is_rollback_call(event.tool_name, event.params):
                     rollback_count += 1
             elif isinstance(event, ToolCallFinishedEvent):
-                if event.tool_use_id in mutation_calls and first_edit_correct is None:
-                    first_results = await run_benchmark_verifiers(task, workspace)
-                    first_edit_correct = bool(first_results) and all(
-                        verifier.passed for verifier in first_results
+                if event.tool_use_id in mutation_calls and first_edit_verifier is None:
+                    first_edit_verifier = asyncio.create_task(
+                        run_benchmark_verifiers(task, workspace),
+                        name=f"benchmark-first-edit:{task.id}",
                     )
             elif isinstance(event, PermissionRequestedEvent):
                 approval_requests += 1
@@ -170,6 +172,15 @@ class CodeRookBenchmarkExecutor:
             result = ""
             reason = f"runtime_error:{type(exc).__name__}"
             timed_out = False
+
+        if first_edit_verifier is not None:
+            try:
+                first_results = await first_edit_verifier
+                first_edit_correct = bool(first_results) and all(
+                    verifier.passed for verifier in first_results
+                )
+            except Exception:
+                first_edit_correct = False
 
         worker_apply_count = 0
         worker_conflicts = 0

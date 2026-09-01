@@ -1718,9 +1718,9 @@ function EventCard({
         {responded && <div className="card-resolved">{tr("已处理", "Resolved")}</div>}
         {!responded && isPermission && toolId && (
           <div className="card-actions">
-            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once" }, tr("已允许本次操作", "Allowed once"))}>{tr("本次允许", "Allow once")}</button>
-            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session" }, tr("本会话已允许", "Allowed for this session"))}>{tr("本会话允许", "Allow for session")}</button>
-            <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once" }, tr("已拒绝", "Denied"))}>{tr("拒绝", "Deny")}</button>
+            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once", session_id: threadId }, tr("已允许本次操作", "Allowed once"))}>{tr("本次允许", "Allow once")}</button>
+            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session", session_id: threadId }, tr("本会话已允许", "Allowed for this session"))}>{tr("本会话允许", "Allow for session")}</button>
+            <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once", session_id: threadId }, tr("已拒绝", "Denied"))}>{tr("拒绝", "Deny")}</button>
           </div>
         )}
         {!responded && isPlan && event.turn_id && (

@@ -71,6 +71,8 @@ def _copy_new_file(source: Path, destination: Path, root: Path) -> bool:
             "rb"
         ) as input_stream:
             shutil.copyfileobj(input_stream, output_stream)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
@@ -95,7 +97,7 @@ def _copy_missing_tree(
             continue
         destination = target / child.name
         if child.is_dir():
-            copied += _copy_missing_tree(child, destination, set(), root=root)
+            copied += _copy_missing_tree(child, destination, skip_names, root=root)
         elif _copy_new_file(child, destination, root):
             copied += 1
     return copied

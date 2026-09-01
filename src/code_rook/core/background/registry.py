@@ -22,6 +22,7 @@ from code_rook.core.sandbox.planner import (
 
 _DEFAULT_OUTPUT_LIMIT = 64 * 1024
 _READ_CHUNK_SIZE = 8 * 1024
+_DEFAULT_HISTORY_LIMIT = 100
 
 
 # 返回当前 UTC ISO 时间字符串
@@ -88,11 +89,14 @@ class BackgroundJobRegistry:
         *,
         max_output_bytes: int = _DEFAULT_OUTPUT_LIMIT,
         artifact_store: ArtifactStore | None = None,
+        history_limit: int = _DEFAULT_HISTORY_LIMIT,
     ) -> None:
         if not 1 <= max_output_bytes <= _DEFAULT_OUTPUT_LIMIT:
             raise ValueError(
                 f"max_output_bytes must be between 1 and {_DEFAULT_OUTPUT_LIMIT}"
             )
+        if history_limit < 1:
+            raise ValueError("history_limit must be positive")
         self._bus = bus
         self._jobs: dict[str, BackgroundJob] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -101,6 +105,25 @@ class BackgroundJobRegistry:
         self._process_supervisor = process_supervisor or ProcessSupervisor()
         self._max_output_bytes = max_output_bytes
         self._artifact_store = artifact_store
+        self._history_limit = history_limit
+
+    # 淘汰最旧的已完成任务记录和 asyncio Task，限制 daemon 长期运行的内存增长
+    def _prune_finished(self) -> None:
+        overflow = len(self._jobs) - self._history_limit + 1
+        if overflow <= 0:
+            return
+        candidates = sorted(
+            (
+                job
+                for job in self._jobs.values()
+                if (task := self._tasks.get(job.id)) is not None and task.done()
+            ),
+            key=lambda job: job.created_at,
+        )
+        for job in candidates[:overflow]:
+            self._jobs.pop(job.id, None)
+            self._tasks.pop(job.id, None)
+            self._ready.pop(job.id, None)
 
     # 启动后台 shell 任务并立即返回可查询的任务记录
     def start(
@@ -113,6 +136,7 @@ class BackgroundJobRegistry:
         cwd: Path | None = None,
         artifact_store: ArtifactStore | None = None,
     ) -> BackgroundJob:
+        self._prune_finished()
         job = BackgroundJob(
             id=f"bg-{uuid.uuid4().hex[:12]}",
             command=command,

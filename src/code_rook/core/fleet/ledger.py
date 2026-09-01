@@ -3,6 +3,8 @@ from __future__ import annotations
 import builtins
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 
@@ -21,13 +23,18 @@ class SQLiteWorkerStore:
         self._initialize()
 
     # 打开启用 WAL、foreign key 和 busy timeout 的 SQLite 连接
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     # 创建 Fleet Worker snapshot 与追加式 event ledger
     def _initialize(self) -> None:

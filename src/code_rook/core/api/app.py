@@ -32,6 +32,7 @@ from code_rook.core.runtime.store import RecordNotFoundError
 logger = logging.getLogger(__name__)
 _MAX_HEADERS = 64 * 1024
 _MAX_BODY = 3 * 1024 * 1024
+_REQUEST_READ_TIMEOUT_S = 15.0
 _THREAD_TURNS = re.compile(r"/v1/threads/([^/]+)/turns")
 _THREAD_READ = re.compile(r"/v1/threads/([^/]+)")
 _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
@@ -378,7 +379,12 @@ class HttpApiServer:
     # 解析有界请求行、headers 和 Content-Length body
     async def _read_request(self, reader: asyncio.StreamReader) -> _HttpRequest:
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
+            head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"),
+                timeout=_REQUEST_READ_TIMEOUT_S,
+            )
+        except TimeoutError as exc:
+            raise ValueError("request headers timed out") from exc
         except asyncio.LimitOverrunError as exc:
             raise ValueError("request headers are too large") from exc
         if len(head) > _MAX_HEADERS:
@@ -401,7 +407,16 @@ class HttpApiServer:
             raise ValueError("invalid content-length") from exc
         if not (0 <= content_length <= _MAX_BODY):
             raise ValueError("request body is too large")
-        body = await reader.readexactly(content_length) if content_length else b""
+        if content_length:
+            try:
+                body = await asyncio.wait_for(
+                    reader.readexactly(content_length),
+                    timeout=_REQUEST_READ_TIMEOUT_S,
+                )
+            except TimeoutError as exc:
+                raise ValueError("request body timed out") from exc
+        else:
+            body = b""
         return _HttpRequest(
             method=request_line[0],
             target=request_line[1],
@@ -741,6 +756,11 @@ class HttpApiServer:
             return HTTPStatus.OK, await self._service.respond_permission(
                 match.group(1),
                 decision,
+                session_id=(
+                    str(body["session_id"])
+                    if body.get("session_id") is not None
+                    else None
+                ),
                 selected_hunks=raw_hunks,
                 patch_plan_id=(
                     str(body["patch_plan_id"])

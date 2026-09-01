@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 from code_rook.core.authority import AuthoritySnapshot, narrow_child_authority
@@ -28,6 +29,8 @@ from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.tool import SpawnAgentTool
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerControllerError(ValueError):
@@ -287,6 +290,13 @@ class WorkerController:
                 WorkerStatus.FAILED,
                 reason=f"backend_start_failed:{type(exc).__name__}",
             )
+            try:
+                await self._worktrees.cleanup_failed_creation(worker_id)
+            except Exception:
+                logger.exception(
+                    "failed to clean external worker worktree worker_id=%s",
+                    worker_id,
+                )
             raise WorkerControllerError(
                 f"external worker failed to start: {type(exc).__name__}"
             ) from exc
@@ -322,9 +332,21 @@ class WorkerController:
         read_only: bool,
     ) -> None:
         try:
-            result = await handle.result()
             worker = self._registry.record(worker_id)
             if worker is None:
+                return
+            try:
+                result = await asyncio.wait_for(
+                    handle.result(),
+                    timeout=float(worker.wall_time_s),
+                )
+            except TimeoutError:
+                await handle.cancel()
+                self._registry.update_status(
+                    worker_id,
+                    WorkerStatus.FAILED,
+                    reason="external_wall_time_exceeded",
+                )
                 return
             inspection = await self._worktrees.inspect(
                 worker_id,

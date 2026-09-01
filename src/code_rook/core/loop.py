@@ -109,6 +109,16 @@ _CHANGE_TOOLS = {
 }
 _DELEGATION_TOOLS = {"spawn_agent"}
 
+
+# 把不可信工具结果字段安全转换为非负整数，非法值使用调用方默认值
+def _nonnegative_int(value: object, *, default: int = 0) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return max(0, default)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return max(0, default)
+
 # 基础系统提示；提供对话纠错、能力校验和工具路由规则，todos 摘要会追加在其后
 _BASE_SYSTEM_PROMPT = (
     "You are CodeRook, a local agentic coding assistant. "
@@ -332,6 +342,7 @@ class AgentLoop:
         self._initial_max_steps: int | None = None
         self._reactive_compaction_attempted = False
         self._length_continues_used = 0
+        self._active_step = 0
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
         self._last_todo_snapshot: str = ""
         self._end_turn_defer_count: int = 0
@@ -885,7 +896,7 @@ class AgentLoop:
                         "name": str(raw_gate.get("name", ""))[:80],
                         "command": str(raw_gate.get("command", ""))[:1_000],
                         "status": str(raw_gate.get("status", "unknown"))[:20],
-                        "duration_ms": max(0, int(raw_gate.get("duration_ms", 0))),
+                        "duration_ms": _nonnegative_int(raw_gate.get("duration_ms")),
                         "output_truncated": bool(raw_gate.get("output_truncated", False)),
                         "candidate_id": str(raw_gate.get("candidate_id", ""))[:64],
                         "source": str(raw_gate.get("source", ""))[:500],
@@ -894,9 +905,21 @@ class AgentLoop:
                         ),
                     }
                 )
-        gate_count = max(1, int(payload.get("gate_count", len(gates) or 1)))
-        failed = max(0, int(payload.get("failed", int(result.is_error))))
-        passed = max(0, int(payload.get("passed", gate_count - failed)))
+        gate_count = max(
+            1,
+            _nonnegative_int(
+                payload.get("gate_count"),
+                default=len(gates) or 1,
+            ),
+        )
+        failed = _nonnegative_int(
+            payload.get("failed"),
+            default=int(result.is_error),
+        )
+        passed = _nonnegative_int(
+            payload.get("passed"),
+            default=gate_count - failed,
+        )
         paths = [
             entry.path
             for entry in context.working_set.snapshot()
@@ -984,9 +1007,21 @@ class AgentLoop:
             representative_indexes.append(index)
 
         await self._cancellation_checkpoint()
-        gathered = await asyncio.gather(
-            *(self._invoke_one(tool_call, context) for tool_call in representatives)
-        )
+        tasks = [
+            asyncio.create_task(
+                self._invoke_one(tool_call, context),
+                name=f"tool-call:{tool_call.id}",
+            )
+            for tool_call in representatives
+        ]
+        try:
+            gathered = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         results_by_index = {
             index: result
             for index, result in zip(representative_indexes, gathered, strict=True)
@@ -1141,14 +1176,34 @@ class AgentLoop:
                     block_count=block_count,
                 )
 
-    # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
+    # 驱动循环并保证任何退出路径都为已开始的步骤补齐终止事件
     async def run(self, context: ExecutionContext) -> None:
+        self._active_step = 0
+        try:
+            await self._run_impl(context)
+        finally:
+            if self._active_step:
+                await asyncio.shield(self._finish_active_step(context))
+
+    # 原子取得并清除活动步骤后发布结束事件，避免发布失败时重复补发
+    async def _finish_active_step(self, context: ExecutionContext) -> None:
+        step = self._active_step
+        if not step:
+            return
+        self._active_step = 0
+        await self._bus.publish(
+            StepFinishedEvent(run_id=context.run_id, step=step, ts=_now())
+        )
+
+    # 执行原始 plan→act→observe 状态机并在正常步骤边界清除活动标记
+    async def _run_impl(self, context: ExecutionContext) -> None:
         while not context.is_done():
             self._inject_steering(context)
             context.step += 1
             await self._bus.publish(
                 StepStartedEvent(run_id=context.run_id, step=context.step, ts=_now())
             )
+            self._active_step = context.step
 
             # [per-turn] 每步前让路由刷新回调决定是否切换模型，返回非空即替换 provider
             if self._route_refresher is not None:
@@ -1224,13 +1279,7 @@ class AgentLoop:
                         trigger="overflow",
                     )
                     if compacted is not None:
-                        await self._bus.publish(
-                            StepFinishedEvent(
-                                run_id=context.run_id,
-                                step=context.step,
-                                ts=_now(),
-                            )
-                        )
+                        await self._finish_active_step(context)
                         continue
                 logging.getLogger(__name__).exception(
                     "LLM call failed run_id=%s step=%d", context.run_id, context.step
@@ -1383,9 +1432,7 @@ class AgentLoop:
                         },
                     )
 
-            await self._bus.publish(
-                StepFinishedEvent(run_id=context.run_id, step=context.step, ts=_now())
-            )
+            await self._finish_active_step(context)
 
         if self._hooks is not None:
             await self._hooks.emit(

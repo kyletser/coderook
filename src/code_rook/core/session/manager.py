@@ -83,6 +83,7 @@ _AUTO_GOAL_PROMPT = (
     "the bounded continuation policy pauses."
 )
 _EMPTY_SESSION_RETENTION = timedelta(hours=24)
+_MAX_RESERVED_GOAL_WAITS = 50
 logger = logging.getLogger(__name__)
 
 
@@ -290,6 +291,7 @@ class SessionManager:
 
         # 重新读取 Goal 真值后启动下一轮，用户在间隙执行 pause/cancel 会使任务安全退出
         async def continue_goal() -> None:
+            reserved_waits = 0
             if delay_s > 0:
                 await asyncio.sleep(delay_s)
             while self._goal_service is not None:
@@ -310,6 +312,15 @@ class SessionManager:
                     current_authority=authority,
                 )
                 if decision.reason == "token_budget_reserved":
+                    reserved_waits += 1
+                    if reserved_waits >= _MAX_RESERVED_GOAL_WAITS:
+                        self._goal_service.set_status(
+                            goal_id,
+                            "blocked",
+                            reason="stale token budget reservation requires repair",
+                            actor="system",
+                        )
+                        return
                     await asyncio.sleep(0.1)
                     continue
                 if not decision.should_continue:
@@ -416,7 +427,6 @@ class SessionManager:
             for session in sessions:
                 turn_times.update(self._store.run_time_ranges(session.id))
             await self._runtime.bootstrap_sessions(sessions, turn_times)
-            self._runtime_bootstrapped = True
             await self._prune_stale_empty_sessions()
             if not self._queue_recovered:
                 recovered = await self._runtime.recover_queued_messages(datetime.now(UTC))
@@ -428,6 +438,7 @@ class SessionManager:
                     )
                 for session_id in self._sessions:
                     self._schedule_queue_dispatch(session_id)
+            self._runtime_bootstrapped = True
 
     # 删除超过保留期且从未使用的无标题会话，避免首启列表长期堆积
     async def _prune_stale_empty_sessions(self) -> None:
@@ -955,7 +966,7 @@ class SessionManager:
             requested_skill: Skill | None = None
             skill_name = ""
             skill_arguments = ""
-            if content.startswith("/"):
+            if content.startswith("/") and content[1:].strip():
                 parts = content[1:].split(None, 1)
                 skill_name = parts[0]
                 skill_arguments = parts[1] if len(parts) > 1 else ""
@@ -1348,6 +1359,20 @@ class SessionManager:
             continuation.session_id == sid and not continuation.task.done()
             for continuation in self._goal_continuations.values()
         )
+
+    # 在异步派发前检查常见拒绝状态，避免 IPC 先返回成功再由后台 task 静默失败
+    async def preflight_turn_start(self, sid: str) -> None:
+        await self._ensure_runtime_sessions()
+        session = self._get_session(sid)
+        if self.is_busy(sid):
+            raise HandlerError(SESSION_BUSY, "session busy")
+        if session.status == "closed":
+            raise HandlerError(SESSION_CLOSED, "session already closed")
+        if await self._load_pending_plan(sid) is not None:
+            raise HandlerError(
+                INVALID_PARAMS,
+                "pending plan must be approved, revised, or cancelled before a new turn",
+            )
 
     # 返回指定 session 的 active run ID，不存在时返回 None
     def active_run_id(self, sid: str) -> str | None:

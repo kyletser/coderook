@@ -335,3 +335,4 @@ async def test_responses_missing_status_discards_function_call() -> None:
     assert result.completion_status == "transport_error"
     assert result.completion_reason == "missing_response_status"
     assert result.tool_calls == []
+    assert result.usage is not None and result.usage.input_tokens > 0

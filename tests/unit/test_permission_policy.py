@@ -78,6 +78,22 @@ def test_outside_cwd_cd_forces_ask() -> None:
     assert result == PermissionDecision.ASK
 
 
+# 功能：验证紧凑重定向、Windows 盘符、UNC 和环境变量路径都被识别为工作区外
+# 设计：逐项覆盖无需空格的 shell 语法与 Windows 特有路径形式，防止 allow 缓存绕过边界询问
+def test_outside_cwd_detects_compact_and_windows_paths() -> None:
+    commands = [
+        "cat</etc/passwd",
+        "cd;cat README.md",
+        r'type "C:\\Users\\Public\\file.txt"',
+        r"type \\\\server\\share\\file.txt",
+        r"type %USERPROFILE%\\secret.txt",
+        r"Get-Content $env:USERPROFILE\\secret.txt",
+        r"type ..\\sibling\\file.txt",
+    ]
+
+    assert all(matches_outside_cwd(command) for command in commands)
+
+
 # 功能：验证纯相对路径命令不触发 OUTSIDE_CWD
 # 设计：echo hi / ls src/ 等安全命令应正常走 allow_patterns 或 default 层
 def test_relative_path_not_outside_cwd() -> None:

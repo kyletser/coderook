@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -234,9 +235,33 @@ async def test_client_closes_connection_when_authentication_fails() -> None:
         assert client._writer is None  # type: ignore[attr-defined]
 
 
+# 功能：验证单个 IPC 事件处理器失败不会阻断同一事件的其他处理器
+# 设计：注册先抛错后收集的两个回调并直接分发事件，断言后者仍收到完整负载
+async def test_event_handler_failure_isolated_from_following_handlers() -> None:
+    client = SocketClient("127.0.0.1", 7437)
+    received: list[dict[str, Any]] = []
+
+    # 模拟前端某个局部渲染回调失败
+    async def fail(_event: dict[str, Any]) -> None:
+        raise RuntimeError("broken renderer")
+
+    # 收集后续处理器收到的事件
+    async def collect(event: dict[str, Any]) -> None:
+        received.append(event)
+
+    client.on_event(fail)
+    client.on_event(collect)
+    await client._dispatch(  # type: ignore[attr-defined]
+        b'{"kind":"event","event":{"type":"run.started","run_id":"r1"}}\n'
+    )
+
+    assert received == [{"type": "run.started", "run_id": "r1"}]
+
+
 def test_client_from_config_reads_token_file(tmp_path: Path) -> None:
     token_path = tmp_path / "ipc-token"
     token_path.write_text("z" * 43 + "\n", encoding="utf-8")
+    os.chmod(token_path, 0o600)
     config = CodeRookConfig(host="127.0.0.1", port=1234, ipc_token_file=str(token_path))
 
     client = SocketClient.from_config(config)

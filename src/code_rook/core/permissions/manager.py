@@ -313,7 +313,11 @@ class PermissionManager:
             and authority_snapshot.sandbox.kind in {"windows_none", "windows_acl"}
         )
 
-        if session_mode.mode == "interactive" and not windows_shell_requires_approval:
+        if (
+            session_mode.mode == "interactive"
+            and not windows_shell_requires_approval
+            and not outside_cwd
+        ):
             # Tier 3: session always 缓存（用户显式选择后也适用于工作区外命令）
             session_key = (session_id, permission_key)
             if session_key in self._session_always:
@@ -484,7 +488,9 @@ class PermissionManager:
             permission_key,
             prefix_key=(
                 f"{policy_name}:{command_pattern_key(command)}"
-                if policy_name == "bash" and command
+                if policy_name == "bash"
+                and command
+                and not windows_shell_requires_approval
                 else ""
             ),
         )
@@ -496,13 +502,21 @@ class PermissionManager:
         tool_use_id: str,
         decision: str,
         *,
+        session_id: str | None = None,
         selected_hunks: list[str] | None = None,
         patch_plan_id: str | None = None,
     ) -> bool:
-        req = self._pending.pop(tool_use_id, None)
+        req = self._pending.get(tool_use_id)
         if req is None:
             logger.warning("permission.respond: unknown tool_use_id=%s", tool_use_id)
             return False
+        if session_id is not None and session_id != req.session_id:
+            logger.warning(
+                "permission.respond: session mismatch tool_use_id=%s",
+                tool_use_id,
+            )
+            return False
+        self._pending.pop(tool_use_id, None)
         if selected_hunks is not None or patch_plan_id is not None:
             self._response_metadata[tool_use_id] = {
                 "selected_hunks": selected_hunks,

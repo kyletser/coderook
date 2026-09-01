@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,7 @@ from code_rook.core.bus.events import (
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runner import RunOutcome
-from code_rook.core.runtime.models import ThreadStatus, TurnStatus
+from code_rook.core.runtime.models import RuntimeEventRecord, ThreadStatus, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session.manager import SessionManager
@@ -65,6 +67,68 @@ class _Runner:
 def _service(tmp_path: Path) -> tuple[RuntimeService, RuntimeStore]:
     store = RuntimeStore(tmp_path / "runtime.db")
     return RuntimeService(store, workspace=tmp_path), store
+
+
+# 功能：验证并发 runtime 事件的 seq 持久化与广播保持同一严格顺序
+# 设计：阻塞 seq=1 的 publish 后并发提交第二事件，断言第二次持久化也被写锁阻挡且最终顺序为 1、2
+async def test_runtime_event_publish_is_ordered_with_persistence(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    publish_started = asyncio.Event()
+    release_first = asyncio.Event()
+    persisted_calls = 0
+    published: list[int] = []
+
+    # 为每次领域事件分配递增的伪持久序号
+    async def persist(*_args: object, **_kwargs: object) -> RuntimeEventRecord:
+        nonlocal persisted_calls
+        persisted_calls += 1
+        return RuntimeEventRecord(
+            thread_id="thread-1",
+            turn_id="run-1",
+            seq=persisted_calls,
+            type="step.started",
+            payload={},
+            ts=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+
+    # 卡住第一条广播以证明第二条不能越过同一顺序边界
+    async def publish(event: RuntimeEventRecord) -> None:
+        published.append(event.seq)
+        if event.seq == 1:
+            publish_started.set()
+            await release_first.wait()
+
+    service._run_persistent_write = persist  # type: ignore[method-assign]
+    service._publish_runtime_event = publish  # type: ignore[method-assign]
+    first = asyncio.create_task(
+        service.record_bus_event(
+            RunFinishedEvent(
+                run_id="run-1",
+                status="success",
+                result="one",
+                steps=1,
+                ts="2026-09-01T00:00:00Z",
+            )
+        )
+    )
+    await publish_started.wait()
+    second = asyncio.create_task(
+        service.record_bus_event(
+            RunFinishedEvent(
+                run_id="run-1",
+                status="success",
+                result="two",
+                steps=2,
+                ts="2026-09-01T00:00:01Z",
+            )
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert persisted_calls == 1
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert published == [1, 2]
 
 
 # 功能：验证扩展 run.finished 字段会原样进入 Schema 1 runtime event 投影

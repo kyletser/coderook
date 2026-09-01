@@ -125,6 +125,8 @@ def _windows_api() -> tuple[Any, Any]:
     kernel32.LocalFree.restype = ctypes.c_void_p
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -582,7 +584,12 @@ def _spawn_and_wait(
     job = None
     try:
         kernel32.CloseHandle(process_info.hThread)
-        job = create_kill_on_close_job(int(process_info.dwProcessId))
+        try:
+            job = create_kill_on_close_job(int(process_info.dwProcessId))
+        except BaseException:
+            kernel32.TerminateProcess(process_info.hProcess, 127)
+            kernel32.WaitForSingleObject(process_info.hProcess, 5_000)
+            raise
         kernel32.WaitForSingleObject(process_info.hProcess, _INFINITE)
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(exit_code)):

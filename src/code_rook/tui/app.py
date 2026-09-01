@@ -600,7 +600,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             try:
                 self.screen.set_class(requested == "high-contrast", "high-contrast")
             except Exception:
-                pass
+                log.debug("could not update high-contrast screen class", exc_info=True)
             message = f"theme: {requested}"
             self._update_header(self._header_state)
         self._append(Static(escape(message), classes="log-line"))
@@ -654,7 +654,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         try:
             self.query_one("#banner", Static).update(self._render_banner())
         except Exception:
-            pass
+            log.debug("could not refresh localized banner", exc_info=True)
         prompt = self._prompt()
         if prompt is not None:
             prompt.border_title = self._localized_prompt_title()
@@ -689,7 +689,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     desc = desc[:57] + "..."
                 items.append(CompletionItem(skill.name, desc))
         except Exception:
-            pass
+            log.debug("could not load skill completions", exc_info=True)
         return items
 
     # 构建按产品类别排序的本地化 Ctrl+P 命令候选
@@ -875,7 +875,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 event.stop()
                 select._pick("deny_once")
         except Exception:
-            pass
+            log.debug("permission keyboard dispatch failed", exc_info=True)
 
     # 在询问、自动接受修改和全自动执行之间循环权限姿态
     async def action_cycle_permission_mode(self) -> None:
@@ -2813,7 +2813,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         try:
             self.query_one(ChangeCenterOverlay).remove()
         except Exception:
-            pass
+            log.debug("could not replace existing change center overlay", exc_info=True)
         self.mount(
             ChangeCenterOverlay(
                 diff_result,
@@ -4257,6 +4257,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 {
                     "tool_use_id": tool_use_id,
                     "decision": decision,
+                    "session_id": self._session_id,
                     "selected_hunks": msg.selected_hunks,
                     "patch_plan_id": msg.patch_plan_id,
                 },
@@ -4385,7 +4386,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         try:
             self.query_one(UserQuestionSelect).remove()
         except Exception:
-            pass
+            log.debug("could not remove user question selector", exc_info=True)
 
     # 移除旧会话审批控件与缓存，防止对新会话发送错误决定
     def _clear_pending_permissions(self) -> None:
@@ -4393,13 +4394,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             try:
                 block.remove()
             except Exception:
-                pass
+                log.debug("could not remove stale permission block", exc_info=True)
         self._pending_permission_blocks.clear()
         try:
             for select in list(self.query(PermissionSelect)):
                 select.remove()
         except Exception:
-            pass
+            log.debug("could not remove stale permission selectors", exc_info=True)
 
     # 将选择控件挂载到 Screen 顶层（#prompt 之前），避免 VerticalScroll 争抢焦点
     def _mount_permission_select(self, select: PermissionSelect) -> None:

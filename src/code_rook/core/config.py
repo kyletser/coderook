@@ -152,6 +152,18 @@ def _is_project_config_path(path: Path, project_path: Path) -> bool:
         return False
 
 
+# 判断显式路径是否具有标准项目配置目录形态
+def _looks_like_project_config(path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    return (
+        resolved.name.lower() == "config.toml"
+        and resolved.parent.name.lower() == ".coderook"
+    )
+
+
 # 构建运行时配置：默认值 → 全局 TOML → 项目 TOML → 显式 env 文件 → 用户进程环境
 def get_config(
     *,
@@ -181,7 +193,14 @@ def get_config(
                     data = tomllib.load(f)
             except tomllib.TOMLDecodeError as e:
                 raise SystemExit(f"Config parse error ({config_path}): {e}") from e
-            if _is_project_config_path(config_path, project_path):
+            is_user_config = _is_project_config_path(
+                config_path,
+                Path(_DEFAULT_CONFIG_PATH).expanduser(),
+            )
+            is_project_config = _is_project_config_path(config_path, project_path) or (
+                bool(explicit) and _looks_like_project_config(config_path)
+            )
+            if not is_user_config and is_project_config:
                 _reject_project_sensitive_settings(data, config_path)
             _apply_toml(config, data)
 

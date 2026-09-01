@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 type EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 _MAX_LINE_BYTES = 64 * 1024 * 1024  # 64 MB per frame，兼容 MCP 大文件工具结果
+logger = logging.getLogger(__name__)
 
 
 class IpcError(RuntimeError):
@@ -164,8 +166,11 @@ class SocketClient:
                             IpcError(err.get("code", -1), err.get("message", "unknown"))
                         )
                     else:
-                        fut.set_result(msg.get("result") or {})
+                        fut.set_result(msg["result"] if "result" in msg else {})
         elif msg.get("kind") == "event":
             event_data: dict[str, Any] = msg.get("event", {})
             for handler in self._event_handlers:
-                await handler(event_data)
+                try:
+                    await handler(event_data)
+                except Exception:
+                    logger.exception("IPC event handler failed; continuing event stream")

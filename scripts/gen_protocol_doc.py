@@ -6,6 +6,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, get_args
+
+from pydantic import BaseModel
 
 from code_rook.core.bus.commands import (
     AgentRunCommand,
@@ -15,6 +18,7 @@ from code_rook.core.bus.commands import (
     BackgroundGetCommand,
     BackgroundGetResult,
     BackgroundJobInfo,
+    Command,
     CoreAuthenticateCommand,
     CoreAuthenticateResult,
     EventReplayCommand,
@@ -157,6 +161,7 @@ from code_rook.core.bus.events import (
     ContextPrefixFingerprintEvent,
     ContextWorkingSetEvent,
     CoreStartedEvent,
+    Event,
     GoalContinueDecisionEvent,
     HookExecutedEvent,
     LlmModelSelectedEvent,
@@ -219,6 +224,16 @@ def _model_section(name: str, model: type, example: dict | None = None) -> str: 
     return f"### {name}\n{table}{schema_block}{example_block}"
 
 
+# 从判别联合递归提取全部 Pydantic 叶子模型，避免手工清单遗漏新增协议成员
+def _union_models(annotation: Any) -> set[type[BaseModel]]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return {annotation}
+    models: set[type[BaseModel]] = set()
+    for argument in get_args(annotation):
+        models.update(_union_models(argument))
+    return models
+
+
 # 生成完整的 Wire Protocol 文档字符串
 def generate() -> str:
     run_id = "20260516-100000-abc123"
@@ -248,6 +263,8 @@ def generate() -> str:
             "server_version": "0.2.0",
             "uptime_ms": 12,
             "received_at": ts,
+            "workspace": "/workspace/coderook",
+            "active_runs": 0,
         },
     }
     agent_run_req_example = {
@@ -778,7 +795,24 @@ def generate() -> str:
         "| -32013 | Session Not Resumable | Session mode cannot be resumed |\n",
         "| -32014 | Run Not Active | Run cannot be cancelled |\n",
     ]
-    return "".join(sections)
+    content = "".join(sections)
+    discovered = _union_models(Command) | _union_models(Event)
+    missing = [
+        model
+        for model in sorted(discovered, key=lambda item: item.__name__)
+        if f"### {model.__name__}\n" not in content
+    ]
+    if missing:
+        content += (
+            "\n## Complete Discriminated Union Members\n\n"
+            "The following command and event models are discovered directly from the "
+            "typed discriminated unions and therefore cannot drift from the wire contract.\n\n"
+        )
+        content += "\n".join(
+            _model_section(model.__name__, model)
+            for model in missing
+        )
+    return content
 
 
 # 解析命令行参数，写出或校验 Wire Protocol 文档

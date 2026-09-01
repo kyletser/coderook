@@ -280,6 +280,7 @@ def test_cli_credential_store_error_is_safe_and_nonzero(
 ) -> None:
     credential_path = tmp_path / "credentials.json"
     credential_path.write_text('{"api_keys":{"secret":"do-not-print"}', encoding="utf-8")
+    os.chmod(credential_path, 0o600)
     config = CodeRookConfig()
     monkeypatch.setattr(sys, "argv", ["coderook", "provider", "list"])
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)

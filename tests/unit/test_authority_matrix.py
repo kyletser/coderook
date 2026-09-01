@@ -54,11 +54,36 @@ def test_authority_matrix(
     expected: AuthorityDecision,
 ) -> None:
     result = evaluate_action(
-        AuthoritySnapshot(mode=mode, profile=profile),
+        AuthoritySnapshot(
+            mode=mode,
+            profile=profile,
+            workspace_trust=WorkspaceTrust.TRUSTED,
+        ),
         action,
     )
 
     assert result.decision == expected
+
+
+@pytest.mark.parametrize(
+    "action",
+    [ToolAction.MUTATE, ToolAction.SHELL, ToolAction.EXTERNAL],
+)
+# 功能：验证未信任工作区不能借 Full Access 或 Auto Review 自动执行副作用动作
+# 设计：覆盖写文件、Shell 与外部操作，确保 trust 维度在 profile 自动放行前强制 ASK
+def test_untrusted_workspace_requires_approval_for_side_effects(
+    action: ToolAction,
+) -> None:
+    snapshot = AuthoritySnapshot(
+        mode=RuntimeMode.ACT,
+        profile=AuthorityProfile.FULL_ACCESS,
+        workspace_trust=WorkspaceTrust.UNTRUSTED,
+    )
+
+    result = evaluate_action(snapshot, action)
+
+    assert result.decision == AuthorityDecision.ASK
+    assert "untrusted workspace" in result.reason
 
 
 # 功能：验证未知 capability 和 task scope 外 action 默认拒绝

@@ -338,6 +338,22 @@ async def test_step_started_and_finished_events_published() -> None:
     assert "step.finished" in types
 
 
+# 功能：验证 Provider 异常退出时仍为已开始步骤发布唯一的 step.finished
+# 设计：让模型调用立即抛错并比较 started/finished 的步骤序号，覆盖正常尾部无法到达的失败路径
+async def test_failed_step_still_publishes_matching_finished_event() -> None:
+    bus = EventBus()
+    events = await _events(bus)
+    provider = _MockProvider([], exc=RuntimeError("api error"))
+    loop, _ = _make_loop(provider, bus=bus)
+
+    await loop.run(_ctx())
+
+    started = [event.step for event in events if event.type == "step.started"]  # type: ignore[attr-defined]
+    finished = [event.step for event in events if event.type == "step.finished"]  # type: ignore[attr-defined]
+    assert started == [1]
+    assert finished == started
+
+
 # 功能：验证每次模型决策都发布可观察的意图摘要且先于工具执行事件
 # 设计：让模型先输出用户可见进度并调用只读工具，检查 inspect 分类、摘要和事件顺序
 async def test_agent_decision_event_precedes_tool_execution() -> None:

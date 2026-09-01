@@ -95,7 +95,7 @@ def apply_file_transaction(workspace_root: Path, mutations: list[FileMutation]) 
         for state in states:
             if state.staged is not None:
                 state.staged.unlink(missing_ok=True)
-            if state.backup is not None:
+            if state.backup is not None and not preserve_backups:
                 state.backup.unlink(missing_ok=True)
         _remove_empty_dirs(created_dirs)
 

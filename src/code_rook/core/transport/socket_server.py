@@ -32,6 +32,7 @@ from code_rook.core.transport.auth import is_loopback_host, require_loopback_hos
 from code_rook.core.transport.ipc_broadcaster import IpcEventBroadcaster
 
 logger = logging.getLogger(__name__)
+_MAX_IN_FLIGHT_PER_CONNECTION = 64
 
 type CommandHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -101,7 +102,7 @@ class SocketServer:
             try:
                 writer.close()
             except Exception:
-                pass
+                logger.debug("IPC writer close failed during shutdown", exc_info=True)
         self._server.close()
         try:
             await asyncio.wait_for(self._server.wait_closed(), timeout=2.0)
@@ -141,14 +142,14 @@ class SocketServer:
             try:
                 writer.close()
             except Exception:
-                pass
+                logger.debug("IPC client writer close failed", exc_info=True)
             logger.debug("client disconnected: %s", peer)
 
     @staticmethod
     def _peer_is_loopback(writer: asyncio.StreamWriter) -> bool:
         peer = writer.get_extra_info("peername")
         if not isinstance(peer, tuple) or not peer:
-            return True
+            return False
         return is_loopback_host(str(peer[0]))
 
     async def _authenticate_connection(
@@ -202,7 +203,10 @@ class SocketServer:
             )
             return False
         assert self._auth_token is not None
-        if not hmac.compare_digest(command.token, self._auth_token):
+        if not hmac.compare_digest(
+            command.token.encode("utf-8"),
+            self._auth_token.encode("utf-8"),
+        ):
             await self._send(
                 writer,
                 make_error(request.id, AUTH_FAILED, "Authentication failed"),
@@ -242,6 +246,13 @@ class SocketServer:
 
             if not line:
                 return
+
+            if len(command_tasks) >= _MAX_IN_FLIGHT_PER_CONNECTION:
+                await self._send(
+                    writer,
+                    make_error(None, INVALID_REQUEST, "Too many in-flight requests"),
+                )
+                continue
 
             # 每条命令独立作为 task 执行，避免长时间运行的 handler（如 session.send_message）
             # 阻塞读循环，使 permission.respond 等并发命令能被及时处理

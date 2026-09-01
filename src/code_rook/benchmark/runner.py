@@ -424,7 +424,14 @@ async def _run_verifier(spec: VerifierSpec, workspace: Path) -> VerifierResult:
             timed_out = False
         except TimeoutError:
             process.kill()
-            stdout_raw, stderr_raw = await process.communicate()
+            try:
+                stdout_raw, stderr_raw = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=5.0,
+                )
+            except TimeoutError:
+                stdout_raw = b""
+                stderr_raw = b"verifier process tree kept output pipes open after kill"
             exit_code = None
             timed_out = True
     except OSError as exc:

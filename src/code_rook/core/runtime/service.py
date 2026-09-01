@@ -502,8 +502,10 @@ class RuntimeService:
                     run_id,
                 )
                 return
-        if persisted is not None:
-            await self._publish_runtime_event(persisted)
+            if persisted is not None:
+                # seq 的分配、持久化和广播必须共享同一顺序边界，否则并发 publish
+                # 可能让客户端先确认较大的 after_seq 并永久跳过较小事件。
+                await self._publish_runtime_event(persisted)
 
     # 同步批量导入历史 session；优先采用 transcript 真实时间戳恢复 turn 时间
     def _bootstrap_sessions_sync(

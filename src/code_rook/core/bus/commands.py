@@ -587,6 +587,7 @@ class SessionCloseResult(BaseModel):
 class PermissionRespondCommand(BaseModel):
     type: Literal["permission.respond"] = "permission.respond"
     tool_use_id: str
+    session_id: str | None = None
     # "allow_once" | "always_allow" | "deny_once" | "always_deny"
     decision: str
     selected_hunks: list[str] | None = Field(default=None, max_length=1000)

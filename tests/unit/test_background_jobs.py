@@ -202,6 +202,25 @@ async def test_background_job_output_uses_bounded_ring(tmp_path: Path) -> None:
     assert "".join(recovered) == "x" * 200000
 
 
+# 功能：验证长期 daemon 只保留有界数量的已完成后台任务与 asyncio Task
+# 设计：把历史上限设为二并串行完成三项任务，断言最旧记录被淘汰且最近结果仍可查询
+async def test_background_job_history_is_bounded() -> None:
+    registry = BackgroundJobRegistry(EventBus(), history_limit=2)
+    command = subprocess.list2cmdline([sys.executable, "-c", "pass"])
+    completed_ids: list[str] = []
+
+    for index in range(3):
+        job = registry.start(command, 5, "sess-history", f"run-{index}")
+        completed = await registry.wait(job.id, 5)
+        assert completed is not None
+        completed_ids.append(job.id)
+
+    assert registry.get(completed_ids[0]) is None
+    assert [job.id for job in registry.list("sess-history")] == list(
+        reversed(completed_ids[1:])
+    )
+
+
 # 功能：验证 result、interact、cancel 都不能凭 job_id 跨 session 操作后台任务
 # 设计：其他 session 依次尝试三种入口并确认任务仍运行，最后由 owner 取消完成清理
 async def test_background_job_operations_reject_cross_session_access() -> None:

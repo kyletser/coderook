@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 type CompletionStatus = Literal[
     "completed",
@@ -47,6 +48,27 @@ def completion_status_from_reason(
     if normalized in {"end_turn", "stop", "stop_sequence", "completed"}:
         return "completed"
     return "incomplete"
+
+
+# 在 Provider 未返回 usage 时按完整请求文本确定性估算输入 token
+def estimate_request_input_tokens(
+    messages: list[dict[str, Any]],
+    tool_schemas: list[dict[str, Any]],
+    system: str,
+) -> int:
+    payload = {
+        "system": system,
+        "messages": messages,
+        "tools": tool_schemas,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return max(1, len(encoded) // 4)
 
 
 @dataclass

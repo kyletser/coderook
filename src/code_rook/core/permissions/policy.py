@@ -14,12 +14,16 @@ class PermissionDecision(StrEnum):
 
 # 检测 bash 命令是否操作 cwd 之外路径的正则规则列表（强制触发 ASK，不可被 allow_patterns 绕过）
 OUTSIDE_CWD_HEURISTICS: list[str] = [
-    r"(^|\s)/[^\s]",              # absolute path
-    r"(^|\s)~",                   # tilde home
-    r"(^|\s)\.\.(/|$|\s)",        # parent traversal
-    r"\$\{?HOME\b",               # $HOME variable
-    r"\$\{?PWD\b",                # $PWD variable
-    r"(^|\s|;|&&|\|\|)cd(\s|$)",  # explicit cd
+    r"(^|[\s<>=;|&(])\/[^\s]",                # POSIX absolute path, including redirection
+    r"(^|[\s<>=;|&(])~",                     # tilde home
+    r"(^|[\s<>=;|&(])\.\.([\\/]|$|\s)",      # parent traversal
+    r"\$\{?(HOME|PWD)\b",                    # POSIX home/cwd variables
+    r"(^|[\s<>=;|&(])[\"']?[A-Za-z]:[\\/]", # Windows drive absolute path
+    r"(^|[\s<>=;|&(])[\"']?\\{2,}[^\\\s]+", # UNC path
+    r"%(USERPROFILE|HOMEDRIVE|HOMEPATH|SYSTEMDRIVE|CD)%",
+    r"\$env:(USERPROFILE|HOMEDRIVE|HOMEPATH|SYSTEMDRIVE|CD)\b",
+    r"(^|\s|;|&&|\|\|)cd(?=\s|$|[;&|])",   # cmd/POSIX explicit cd
+    r"(^|\s|;|&&|\|\|)Set-Location(?=\s|$|[;&|])",
 ]
 
 _OUTSIDE_CWD_RE: list[re.Pattern[str]] = [re.compile(p) for p in OUTSIDE_CWD_HEURISTICS]

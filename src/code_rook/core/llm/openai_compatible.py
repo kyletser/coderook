@@ -22,6 +22,7 @@ from code_rook.core.llm.types import (
     ToolCallBlock,
     UsageStats,
     completion_status_from_reason,
+    estimate_request_input_tokens,
 )
 from code_rook.core.llm.wire import merge_consecutive_user_messages
 
@@ -192,7 +193,14 @@ class OpenAICompatibleProvider:
             await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
 
         usage_raw = result.usage
-        input_tokens = int(usage_raw.get("prompt_tokens") or usage_raw.get("input_tokens") or 0)
+        reported_input_tokens = int(
+            usage_raw.get("prompt_tokens") or usage_raw.get("input_tokens") or 0
+        )
+        input_tokens = reported_input_tokens or estimate_request_input_tokens(
+            messages,
+            tool_schemas,
+            system or "",
+        )
         output_tokens = int(
             usage_raw.get("completion_tokens") or usage_raw.get("output_tokens") or 0
         )

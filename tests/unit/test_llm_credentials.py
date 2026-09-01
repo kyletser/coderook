@@ -280,6 +280,26 @@ def test_route_credentials_are_isolated_by_route(tmp_path: Path) -> None:
     assert store.resolve(second_ref).value == "second-secret"
 
 
+# 功能：验证 OS keyring 删除失败会显式返回 typed 错误而不是伪装成功
+# 设计：让后端仅在 delete 阶段抛错，断言调用方能获知凭据仍可能存在且异常正文不含密钥
+def test_keyring_delete_failure_is_reported(tmp_path: Path) -> None:
+    class _DeleteFailBackend(_MemoryBackend):
+        # 模拟系统密钥环拒绝删除
+        def delete_password(self, service: str, account: str) -> None:
+            del service, account
+            raise RuntimeError("backend unavailable")
+
+    store = CredentialStore(
+        tmp_path / "credentials.json",
+        backend=_DeleteFailBackend(),
+    )
+
+    with pytest.raises(CredentialStoreError) as captured:
+        store.delete("keyring:route-a")
+
+    assert captured.value.code == "write_failed"
+
+
 # 功能：验证 env credential ref 仅报告 presence/source 且缺失时安全降级
 # 设计：设置一次环境变量后删除，比较两次解析而不经过任何凭据文件
 def test_route_credential_resolves_environment_reference(
@@ -328,6 +348,7 @@ def test_future_credentials_version_is_preserved_without_rewrite(tmp_path: Path)
         '"future_encryption":{"kind":"v3"}}\n'
     )
     path.write_text(original, encoding="utf-8")
+    os.chmod(path, 0o600)
 
     with pytest.raises(CredentialStoreError, match="newer than supported") as caught:
         save_api_key("anthropic", "must-not-write", path)
@@ -346,6 +367,7 @@ def test_unknown_credentials_fields_block_lossy_rewrite(tmp_path: Path) -> None:
         '"encryption_metadata":{"key_id":"future"}}\n'
     )
     path.write_text(original, encoding="utf-8")
+    os.chmod(path, 0o600)
 
     with pytest.raises(CredentialStoreError, match="unknown fields") as caught:
         CredentialStore(path, backend=_MemoryBackend(fail_write=True)).save(
@@ -364,6 +386,7 @@ def test_corrupt_credential_document_is_preserved_without_rewrite(tmp_path: Path
     path = tmp_path / "credentials.json"
     original = b'{"api_keys":{"private":"never-print"}'
     path.write_bytes(original)
+    os.chmod(path, 0o600)
 
     with pytest.raises(CredentialStoreError, match="invalid JSON") as caught:
         CredentialStore(path, backend=_MemoryBackend(fail_write=True)).save(
@@ -381,6 +404,7 @@ def test_corrupt_credential_document_is_preserved_without_rewrite(tmp_path: Path
 def test_legacy_credentials_document_migrates_without_data_loss(tmp_path: Path) -> None:
     path = tmp_path / "credentials.json"
     path.write_text('{"api_keys":{"anthropic":"legacy-key"}}\n', encoding="utf-8")
+    os.chmod(path, 0o600)
 
     save_api_key("openai", "new-key", path)
     payload = json.loads(path.read_text(encoding="utf-8"))

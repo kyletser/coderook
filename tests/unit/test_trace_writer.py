@@ -132,6 +132,8 @@ def test_recursive_redaction_covers_keys_and_embedded_secrets() -> None:
             "OPENAI_API_KEY": "sk-environmentSecret",
             "x-api-key": "header-secret",
             "token": "opaque-token",
+            "secret_key": "secret-key-value",
+            "session_token": "session-token-value",
             "message": "use token=secret-value and sk-anotherSecret456",
             "input_tokens": 42,
         },
@@ -145,6 +147,8 @@ def test_recursive_redaction_covers_keys_and_embedded_secrets() -> None:
     assert redacted["nested"]["OPENAI_API_KEY"] == REDACTED
     assert redacted["nested"]["x-api-key"] == REDACTED
     assert redacted["nested"]["token"] == REDACTED
+    assert redacted["nested"]["secret_key"] == REDACTED
+    assert redacted["nested"]["session_token"] == REDACTED
     assert "secret-value" not in redacted["nested"]["message"]
     assert "sk-anotherSecret456" not in redacted["nested"]["message"]
     assert redacted["nested"]["input_tokens"] == 42

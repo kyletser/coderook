@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,6 +193,10 @@ def _public_run_outcome(
         return "failed", "configuration"
     if normalized.startswith("sandbox"):
         return "failed", "sandbox"
+    if normalized == "persistence_error":
+        return "failed", "persistence"
+    if normalized == "internal_error":
+        return "failed", "internal"
     return "failed", "runtime"
 
 
@@ -1057,12 +1062,18 @@ class AgentRunner:
                 cancelled = True
                 if not context.is_done():
                     context.mark_failed("cancelled")
-            except Exception:
+            except (OSError, sqlite3.Error):
                 logging.getLogger(__name__).exception(
-                    "agent run failed run_id=%s step=%d", run_id, context.step
+                    "agent persistence failed run_id=%s step=%d", run_id, context.step
                 )
                 if not context.is_done():
-                    context.mark_failed("llm_error")
+                    context.mark_failed("persistence_error")
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "agent internal failure run_id=%s step=%d", run_id, context.step
+                )
+                if not context.is_done():
+                    context.mark_failed("internal_error")
 
             # 后台 subagent 由 daemon 级 registry 管理生命周期，不在此处清理。
             public_outcome, failure_category = _public_run_outcome(

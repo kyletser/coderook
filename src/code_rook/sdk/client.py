@@ -217,6 +217,7 @@ class AsyncCodeRookClient:
         tool_use_id: str,
         decision: str,
         *,
+        session_id: str | None = None,
         selected_hunks: list[str] | None = None,
         patch_plan_id: str | None = None,
     ) -> bool:
@@ -225,6 +226,7 @@ class AsyncCodeRookClient:
             f"/v1/permissions/{tool_use_id}",
             json={
                 "decision": decision,
+                "session_id": session_id,
                 "selected_hunks": selected_hunks,
                 "patch_plan_id": patch_plan_id,
             },
@@ -430,6 +432,7 @@ class CodeRookClient:
         tool_use_id: str,
         decision: str,
         *,
+        session_id: str | None = None,
         selected_hunks: list[str] | None = None,
         patch_plan_id: str | None = None,
     ) -> bool:
@@ -438,6 +441,7 @@ class CodeRookClient:
             f"/v1/permissions/{tool_use_id}",
             json={
                 "decision": decision,
+                "session_id": session_id,
                 "selected_hunks": selected_hunks,
                 "patch_plan_id": patch_plan_id,
             },

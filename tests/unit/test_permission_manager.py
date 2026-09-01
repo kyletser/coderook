@@ -11,6 +11,7 @@ from code_rook.core.authority import (
     AuthoritySnapshot,
     SandboxCapability,
     ToolAction,
+    WorkspaceTrust,
 )
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.policy import PermissionDecision, ToolPolicy
@@ -247,6 +248,36 @@ async def test_check_and_wait_ask_emits_event_and_waits() -> None:
     assert emitted[0]["tool_name"] == "bash"
 
 
+# 功能：验证其他会话不能解决当前会话尚未完成的权限请求
+# 设计：先用错误 session_id 响应并断言 Future 仍挂起，再用正确会话完成请求
+async def test_permission_response_is_bound_to_request_session() -> None:
+    mgr = _make_manager()
+    _, emitter = await _collect_emitted()
+    pending = asyncio.create_task(
+        mgr.check_and_wait(
+            tool_use_id="session-bound",
+            tool_name="bash",
+            params={"command": "echo hi"},
+            session_id="victim-session",
+            event_emitter=emitter,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert mgr.respond(
+        "session-bound",
+        "allow_once",
+        session_id="other-session",
+    ) is False
+    assert not pending.done()
+    assert mgr.respond(
+        "session-bound",
+        "allow_once",
+        session_id="victim-session",
+    ) is True
+    assert await pending == (True, "allow_once")
+
+
 # 功能：验证 respond("deny_once") 使 check_and_wait 返回 (False, "deny_once")
 # 设计：用户拒绝时工具不应执行，确认 False 返回值而不是异常
 async def test_check_and_wait_deny_once_returns_false() -> None:
@@ -452,9 +483,9 @@ def test_respond_unknown_tool_use_id_is_noop() -> None:
 
 # ── OUTSIDE_CWD 显式授权 ──────────────────────────────────────────────────────
 
-# 功能：验证 always_allow bash 之后，绝对路径命令命中缓存且不再询问
-# 设计：先显式永久允许普通 bash，再请求工作区外路径，断言缓存语义与界面文案一致
-async def test_always_allow_applies_to_outside_cwd() -> None:
+# 功能：验证普通 bash 的 always_allow 不能自动批准后续工作区外命令
+# 设计：先永久允许工作区内命令，再请求绝对路径并让零超时自动拒绝，证明边界检查覆盖缓存
+async def test_always_allow_does_not_apply_to_outside_cwd() -> None:
     mgr = _make_manager()
     emitted, emitter = await _collect_emitted()
 
@@ -472,16 +503,16 @@ async def test_always_allow_applies_to_outside_cwd() -> None:
     await t
     assert len(emitted) == 1  # 首次 ASK 触发事件
 
-    # 第二次：bash + 绝对路径 → 命中用户显式设置的 always 缓存
+    # 第二次：bash + 绝对路径必须重新 ASK，零超时 manager 会安全拒绝
     allowed, decision = await mgr.check_and_wait(
         tool_use_id="t_abs", tool_name="bash",
         params={"command": "cat /etc/hosts"}, session_id="s1",
         event_emitter=emitter,
     )
 
-    assert allowed is True
-    assert decision == "auto_allow"
-    assert len(emitted) == 1
+    assert allowed is False
+    assert decision == "timeout"
+    assert len(emitted) == 2
 
 
 # 功能：验证有真实沙箱的平台上 Full Access 可批准工作区外命令且不触发询问
@@ -495,6 +526,7 @@ async def test_full_access_allows_outside_cwd_without_prompt() -> None:
         current.model_copy(
             update={
                 "profile": AuthorityProfile.FULL_ACCESS,
+                "workspace_trust": WorkspaceTrust.TRUSTED,
                 "sandbox": SandboxCapability(
                     available=True,
                     kind="linux_bwrap",

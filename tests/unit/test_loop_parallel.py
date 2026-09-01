@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
@@ -182,6 +184,40 @@ async def test_independent_read_tools_run_concurrently() -> None:
     assert max(tool.starts) < min(tool.ends), (
         f"tools were not concurrent: starts={tool.starts}, ends={tool.ends}"
     )
+
+
+# 功能：验证并行工具基础设施异常会取消并等待仍在运行的兄弟调用
+# 设计：首个只读工具长时间休眠，第二个 started 事件由 critical handler 抛错，断言无命名工具 task 遗留
+async def test_parallel_infrastructure_failure_cancels_sibling_tasks() -> None:
+    tool = _AsyncRead()
+    registry = ToolRegistry()
+    registry.register(tool)
+    provider = _StubProvider([LlmResponse(stop_reason="end_turn", text="done")])
+    loop, bus = _make_loop(provider, registry)
+
+    # 仅让第二个调用的事件持久化边界失败，使第一个调用已进入长 sleep
+    async def fail_second_started(event: Any) -> None:
+        if getattr(event, "type", "") == "tool.call_started" and getattr(
+            event, "tool_use_id", ""
+        ) == "t2":
+            raise RuntimeError("event persistence failed")
+
+    bus.subscribe(fail_second_started, critical=True)
+    calls = [
+        _tc("async_read", uid="t1", label="slow", delay=10.0),
+        _tc("async_read", uid="t2", label="fail", delay=10.0),
+    ]
+
+    with pytest.raises(RuntimeError, match="event persistence failed"):
+        await loop._run_act_phase(calls, _ctx())
+
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and task.get_name().startswith("tool-call:")
+        and not task.done()
+    ]
 
 
 # 功能：副作用工具（can_parallel=False）必须串行执行；前后两个只读工具不会跨过它合并成一批

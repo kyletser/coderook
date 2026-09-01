@@ -632,6 +632,7 @@ async def test_openai_compatible_length_discards_partial_tool_arguments() -> Non
     assert result.completion_status == "length"
     assert result.stop_reason == "max_tokens"
     assert result.tool_calls == []
+    assert result.usage is not None and result.usage.input_tokens > 0
 
 
 # 功能：验证 OpenAI Chat SSE 在没有 DONE 或 finish_reason 时分类为 transport_error

@@ -60,6 +60,11 @@ def evaluate_action(
             decision=AuthorityDecision.ALLOW,
             reason="read action is within authority scope",
         )
+    if snapshot.workspace_trust == WorkspaceTrust.UNTRUSTED:
+        return AuthorityEvaluation(
+            decision=AuthorityDecision.ASK,
+            reason=f"untrusted workspace requires approval for {known_action.value}",
+        )
     if snapshot.profile == AuthorityProfile.FULL_ACCESS:
         return AuthorityEvaluation(
             decision=AuthorityDecision.ALLOW,

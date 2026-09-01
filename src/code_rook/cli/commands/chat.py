@@ -161,7 +161,11 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
                 printer.pending_permission_id = None
                 await client.send_command(
                     "permission.respond",
-                    {"tool_use_id": tool_use_id, "decision": decision},
+                    {
+                        "tool_use_id": tool_use_id,
+                        "decision": decision,
+                        "session_id": session_id,
+                    },
                 )
                 continue
 

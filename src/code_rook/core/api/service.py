@@ -368,6 +368,7 @@ class RuntimeApiService:
         tool_use_id: str,
         decision: str,
         *,
+        session_id: str | None = None,
         selected_hunks: list[str] | None = None,
         patch_plan_id: str | None = None,
     ) -> dict[str, object]:
@@ -376,6 +377,7 @@ class RuntimeApiService:
         accepted = self._permission_manager.respond(
             tool_use_id,
             decision,
+            session_id=session_id,
             selected_hunks=selected_hunks,
             patch_plan_id=patch_plan_id,
         )

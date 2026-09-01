@@ -31,6 +31,29 @@ from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.worktree import WorktreeManager
 
 
+# 功能：验证 daemon 初始化中途失败仍会调用统一 teardown
+# 设计：用立即抛错的初始化替身和记录型 teardown 驱动公开 run，证明失败发生在 server 创建前也能拆除
+async def test_core_run_tears_down_after_startup_failure() -> None:
+    app = CoreApp()
+    teardown_calls: list[object] = []
+
+    # 模拟传输启动前的初始化异常
+    async def fail_startup() -> None:
+        raise RuntimeError("startup failed")
+
+    # 记录 wrapper 传入的尚未创建 server
+    async def record_teardown(server: object) -> None:
+        teardown_calls.append(server)
+
+    app._run_impl = fail_startup  # type: ignore[method-assign]
+    app._teardown = record_teardown  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await app.run()
+
+    assert teardown_calls == [None]
+
+
 # 功能：验证 Core 把通过验证事件关联到当前 Goal，形成只能由 daemon 产生的可信完成证据
 # 设计：直接向生产事件处理器发送 typed 事件，核对 run 绑定、证据类型和稳定引用
 async def test_goal_event_handler_records_verification(tmp_path: Path) -> None:
@@ -310,6 +333,10 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     class _Sessions:
         async def create(self, mode: str, title: str = "") -> Session:
             return session
+
+        # 模拟会话可接受新 turn 的同步前置校验
+        async def preflight_turn_start(self, session_id: str) -> None:
+            assert session_id == session.id
 
         async def send_message(
             self,

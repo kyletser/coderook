@@ -21,6 +21,15 @@ def _make_writer() -> asyncio.StreamWriter:
     return cast(asyncio.StreamWriter, writer)
 
 
+# 功能：验证 legacy run 事件回放拒绝包含路径分隔或父级穿越的 run_id
+# 设计：直接调用回放边界并传入穿越字符串，确保读取磁盘前由统一 run ID 校验失败关闭
+async def test_legacy_replay_rejects_unsafe_run_id() -> None:
+    app = CoreApp()
+
+    with pytest.raises(ValueError, match="invalid run id"):
+        await app._replay_events("../outside", _make_writer(), ["*"])
+
+
 # 功能：验证 event.unsubscribe handler 只能删除当前连接 writer 自己的指定订阅
 # 设计：先从另一 writer 请求删除 owner 的标识，再由 owner 删除并发布事件，以 removed 结果和写入次数共同证明归属边界
 async def test_event_unsubscribe_handler_enforces_current_writer(
@@ -125,3 +134,32 @@ async def test_runtime_replay_delivery_failure_rejects_high_water_ack() -> None:
     )
 
     writer.write.assert_called_once()  # type: ignore[attr-defined]
+
+
+# 功能：验证 runtime 高水位存在但历史查询为空时拒绝确认并回滚订阅
+# 设计：模拟损坏投影中 counter=2、事件列表为空，断言不会把 2 返回为已确认游标
+async def test_runtime_replay_gap_never_acknowledges_missing_high_water() -> None:
+    class _GappedRuntime:
+        # 返回高于客户端游标的计数器以进入回放循环
+        async def latest_event_seq(self, _thread_id: str) -> int:
+            return 2
+
+        # 模拟事件表缺失 counter 声称存在的记录
+        async def list_events(self, *args: object, **kwargs: object) -> list[RuntimeEventRecord]:
+            return []
+
+    app = CoreApp()
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    app._broadcaster = broadcaster  # type: ignore[attr-defined]
+    app._runtime = _GappedRuntime()  # type: ignore[assignment]
+    command = EventSubscribeCommand(
+        topics=["turn.*"],
+        thread_id="thread-gap",
+        after_seq=0,
+    )
+
+    with pytest.raises(RuntimeError, match="replay gap"):
+        await app._subscribe_runtime_events(command, writer)  # type: ignore[attr-defined]
+
+    assert broadcaster._subscriptions == []  # type: ignore[attr-defined]

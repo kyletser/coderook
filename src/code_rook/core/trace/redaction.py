@@ -44,6 +44,8 @@ _SENSITIVE_KEYS = {
     "accesstoken",
     "refreshtoken",
     "clientsecret",
+    "secretkey",
+    "sessiontoken",
     "password",
     "passwd",
     "privatekey",
@@ -58,6 +60,8 @@ _SENSITIVE_KEY_SUFFIXES = (
     "refreshtoken",
     "authtoken",
     "clientsecret",
+    "secretkey",
+    "sessiontoken",
     "password",
     "privatekey",
 )

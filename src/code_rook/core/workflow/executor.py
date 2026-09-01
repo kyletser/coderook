@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -488,7 +489,9 @@ class WorkflowExecutor:
             async with semaphore:
                 return await self._run_step(child)
 
-        outcomes = await asyncio.gather(*(run_child(child) for child in step.steps))
+        outcomes = await self._gather_step_tasks(
+            [run_child(child) for child in step.steps]
+        )
         evidence = [item for outcome in outcomes for item in outcome.evidence]
         failed = next((outcome for outcome in outcomes if not outcome.success), None)
         if failed is not None:
@@ -634,7 +637,9 @@ class WorkflowExecutor:
 
     # 并行收集所有 child evidence，并用显式 owner 生成可追溯 fan-in 结果
     async def _run_fan_in(self, step: FanInStep) -> _StepOutcome:
-        outcomes = await asyncio.gather(*(self._run_step(child) for child in step.steps))
+        outcomes = await self._gather_step_tasks(
+            [self._run_step(child) for child in step.steps]
+        )
         failed = next((outcome for outcome in outcomes if not outcome.success), None)
         if failed is not None:
             assert self._spec is not None
@@ -655,6 +660,23 @@ class WorkflowExecutor:
             f"fan-in owner={step.owner} children={len(outcomes)}",
             evidence,
         )
+
+    # 并发执行子树，任一异常时取消并等待全部兄弟任务，禁止脱管后继续写 ledger
+    async def _gather_step_tasks(
+        self,
+        awaitables: list[Awaitable[_StepOutcome]],
+    ) -> list[_StepOutcome]:
+        tasks: list[asyncio.Future[_StepOutcome]] = [
+            asyncio.ensure_future(awaitable) for awaitable in awaitables
+        ]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     # 将尚未到达终态的整个子树标记为 skipped 或 blocked
     def _mark_tree(self, step: WorkflowStep, event_kind: str, reason: str) -> None:

@@ -381,6 +381,7 @@ class CoreApp:
         self._fleet: LocalFleet | None = None
         self._http_api: HttpApiServer | None = None
         self._runtime_api: RuntimeApiService | None = None
+        self._socket_server: SocketServer | None = None
 
     # 将审计故障转换为不含异常正文的全局可见事件
     async def _publish_audit_incident(self, incident: AuditIncident) -> None:
@@ -646,6 +647,7 @@ class CoreApp:
             if cmd.resume_session_id is not None
             else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
         )
+        await self._sessions.preflight_turn_start(session.id)
         self._permission_manager.set_session_mode(
             session.id,
             cmd.permission_mode,
@@ -665,14 +667,35 @@ class CoreApp:
         )
         self._running_runs.add(run_task)
 
+        # 回收 headless run 并消费异常，避免客户端收到启动成功后后台失败完全静默
         def _cleanup(completed: asyncio.Task[Any]) -> None:
-            self._running_runs.discard(completed)
+            self._observe_running_task(completed, run_id=run_id, session_id=session.id)
             if self._permission_manager is not None:
                 self._permission_manager.clear_session_mode(session.id)
             self._interaction_manager.clear_question_policy(session.id)
 
         run_task.add_done_callback(_cleanup)
         return AgentRunResult(run_id=run_id, session_id=session.id)
+
+    # 回收后台 run task 并记录其未被上层 await 的真实异常
+    def _observe_running_task(
+        self,
+        completed: asyncio.Task[Any],
+        *,
+        run_id: str,
+        session_id: str,
+    ) -> None:
+        self._running_runs.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.result()
+        except Exception:
+            logger.exception(
+                "background run failed run_id=%s session_id=%s",
+                run_id,
+                session_id,
+            )
 
     # 将 daemon 验证通过事件写入当前 run 关联的 Goal
     async def _goal_usage_event_handler(self, event: BaseModel) -> None:
@@ -1000,6 +1023,7 @@ class CoreApp:
     async def _turn_start_handler(self, params: dict[str, Any]) -> TurnStartResult:
         assert self._sessions is not None
         cmd = TurnStartCommand.model_validate(params)
+        await self._sessions.preflight_turn_start(cmd.thread_id)
         turn_id = new_run_id()
         task = asyncio.create_task(
             self._sessions.send_message(
@@ -1010,7 +1034,16 @@ class CoreApp:
             )
         )
         self._running_runs.add(task)
-        task.add_done_callback(self._running_runs.discard)
+
+        # 消费后台 turn 异常，避免 done task 只从集合移除后失去诊断
+        def _cleanup(completed: asyncio.Task[Any]) -> None:
+            self._observe_running_task(
+                completed,
+                run_id=turn_id,
+                session_id=cmd.thread_id,
+            )
+
+        task.add_done_callback(_cleanup)
         return TurnStartResult(turn_id=turn_id)
 
     # 查询单个 durable turn
@@ -1345,6 +1378,7 @@ class CoreApp:
         self._permission_manager.respond(
             cmd.tool_use_id,
             cmd.decision,
+            session_id=cmd.session_id,
             selected_hunks=cmd.selected_hunks,
             patch_plan_id=cmd.patch_plan_id,
         )
@@ -2207,7 +2241,9 @@ class CoreApp:
                     limit=1000,
                 )
                 if not events:
-                    break
+                    raise RuntimeError(
+                        "runtime replay gap detected before captured high-water mark"
+                    )
                 replayed_count += await self._broadcaster.replay_runtime_batch(
                     sub_id,
                     events,
@@ -2217,7 +2253,7 @@ class CoreApp:
                 cursor = events[-1].seq
             pending_count, cursor = await self._broadcaster.finish_runtime_replay(
                 sub_id,
-                max(cursor, high_water),
+                cursor,
             )
             if not self._broadcaster.owns_subscription(writer, sub_id):
                 raise ConnectionError("runtime event handoff delivery failed")
@@ -2312,8 +2348,15 @@ class CoreApp:
         self._config.api.token = token
         return token
 
-    # 启动守护进程：加载配置、初始化日志、启动 trace、启动 TCP 服务器，并等待退出信号
+    # 启动守护进程并保证初始化中途失败也执行完整资源拆除
     async def run(self) -> None:
+        try:
+            await self._run_impl()
+        finally:
+            await self._teardown(self._socket_server)
+
+    # 加载配置、初始化各子系统、启动传输并等待退出信号
+    async def _run_impl(self) -> None:
         self._start_time = time.monotonic()
         self._config = (
             get_config()
@@ -2528,6 +2571,7 @@ class CoreApp:
             trace=self._trace,
             auth_token=ipc_token,
         )
+        self._socket_server = server
         server.register("core.ping", self._ping_handler)
         server.register("core.shutdown", self._shutdown_handler)
         server.register("web.launch", self._web_launch_handler)
@@ -2640,19 +2684,14 @@ class CoreApp:
         except NotImplementedError:
             logger.warning("signal handlers are not supported by this event loop")
 
-        try:
-            await shutdown.wait()
-        finally:
-            # Ctrl+C/取消路径（Windows 无信号 handler 时 asyncio.run 会直接取消主任务）
-            # 也必须完整拆除，否则子进程/MCP/SSE 客户端被遗弃
-            await self._teardown(server)
+        await shutdown.wait()
 
     # 有序拆除所有子系统，单步失败后继续，保证一次 Ctrl+C 能完成全部清理
-    async def _teardown(self, server: SocketServer) -> None:
+    async def _teardown(self, server: SocketServer | None) -> None:
         logger.info("shutting down")
         entry_steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
             ("http_api", None if self._http_api is None else self._http_api.stop),
-            ("socket_server", server.stop),
+            ("socket_server", None if server is None else server.stop),
         ]
         for name, step in entry_steps:
             if step is None:

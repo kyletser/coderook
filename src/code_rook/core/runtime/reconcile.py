@@ -113,6 +113,21 @@ _RUNTIME_SCHEMA_MANIFEST = {
     "runtime_session_facades": frozenset(
         {"thread_id", "mode", "parent_thread_id", "schema_version"}
     ),
+    "runtime_message_queue": frozenset(
+        {
+            "id",
+            "thread_id",
+            "content",
+            "display_content",
+            "mode",
+            "attachments_json",
+            "status",
+            "error",
+            "created_at",
+            "updated_at",
+            "schema_version",
+        }
+    ),
 }
 _REQUIRED_RUNTIME_TABLES = frozenset(_RUNTIME_SCHEMA_MANIFEST)
 _REQUIRED_RUNTIME_INDEXES = frozenset(
@@ -121,6 +136,7 @@ _REQUIRED_RUNTIME_INDEXES = frozenset(
         "runtime_turn_items_turn_id",
         "runtime_unique_tool_result",
         "runtime_events_turn_id",
+        "runtime_message_queue_thread",
     }
 )
 _REQUIRED_RUNTIME_FOREIGN_KEYS = {
@@ -138,6 +154,9 @@ _REQUIRED_RUNTIME_FOREIGN_KEYS = {
         }
     ),
     "runtime_session_facades": frozenset(
+        {("thread_id", "runtime_threads", "id", "CASCADE")}
+    ),
+    "runtime_message_queue": frozenset(
         {("thread_id", "runtime_threads", "id", "CASCADE")}
     ),
 }

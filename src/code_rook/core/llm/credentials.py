@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -118,6 +119,20 @@ def _validated_credentials_path(path: Path) -> Path:
             target,
             "credential store must be a regular file",
         )
+    if target.exists():
+        file_stat = target.stat()
+        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+            raise CredentialStoreError(
+                "unsafe_path",
+                target,
+                "credential store is not owned by the current user",
+            )
+        if os.name != "nt" and stat.S_IMODE(file_stat.st_mode) & 0o077:
+            raise CredentialStoreError(
+                "unsafe_path",
+                target,
+                "credential store permissions are too broad",
+            )
     return target
 
 
@@ -359,8 +374,13 @@ class CredentialStore:
         if kind == "keyring":
             try:
                 self._backend.delete_password(_KEYRING_SERVICE, account)
-            except Exception:
-                return
+            except Exception as exc:
+                raise CredentialStoreError(
+                    "write_failed",
+                    self.path,
+                    f"OS keyring could not delete credential {account!r}: "
+                    f"{type(exc).__name__}",
+                ) from exc
         elif kind == "file":
             data = _load_credentials(self.path)
             route_values = dict(data.get("route_credentials", {}))

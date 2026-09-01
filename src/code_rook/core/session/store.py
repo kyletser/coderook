@@ -222,6 +222,7 @@ class SessionStore:
                 run_id=run_id,
             )
 
+    # 以 block_id 幂等追加模型消息块，并把去重检查纳入同一账本锁
     def append_block(
         self,
         sid: str,
@@ -235,25 +236,26 @@ class SessionStore:
         block_index: int,
         block_count: int,
     ) -> bool:
-        known_ids = self._block_ids(sid)
-        if block_id in known_ids:
-            return False
-        self.append_session_event(
-            sid,
-            event_type="llm.message",
-            turn_id=run_id,
-            step_id=f"{run_id}:{step}",
-            payload={
-                "role": role,
-                "block": block,
-                "message_id": message_id,
-                "block_id": block_id,
-                "block_index": block_index,
-                "block_count": block_count,
-            },
-        )
-        known_ids.add(block_id)
-        return True
+        with self._ledger_lock(sid):
+            known_ids = self._block_ids(sid)
+            if block_id in known_ids:
+                return False
+            self.append_session_event(
+                sid,
+                event_type="llm.message",
+                turn_id=run_id,
+                step_id=f"{run_id}:{step}",
+                payload={
+                    "role": role,
+                    "block": block,
+                    "message_id": message_id,
+                    "block_id": block_id,
+                    "block_index": block_index,
+                    "block_count": block_count,
+                },
+            )
+            known_ids.add(block_id)
+            return True
 
     # 追加一条 schema v2 SessionEvent 并复用 transcript 的序号和 checksum 链
     def append_session_event(

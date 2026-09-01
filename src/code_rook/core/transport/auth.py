@@ -58,6 +58,8 @@ def _read_token_file(path: Path) -> str:
         raise IpcTokenError(f"IPC token file is unexpectedly large: {path}")
     if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
         raise IpcTokenError(f"IPC token file is not owned by the current user: {path}")
+    if os.name != "nt" and stat.S_IMODE(file_stat.st_mode) & 0o077:
+        raise IpcTokenError(f"IPC token file permissions are too broad: {path}")
     try:
         token = path.read_text(encoding="utf-8").rstrip("\r\n")
     except (OSError, UnicodeError) as exc:

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 RUNS_DIR = Path("~/.coderook/runs").expanduser()
+_RUN_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
+
+# 校验 run_id 仅含路径安全字符，禁止回放与写入路径逃逸状态根目录
+def validate_run_id(run_id: str) -> str:
+    if _RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise ValueError(f"invalid run id: {run_id!r}")
+    return run_id
 
 
 # 返回指定 run_id 对应的目录路径
 def run_dir(run_id: str) -> Path:
-    return RUNS_DIR / run_id
+    return RUNS_DIR / validate_run_id(run_id)
 
 
 # 返回指定 run_id 的事件日志文件路径

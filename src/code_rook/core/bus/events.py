@@ -25,6 +25,8 @@ RunFailureCategory = Literal[
     "runtime",
     "permission",
     "verification",
+    "persistence",
+    "internal",
     "user_cancelled",
 ]
 

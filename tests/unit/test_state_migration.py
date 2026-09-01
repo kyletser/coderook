@@ -70,6 +70,24 @@ def test_project_migration_skips_managed_worktrees(tmp_path: Path) -> None:
     assert report.project_files_copied == 1
 
 
+# 功能：验证任意嵌套层级中名为 worktrees 的受管目录都不会被迁移
+# 设计：在普通父目录下嵌入 worktrees 哨兵，锁定递归时继续传递 skip_names 的行为
+def test_project_migration_skips_nested_managed_worktrees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    nested = workspace / ".kyle" / "cache" / "worktrees" / "worker" / "file.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("must not migrate", encoding="utf-8")
+
+    migrate_legacy_state(
+        user_home=home,
+        workspace=workspace,
+        include_project=True,
+    )
+
+    assert not (workspace / ".coderook" / "cache" / "worktrees").exists()
+
+
 # 功能：验证普通 CLI/TUI/Core 启动不会自动复制工作区内的旧项目状态
 # 设计：保留真实旧 memory 文件并使用默认参数，断言只报告发现而不创建项目 .coderook
 def test_project_migration_requires_explicit_confirmation(tmp_path: Path) -> None:
