@@ -32,6 +32,12 @@ uv run coderook-core
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| `GET` | `/v1/projects` | 列出用户登记的项目、当前活动工作区和默认空白项目目录 |
+| `POST` | `/v1/projects` | 创建空白项目目录，body: `{"name":"...","parent":"..."}`；parent 可省略 |
+| `POST` | `/v1/projects/open` | 登记电脑上已有的目录，body: `{"path":"..."}`；不复制文件 |
+| `POST` | `/v1/projects/activate` | 在无活动 run 时切换单一活动工作区并返回浏览器 handoff ticket |
+| `DELETE` | `/v1/projects` | 忘记非活动项目记录，不删除磁盘文件 |
+| `GET` | `/v1/filesystem/directories` | 为本机 Web 目录选择器列出驱动器或直接子目录 |
 | `GET` | `/v1/threads` | 列出 durable threads；摘要包含 `turn_count`，供客户端优先恢复非空会话 |
 | `POST` | `/v1/threads` | 创建 thread，body: `{"title":"...","mode":"chat"}` |
 | `GET` | `/v1/threads/{id}` | 读取单个 durable thread |
@@ -46,12 +52,14 @@ uv run coderook-core
 | `POST` | `/v1/threads/{id}/queue/{message}/retry` | 重试 daemon 中断后需确认的队列消息 |
 | `POST` | `/v1/threads/{id}/turns` | 启动 turn；支持 mode 与图片 attachments |
 | `POST` | `/v1/threads/{id}/turns/{turn}/plan` | 批准、修改或取消当前 Plan Ticket |
+| `POST` | `/v1/threads/{id}/checkpoints/{checkpoint}/preview` | 预览恢复 checkpoint 的文件与上下文影响 |
+| `POST` | `/v1/threads/{id}/checkpoints/{checkpoint}/rewind` | 按显式 scope 恢复文件、上下文或两者 |
 | `GET` | `/v1/turns/{id}` | 读取单个 durable turn |
 | `POST` | `/v1/turns/{id}/interrupt` | 中断活动 turn |
 | `POST` | `/v1/turns/{id}/steer` | 注入指令，body: `{"content":"..."}` |
 | `GET` | `/v1/turns/{id}/items` | 读取 durable turn items |
 | `GET` | `/v1/turns/{id}/receipt` | 读取可离线重建的 Turn Receipt |
-| `POST` | `/v1/permissions/{request_id}` | 回答审批；支持 `decision`、`patch_plan_id` 与 `selected_hunks` |
+| `POST` | `/v1/permissions/{request_id}` | 回答审批；必须提供 `session_id`，支持 `decision`、`patch_plan_id` 与 `selected_hunks` |
 | `POST` | `/v1/questions/{id}` | 回答结构化 Agent 提问 |
 | `POST` | `/v1/artifacts/images` | 上传有界图片到内容寻址 ArtifactStore |
 | `GET` | `/v1/artifacts/{sha256}` | 分页读取完整工具 Artifact |
@@ -61,9 +69,15 @@ uv run coderook-core
 | `POST` | `/v1/workspace/stage` | 以审查 digest stage 显式路径 |
 | `POST` | `/v1/workspace/commit` | 以 staged digest 创建本地 commit，不 push |
 | `GET/POST` | `/v1/providers` | 读取 Catalog 或 Doctor 后保存路由 |
+| `GET/DELETE` | `/v1/providers/{id}` | 读取或删除非活动 Provider 路由 |
+| `POST` | `/v1/providers/{id}/activate` | 激活已通过 readiness 的路由 |
 | `GET/POST` | `/v1/goals` | 查询或创建有界 Goal |
 | `GET` | `/v1/workers` | 查询当前会话 Worker |
-| `GET` | `/v1/skills`、`/v1/mcp`、`/v1/memories` | 稳定高级抽屉控制面 |
+| `POST` | `/v1/workers/{id}/followup`、`review`、`apply`、`cancel` | 跟进、审查、应用或取消 Worker |
+| `GET/POST` | `/v1/memories` | 查询或新增 Memory |
+| `PATCH/DELETE` | `/v1/memories/{id}` | 编辑、置顶、过期或删除 Memory |
+| `GET/PATCH` | `/v1/memory/settings` | 读取或更新自动记忆设置 |
+| `GET` | `/v1/skills`、`/v1/mcp` | 稳定高级抽屉状态 |
 | `GET` | `/v1/capabilities` | 查询协商能力 |
 | `GET` | `/v1/usage` | 汇总 durable token usage；未知价格返回 `unknown` |
 

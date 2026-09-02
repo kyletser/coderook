@@ -368,7 +368,7 @@ class RuntimeApiService:
         tool_use_id: str,
         decision: str,
         *,
-        session_id: str | None = None,
+        session_id: str,
         selected_hunks: list[str] | None = None,
         patch_plan_id: str | None = None,
     ) -> dict[str, object]:

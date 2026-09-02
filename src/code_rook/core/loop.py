@@ -1183,7 +1183,15 @@ class AgentLoop:
             await self._run_impl(context)
         finally:
             if self._active_step:
-                await asyncio.shield(self._finish_active_step(context))
+                finish_task = asyncio.create_task(
+                    self._finish_active_step(context),
+                    name=f"finish-step:{context.run_id}:{self._active_step}",
+                )
+                try:
+                    await asyncio.shield(finish_task)
+                except asyncio.CancelledError:
+                    await finish_task
+                    raise
 
     # 原子取得并清除活动步骤后发布结束事件，避免发布失败时重复补发
     async def _finish_active_step(self, context: ExecutionContext) -> None:

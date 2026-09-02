@@ -16,7 +16,7 @@ class RoutingPolicy:
     plan_route_id: str = ""
     act_route_id: str = ""
 
-    # cost_budget：单 run 累计成本超限后降档到廉价路由（USD）
+    # cost_budget：当前会话累计成本超限后让下一 Turn 降档到廉价路由（USD）
     cost_budget_usd: float = 0.0
     cost_fallback_route_id: str = ""
 

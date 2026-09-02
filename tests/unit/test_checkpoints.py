@@ -7,7 +7,12 @@ import pytest
 
 from code_rook.core.checkpoints import CheckpointError, CheckpointStore
 from code_rook.core.config import CodeRookConfig
-from code_rook.core.editing import FileMutation, apply_file_transaction
+from code_rook.core.editing import (
+    FileMutation,
+    apply_file_transaction,
+    recover_file_transactions,
+)
+from code_rook.core.editing import transaction as transaction_module
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.builtin.apply_patch import ApplyPatchTool
@@ -26,6 +31,39 @@ def _store(tmp_path: Path) -> CheckpointStore:
 
 def _payload(content: str) -> dict:
     return json.loads(content)
+
+
+# 功能：验证强杀发生在原文件移到 backup 后，下次启动能从事务日志恢复原文件
+# 设计：直接构造 prepared 日志和磁盘中间态，避开同进程异常回滚，以最小 fixture 复现真实崩溃窗口
+def test_file_transaction_journal_recovers_interrupted_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "value.txt"
+    target.write_bytes(b"before")
+    staged = workspace / ".value.txt.stage"
+    staged.write_bytes(b"after")
+    backup = workspace / ".value.txt.backup"
+    journal_dir = tmp_path / "journals"
+    monkeypatch.setattr(transaction_module, "_journal_directory", lambda _root: journal_dir)
+    state = transaction_module._CommitState(
+        mutation=FileMutation(target, b"before", b"after"),
+        staged=staged,
+        backup=backup,
+    )
+    transaction_module._write_transaction_journal(
+        workspace.resolve(),
+        [state],
+        state="prepared",
+    )
+    target.replace(backup)
+
+    assert recover_file_transactions(workspace) == 1
+    assert target.read_bytes() == b"before"
+    assert not staged.exists()
+    assert not backup.exists()
 
 
 def test_checkpoint_persists_and_rewinds_modify_add_delete(tmp_path: Path) -> None:

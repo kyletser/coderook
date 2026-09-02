@@ -49,7 +49,7 @@ class LlmConfig:
     router_plan_route: str = ""
     # rule_based：ACT/默认模式选用的路由 id（空则沿用活动路由）
     router_act_route: str = ""
-    # cost_budget：单 run 累计成本超限阈值（USD）；<=0 表示不启用
+    # cost_budget：当前会话已完成 Turn 的累计成本阈值（USD）；<=0 表示不启用
     router_cost_budget: float = 0.0
     # cost_budget：超限后降档到的廉价路由 id（空则沿用活动路由）
     router_cost_fallback: str = ""

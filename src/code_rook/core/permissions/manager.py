@@ -328,6 +328,18 @@ class PermissionManager:
                     cached,
                 )
                 return cached == "allow", f"auto_{cached}"
+            session_prefix_hit = self._match_session_prefix(
+                session_id,
+                policy_name,
+                command,
+            )
+            if session_prefix_hit is not None:
+                logger.debug(
+                    "permission: session command-prefix cache hit command=%s decision=%s",
+                    command,
+                    session_prefix_hit,
+                )
+                return session_prefix_hit == "allow", "auto_session_prefix"
 
             # Tier 4: persistent always（跨 session，同样尊重用户对工作区外命令的选择）
             cached_key = next(
@@ -566,8 +578,9 @@ class PermissionManager:
             self._store_always(prefix_key, "allow", session_id)
             return True
         if decision == "session_allow":
-            # 会话级 allow 只写内存 session 缓存，不落 policy.toml，避免跨会话放大授权
-            self._session_always[(session_id, permission_key)] = "allow"
+            # Shell 会话授权只缓存规范化命令前缀，其他工具仍按精确权限键缓存
+            session_key = prefix_key or permission_key
+            self._session_always[(session_id, session_key)] = "allow"
             return True
         if decision == "session_deny":
             self._session_always[(session_id, permission_key)] = "deny"
@@ -577,6 +590,22 @@ class PermissionManager:
         elif decision == "always_deny":
             self._store_always(permission_key, "deny", session_id)
         return allow
+
+    # 在当前 session 的内存缓存中查找匹配命令前缀的 Bash 决策
+    def _match_session_prefix(
+        self,
+        session_id: str,
+        policy_name: str,
+        command: str,
+    ) -> str | None:
+        if policy_name != "bash" or not command:
+            return None
+        scoped = {
+            key: value
+            for (cached_session, key), value in self._session_always.items()
+            if cached_session == session_id
+        }
+        return self._match_prefix(scoped, policy_name, command)
 
     # 写入持久 always 缓存并回写 policy 文件（session 键按 permission_key 缓存）
     def _store_always(

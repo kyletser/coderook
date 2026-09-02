@@ -4,6 +4,9 @@ import secrets
 import time
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
+from pathlib import Path
+
+from code_rook.core.projects import ProjectHandoffTickets
 
 _COOKIE_NAME = "coderook_web_session"
 _LAUNCH_TTL_SECONDS = 60
@@ -24,11 +27,15 @@ class WebAuthManager:
         *,
         launch_ttl_seconds: int = _LAUNCH_TTL_SECONDS,
         session_ttl_seconds: int = _SESSION_TTL_SECONDS,
+        workspace: Path | None = None,
+        handoff_tickets: ProjectHandoffTickets | None = None,
     ) -> None:
         self._launch_ttl_seconds = launch_ttl_seconds
         self._session_ttl_seconds = session_ttl_seconds
         self._launch_tickets: dict[str, float] = {}
         self._sessions: dict[str, WebSession] = {}
+        self._workspace = workspace
+        self._handoff_tickets = handoff_tickets or ProjectHandoffTickets()
 
     @property
     # 返回公开给 CLI 的一次性启动票据有效期
@@ -66,7 +73,12 @@ class WebAuthManager:
         now = time.monotonic()
         self._purge(now)
         expires_at = self._launch_tickets.pop(launch_token, None)
-        if expires_at is None or expires_at <= now:
+        local_ticket = expires_at is not None and expires_at > now
+        handoff_ticket = (
+            self._workspace is not None
+            and self._handoff_tickets.consume(launch_token, self._workspace)
+        )
+        if not local_ticket and not handoff_ticket:
             return None
         session = WebSession(
             token=secrets.token_urlsafe(32),

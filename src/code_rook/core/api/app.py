@@ -117,7 +117,7 @@ class HttpApiServer:
         self._control_dispatcher = control_dispatcher
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.StreamWriter] = set()
-        self._web_auth = WebAuthManager()
+        self._web_auth = WebAuthManager(workspace=Path(service.workspace_root))
         self._bound_host = host
         self._bound_port = port
 
@@ -153,10 +153,19 @@ class HttpApiServer:
         for writer in writers:
             writer.close()
         if writers:
-            await asyncio.gather(
-                *(writer.wait_closed() for writer in writers),
-                return_exceptions=True,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(writer.wait_closed() for writer in writers),
+                        return_exceptions=True,
+                    ),
+                    timeout=1.0,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "timed out closing %d HTTP client connection(s)",
+                    len(writers),
+                )
         self._clients.clear()
 
     # 读取并路由单个 HTTP 请求，响应后关闭普通连接
@@ -427,6 +436,34 @@ class HttpApiServer:
     # 分发非流式 v1 路由到统一 runtime service
     async def _dispatch(self, request: _HttpRequest) -> tuple[HTTPStatus, Any]:
         path = urlsplit(request.target).path
+        if request.method == "GET" and path == "/v1/projects":
+            return HTTPStatus.OK, await self._dispatch_control("project.list", {})
+        if request.method == "POST" and path == "/v1/projects":
+            return HTTPStatus.CREATED, await self._dispatch_control(
+                "project.create",
+                _json_object(request.body),
+            )
+        if request.method == "POST" and path == "/v1/projects/open":
+            return HTTPStatus.CREATED, await self._dispatch_control(
+                "project.open",
+                _json_object(request.body),
+            )
+        if request.method == "POST" and path == "/v1/projects/activate":
+            return HTTPStatus.ACCEPTED, await self._dispatch_control(
+                "project.activate",
+                _json_object(request.body),
+            )
+        if request.method == "DELETE" and path == "/v1/projects":
+            return HTTPStatus.OK, await self._dispatch_control(
+                "project.forget",
+                _json_object(request.body),
+            )
+        if request.method == "GET" and path == "/v1/filesystem/directories":
+            query = parse_qs(urlsplit(request.target).query)
+            return HTTPStatus.OK, await self._dispatch_control(
+                "project.browse",
+                {"path": query.get("path", [""])[0]},
+            )
         if request.method == "GET" and path == "/v1/threads":
             return HTTPStatus.OK, await self._service.list_threads()
         if request.method == "POST" and path == "/v1/threads":
@@ -745,6 +782,9 @@ class HttpApiServer:
                 "deny_once", "deny_session", "deny_always",
             }:
                 raise ValueError("invalid permission decision")
+            session_id = body.get("session_id")
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ValueError("session_id must be a non-empty string")
             # Web 词表与 PermissionManager 词表不同构，必须在此翻译，否则会静默变成拒绝
             decision = _HTTP_PERMISSION_DECISIONS[decision]
             raw_hunks = body.get("selected_hunks")
@@ -756,11 +796,7 @@ class HttpApiServer:
             return HTTPStatus.OK, await self._service.respond_permission(
                 match.group(1),
                 decision,
-                session_id=(
-                    str(body["session_id"])
-                    if body.get("session_id") is not None
-                    else None
-                ),
+                session_id=session_id,
                 selected_hunks=raw_hunks,
                 patch_plan_id=(
                     str(body["patch_plan_id"])

@@ -8,13 +8,26 @@ from typing import Any
 import pytest
 
 from code_rook.core.bus.envelope import AUTH_FAILED, AUTH_REQUIRED
-from code_rook.core.transport.socket_server import SocketServer, get_connection_writer
+from code_rook.core.transport.socket_server import (
+    SocketServer,
+    _request_id_from_line,
+    get_connection_writer,
+)
 
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+# 功能：验证连接限流响应能从待处理帧保留原始 JSON-RPC 请求 ID
+# 设计：覆盖合法字符串及非法整数、布尔 ID，确保客户端 Future 可结束且无效帧仍安全回落到 null
+def test_request_id_extraction_for_backpressure() -> None:
+    assert _request_id_from_line(b'{"jsonrpc":"2.0","id":"req-7","method":"x"}\n') == "req-7"
+    assert _request_id_from_line(b'{"id":8}') is None
+    assert _request_id_from_line(b'{"id":true}') is None
+    assert _request_id_from_line(b'not-json') is None
 
 
 # 功能：验证客户端断开后 SocketServer 调用 broadcaster.unsubscribe(writer) 清理订阅

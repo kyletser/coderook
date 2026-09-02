@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 from code_rook.core.compact.budget import distill_tool_results, truncate_tool_results
+from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse
 
 
@@ -87,13 +88,24 @@ async def test_huge_tool_result_is_distilled() -> None:
     provider.chat = AsyncMock(return_value=LlmResponse(stop_reason="end_turn", text="42 tests passed"))
     messages = [_make_tool_result_msg("log line\n" * 4000)]
 
-    result, stats = await distill_tool_results(messages, provider, threshold=20_000)
+    bus = EventBus()
+    result, stats = await distill_tool_results(
+        messages,
+        provider,
+        threshold=20_000,
+        bus=bus,
+        run_id="run-distill",
+        step=4,
+    )
 
     content = result[0]["content"][0]["content"]
     assert content.startswith("[CodeRook distilled tool output id=id1")
     assert "42 tests passed" in content
     assert stats.distilled == 1
     assert stats.truncated == 0
+    assert provider.chat.call_args.kwargs["bus"] is bus
+    assert provider.chat.call_args.kwargs["run_id"] == "run-distill"
+    assert provider.chat.call_args.kwargs["step"] == 4
 
 
 # 功能：验证工具输出蒸馏失败时自动降级为头尾截断

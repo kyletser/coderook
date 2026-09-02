@@ -56,10 +56,10 @@ coderook-core (daemon)
   ├─ 127.0.0.1:7438  hand-written HTTP/1.1 + SSE (durable runtime API, Bearer auth)
   └─ spawns: fleet worker subprocesses, hooks, MCP servers, git/rg/pyright
        ↑
-coderook (CLI)   coderook-tui (TUI, primary frontend)
+coderook (CLI/TUI)   coderook web (local browser SPA)
 ```
 
-**`coderook-tui` is the primary frontend.** All user-facing work on task management, observability, and interaction should be designed for and validated in the TUI first. The `coderook` CLI exists only for quick scripted testing and debugging — it is not a product surface. Note that `coderook` with **no arguments launches the TUI**; subcommands are the CLI surface.
+**TUI and Web are shared product frontends.** Both consume the same durable runtime events, receipts, permissions, sessions, and Change Center state. The scripted CLI exists for automation and debugging. `coderook` with no arguments launches the TUI; `coderook web` starts the local browser product; other subcommands form the scripted CLI surface.
 
 **`docs/reference/FUNCTIONAL_ARCHITECTURE.md` is the authoritative architecture reference** (generated from a full code read; regenerate its claims against code when in doubt). The summary below is the orientation map.
 

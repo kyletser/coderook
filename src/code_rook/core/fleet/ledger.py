@@ -64,16 +64,30 @@ class SQLiteWorkerStore:
     def save(self, worker: WorkerRecord) -> None:
         payload = worker.model_dump_json()
         with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO fleet_workers(id, record_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    record_json = excluded.record_json,
-                    updated_at = excluded.updated_at
-                """,
-                (worker.id, payload, worker.created_at, worker.updated_at),
-            )
+            self._save_on_connection(connection, worker, payload)
+
+    # 在现有 SQLite 事务内写入 Worker snapshot
+    def _save_on_connection(
+        self,
+        connection: sqlite3.Connection,
+        worker: WorkerRecord,
+        payload: str | None = None,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO fleet_workers(id, record_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                record_json = excluded.record_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                worker.id,
+                payload or worker.model_dump_json(),
+                worker.created_at,
+                worker.updated_at,
+            ),
+        )
 
     # 从 SQLite 读取并严格校验一个 WorkerRecord
     def get(self, worker_id: str) -> WorkerRecord:
@@ -117,6 +131,42 @@ class SQLiteWorkerStore:
                 raise WorkerStoreError(
                     f"duplicate or orphan fleet event: {event.worker_id}:{event.cursor}"
                 ) from exc
+
+    # 在同一 SQLite 事务中分配事件游标、追加事件并推进 Worker snapshot
+    def append_event_and_save(
+        self,
+        event: WorkerEvent,
+        worker: WorkerRecord,
+    ) -> WorkerEvent:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(cursor), 0) AS cursor "
+                "FROM fleet_worker_events WHERE worker_id = ?",
+                (worker.id,),
+            ).fetchone()
+            next_cursor = int(row["cursor"]) + 1
+            persisted_event = event.model_copy(update={"cursor": next_cursor})
+            persisted_worker = worker.model_copy(update={"event_cursor": next_cursor})
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO fleet_worker_events(worker_id, cursor, event_json, at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        persisted_event.worker_id,
+                        persisted_event.cursor,
+                        persisted_event.model_dump_json(),
+                        persisted_event.at,
+                    ),
+                )
+                self._save_on_connection(connection, persisted_worker)
+            except sqlite3.IntegrityError as exc:
+                raise WorkerStoreError(
+                    "could not atomically append fleet event: "
+                    f"{event.worker_id}:{next_cursor}"
+                ) from exc
+        return persisted_event
 
     # 从指定 cursor 后稳定读取有界 Fleet WorkerEvent
     def list_events(

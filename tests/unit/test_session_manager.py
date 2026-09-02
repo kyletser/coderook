@@ -43,6 +43,7 @@ class _Runner:
         resolved_route: object | None,
         runtime_mode: RuntimeMode,
         run_id: str,
+        accumulated_cost_usd: float = 0.0,
     ) -> object | None:
         return resolved_route
 
@@ -101,6 +102,23 @@ class _GoalRunner(_Runner):
     ) -> RunOutcome:
         self.goal_context = persistent_goal_context
         return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+
+# 功能：验证两个并发 Turn 在返回 run ID 前只能有一个取得会话预留
+# 设计：不启动模型循环而直接连续执行原子 preflight，稳定覆盖旧实现“都检查为空”后后台竞争的窗口
+async def test_turn_preflight_reserves_session_atomically(tmp_path: Path) -> None:
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: _Runner(),
+        EventBus(),
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    await manager.preflight_turn_start(session.id, "run-first")
+
+    with pytest.raises(HandlerError) as error:
+        await manager.preflight_turn_start(session.id, "run-second")
+    assert error.value.code == SESSION_BUSY
 
 
 # 功能：验证 daemon 启动后自动删除超过保留期且从未使用的空会话

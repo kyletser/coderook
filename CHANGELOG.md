@@ -44,8 +44,7 @@
   子 Agent 权限只能收窄。
 - Anthropic Messages、OpenAI Chat 与 OpenAI Responses 统一 completion 语义；截断、incomplete、提前
   EOF、content filter、失败和取消不再误报成功。
-- Windows Shell/Run 保持 Ask-only 并明确 “NO OS SANDBOX”；Linux/macOS 只有真实强制探针成功才启用
-  收窄后的 sandbox profile。
+- Windows Shell/Run 保持 Ask-only；Restricted Token + ACL 探针成功时提供 `partial` 写隔离，明确不限制读取与网络，探针失败降级为 `unavailable`。Linux/macOS 只有真实强制探针成功才启用收窄后的 sandbox profile。
 - Session 持久化绑定 workspace；`coderook --continue` 恢复当前仓库最近会话，跨仓库启动时仅自动切换空闲受管 Core。
 - TUI 顶栏显示当前仓库名；手动 `--no-auto-core` 模式也拒绝连接到其他 workspace。
 - 受管 Core 意外退出时由 TUI 自动重新启动并恢复同一 session；界面明确显示新建、历史恢复与断线续接状态。
@@ -57,6 +56,11 @@
 
 ### Fixed
 
+- Turn 启动在返回 ID 前原子预留会话，消除并发请求同时通过 preflight 后其中一个后台静默失败的窗口。
+- 权限响应必须携带匹配的 session ID；IPC 连接限流错误保留原请求 ID，不再让客户端 Future 永久等待。
+- 成本路由读取同一会话的 durable 累计成本；压缩与工具蒸馏复用真实 run 事件总线并计入用量投影。
+- Fleet 事件与 Worker 游标快照在同一 SQLite 事务提交；Workflow 使用持久序号计数器避免跨进程争抢 `MAX(seq)+1`。
+- 文件事务增加用户级强杀恢复日志；Windows 受限进程使用显式 Unicode 环境块，避免系统缓存路径落入工作区。
 - TUI 在任务、运行中纠偏、Goal 或问题回答发送失败时恢复草稿与附件；run 启动窗口不再清空提前输入的纠偏。
 - TUI 事件订阅按 session 保存 durable cursor，切换与重连不再复用旧 session 的 busy、cost、审批或结果状态。
 - `/export` 默认拒绝覆盖已有目标，只有 `--force --yes` 显式确认才覆盖。

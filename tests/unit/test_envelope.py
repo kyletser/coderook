@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from code_rook.core.bus.commands import PermissionRespondCommand
 from code_rook.core.bus.envelope import (
     PARSE_ERROR,
     JsonRpcRequest,
@@ -26,6 +27,15 @@ def test_request_roundtrip() -> None:
 def test_request_default_params() -> None:
     req = JsonRpcRequest(id="1", method="x")
     assert req.params == {}
+
+
+# 功能：验证权限响应缺少 session_id 时在协议边界被拒绝
+# 设计：直接校验 typed command，确保任何 IPC/HTTP 适配器都不能省略会话归属后跨会话审批
+def test_permission_response_requires_session_id() -> None:
+    with pytest.raises(ValidationError):
+        PermissionRespondCommand.model_validate(
+            {"type": "permission.respond", "tool_use_id": "tool-1", "decision": "allow_once"}
+        )
 
 
 # 功能：验证缺少必填 id 字段时 pydantic 校验失败

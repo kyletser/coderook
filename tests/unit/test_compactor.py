@@ -59,13 +59,22 @@ def _make_messages(n: int = 8) -> list[dict[str, Any]]:
 # 设计：使用合法 JSON stub 隔离真实 API，并检查 chat 调用参数
 async def test_compact_messages_calls_provider(tmp_path: Path) -> None:
     provider = _stub_provider()
-    compactor = Compactor(EventBus(), tmp_path, "sess-1")
+    bus = EventBus()
+    compactor = Compactor(bus, tmp_path, "sess-1")
 
-    result = await compactor.compact_messages(_make_messages(), provider)
+    result = await compactor.compact_messages(
+        _make_messages(),
+        provider,
+        run_id="run-compact",
+        step=3,
+    )
 
     assert result is not None
     provider.chat.assert_called_once()
     assert provider.chat.call_args.kwargs["tool_schemas"] == []
+    assert provider.chat.call_args.kwargs["bus"] is bus
+    assert provider.chat.call_args.kwargs["run_id"] == "run-compact"
+    assert provider.chat.call_args.kwargs["step"] == 3
 
 
 # 功能：验证压缩结果包含 Pydantic 摘要和未改写的最近原文窗口

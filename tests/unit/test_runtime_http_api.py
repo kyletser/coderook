@@ -71,7 +71,7 @@ class _FakeRuntimeApi:
         ]
         self.steering = ""
         self.display_content: str | None = None
-        self.permission_response: tuple[str, str] | None = None
+        self.permission_response: tuple[str, str, str] | None = None
         self.queue: list[dict[str, object]] = []
         self.turn_query: tuple[int | None, str | None] | None = None
 
@@ -224,9 +224,11 @@ class _FakeRuntimeApi:
         self,
         tool_use_id: str,
         decision: str,
+        *,
+        session_id: str,
         **_kwargs: object,
     ) -> dict[str, object]:
-        self.permission_response = (tool_use_id, decision)
+        self.permission_response = (tool_use_id, decision, session_id)
         return {"tool_use_id": tool_use_id, "accepted": True}
 
     # 返回最小结构化 diff 供 HTTP 路由测试
@@ -379,10 +381,17 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
 
             response = await client.post(
                 "/v1/permissions/tool-1",
-                json={"decision": "allow_once"},
+                json={"decision": "allow_once", "session_id": "thread-1"},
             )
             assert response.json()["accepted"] is True
-            assert service.permission_response == ("tool-1", "allow_once")
+            assert service.permission_response == ("tool-1", "allow_once", "thread-1")
+
+            response = await client.post(
+                "/v1/permissions/tool-1",
+                json={"decision": "allow_once"},
+            )
+            assert response.status_code == 400
+            assert service.permission_response == ("tool-1", "allow_once", "thread-1")
 
             # 功能：Web 决策词表在路由层翻译为 PermissionManager 词表
             # 设计：allow_session 直传曾被 manager 判为拒绝且不落盘，用户无限重试；
@@ -397,9 +406,13 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             for web_decision, manager_decision in decisions.items():
                 await client.post(
                     "/v1/permissions/tool-1",
-                    json={"decision": web_decision},
+                    json={"decision": web_decision, "session_id": "thread-1"},
                 )
-                assert service.permission_response == ("tool-1", manager_decision)
+                assert service.permission_response == (
+                    "tool-1",
+                    manager_decision,
+                    "thread-1",
+                )
 
             response = await client.get(
                 "/v1/workspace/diff",

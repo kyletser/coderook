@@ -1137,6 +1137,7 @@ class AgentRunner:
         resolved_route_is_explicit: bool = False,
         runtime_mode: RuntimeMode,
         run_id: str,
+        accumulated_cost_usd: float = 0.0,
     ) -> ResolvedRoute | None:
         if resolved_route is not None and resolved_route_is_explicit:
             return resolved_route
@@ -1154,16 +1155,11 @@ class AgentRunner:
             cost_budget_usd=llm.router_cost_budget,
             cost_fallback_route_id=llm.router_cost_fallback,
         )
-        accumulated_cost: float = 0.0
-        if policy.strategy == "cost_budget" and self._runtime is not None:
-            durable_cost = await self._runtime.get_estimated_cost(run_id)
-            if durable_cost is not None:
-                accumulated_cost = durable_cost
         target_route_id = select_route_id(
             policy,
             mode=runtime_mode,
             step=1,
-            cost_usd=accumulated_cost,
+            cost_usd=max(0.0, accumulated_cost_usd),
         )
         if target_route_id is None or target_route_id == active.route.id:
             return active

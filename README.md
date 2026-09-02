@@ -56,6 +56,11 @@ URL fragment, exchanges it for an HttpOnly SameSite cookie, and removes the frag
 keys and the Core bearer token never enter browser storage or ordinary responses. TUI and Web share
 the same sessions, durable event cursor, permissions, receipts, Checkpoints and Change Center.
 
+Use the project switcher in the Web sidebar to create a blank workspace under
+`~/CodeRookProjects`, choose another location, or open an existing local folder. Switching projects
+restarts the idle Core in the selected directory and reconnects the browser automatically, so the
+agent's tools and sessions remain bound to one explicit workspace.
+
 Explicit product entries are:
 
 ```text
@@ -115,6 +120,7 @@ Useful TUI commands:
 | `/sessions`, `/new`, `/rename`, `/fork`, `/export`, `/delete` | Manage durable sessions |
 | `/changes` (`/diff` alias), `/stage`, `/commit`, `/review`, `/turn`, `/rewind` | Inspect, select, commit, and recover changes |
 | `/goal` | Manage a durable goal and its bounded continuation policy |
+| `/compact [focus]` | Compact older context while preserving task facts and complete tool pairs |
 | `/workers` | Start, inspect, steer, retry, cancel, review, and explicitly apply a session worker |
 | `/history status\|on\|off\|clear` | Control workspace-scoped input history |
 | `/language zh-CN\|en-US` | Switch the persisted TUI language preference |
@@ -231,7 +237,7 @@ uv build
 uv run python scripts/smoke_wheel.py dist
 ```
 
-Daily GitHub CI is intentionally a single fast Ubuntu gate. Cross-platform sandbox, recovery,
+The checked-in GitHub CI definition is intentionally a single fast Ubuntu gate. Cross-platform sandbox, recovery,
 distribution, MCP, security, and real-model evidence run only by manual dispatch or release tag.
 The existence of those workflows is not evidence that the current commit passed them.
 

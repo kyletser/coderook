@@ -79,6 +79,16 @@ class WorkflowLedger:
                 );
                 CREATE INDEX IF NOT EXISTS workflow_events_kind_idx
                     ON workflow_events(workflow_id, kind, seq);
+                CREATE TABLE IF NOT EXISTS workflow_event_counters (
+                    workflow_id TEXT PRIMARY KEY,
+                    next_seq INTEGER NOT NULL,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                );
+                INSERT OR IGNORE INTO workflow_event_counters(workflow_id, next_seq)
+                SELECT workflows.id, COALESCE(MAX(workflow_events.seq), 0) + 1
+                FROM workflows
+                LEFT JOIN workflow_events ON workflow_events.workflow_id = workflows.id
+                GROUP BY workflows.id;
                 """
             )
 
@@ -101,6 +111,10 @@ class WorkflowLedger:
                 VALUES (?, ?, 'pending', ?, ?)
                 """,
                 (spec.id, payload, now, now),
+            )
+            connection.execute(
+                "INSERT INTO workflow_event_counters(workflow_id, next_seq) VALUES (?, 1)",
+                (spec.id,),
             )
 
     # 读取并严格校验持久 WorkflowSpec
@@ -128,6 +142,7 @@ class WorkflowLedger:
         details: dict[str, JsonValue] | None = None,
     ) -> WorkflowEvent:
         with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT status FROM workflows WHERE id = ?",
                 (workflow_id,),
@@ -135,15 +150,22 @@ class WorkflowLedger:
             if row is None:
                 raise WorkflowLedgerError(f"workflow not found: {workflow_id}")
             seq_row = connection.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
-                "FROM workflow_events WHERE workflow_id = ?",
+                "SELECT next_seq FROM workflow_event_counters WHERE workflow_id = ?",
                 (workflow_id,),
             ).fetchone()
-            assert seq_row is not None
+            if seq_row is None:
+                raise WorkflowLedgerError(
+                    f"workflow event counter not found: {workflow_id}"
+                )
+            next_seq = int(seq_row["next_seq"])
+            connection.execute(
+                "UPDATE workflow_event_counters SET next_seq = ? WHERE workflow_id = ?",
+                (next_seq + 1, workflow_id),
+            )
             event = WorkflowEvent.model_validate(
                 {
                     "workflow_id": workflow_id,
-                    "seq": int(seq_row["next_seq"]),
+                    "seq": next_seq,
                     "kind": kind,
                     "node_id": node_id,
                     "node_kind": node_kind,

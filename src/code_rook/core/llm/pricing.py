@@ -77,14 +77,20 @@ def load_pricing_overrides(path: Path | None = None) -> dict[str, ModelPricing]:
     return overrides
 
 
-# 在指定价格表中按精确名称或最长前缀查找模型单价
+# 在指定价格表中按精确名称或带合法版本分隔符的最长前缀查找模型单价
 def _match_pricing(table: dict[str, ModelPricing], model: str) -> ModelPricing | None:
     name = model.strip()
     if not name:
         return None
     if name in table:
         return table[name]
-    candidates = [key for key in table if name.startswith(key)]
+    candidates = [
+        key
+        for key in table
+        if name.startswith(key)
+        and len(name) > len(key)
+        and name[len(key)] in {"-", ".", ":", "/", "@"}
+    ]
     if not candidates:
         return None
     return table[max(candidates, key=len)]

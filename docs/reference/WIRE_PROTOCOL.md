@@ -190,7 +190,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
   "jsonrpc": "2.0",
   "id": "u-1",
   "result": {
-    "server_version": "0.2.0",
+    "server_version": "0.2.0b1",
     "uptime_ms": 12,
     "received_at": "2026-05-16T10:00:00.001Z",
     "workspace": "/workspace/coderook",
@@ -7224,7 +7224,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `tool_use_id` | `string` | yes |
-| `session_id` | `string | null` | no |
+| `session_id` | `string` | yes |
 | `decision` | `string` | yes |
 | `selected_hunks` | `array | null` | no |
 | `patch_plan_id` | `string | null` | no |
@@ -7239,20 +7239,14 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "type": "string"
     },
     "tool_use_id": {
+      "minLength": 1,
       "title": "Tool Use Id",
       "type": "string"
     },
     "session_id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Session Id"
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
     },
     "decision": {
       "title": "Decision",
@@ -7290,6 +7284,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
   },
   "required": [
     "tool_use_id",
+    "session_id",
     "decision"
   ],
   "title": "PermissionRespondCommand",

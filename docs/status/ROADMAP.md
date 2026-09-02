@@ -33,7 +33,7 @@ Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据
 - 录制脱敏真实任务的 20 秒 GitHub GIF：理解、计划、修改、验证、结果卡、Change Center 与 rewind。
 - 录制 daemon 强杀后恢复 Goal，以及 Worker worktree 审查后显式 apply 的可复现演示。
 - 准备真实 Bug 修复、长 Goal 恢复和多 Agent Worktree 三个案例；benchmark 未产出前不展示占位数字。
-- GitHub README 只放真实安装入口、已知限制和可复现证据；小红书明确写出 Windows 无强制 sandbox。
+- GitHub README 只放真实安装入口、已知限制和可复现证据；对外明确 Windows 只有部分写隔离，不限制读取与网络。
 
 ## Later
 

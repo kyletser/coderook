@@ -181,8 +181,10 @@ class SessionManager:
         )
         self._runtime_bootstrapped = False
         self._runtime_bootstrap_lock = asyncio.Lock()
+        self._turn_reservation_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._turn_reservations: dict[str, str] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
         self._goal_continuations: dict[str, _GoalContinuation] = {}
         self._queue_dispatch_tasks: dict[str, asyncio.Task[None]] = {}
@@ -885,15 +887,22 @@ class SessionManager:
         attachments: list[ImageArtifactInput] | None = None,
         display_content: str | None = None,
     ) -> str:
-        async with self._workspace_mutation_guard.turn():
-            return await self._send_message(
-                sid,
-                content,
-                run_id=run_id,
-                runtime_mode=runtime_mode,
-                attachments=attachments,
-                display_content=display_content,
-            )
+        resolved_run_id = run_id or new_run_id()
+        await self.preflight_turn_start(sid, resolved_run_id)
+        try:
+            async with self._workspace_mutation_guard.turn():
+                return await self._send_message(
+                    sid,
+                    content,
+                    run_id=resolved_run_id,
+                    runtime_mode=runtime_mode,
+                    attachments=attachments,
+                    display_content=display_content,
+                )
+        finally:
+            async with self._turn_reservation_lock:
+                if self._turn_reservations.get(sid) == resolved_run_id:
+                    self._turn_reservations.pop(sid, None)
 
     # 追加 thread 并启动一次 agent run
     async def _send_message(
@@ -962,7 +971,7 @@ class SessionManager:
                 else content
             )
 
-            run_id = run_id or new_run_id()
+            assert run_id is not None
             requested_skill: Skill | None = None
             skill_name = ""
             skill_arguments = ""
@@ -1027,10 +1036,16 @@ class SessionManager:
 
             runner = self._runner_factory()
             if resolved_route is not None:
+                accumulated_cost = (
+                    await self._runtime.get_thread_estimated_cost(sid)
+                    if self._runtime is not None
+                    else 0.0
+                )
                 resolved_route = await runner.resolve_turn_binding(
                     resolved_route=resolved_route,
                     runtime_mode=runtime_mode,
                     run_id=run_id,
+                    accumulated_cost_usd=accumulated_cost,
                 )
             if (
                 image_attachments
@@ -1355,24 +1370,34 @@ class SessionManager:
     # 返回指定会话当前是否正持有 turn 执行锁
     def is_busy(self, sid: str) -> bool:
         self._get_session(sid)
-        return self._locks[sid].locked() or any(
+        return sid in self._turn_reservations or self._locks[sid].locked() or any(
             continuation.session_id == sid and not continuation.task.done()
             for continuation in self._goal_continuations.values()
         )
 
     # 在异步派发前检查常见拒绝状态，避免 IPC 先返回成功再由后台 task 静默失败
-    async def preflight_turn_start(self, sid: str) -> None:
+    async def preflight_turn_start(self, sid: str, run_id: str) -> None:
         await self._ensure_runtime_sessions()
-        session = self._get_session(sid)
-        if self.is_busy(sid):
-            raise HandlerError(SESSION_BUSY, "session busy")
-        if session.status == "closed":
-            raise HandlerError(SESSION_CLOSED, "session already closed")
-        if await self._load_pending_plan(sid) is not None:
-            raise HandlerError(
-                INVALID_PARAMS,
-                "pending plan must be approved, revised, or cancelled before a new turn",
-            )
+        async with self._turn_reservation_lock:
+            session = self._get_session(sid)
+            current_task = asyncio.current_task()
+            reservation = self._turn_reservations.get(sid)
+            if reservation is not None and reservation != run_id:
+                raise HandlerError(SESSION_BUSY, "session busy")
+            if self._locks[sid].locked() or any(
+                continuation.session_id == sid and not continuation.task.done()
+                and continuation.task is not current_task
+                for continuation in self._goal_continuations.values()
+            ):
+                raise HandlerError(SESSION_BUSY, "session busy")
+            if session.status == "closed":
+                raise HandlerError(SESSION_CLOSED, "session already closed")
+            if await self._load_pending_plan(sid) is not None:
+                raise HandlerError(
+                    INVALID_PARAMS,
+                    "pending plan must be approved, revised, or cancelled before a new turn",
+                )
+            self._turn_reservations[sid] = run_id
 
     # 返回指定 session 的 active run ID，不存在时返回 None
     def active_run_id(self, sid: str) -> str | None:
@@ -1482,7 +1507,7 @@ class SessionManager:
     # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
     async def compact(self, sid: str, focus: str = "") -> Any:
         await self._ensure_runtime_sessions()
-        self._get_session(sid)
+        session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
@@ -1506,12 +1531,18 @@ class SessionManager:
             messages = self._store.read_messages(sid)
             session_dir = self._store.session_dir(sid)
             compactor = Compactor(self._bus, session_dir, sid, store=self._store)
-            result = await compactor.compact_messages(messages, provider, focus=focus)
+            latest_run_id = session.run_ids[-1] if session.run_ids else ""
+            result = await compactor.compact_messages(
+                messages,
+                provider,
+                focus=focus,
+                run_id=latest_run_id,
+            )
             if result is None:
                 raise HandlerError(-32021, "compaction failed or not beneficial")
             await compactor.commit(
                 result,
-                run_id="manual",
+                run_id=latest_run_id or "manual",
                 trigger="manual",
                 publish=False,
             )
@@ -1520,7 +1551,7 @@ class SessionManager:
                     "compaction_completed",
                     {
                         "session_id": sid,
-                        "run_id": "manual",
+                        "run_id": latest_run_id or "manual",
                         "trigger": "manual",
                         "summary_path": result.summary_path,
                         "saved_tokens": max(

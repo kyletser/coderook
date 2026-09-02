@@ -335,8 +335,9 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             return session
 
         # 模拟会话可接受新 turn 的同步前置校验
-        async def preflight_turn_start(self, session_id: str) -> None:
+        async def preflight_turn_start(self, session_id: str, run_id: str) -> None:
             assert session_id == session.id
+            assert run_id
 
         async def send_message(
             self,

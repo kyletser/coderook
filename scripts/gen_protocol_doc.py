@@ -260,7 +260,7 @@ def generate() -> str:
         "jsonrpc": "2.0",
         "id": "u-1",
         "result": {
-            "server_version": "0.2.0",
+            "server_version": "0.2.0b1",
             "uptime_ms": 12,
             "received_at": ts,
             "workspace": "/workspace/coderook",

@@ -64,6 +64,9 @@ button:disabled { cursor: default; opacity: .38; }
 .workspace-avatar { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: #d8d8ff; background: #29293b; font-size: 12px; font-weight: 700; }
 .workspace-head b { display: block; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .workspace-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.project-switcher { min-width: 0; flex: 1; padding: 5px 4px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.project-switcher:hover { background: var(--hover); }
+.project-chevron { color: var(--faint); font-size: 14px; }
 .new-thread {
   height: 36px; display: flex; align-items: center; gap: 8px; margin: 11px 2px 4px; padding: 0 10px;
   border: 1px solid #33343c; border-radius: 9px; background: #191a20; color: #e1e1e5; text-align: left;
@@ -241,6 +244,52 @@ button:disabled { cursor: default; opacity: .38; }
 .loading span, .fatal > span { color: var(--accent); font-size: 40px; }
 .fatal h1 { color: #ececef; }
 .fatal code { padding: 3px 6px; border-radius: 4px; background: #202127; color: var(--accent-strong); }
+
+.project-hub-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(31,32,35,.22); backdrop-filter: blur(3px); }
+.project-hub { width: min(760px, 100%); height: min(650px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0,1fr) auto; overflow: hidden; border: 1px solid #d8d8d3; border-radius: 16px; background: #fbfbf9; box-shadow: 0 24px 80px rgba(28,29,32,.2); }
+.project-hub > header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 13px; }
+.project-hub > header > div { display: flex; align-items: center; gap: 11px; }
+.project-hub > header .app-mark { width: 32px; height: 32px; margin: 0; border-radius: 9px; background: #25262a; color: #fff; }
+.project-hub > header small { display: block; color: #8a8a84; font-size: 8px; font-weight: 700; letter-spacing: .14em; }
+.project-hub > header h2 { margin: 2px 0 0; font-size: 18px; font-weight: 650; }
+.project-hub > header > button { width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: #858680; font-size: 20px; }
+.project-hub > header > button:hover { background: #ecece8; color: #292a2e; }
+.project-hub > nav { display: flex; gap: 4px; padding: 0 20px 12px; border-bottom: 1px solid #e4e4df; }
+.project-hub > nav button { padding: 7px 11px; border: 0; border-radius: 8px; background: transparent; color: #777873; font-size: 11px; }
+.project-hub > nav button:hover { background: #eeeeea; color: #333438; }
+.project-hub > nav button.active { background: #e6e5fb; color: #4442b7; font-weight: 650; }
+.project-hub-content { min-height: 0; overflow: auto; padding: 17px 20px; }
+.project-list { display: grid; gap: 5px; }
+.project-list > button { width: 100%; display: grid; grid-template-columns: 36px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; }
+.project-list > button:hover:not(:disabled) { border-color: #ddddda; background: #fff; box-shadow: 0 1px 3px rgba(24,25,28,.05); }
+.project-list > button.active { background: #efefeb; }
+.project-list > button:disabled { opacity: 1; cursor: default; }
+.project-avatar { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; background: #e4e3f7; color: #4b49b5; font-size: 13px; font-weight: 700; }
+.project-list b, .directory-picker b { display: block; overflow: hidden; color: #313237; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.project-list small { display: block; overflow: hidden; margin-top: 3px; color: #8a8a85; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.project-list em { padding: 3px 7px; border-radius: 999px; background: #dcebdd; color: #36704d; font-size: 9px; font-style: normal; }
+.project-create { width: min(480px, 100%); margin: 12px auto; display: grid; gap: 13px; }
+.project-create h3 { margin: 0; color: #292a2e; font-size: 18px; }
+.project-create p { margin: -5px 0 5px; color: #747570; font-size: 11px; line-height: 1.6; }
+.project-create label { color: #55565a; font-size: 10px; font-weight: 600; }
+.project-create input { width: 100%; margin-top: 6px; padding: 10px 11px; border: 1px solid #d7d7d2; border-radius: 9px; outline: 0; background: #fff; color: #28292d; font-size: 11px; }
+.project-create input:focus { border-color: #8987df; box-shadow: 0 0 0 3px rgba(87,85,217,.08); }
+.project-create > small { color: #92928d; font-size: 9px; }
+.project-create .primary { justify-self: start; min-width: 110px; background: #292a2e; color: #fff; }
+.directory-picker { height: 100%; display: grid; grid-template-rows: auto minmax(0,1fr); }
+.directory-picker > header { display: flex; align-items: center; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #e7e7e2; }
+.directory-picker > header button { min-width: 31px; height: 31px; padding: 0 9px; border: 1px solid #d7d7d2; border-radius: 8px; background: #fff; color: #4e4f53; font-size: 10px; }
+.directory-picker > header button.primary { margin-left: auto; border-color: #292a2e; background: #292a2e; color: #fff; }
+.directory-picker > header span { min-width: 0; overflow: hidden; color: #747570; font: 10px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.directory-picker > div { min-height: 0; overflow: auto; padding-top: 7px; }
+.directory-picker > div > button { width: 100%; display: grid; grid-template-columns: 24px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; }
+.directory-picker > div > button:hover { background: #ededE9; }
+.folder-icon { color: #7977ce; font-size: 12px; }
+.project-switching { height: 100%; display: grid; place-content: center; justify-items: center; gap: 12px; color: #424348; font-size: 13px; }
+.project-switching .pulse { width: 10px; height: 10px; }
+.project-switching small { max-width: 520px; overflow: hidden; color: #898a85; font: 9px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.project-hub > footer { display: flex; gap: 10px; padding: 10px 20px; border-top: 1px solid #e4e4df; color: #898a85; font-size: 9px; }
+.project-hub > footer code { min-width: 0; overflow: hidden; color: #696a66; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 浅色产品主题：单侧栏、无边框任务流与紧凑输入区。 */
 body { background: #f1f1ee; color: var(--text); }

@@ -49,12 +49,25 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 export async function bootstrap(): Promise<{ workspace: string }> {
   const fragment = new URLSearchParams(location.hash.slice(1));
   const launchToken = fragment.get("launch");
-  const session = launchToken
-    ? await request<{ csrf_token: string; workspace: string }>("/v1/web/bootstrap", {
-        method: "POST",
-        body: JSON.stringify({ launch_token: launchToken }),
-      })
-    : await request<{ csrf_token: string; workspace: string }>("/v1/web/session");
+  let session: { csrf_token: string; workspace: string } | undefined;
+  if (launchToken) {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        session = await request<{ csrf_token: string; workspace: string }>("/v1/web/bootstrap", {
+          method: "POST",
+          body: JSON.stringify({ launch_token: launchToken }),
+        });
+        break;
+      } catch (reason: unknown) {
+        lastError = reason;
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+      }
+    }
+    if (!session) throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  } else {
+    session = await request<{ csrf_token: string; workspace: string }>("/v1/web/session");
+  }
   csrfToken = session.csrf_token;
   if (launchToken) history.replaceState(null, "", `${location.pathname}${location.search}`);
   return { workspace: session.workspace };

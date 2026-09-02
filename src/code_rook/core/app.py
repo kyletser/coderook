@@ -10,9 +10,11 @@ import logging
 import os
 import signal
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from datetime import UTC
 from pathlib import Path
 from typing import Any, cast
@@ -215,6 +217,7 @@ from code_rook.core.change_center import ChangeCenterError, ChangeCenterService
 from code_rook.core.compatibility import build_runtime_capabilities
 from code_rook.core.config import CodeRookConfig, get_config
 from code_rook.core.daemon_lock import DaemonLock, DaemonLockError
+from code_rook.core.editing import recover_file_transactions
 from code_rook.core.events.bus import EventBus
 from code_rook.core.features import labs_enabled
 from code_rook.core.fleet import (
@@ -238,6 +241,7 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import ProcessSupervisor
+from code_rook.core.projects import ProjectHandoffTickets, ProjectRegistry
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
 from code_rook.core.runtime.service import RuntimeService
@@ -382,6 +386,8 @@ class CoreApp:
         self._http_api: HttpApiServer | None = None
         self._runtime_api: RuntimeApiService | None = None
         self._socket_server: SocketServer | None = None
+        self._project_registry = ProjectRegistry()
+        self._project_handoff_tickets = ProjectHandoffTickets()
 
     # 将审计故障转换为不含异常正文的全局可见事件
     async def _publish_audit_incident(self, incident: AuditIncident) -> None:
@@ -596,6 +602,12 @@ class CoreApp:
         params: dict[str, Any],
     ) -> Any:
         handlers = {
+            "project.list": self._project_list_handler,
+            "project.create": self._project_create_handler,
+            "project.open": self._project_open_handler,
+            "project.activate": self._project_activate_handler,
+            "project.forget": self._project_forget_handler,
+            "project.browse": self._project_browse_handler,
             "goal.create": self._goal_create_handler,
             "goal.list": self._goal_list_handler,
             "goal.pause": self._goal_pause_handler,
@@ -622,6 +634,122 @@ class CoreApp:
             return result.model_dump(mode="json")
         return result
 
+    # 返回注册项目、活动项目和默认空白项目目录
+    async def _project_list_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params:
+            raise HandlerError(INVALID_PARAMS, "project.list does not accept parameters")
+        active_root = os.path.normcase(str(Path.cwd().resolve()))
+        projects = [
+            {
+                **asdict(record),
+                "active": os.path.normcase(str(Path(record.root).resolve())) == active_root,
+            }
+            for record in self._project_registry.list_projects()
+        ]
+        return {
+            "projects": projects,
+            "active_workspace": str(Path.cwd().resolve()),
+            "default_projects_root": str(self._project_registry.default_projects_root),
+        }
+
+    # 创建空白项目目录并返回可立即激活的项目记录
+    async def _project_create_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        name = params.get("name")
+        parent = params.get("parent")
+        if not isinstance(name, str):
+            raise HandlerError(INVALID_PARAMS, "project name is required")
+        if parent is not None and not isinstance(parent, str):
+            raise HandlerError(INVALID_PARAMS, "project parent must be a path")
+        try:
+            record = await asyncio.to_thread(
+                self._project_registry.create_blank,
+                name,
+                Path(parent) if parent else None,
+            )
+        except (OSError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return asdict(record)
+
+    # 将用户选择的已有目录注册为项目
+    async def _project_open_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        path = params.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise HandlerError(INVALID_PARAMS, "project path is required")
+        try:
+            record = await asyncio.to_thread(self._project_registry.register, Path(path))
+        except (OSError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return asdict(record)
+
+    # 忘记项目记录但保留磁盘上的全部用户文件
+    async def _project_forget_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_id = params.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise HandlerError(INVALID_PARAMS, "project_id is required")
+        try:
+            record = self._project_registry.get(project_id)
+            if os.path.normcase(record.root) == os.path.normcase(str(Path.cwd().resolve())):
+                raise ValueError("the active project cannot be forgotten")
+            await asyncio.to_thread(self._project_registry.forget, project_id)
+        except (OSError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        return {"project_id": project_id, "forgotten": True, "files_deleted": False}
+
+    # 浏览本机目录供 Web 项目选择器逐级导航
+    async def _project_browse_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        path = params.get("path")
+        if path is not None and not isinstance(path, str):
+            raise HandlerError(INVALID_PARAMS, "directory path must be a string")
+        try:
+            return await asyncio.to_thread(self._project_registry.browse, path or None)
+        except (OSError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+
+    # 激活项目并通过短期票据把浏览器交接给目标工作区 Core
+    async def _project_activate_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        project_id = params.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise HandlerError(INVALID_PARAMS, "project_id is required")
+        try:
+            record = self._project_registry.get(project_id)
+            target = Path(record.root).resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        current = Path.cwd().resolve()
+        if os.path.normcase(str(target)) == os.path.normcase(str(current)):
+            self._project_registry.register(target)
+            return {"switching": False, "workspace": str(target)}
+        active_runs = self._sessions.active_run_count() if self._sessions is not None else 0
+        if active_runs:
+            raise HandlerError(
+                INVALID_PARAMS,
+                "finish or cancel the active task before switching projects",
+            )
+        if self._shutdown_event is None:
+            raise HandlerError(INVALID_PARAMS, "Core shutdown coordinator is unavailable")
+        launch_token = self._project_handoff_tickets.issue(target)
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "code_rook.core.project_switch",
+                "--workspace",
+                str(target),
+                "--old-pid",
+                str(os.getpid()),
+            ],
+            cwd=current,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        asyncio.get_running_loop().call_later(0.5, self._shutdown_event.set)
+        return {
+            "switching": True,
+            "workspace": str(target),
+            "launch_token": launch_token,
+        }
+
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
     async def _trace_event_handler(self, event: BaseModel) -> None:
         assert self._trace is not None
@@ -647,7 +775,7 @@ class CoreApp:
             if cmd.resume_session_id is not None
             else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
         )
-        await self._sessions.preflight_turn_start(session.id)
+        run_id = new_run_id()
         self._permission_manager.set_session_mode(
             session.id,
             cmd.permission_mode,
@@ -661,7 +789,7 @@ class CoreApp:
                 answers=tuple(cmd.preset_answers),
             ),
         )
-        run_id = new_run_id()
+        await self._sessions.preflight_turn_start(session.id, run_id)
         run_task = asyncio.create_task(
             self._sessions.send_message(session.id, cmd.goal, run_id=run_id)
         )
@@ -1023,8 +1151,8 @@ class CoreApp:
     async def _turn_start_handler(self, params: dict[str, Any]) -> TurnStartResult:
         assert self._sessions is not None
         cmd = TurnStartCommand.model_validate(params)
-        await self._sessions.preflight_turn_start(cmd.thread_id)
         turn_id = new_run_id()
+        await self._sessions.preflight_turn_start(cmd.thread_id, turn_id)
         task = asyncio.create_task(
             self._sessions.send_message(
                 cmd.thread_id,
@@ -2371,6 +2499,9 @@ class CoreApp:
             raise SystemExit(
                 f"unsafe CodeRook user state; run coderook doctor runtime: {exc}"
             ) from None
+        self._project_registry = ProjectRegistry(state_layout.root)
+        self._project_handoff_tickets = ProjectHandoffTickets(state_layout.root)
+        self._project_registry.register(Path.cwd(), kind="existing")
 
         if self._daemon_lock is None:
             self._daemon_lock = DaemonLock(state_layout.root / "core.lock")
@@ -2378,6 +2509,13 @@ class CoreApp:
                 self._daemon_lock.acquire()
             except DaemonLockError as exc:
                 raise SystemExit(str(exc)) from None
+
+        recovered_transactions = recover_file_transactions(WorkspaceBoundary.current().root)
+        if recovered_transactions:
+            logger.warning(
+                "recovered %d interrupted file transaction(s)",
+                recovered_transactions,
+            )
 
         ipc_token = load_or_create_ipc_token(
             Path(self._config.ipc_token_file).expanduser()

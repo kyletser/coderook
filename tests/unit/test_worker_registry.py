@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from code_rook.core.authority import AuthoritySnapshot
 from code_rook.core.context import ExecutionContext
+from code_rook.core.fleet import SQLiteWorkerStore
 from code_rook.core.subagent.models import WorkerRecord, WorkerStatus, WriteClaim
 from code_rook.core.subagent.registry import (
     BackgroundTaskRegistry,
@@ -49,6 +50,24 @@ def _record(
         merge_reviewer=merge_reviewer,
         token_budget=token_budget,
     )
+
+
+# 功能：验证 Fleet 事件游标可从事件表高水位恢复并与 Worker snapshot 原子推进
+# 设计：故意把 snapshot 回退到旧游标后再追加，确认 SQLite 事务按事件表分配下一游标而非产生重复游标毒化
+def test_sqlite_fleet_event_repairs_stale_snapshot_cursor(tmp_path: Path) -> None:
+    store = SQLiteWorkerStore(tmp_path / "fleet.db")
+    registry = BackgroundTaskRegistry(store=store, boot_id="boot-a", recover=False)
+    worker = _record(registry, tmp_path, "worker-cursor")
+    registry.create(worker)
+    first = registry.append_event(worker.id, "worker.started", "started")
+    store.save(worker.model_copy(update={"event_cursor": 0}))
+
+    second = registry.append_event(worker.id, "worker.progress", "continued")
+
+    restored = registry.record(worker.id)
+    assert first.cursor == 1
+    assert second.cursor == 2
+    assert restored is not None and restored.event_cursor == 2
 
 
 # 功能：daemon 重启后仍可查询 Worker，且旧 boot 的活跃状态恢复为 interrupted

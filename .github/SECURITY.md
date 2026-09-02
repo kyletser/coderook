@@ -33,7 +33,7 @@ MCP server、Skill、Hook 和外部网页视为不受信任输入。
 ## 公开安全边界
 
 - Linux/macOS 只有在能力探测显示真实后端可用且 `enforced=true` 时才宣称 OS 强制隔离。
-- Windows 当前没有文件系统/网络强制 sandbox；AUTO_REVIEW shell 会明确降级到 ASK。
+- Windows 当前提供 Restricted Token + ACL 的 `partial` 写隔离，但不限制读取或网络；Shell/Run 始终需要审批，探针失败则降级为 `unavailable`。
 - 工作区边界不是 shell 的 OS 安全边界，ProcessSupervisor/Job Object 也只负责进程治理。
 - 域名出站白名单没有可接受的强制后端时会 fail closed，不会静默扩大为全网访问。
 - 第三方 MCP/Skill/Hook 具有其声明能力范围内的风险，只安装可信来源并审查自动批准规则。

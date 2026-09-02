@@ -33,6 +33,7 @@ _STD_OUTPUT_HANDLE = -11
 _STD_ERROR_HANDLE = -12
 _HANDLE_FLAG_INHERIT = 0x00000001
 _INFINITE = 0xFFFFFFFF
+_CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _RUNNER_FAILURE_EXIT = 127
 _RUNNER_PREFIX = "windows-acl-run:"
 _FILE_GRANT_MASK = 0x00110156
@@ -559,10 +560,18 @@ def _spawn_and_wait(
     cwd: Path,
     kernel32: Any,
     advapi32: Any,
+    environment: dict[str, str],
 ) -> int:
     inherited, startup = _inheritable_standard_handles(kernel32)
     process_info = _ProcessInformation()
     command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+    environment_block = ctypes.create_unicode_buffer(
+        "\0".join(
+            f"{key}={value}"
+            for key, value in sorted(environment.items(), key=lambda item: item[0].upper())
+        )
+        + "\0\0"
+    )
     try:
         created = advapi32.CreateProcessAsUserW(
             token,
@@ -571,8 +580,8 @@ def _spawn_and_wait(
             None,
             None,
             True,
-            0,
-            None,
+            _CREATE_UNICODE_ENVIRONMENT,
+            ctypes.cast(environment_block, ctypes.c_void_p),
             str(cwd),
             ctypes.byref(startup),
             ctypes.byref(process_info),
@@ -653,38 +662,28 @@ def run_confined(
         write_sids.extend((workspace_sid, temp_sid))
     token = 0
     allocated: list[ctypes.c_void_p] = []
-    previous_temp = os.environ.get("TEMP")
-    previous_tmp = os.environ.get("TMP")
-    previous_marker = os.environ.get("CODEROOK_WINDOWS_ACL")
-    previous_pythonpath = os.environ.get("PYTHONPATH")
     try:
         token, allocated = _create_restricted_token(
             mode, write_sids, kernel32, advapi32
         )
-        os.environ["TEMP"] = str(private_temp)
-        os.environ["TMP"] = str(private_temp)
-        os.environ["CODEROOK_WINDOWS_ACL"] = "1"
-        os.environ["PYTHONPATH"] = str(
+        child_environment = dict(os.environ)
+        child_environment["TEMP"] = str(private_temp)
+        child_environment["TMP"] = str(private_temp)
+        child_environment["CODEROOK_WINDOWS_ACL"] = "1"
+        child_environment["PYTHONPATH"] = str(
             Path(__file__).with_name("windows_python_compat").resolve()
         )
-        return _spawn_and_wait(token, argv, workspace, kernel32, advapi32)
+        if workspace.drive:
+            child_environment["SystemDrive"] = workspace.drive
+        return _spawn_and_wait(
+            token,
+            argv,
+            workspace,
+            kernel32,
+            advapi32,
+            child_environment,
+        )
     finally:
-        if previous_temp is None:
-            os.environ.pop("TEMP", None)
-        else:
-            os.environ["TEMP"] = previous_temp
-        if previous_tmp is None:
-            os.environ.pop("TMP", None)
-        else:
-            os.environ["TMP"] = previous_tmp
-        if previous_marker is None:
-            os.environ.pop("CODEROOK_WINDOWS_ACL", None)
-        else:
-            os.environ["CODEROOK_WINDOWS_ACL"] = previous_marker
-        if previous_pythonpath is None:
-            os.environ.pop("PYTHONPATH", None)
-        else:
-            os.environ["PYTHONPATH"] = previous_pythonpath
         if token:
             kernel32.CloseHandle(token)
         for pointer in allocated:

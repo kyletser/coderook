@@ -302,6 +302,66 @@ async def test_check_and_wait_deny_once_returns_false() -> None:
 
 # ── always_allow cache ────────────────────────────────────────────────────────
 
+
+# 功能：验证 Bash 的本会话允许只覆盖同一规范化命令前缀而非所有后续命令
+# 设计：在可强制沙箱快照下依次执行两个 git status 变体和一个 pytest，确认同前缀复用授权而不同前缀仍重新询问
+async def test_session_allow_for_bash_is_scoped_to_command_prefix() -> None:
+    mgr = _make_manager()
+    current = mgr.get_authority_snapshot("s-prefix")
+    mgr.set_authority_snapshot(
+        "s-prefix",
+        current.model_copy(
+            update={
+                "sandbox": SandboxCapability(
+                    available=True,
+                    kind="linux_bwrap",
+                    reason="test capability",
+                )
+            }
+        ),
+    )
+    emitted: list[str] = []
+
+    # 对首次 git 调用授予会话前缀权限，对不同 pytest 前缀明确拒绝
+    async def emitter(event: dict[str, Any]) -> None:
+        tool_use_id = str(event["tool_use_id"])
+        emitted.append(tool_use_id)
+        mgr.respond(
+            tool_use_id,
+            "session_allow" if tool_use_id == "git-first" else "deny_once",
+            session_id="s-prefix",
+        )
+
+    first = await mgr.check_and_wait(
+        tool_use_id="git-first",
+        tool_name="bash",
+        params={"command": "git status"},
+        session_id="s-prefix",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+    second = await mgr.check_and_wait(
+        tool_use_id="git-second",
+        tool_name="bash",
+        params={"command": "git status --short"},
+        session_id="s-prefix",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+    third = await mgr.check_and_wait(
+        tool_use_id="pytest-third",
+        tool_name="bash",
+        params={"command": "pytest -q"},
+        session_id="s-prefix",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+
+    assert first == (True, "session_allow")
+    assert second == (True, "auto_session_prefix")
+    assert third == (False, "deny_once")
+    assert emitted == ["git-first", "pytest-third"]
+
 # 功能：验证 respond("always_allow") 后同 session 同工具下次不再发事件
 # 设计：第二次调用 check_and_wait 命中 always 缓存，直接返回 (True, "auto_allow")，emitted 仍为 1 条
 async def test_always_allow_skips_future_ask() -> None:

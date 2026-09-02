@@ -54,8 +54,9 @@ class _Sessions:
         self.calls.append(("close", session_id))
 
     # 记录 turn 启动前置校验已通过
-    async def preflight_turn_start(self, session_id: str) -> None:
+    async def preflight_turn_start(self, session_id: str, run_id: str) -> None:
         self.calls.append(("preflight", session_id))
+        assert run_id
 
     # 运行一次 turn 并记录调用
     async def send_message(

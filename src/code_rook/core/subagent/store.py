@@ -28,6 +28,13 @@ class WorkerStoreBackend(Protocol):
     # 追加一条 WorkerEvent
     def append_event(self, event: WorkerEvent) -> None: ...
 
+    # 将 WorkerEvent 与推进后的 WorkerRecord 一起持久化
+    def append_event_and_save(
+        self,
+        event: WorkerEvent,
+        worker: WorkerRecord,
+    ) -> WorkerEvent: ...
+
     # 从游标后读取有界 WorkerEvent
     def list_events(
         self,
@@ -90,6 +97,17 @@ class WorkerStore:
         target = self.event_path(event.worker_id)
         with self._lock, target.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(event.model_dump_json() + "\n")
+
+    # 在进程内写锁中连续追加事件和快照，避免并发调用观察到游标倒退
+    def append_event_and_save(
+        self,
+        event: WorkerEvent,
+        worker: WorkerRecord,
+    ) -> WorkerEvent:
+        with self._lock:
+            self.append_event(event)
+            self.save(worker)
+        return event
 
     # 从游标后读取至多 limit 条 Worker 事件
     def list_events(

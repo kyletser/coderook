@@ -9,6 +9,7 @@ from code_rook.core.editing.transaction import (
     FileMutation,
     FileTransactionError,
     apply_file_transaction,
+    recover_file_transactions,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "apply_file_transaction",
     "atomic_write_bytes",
     "content_hash",
+    "recover_file_transactions",
 ]

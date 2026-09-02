@@ -34,6 +34,15 @@ uv run coderook tui
 受管 Core 正绑定其他仓库，会安全重启到新仓库；存在活动任务时则拒绝切换。页面无模型时仍可浏览
 会话、文件、Diff、设置和帮助，第一次提交任务前才执行 readiness 检查。
 
+Web 左上角的项目名称是项目入口，不需要先在终端切换目录：
+
+- “新建项目”输入名称即可，默认创建到 `~/CodeRookProjects/<项目名>`，也可修改保存位置；
+- “打开文件夹”通过网页目录选择器选择电脑上已有的目录，CodeRook 不复制或移动其中的文件；
+- “最近项目”用于切换。切换时当前 Core 会在没有活动任务的前提下重启到目标目录，并自动恢复浏览器连接；
+- 项目就是 Agent 的工作区。切换完成后，文件、Shell、Diff、会话和工作区级 `.coderook/` 都绑定新目录，原项目不会继续作为隐式代码上下文。
+
+删除项目记录只会从最近项目列表移除，绝不删除磁盘目录。当前活动项目必须先切换后才能移除。
+
 浏览器通过 URL fragment 内 60 秒单次票据换取 HttpOnly Cookie；fragment 随即清除。所有写请求
 还必须通过同源与 CSRF 校验。Provider API Key 只提交给本地 Core 的配置事务，不进入 URL、日志、
 localStorage 或普通响应。刷新页面后以 durable event seq 续接，不会重新执行工具。
@@ -261,7 +270,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes` |
 | 模型 | `/config`、`/provider`、`/model`、`/doctor` |
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
-| 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/cost` |
+| 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/compact`、`/cost` |
 | 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
 | Labs/高级 | `/preset tool-program`、`/workflow`、`/hooks` |
 

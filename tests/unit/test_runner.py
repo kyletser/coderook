@@ -989,3 +989,48 @@ async def test_turn_route_selection_freezes_rule_based_plan_binding(
     assert selected is plan
     assert selected.route.model == "plan-model"
     assert selected.route.thinking == "high"
+
+
+# 功能：验证成本路由使用调用方提供的会话累计成本选择降档 Route
+# 设计：构造高低两个不可变 Route 并把累计成本置于阈值上方，锁定新 Turn 前而非未创建 run_id 的决策语义
+async def test_runner_cost_route_uses_durable_session_total(tmp_path: Path) -> None:
+    active_route = get_route_preset("ollama").model_copy(
+        update={"id": "active", "model": "active-model"}
+    )
+    fallback_route = get_route_preset("ollama").model_copy(
+        update={"id": "fallback", "model": "fallback-model"}
+    )
+    active = ResolvedRoute(
+        route=active_route,
+        receipt=active_route.receipt("missing"),
+        credential="",
+    )
+    fallback = ResolvedRoute(
+        route=fallback_route,
+        receipt=fallback_route.receipt("missing"),
+        credential="",
+    )
+    registry = Mock()
+    registry.resolve.side_effect = lambda route_id=None: (
+        fallback if route_id == "fallback" else active
+    )
+    config = _config()
+    config.llm.router = "cost_budget"
+    config.llm.router_cost_budget = 1.0
+    config.llm.router_cost_fallback = "fallback"
+    runner = AgentRunner(
+        config,
+        provider=_EndTurnProvider(),  # type: ignore[arg-type]
+        route_registry=registry,  # type: ignore[arg-type]
+        runs_dir=tmp_path,
+        workspace_root=tmp_path,
+    )
+
+    selected = await runner.resolve_turn_binding(
+        resolved_route=active,
+        runtime_mode=RuntimeMode.ACT,
+        run_id="new-turn",
+        accumulated_cost_usd=1.5,
+    )
+
+    assert selected is fallback

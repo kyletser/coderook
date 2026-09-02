@@ -127,6 +127,8 @@ class Compactor:
             focus=focus,
             retain_ratio=0.0 if force else None,
             force=force,
+            run_id=context.run_id,
+            step=context.step,
         )
         if result is None:
             return None
@@ -188,9 +190,9 @@ class Compactor:
         retain_ratio: float | None = None,
         force: bool = False,
         strategy: str | None = None,
+        run_id: str = "",
+        step: int = 0,
     ) -> CompactionResult | None:
-        from code_rook.core.events.bus import EventBus as _Bus
-
         protocol_valid, protocol_errors = validate_tool_protocol(messages)
         if not protocol_valid:
             logger.warning("compactor: invalid tool protocol: %s", "; ".join(protocol_errors))
@@ -242,9 +244,9 @@ class Compactor:
             response = await provider.chat(
                 messages=compress_request,
                 tool_schemas=[],
-                bus=_Bus(),
-                run_id="compact",
-                step=0,
+                bus=self._bus,
+                run_id=run_id or "compact",
+                step=step,
                 system="Return a faithful structured JSON handoff summary.",
             )
         except Exception:

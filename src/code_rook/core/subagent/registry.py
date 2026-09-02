@@ -656,12 +656,14 @@ class BackgroundTaskRegistry:
             summary=summary[:500],
             at=_now(),
         )
-        if self._store is not None:
-            self._store.append_event(event)
         worker.event_cursor = event.cursor
         worker.heartbeat_at = event.at
         worker.updated_at = event.at
-        self._save(worker)
+        if self._store is not None:
+            event = self._store.append_event_and_save(event, worker)
+            worker.event_cursor = event.cursor
+        else:
+            self._save(worker)
         return event
 
     # 从持久 backend 读取游标后的有界 Worker 事件

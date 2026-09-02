@@ -89,6 +89,7 @@ Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置�
 - thread 事件 SSE 与 cursor replay；
 - 权限/Plan/Question 回复，图片 Artifact，受限文件读取与工作区 diff/stage/commit；
 - Provider Catalog/Doctor 配置，以及 Goal、Worker、Skills、MCP 和 Memory 稳定控制面；
+- 用户级 Project Registry、空白项目创建、本机目录浏览和单活动工作区切换；
 - 打包在 wheel 内的 React/TypeScript SPA 静态资源。
 
 Runtime API 始终使用 Bearer token；空白环境值不能关闭鉴权。环境未显式提供非空值时，Core 会以
@@ -100,6 +101,12 @@ no-follow、普通文件和对象身份检查加载或排他创建用户级 `api
 URL fragment；SPA 以严格 Host/Origin 校验交换 HttpOnly、SameSite=Strict Cookie 与内存 CSRF token，
 然后移除 fragment。Cookie 写请求必须同时通过同源和 CSRF header。静态壳启用 CSP、nosniff、
 referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API binding，也不提供公网监听参数。
+
+`core/projects.py` 保存用户级 `~/.coderook/projects.json`。项目切换不在同一进程混用多个 workspace：
+空闲 Core 签发目标目录绑定的一次性 handoff ticket，有序退出后由内部 helper 从目标目录启动新 Core，
+SPA 使用该 ticket 重连。活动 run 会阻止切换，因此现有 SessionManager、工具、权限、Artifact 和
+Change Center 仍维持单一工作区不变量。新建空白项目默认落到 `~/CodeRookProjects/`；登记已有目录
+不复制、不移动文件，忘记项目记录也不删除磁盘内容。
 
 ## 4. Agent 执行链
 

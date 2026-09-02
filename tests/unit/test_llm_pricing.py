@@ -31,6 +31,15 @@ def test_get_pricing_exact_prefix_and_override() -> None:
     assert get_pricing("") is None
 
 
+# 功能：验证模型价格前缀只接受合法版本分隔符而不会误匹配相邻数字
+# 设计：同时给出日期后缀正例和 gpt-5.61 反例，锁定最长前缀匹配的名称边界
+def test_pricing_prefix_requires_version_separator() -> None:
+    table = {"gpt-5.6": ModelPricing(1.0, 2.0)}
+
+    assert get_pricing("gpt-5.6-20260901", table) == table["gpt-5.6"]
+    assert get_pricing("gpt-5.61", table) is None
+
+
 # 功能：验证 DeepSeek V4 当前模型名能命中独立输入、输出与缓存读取单价
 # 设计：直接查询两个 Catalog 模型 ID，并确认未知模型不会误套价格
 def test_deepseek_v4_pricing_uses_current_catalog_ids() -> None:

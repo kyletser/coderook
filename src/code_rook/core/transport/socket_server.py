@@ -51,6 +51,20 @@ def get_connection_writer() -> asyncio.StreamWriter:
 _MAX_LINE_BYTES = 64 * 1024 * 1024  # 64 MB per frame，兼容 MCP 大文件工具结果
 
 
+# 从完整 JSON-RPC 帧中尽力提取请求 ID，确保限流错误能结束对应客户端 Future
+def _request_id_from_line(line: bytes) -> str | None:
+    try:
+        raw = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    request_id = raw.get("id")
+    if not isinstance(request_id, str):
+        return None
+    return request_id
+
+
 class SocketServer:
     def __init__(
         self,
@@ -250,7 +264,11 @@ class SocketServer:
             if len(command_tasks) >= _MAX_IN_FLIGHT_PER_CONNECTION:
                 await self._send(
                     writer,
-                    make_error(None, INVALID_REQUEST, "Too many in-flight requests"),
+                    make_error(
+                        _request_id_from_line(line),
+                        INVALID_REQUEST,
+                        "Too many in-flight requests",
+                    ),
                 )
                 continue
 
@@ -266,7 +284,6 @@ class SocketServer:
                     command_tasks=command_tasks,
                 )
             )
-
     # 回收独立命令任务，并在连接已关闭时再次清理任务结束前新建的订阅
     def _command_task_done(
         self,

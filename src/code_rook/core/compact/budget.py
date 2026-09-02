@@ -66,6 +66,9 @@ async def distill_tool_results(
     *,
     threshold: int = TOOL_RESULT_SUMMARIZE_THRESHOLD,
     fallback_keep: int = TOOL_RESULT_KEEP,
+    bus: EventBus | None = None,
+    run_id: str = "",
+    step: int = 0,
 ) -> tuple[list[dict[str, Any]], ToolResultBudgetStats]:
     output: list[dict[str, Any]] = []
     distilled = 0
@@ -89,6 +92,9 @@ async def distill_tool_results(
                         provider,
                         str(block.get("tool_use_id", "")),
                         text,
+                        bus=bus,
+                        run_id=run_id,
+                        step=step,
                     )
                     if compacted is None:
                         compacted = _truncate_text(text, fallback_keep)
@@ -106,6 +112,10 @@ async def _distill_one(
     provider: LLMProvider,
     tool_use_id: str,
     content: str,
+    *,
+    bus: EventBus | None,
+    run_id: str,
+    step: int,
 ) -> str | None:
     bounded = content if len(content) <= 100_000 else _truncate_text(content, 80_000)
     request: list[dict[str, object]] = [{
@@ -119,9 +129,9 @@ async def _distill_one(
         response = await provider.chat(
             messages=request,
             tool_schemas=[],
-            bus=EventBus(),
-            run_id="tool-distill",
-            step=0,
+            bus=bus or EventBus(),
+            run_id=run_id or "tool-distill",
+            step=step,
             system="Return a concise, factual tool-output summary.",
         )
     except Exception:

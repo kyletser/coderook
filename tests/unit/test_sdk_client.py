@@ -147,7 +147,9 @@ async def test_async_sdk_maps_http_errors() -> None:
 async def test_async_sdk_controls_permission_and_workspace_diff() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith("/v1/permissions/"):
-            assert json.loads(request.content)["decision"] == "allow_once"
+            body = json.loads(request.content)
+            assert body["decision"] == "allow_once"
+            assert body["session_id"] == "thread-1"
             return httpx.Response(200, json={"accepted": True})
         assert request.url.path == "/v1/workspace/diff"
         assert request.url.params["scope"] == "unstaged"
@@ -158,7 +160,11 @@ async def test_async_sdk_controls_permission_and_workspace_diff() -> None:
         "token",
         transport=httpx.MockTransport(handler),
     ) as client:
-        accepted = await client.respond_permission("tool-1", "allow_once")
+        accepted = await client.respond_permission(
+            "tool-1",
+            "allow_once",
+            session_id="thread-1",
+        )
         diff = await client.workspace_diff(scope="unstaged")
 
     assert accepted is True

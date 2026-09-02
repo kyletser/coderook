@@ -370,6 +370,16 @@ class RuntimeService:
             return float(value)
         return None
 
+    # 汇总指定 thread 已持久化 Turn 的已知估算成本，供下一 Turn 的成本路由决策
+    async def get_thread_estimated_cost(self, thread_id: str) -> float:
+        turns = await self.list_turns(thread_id)
+        total = 0.0
+        for turn in turns:
+            value = turn.usage.get("estimated_cost_usd")
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                total += float(value)
+        return total
+
     # 异步列出全部 thread
     async def list_threads(self) -> list[ThreadRecord]:
         return await asyncio.to_thread(self._store.list_threads)
@@ -448,10 +458,14 @@ class RuntimeService:
     async def drain_pending_writes(self) -> None:
         while self._pending_writes:
             pending = set(self._pending_writes)
-            try:
-                await asyncio.gather(*pending)
-            finally:
-                self._pending_writes.difference_update(pending)
+            results = await asyncio.gather(*pending, return_exceptions=True)
+            self._pending_writes.difference_update(pending)
+            failure = next(
+                (item for item in results if isinstance(item, BaseException)),
+                None,
+            )
+            if failure is not None:
+                raise failure
 
     # 恢复其他 daemon boot 遗留的活动 turn 并发布持久事件
     async def recover_stale_turns(self, ts: datetime) -> list[RuntimeEventRecord]:
