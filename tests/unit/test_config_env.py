@@ -289,6 +289,28 @@ def test_project_config_allows_non_sensitive_preferences(
     assert config.logging.format == "json"
 
 
+# 功能：验证 Core 可为非当前目录加载目标项目配置而不临时修改进程工作目录
+# 设计：当前目录与目标目录设置不同 max_steps，通过显式 workspace 断言只读取目标项目值
+def test_config_can_load_an_explicit_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "current"
+    target = tmp_path / "target"
+    for root, steps in ((current, 7), (target, 19)):
+        config_path = root / ".coderook" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(f"[agent]\nmax_steps = {steps}\n", encoding="utf-8")
+    monkeypatch.chdir(current)
+    monkeypatch.delenv("CODEROOK_CONFIG", raising=False)
+    monkeypatch.delenv("CODEROOK_MAX_STEPS", raising=False)
+
+    config = get_config(workspace=target)
+
+    assert config.agent.max_steps == 19
+    assert Path.cwd() == current
+
+
 @pytest.mark.parametrize(
     "content",
     [

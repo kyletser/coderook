@@ -614,6 +614,10 @@ export function eventBelongsToThread(activeThreadId: string, streamThreadId: str
   return Boolean(activeThreadId) && activeThreadId === streamThreadId;
 }
 
+export function workspaceHasUserProject(workspace: string): boolean {
+  return !/(?:^|[\\/])\.coderook[\\/]welcome-workspace[\\/]?$/i.test(workspace);
+}
+
 export function parentWorkspacePath(path: string): string {
   const parts = path.split("/").filter(Boolean);
   parts.pop();
@@ -649,7 +653,13 @@ export function preferredThreadId(threads: ThreadRecord[]): string {
   return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
 }
 
-function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElement {
+function AppShell({
+  initialWorkspace,
+  onWorkspaceChanged,
+}: {
+  initialWorkspace: string;
+  onWorkspaceChanged(workspace: string): void;
+}): ReactElement {
   const dialog = useProductDialog();
   const preferences = useInterfacePreferences();
   const [workspace] = useState(initialWorkspace);
@@ -1332,16 +1342,19 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
     previousTimelineSize.current = timelineEntries.length;
   }, [timelineEntries]);
   const tokenUsage = contextTokens;
-  const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace";
+  const projectSelected = workspaceHasUserProject(workspace);
+  const workspaceName = projectSelected
+    ? workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
+    : tr("选择项目", "Choose project");
 
   return (
     <div className={`app-shell ${drawer ? "inspector-open" : ""}`} lang={preferences.locale}>
       <aside className={`sidebar ${mobileSidebarOpen ? "mobile-open" : ""}`}>
         <div className="workspace-head"><span className="app-mark"><Icon name="rook" size={18} /></span><button className="project-switcher" type="button" title={workspace} onClick={() => { setProjectHubOpen(true); setMobileSidebarOpen(false); }}><b>{workspaceName}</b><small>{tr("切换或新建项目", "Switch or create project")}</small></button><span className="project-chevron">⌄</span><button className="mobile-sidebar-close" aria-label={tr("关闭导航", "Close navigation")} onClick={() => setMobileSidebarOpen(false)}>×</button></div>
-        <button className="new-thread" onClick={beginDraft}><Icon name="plus" size={15} /><span>{tr("新建任务", "New task")}</span></button>
+        <button className="new-thread" onClick={projectSelected ? beginDraft : () => setProjectHubOpen(true)}><Icon name="plus" size={15} /><span>{projectSelected ? tr("新建任务", "New task") : tr("选择或新建项目", "Choose or create project")}</span></button>
         <nav className="workspace-nav" aria-label={tr("工作区工具", "Workspace tools")}>
-          <button className={drawer === "files" ? "active" : ""} onClick={() => { setInspectorFile(""); setDrawer(drawer === "files" ? null : "files"); setMobileSidebarOpen(false); }}><Icon name="files" size={15} /><span>{tr("文件", "Files")}</span></button>
-          <button className={drawer === "changes" ? "active" : ""} onClick={() => { setDrawer(drawer === "changes" ? null : "changes"); setMobileSidebarOpen(false); }}><Icon name="changes" size={15} /><span>{tr("变更", "Changes")}</span></button>
+          <button disabled={!projectSelected} className={drawer === "files" ? "active" : ""} onClick={() => { setInspectorFile(""); setDrawer(drawer === "files" ? null : "files"); setMobileSidebarOpen(false); }}><Icon name="files" size={15} /><span>{tr("文件", "Files")}</span></button>
+          <button disabled={!projectSelected} className={drawer === "changes" ? "active" : ""} onClick={() => { setDrawer(drawer === "changes" ? null : "changes"); setMobileSidebarOpen(false); }}><Icon name="changes" size={15} /><span>{tr("变更", "Changes")}</span></button>
           <button className={drawer === "models" ? "active" : ""} onClick={() => { setDrawer(drawer === "models" ? null : "models"); setMobileSidebarOpen(false); }}><Icon name="models" size={15} /><span>{tr("模型", "Models")}</span></button>
           <button className={drawer === "advanced" ? "active" : ""} onClick={() => { setDrawer(drawer === "advanced" ? null : "advanced"); setMobileSidebarOpen(false); }}><Icon name="settings" size={15} /><span>{tr("设置", "Settings")}</span></button>
         </nav>
@@ -1388,13 +1401,13 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           {!timelineEntries.length && (
             <div className="welcome-card">
               <span className="welcome-kicker">CODEROOK · LOCAL AGENT</span>
-              <h1>{tr("今天想完成什么？", "What would you like to accomplish?")}</h1>
-              <p>{tr("描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。", "Describe a goal. CodeRook will understand the code, make changes, run checks, and leave a reviewable, recoverable result.")}</p>
-              <div className="suggestions">
+              <h1>{projectSelected ? tr("今天想完成什么？", "What would you like to accomplish?") : tr("选择一个项目开始", "Choose a project to get started")}</h1>
+              <p>{projectSelected ? tr("描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。", "Describe a goal. CodeRook will understand the code, make changes, run checks, and leave a reviewable, recoverable result.") : tr("创建一个新的空白项目，或者打开电脑上已有的项目文件夹。CodeRook 只会把选中的目录作为工作区。", "Create a blank project or open an existing folder on this computer. CodeRook uses only the selected directory as its workspace.")}</p>
+              {!projectSelected ? <div className="welcome-project-action"><button className="primary" onClick={() => setProjectHubOpen(true)}><Icon name="plus" size={15} />{tr("选择或新建项目", "Choose or create project")}</button></div> : <div className="suggestions">
                 <button onClick={() => setComposer(tr("解释这个仓库的核心架构和数据流", "Explain this repository's core architecture and data flow"))}><span><b>{tr("理解代码库", "Understand the codebase")}</b><small>{tr("梳理架构、模块与关键数据流", "Map the architecture, modules, and key data flows")}</small></span><Icon name="arrow" size={16} /></button>
                 <button onClick={() => setComposer(tr("检查当前改动，找出最可能的缺陷", "Review the current changes and identify the most likely defects"))}><span><b>{tr("审查当前改动", "Review current changes")}</b><small>{tr("检查风险、缺陷与验证缺口", "Inspect risks, defects, and verification gaps")}</small></span><Icon name="arrow" size={16} /></button>
                 <button onClick={() => setComposer(tr("运行最相关的测试并修复失败", "Run the most relevant tests and fix any failures"))}><span><b>{tr("修复测试失败", "Fix failing tests")}</b><small>{tr("定位问题、修改代码并重新验证", "Locate the issue, edit the code, and verify again")}</small></span><Icon name="arrow" size={16} /></button>
-              </div>
+              </div>}
             </div>
           )}
           {timelineEntries.map((entry) => entry.kind === "item" ? (
@@ -1429,7 +1442,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           {error && <div className="error-card"><b>{tr("需要处理", "Action required")}</b><p>{error}</p><button onClick={() => setError("")}>{tr("关闭", "Close")}</button></div>}
         </section>
 
-        <form className="composer" onSubmit={(event) => void send(event)}>
+        {projectSelected && <form className="composer" onSubmit={(event) => void send(event)}>
           {queuedMessages.length > 0 && <div className="message-queue" aria-label={tr("待发送消息", "Queued messages")}>
             {queuedMessages.map((message, index) => <div className={`queued-message ${message.status}`} key={message.id}>
               <span>{message.status === "dispatching" ? tr("正在发送", "Sending") : message.status === "blocked" ? tr("需要处理", "Action required") : tr(`排队 ${index + 1}`, `Queued ${index + 1}`)}</span>
@@ -1508,7 +1521,7 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
               <button className="send" aria-label={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} title={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
-        </form>
+        </form>}
       </main>
 
       {mobileSidebarOpen && <button className="sidebar-scrim" aria-label={tr("关闭导航", "Close navigation")} onClick={() => setMobileSidebarOpen(false)} />}
@@ -1528,12 +1541,22 @@ function AppShell({ initialWorkspace }: { initialWorkspace: string }): ReactElem
           onError={setError}
         />
       )}
-      {projectHubOpen && <ProjectHub workspace={workspace} onClose={() => setProjectHubOpen(false)} onError={setError} />}
+      {projectHubOpen && <ProjectHub workspace={workspace} onActivated={onWorkspaceChanged} onClose={() => setProjectHubOpen(false)} onError={setError} />}
     </div>
   );
 }
 
-function ProjectHub({ workspace, onClose, onError }: { workspace: string; onClose(): void; onError(value: string): void }): ReactElement {
+function ProjectHub({
+  workspace,
+  onActivated,
+  onClose,
+  onError,
+}: {
+  workspace: string;
+  onActivated(workspace: string): void;
+  onClose(): void;
+  onError(value: string): void;
+}): ReactElement {
   const [catalog, setCatalog] = useState<ProjectCatalog | null>(null);
   const [tab, setTab] = useState<"projects" | "create" | "open">("projects");
   const [name, setName] = useState("");
@@ -1558,14 +1581,12 @@ function ProjectHub({ workspace, onClose, onError }: { workspace: string; onClos
     setBusy(true);
     setSwitching(project.root);
     try {
-      const result = await request<{ switching: boolean; workspace: string; launch_token?: string }>("/v1/projects/activate", {
+      const result = await request<{ workspace: string }>("/v1/projects/activate", {
         method: "POST",
         body: JSON.stringify({ project_id: project.id }),
       });
-      if (!result.switching) { onClose(); return; }
-      if (!result.launch_token) throw new Error(tr("项目切换票据缺失", "Project switch ticket is missing"));
-      window.location.hash = `launch=${encodeURIComponent(result.launch_token)}`;
-      window.setTimeout(() => window.location.reload(), 700);
+      if (result.workspace === workspace) onClose();
+      else onActivated(result.workspace);
     } catch (reason: unknown) {
       setBusy(false);
       setSwitching("");
@@ -1606,7 +1627,7 @@ function ProjectHub({ workspace, onClose, onError }: { workspace: string; onClos
       <header><div><span className="app-mark"><Icon name="rook" size={17} /></span><div><small>CODEROOK</small><h2>{tr("项目", "Projects")}</h2></div></div><button type="button" disabled={busy} onClick={onClose}>×</button></header>
       <nav><button className={tab === "projects" ? "active" : ""} onClick={() => setTab("projects")}>{tr("最近项目", "Recent")}</button><button className={tab === "create" ? "active" : ""} onClick={() => setTab("create")}>{tr("新建项目", "New project")}</button><button className={tab === "open" ? "active" : ""} onClick={() => setTab("open")}>{tr("打开文件夹", "Open folder")}</button></nav>
       <div className="project-hub-content">
-        {switching && <div className="project-switching"><span className="pulse" />{tr("正在切换项目并重新连接…", "Switching project and reconnecting…")}<small>{switching}</small></div>}
+        {switching && <div className="project-switching"><span className="pulse" />{tr("正在打开项目…", "Opening project…")}<small>{switching}</small></div>}
         {!switching && tab === "projects" && <div className="project-list">
           {catalog?.projects.map((project) => <button type="button" key={project.id} className={project.active ? "active" : ""} disabled={busy || project.active} onClick={() => void activate(project)}><span className="project-avatar">{project.name.slice(0, 1).toUpperCase()}</span><span><b>{project.name}</b><small>{project.root}</small></span>{project.active ? <em>{tr("当前", "Current")}</em> : <Icon name="arrow" size={15} />}</button>)}
           {!catalog?.projects.length && <p className="empty">{tr("还没有项目。创建空白项目或打开电脑上的文件夹。", "No projects yet. Create a blank project or open a folder on this computer.")}</p>}
@@ -2303,9 +2324,9 @@ function AppContent(): ReactElement {
   useEffect(() => {
     bootstrap().then((result) => { setWorkspace(result.workspace); setReady(true); }).catch((reason: unknown) => setFatal(reason instanceof Error ? reason.message : String(reason)));
   }, []);
-  if (fatal) return <div className="fatal"><span>♜</span><h1>{tr("无法连接本地 CodeRook Core", "Unable to connect to the local CodeRook Core")}</h1><p>{fatal}</p><p>{tr("请重新运行", "Run")} <code>coderook web</code> {tr("获取一次性启动链接。", "again to get a new one-time launch link.")}</p></div>;
+  if (fatal) return <div className="fatal"><span>♜</span><h1>{tr("无法连接本地 CodeRook Core", "Unable to connect to the local CodeRook Core")}</h1><p>{fatal}</p><p>{tr("请刷新页面；如果 Core 未运行，再执行", "Refresh the page. If Core is not running, run")} <code>coderook web</code>。</p></div>;
   if (!ready) return <div className="loading"><span>♜</span><p>{tr("正在连接本地工作区…", "Connecting to the local workspace…")}</p></div>;
-  return <ProductDialogProvider><AppShell initialWorkspace={workspace} /></ProductDialogProvider>;
+  return <ProductDialogProvider><AppShell key={workspace} initialWorkspace={workspace} onWorkspaceChanged={setWorkspace} /></ProductDialogProvider>;
 }
 
 export function App(): ReactElement {

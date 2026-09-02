@@ -31,7 +31,7 @@ from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runner import RunOutcome
 from code_rook.core.runtime.models import RuntimeEventRecord, ThreadStatus, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
-from code_rook.core.runtime.store import RuntimeStore
+from code_rook.core.runtime.store import RecordNotFoundError, RuntimeStore
 from code_rook.core.session.manager import SessionManager
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
@@ -217,6 +217,44 @@ async def test_bootstrap_sessions_is_idempotent(tmp_path: Path) -> None:
         TurnStatus.COMPLETED,
         TurnStatus.INTERRUPTED,
     ]
+
+
+# 功能：验证共享 Runtime 数据库的读接口只暴露当前服务绑定工作区的 thread
+# 设计：两个工作区服务向同一数据库写入独立 session，再交叉查询以覆盖列表过滤和 ID 越界拒绝
+async def test_runtime_service_scopes_threads_to_workspace(tmp_path: Path) -> None:
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    store = RuntimeStore(tmp_path / "runtime.db")
+    first = RuntimeService(store, workspace=first_workspace)
+    second = RuntimeService(RuntimeStore(store.path), workspace=second_workspace)
+    first_session = Session(
+        id="sess-first",
+        mode="chat",
+        status="waiting_for_input",
+        title="First",
+        created_at="2026-09-02T00:00:00Z",
+        updated_at="2026-09-02T00:00:00Z",
+        workspace=str(first_workspace),
+    )
+    second_session = Session(
+        id="sess-second",
+        mode="chat",
+        status="waiting_for_input",
+        title="Second",
+        created_at="2026-09-02T00:00:00Z",
+        updated_at="2026-09-02T00:00:00Z",
+        workspace=str(second_workspace),
+    )
+
+    await first.bootstrap_sessions([first_session])
+    await second.bootstrap_sessions([second_session])
+
+    assert [thread.id for thread in await first.list_threads()] == ["sess-first"]
+    assert [thread.id for thread in await second.list_threads()] == ["sess-second"]
+    with pytest.raises(RecordNotFoundError):
+        await first.get_thread("sess-second")
 
 
 # 功能：验证 session send_message 通过 runtime service 建立并完成同一 turn

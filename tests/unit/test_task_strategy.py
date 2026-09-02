@@ -87,6 +87,22 @@ def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) 
     assert profile.confidence >= 0.95
 
 
+# 功能：验证目录内容询问被识别为直接只读检查并开放目录读取工具
+# 设计：覆盖用户真实中文表达和常见同义句，防止无修改意图的简单查询误入 Plan 门禁
+@pytest.mark.parametrize(
+    "goal",
+    ["当前文件夹有什么。", "列出当前目录", "这个目录下有哪些文件"],
+)
+def test_directory_listing_routes_to_direct_read(goal: str) -> None:
+    profile = TaskStrategyRouter().classify_rules(goal)
+
+    assert profile.intent == TaskIntent.INSPECT
+    assert profile.risk == TaskRisk.READ
+    assert profile.strategy == TaskStrategy.DIRECT
+    assert "list_dir" in (profile.model_tool_allowlist() or frozenset())
+    assert profile.confidence >= 0.9
+
+
 # 功能：验证编码任务画像会按具体意图和用户目标生成不同的执行说明
 # 设计：对比修复与解释任务的标题素材，防止所有任务退化成同一段固定模板
 def test_task_profile_summary_mentions_current_goal_and_intent() -> None:

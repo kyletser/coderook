@@ -169,6 +169,7 @@ def get_config(
     *,
     env_file: str | Path | None = None,
     environ: Mapping[str, str] | None = None,
+    workspace: Path | None = None,
 ) -> CodeRookConfig:
     config = CodeRookConfig()
 
@@ -177,7 +178,7 @@ def get_config(
 
     # 若显式指定 CODEROOK_CONFIG，只读该文件；否则按优先级叠加：全局 → 项目本地
     explicit = process_env.get("CODEROOK_CONFIG")
-    project_path = Path(".coderook/config.toml")
+    project_path = (workspace or Path.cwd()) / ".coderook" / "config.toml"
     if explicit:
         config_paths = [Path(explicit).expanduser()]
     else:

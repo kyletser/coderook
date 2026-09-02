@@ -2,6 +2,14 @@ import type { RuntimeEvent } from "./types";
 
 let csrfToken = "";
 
+async function establishSession(): Promise<{ csrf_token: string; workspace: string }> {
+  const response = await fetch("/v1/web/session", { credentials: "same-origin" });
+  if (!response.ok) throw new Error(await decodeError(response));
+  const session = (await response.json()) as { csrf_token: string; workspace: string };
+  csrfToken = session.csrf_token;
+  return session;
+}
+
 async function decodeError(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as {
@@ -36,40 +44,26 @@ async function decodeError(response: Response): Promise<string> {
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method || "GET").toUpperCase();
-  const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
-    headers.set("X-CodeRook-CSRF", csrfToken);
+  const send = () => {
+    const headers = new Headers(init.headers);
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+      headers.set("X-CodeRook-CSRF", csrfToken);
+    }
+    return fetch(path, { ...init, headers, credentials: "same-origin" });
+  };
+  let response = await send();
+  if (response.status === 401 && path !== "/v1/web/session") {
+    await establishSession();
+    response = await send();
   }
-  const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
   if (!response.ok) throw new Error(await decodeError(response));
   return (await response.json()) as T;
 }
 
 export async function bootstrap(): Promise<{ workspace: string }> {
-  const fragment = new URLSearchParams(location.hash.slice(1));
-  const launchToken = fragment.get("launch");
-  let session: { csrf_token: string; workspace: string } | undefined;
-  if (launchToken) {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      try {
-        session = await request<{ csrf_token: string; workspace: string }>("/v1/web/bootstrap", {
-          method: "POST",
-          body: JSON.stringify({ launch_token: launchToken }),
-        });
-        break;
-      } catch (reason: unknown) {
-        lastError = reason;
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-      }
-    }
-    if (!session) throw lastError instanceof Error ? lastError : new Error(String(lastError));
-  } else {
-    session = await request<{ csrf_token: string; workspace: string }>("/v1/web/session");
-  }
-  csrfToken = session.csrf_token;
-  if (launchToken) history.replaceState(null, "", `${location.pathname}${location.search}`);
+  const session = await establishSession();
+  if (location.hash) history.replaceState(null, "", `${location.pathname}${location.search}`);
   return { workspace: session.workspace };
 }
 
@@ -81,10 +75,13 @@ export async function streamEvents(
   tail?: number,
 ): Promise<number> {
   const tailQuery = tail && afterSeq === 0 ? `&tail=${tail}` : "";
-  const response = await fetch(
-    `/v1/threads/${encodeURIComponent(threadId)}/events?after_seq=${afterSeq}${tailQuery}`,
-    { credentials: "same-origin", signal },
-  );
+  const url = `/v1/threads/${encodeURIComponent(threadId)}/events?after_seq=${afterSeq}${tailQuery}`;
+  const connect = () => fetch(url, { credentials: "same-origin", signal });
+  let response = await connect();
+  if (response.status === 401 && !signal.aborted) {
+    await establishSession();
+    response = await connect();
+  }
   if (!response.ok || !response.body) throw new Error(await decodeError(response));
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

@@ -17,7 +17,8 @@ from code_rook.core.strategy.models import (
 )
 
 _READ_RE = re.compile(
-    r"(?i)(解释|说明|分析|理解|检查|审查|查看|是什么|为什么|explain|inspect|review|analy[sz]e|why|what)"
+    r"(?i)(解释|说明|分析|理解|检查|审查|查看|列出|文件夹|目录|有哪些|是什么|为什么|"
+    r"explain|inspect|review|list|directory|folder|analy[sz]e|why|what)"
 )
 _MUTATE_RE = re.compile(
     r"(?i)(修复|修改|实现|增加|删除|重构|改造|补全|记住|保存记忆|"

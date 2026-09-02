@@ -51,15 +51,18 @@ uv run coderook web C:\path\to\repo
 uv run coderook web --no-open
 ```
 
-The Web UI binds only to `127.0.0.1`. The CLI places a 60-second, single-use launch ticket in the
-URL fragment, exchanges it for an HttpOnly SameSite cookie, and removes the fragment. Provider API
-keys and the Core bearer token never enter browser storage or ordinary responses. TUI and Web share
+The Web UI binds only to `127.0.0.1`. Opening its stable local URL automatically establishes an
+HttpOnly SameSite browser session; no expiring launch link is required. Provider API keys and the
+Core bearer token never enter browser storage or ordinary responses. TUI and Web share
 the same sessions, durable event cursor, permissions, receipts, Checkpoints and Change Center.
 
 Use the project switcher in the Web sidebar to create a blank workspace under
 `~/CodeRookProjects`, choose another location, or open an existing local folder. Switching projects
-restarts the idle Core in the selected directory and reconnects the browser automatically, so the
-agent's tools and sessions remain bound to one explicit workspace.
+rebinds the idle Core in place: the browser page, authenticated session, HTTP listener, and IPC
+listener stay alive while workspace-scoped sessions, tools, Shell, MCP, Workers, artifacts, and
+Change Center are replaced. Each session remains bound to one explicit workspace. When launched
+without an explicit path from CodeRook's own editable source checkout, Web opens a neutral project
+picker and keeps the agent source unavailable until a user project is selected.
 
 Explicit product entries are:
 

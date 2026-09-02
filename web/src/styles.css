@@ -67,6 +67,7 @@ button:disabled { cursor: default; opacity: .38; }
 .project-switcher { min-width: 0; flex: 1; padding: 5px 4px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
 .project-switcher:hover { background: var(--hover); }
 .project-chevron { color: var(--faint); font-size: 14px; }
+.workspace-nav button:disabled { opacity: .32; }
 .new-thread {
   height: 36px; display: flex; align-items: center; gap: 8px; margin: 11px 2px 4px; padding: 0 10px;
   border: 1px solid #33343c; border-radius: 9px; background: #191a20; color: #e1e1e5; text-align: left;
@@ -121,6 +122,8 @@ button:disabled { cursor: default; opacity: .38; }
 .suggestions small { display: block; margin-top: 4px; color: #71737d; font-size: 10.5px; }
 .suggestions .icon { color: #575963; transition: color .14s ease, transform .14s ease; }
 .suggestions button:hover .icon { color: var(--accent); transform: translateX(2px); }
+.welcome-project-action { margin-top: 26px; }
+.welcome-project-action button { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 13px; border-radius: 9px; background: #292a2e; color: #fff; }
 
 .event-card { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px; padding: 12px 0; }
 .event-card + .event-card { border-top: 1px solid rgba(41,42,49,.55); }

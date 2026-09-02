@@ -12,7 +12,7 @@ Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据
   时只恢复单个 `Required Ubuntu gate` 并绑定同一候选 commit，不恢复 cron/nightly 或三平台 push matrix。
 - 运行 80×24、100×30、140×40 三种尺寸与中英文产品矩阵，覆盖 onboarding、Provider、权限、结果卡、
   Change Center、rewind、session 切换、Goal、Worker 与附件；修复后重新跑完整矩阵。
-- 对 Web 的 1280×720、1920×1080 和 390×844 做中英文人工验收，覆盖一次性登录、SSE 重连、
+- 对 Web 的 1280×720、1920×1080 和 390×844 做中英文人工验收，覆盖直接登录、SSE 重连、
   文件/Diff、Provider Doctor、审批、恢复和同一会话在 TUI/Web 间切换。
 - 对升级备份、坏 Goal/Task/Session 隔离和 `doctor runtime --repair` 做一次真实旧状态目录恢复演练；
   repair 只处理可证明安全的投影，不猜测损坏记录。

@@ -353,11 +353,16 @@ class RuntimeService:
 
     # 异步查询 thread
     async def get_thread(self, thread_id: str) -> ThreadRecord:
-        return await asyncio.to_thread(self._store.get_thread, thread_id)
+        thread = await asyncio.to_thread(self._store.get_thread, thread_id)
+        if str(Path(thread.workspace).resolve()) != self._workspace:
+            raise RecordNotFoundError(f"thread not found: {thread_id}")
+        return thread
 
     # 异步查询 turn
     async def get_turn(self, turn_id: str) -> TurnRecord:
-        return await asyncio.to_thread(self._store.get_turn, turn_id)
+        turn = await asyncio.to_thread(self._store.get_turn, turn_id)
+        await self.get_thread(turn.thread_id)
+        return turn
 
     # 从 durable usage 投影读取已知估算成本，未知或未建 turn 时返回 None
     async def get_estimated_cost(self, turn_id: str) -> float | None:
@@ -380,9 +385,14 @@ class RuntimeService:
                 total += float(value)
         return total
 
-    # 异步列出全部 thread
+    # 异步列出当前工作区的全部 thread
     async def list_threads(self) -> list[ThreadRecord]:
-        return await asyncio.to_thread(self._store.list_threads)
+        threads = await asyncio.to_thread(self._store.list_threads)
+        return [
+            thread
+            for thread in threads
+            if str(Path(thread.workspace).resolve()) == self._workspace
+        ]
 
     # 异步列出 thread 的全部或游标前最近一页 turn
     async def list_turns(
@@ -392,6 +402,7 @@ class RuntimeService:
         limit: int | None = None,
         before_turn_id: str | None = None,
     ) -> list[TurnRecord]:
+        await self.get_thread(thread_id)
         return await asyncio.to_thread(
             self._store.list_turns,
             thread_id,
@@ -408,6 +419,7 @@ class RuntimeService:
         up_to_seq: int | None = None,
         limit: int = 1000,
     ) -> list[RuntimeEventRecord]:
+        await self.get_thread(thread_id)
         return await asyncio.to_thread(
             self._store.list_events,
             thread_id,
@@ -418,6 +430,7 @@ class RuntimeService:
 
     # 异步查询 thread 当前事件高水位
     async def latest_event_seq(self, thread_id: str) -> int:
+        await self.get_thread(thread_id)
         return await asyncio.to_thread(self._store.latest_event_seq, thread_id)
 
     # 构造 Task timeline 到当前 thread/turn 的持久 runtime event 投影
@@ -481,10 +494,12 @@ class RuntimeService:
 
     # 异步列出 thread 的 item
     async def list_items(self, turn_id: str) -> list[TurnItemRecord]:
+        await self.get_turn(turn_id)
         return await asyncio.to_thread(self._store.list_items, turn_id)
 
     # 异步列出单个 turn 的全部 durable events
     async def list_turn_events(self, turn_id: str) -> list[RuntimeEventRecord]:
+        await self.get_turn(turn_id)
         return await asyncio.to_thread(self._store.list_turn_events, turn_id)
 
     # 从持久化记录构建可在 daemon 重启后离线读取的 turn receipt

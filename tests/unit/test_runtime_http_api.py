@@ -547,22 +547,16 @@ async def test_http_loopback_empty_token_fails_closed(tmp_path: Path) -> None:
         await server.stop()
 
 
-# 功能：验证 Web 启动 URL 使用 fragment、单次票据、HttpOnly Cookie 和 CSRF 写保护
-# 设计：通过真实回环 HTTP 交换票据后分别执行读、无 CSRF 写和带 CSRF 写，覆盖完整浏览器认证链
-async def test_web_bootstrap_uses_single_use_cookie_and_csrf(tmp_path: Path) -> None:
+# 功能：验证本机 Web 可直接建立 HttpOnly Cookie，同时继续使用 CSRF 保护写请求
+# 设计：直接打开稳定 URL 获取会话，再分别执行无 CSRF 与带 CSRF 写请求，覆盖零配置浏览器入口
+async def test_web_session_opens_directly_and_keeps_csrf_protection(tmp_path: Path) -> None:
     server, service, base_url = await _start_server(tmp_path)
     try:
-        launch_url, expires_in = server.issue_web_launch_url()
-        assert expires_in == 60
-        assert "#launch=" in launch_url
-        ticket = launch_url.split("#launch=", 1)[1]
+        launch_url = server.issue_web_launch_url()
+        assert launch_url == f"{base_url}/"
         origin = base_url
         async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
-            response = await client.post(
-                "/v1/web/bootstrap",
-                json={"launch_token": ticket},
-                headers={"Origin": origin},
-            )
+            response = await client.get("/v1/web/session")
             assert response.status_code == 200
             payload = response.json()
             csrf = payload["csrf_token"]
@@ -570,12 +564,12 @@ async def test_web_bootstrap_uses_single_use_cookie_and_csrf(tmp_path: Path) -> 
             assert "HttpOnly" in response.headers["set-cookie"]
             assert "SameSite=Strict" in response.headers["set-cookie"]
 
-            duplicate = await client.post(
+            compatible = await client.post(
                 "/v1/web/bootstrap",
-                json={"launch_token": ticket},
+                json={"launch_token": "expired-old-link"},
                 headers={"Origin": origin},
             )
-            assert duplicate.status_code == 401
+            assert compatible.status_code == 200
             assert (await client.get("/v1/web/session")).status_code == 200
             denied = await client.post(
                 "/v1/threads",

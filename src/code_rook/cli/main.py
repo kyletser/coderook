@@ -55,6 +55,7 @@ from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStoreError
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
+from code_rook.core.projects import ProjectRegistry
 from code_rook.core.state_migration import migrate_legacy_state
 
 _PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
@@ -409,13 +410,24 @@ def _run_cli() -> int:
         workspace = args.workspace.expanduser().resolve()
         if not workspace.is_dir():
             parser.error(f"web workspace is not a directory: {workspace}")
+        if ProjectRegistry().is_protected_workspace(workspace):
+            parser.error("CodeRook's internal source cannot be opened as a project")
         os.chdir(workspace)
+    elif args.command == "web":
+        registry = ProjectRegistry()
+        if registry.is_protected_workspace(Path.cwd()):
+            os.chdir(registry.prepare_welcome_workspace())
 
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
 
     if args.command == "web":
-        return cmd_web(config, no_open=args.no_open, env_file=args.env_file)
+        return cmd_web(
+            config,
+            no_open=args.no_open,
+            env_file=args.env_file,
+            explicit_workspace=args.workspace is not None,
+        )
     if args.command in {"configure", "config"}:
         cmd_configure(config)
     elif args.command == "config-status":

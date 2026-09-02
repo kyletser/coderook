@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +134,58 @@ def test_web_command_dispatches_selected_workspace(monkeypatch, tmp_path: Path) 
         "cwd": tmp_path.resolve(),
         "no_open": True,
         "env_file": None,
+        "explicit_workspace": True,
+    }
+
+
+# 功能：验证从 Agent 源码无参数启动 Web 时先进入隔离欢迎工作区再加载配置
+# 设计：替换项目注册表和启动器并捕获配置加载时 cwd，证明源码配置和文件不会成为默认项目
+def test_web_command_uses_welcome_workspace_for_protected_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    original = Path.cwd()
+    registry = SimpleNamespace(
+        is_protected_workspace=lambda path: Path(path) == source,
+        prepare_welcome_workspace=lambda: welcome,
+    )
+    monkeypatch.setattr(sys, "argv", ["coderook", "web", "--no-open"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "ProjectRegistry", lambda: registry)
+    monkeypatch.setattr(
+        cli_main,
+        "get_config",
+        lambda: captured.update({"config_cwd": Path.cwd()}) or config,
+    )
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_web",
+        lambda passed, **kwargs: captured.update(
+            {"config": passed, "web_cwd": Path.cwd(), **kwargs}
+        )
+        or 0,
+    )
+    try:
+        os.chdir(source)
+        result = cli_main.main()
+    finally:
+        os.chdir(original)
+
+    assert result == 0
+    assert captured == {
+        "config_cwd": welcome,
+        "config": config,
+        "web_cwd": welcome,
+        "no_open": True,
+        "env_file": None,
+        "explicit_workspace": False,
     }
 
 

@@ -23,7 +23,7 @@ CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经�
   no-follow 加载或排他创建用户 token，POSIX 校验 owner/0600，Windows 校验 reparse、普通文件及对象
   身份而不宣称额外 ACL 隔离。
 - `coderook web` 与 TUI 共用同一 Core、Session、SSE cursor、权限、Receipt、Checkpoint 和 Change
-  Center。浏览器以 IPC 签发的 60 秒单次票据换取 HttpOnly SameSite Cookie，写请求还受 Host、Origin、
+  Center。浏览器打开固定 loopback URL 后自动建立 HttpOnly SameSite Cookie，写请求还受 Host、Origin、
   CSRF 和 CSP 约束；Core bearer 与 Provider API Key 不进入 URL 或 Web Storage。
 - 每个 Turn 冻结 authority、route/model、工具、图片、并行、thinking 与 sandbox capability。修改另一
   session 或运行中配置不能扩大当前 Turn，子 Agent authority 只能收窄。

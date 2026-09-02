@@ -47,8 +47,8 @@ CodeRook Web SPA
 5. HTTP API 与 IPC SocketServer。
 
 关闭时按反向依赖顺序停止入口、后台工作和持久资源。进程启动前会探测端口，已有 Core 占用时不会
-静默启动第二个 daemon。Core 固定服务其启动目录；TUI 启动器通过 `core.ping` 核对 workspace 和活动
-run 数：同目录复用，其他目录的空闲受管 Core 有序重启，存在活动 run 时拒绝切换。即使使用
+静默启动第二个 daemon。Core 维护一个可重绑定的活动工作区运行时；TUI 启动器通过 `core.ping` 核对
+workspace 和活动 run 数：同目录复用，其他目录的空闲受管 Core 可原地重绑定，存在活动 run 时拒绝切换。即使使用
 `--no-auto-core`，也必须通过 workspace 一致性校验。
 
 Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置，也不暴露或恢复 Workflow/Fleet
@@ -97,16 +97,21 @@ no-follow、普通文件和对象身份检查加载或排他创建用户级 `api
 `0600`，Windows 使用可执行的重解析点/路径身份边界而不宣称 POSIX chmod。
 接口清单和恢复语义见 [Runtime API](RUNTIME_API.md)。
 
-浏览器不接触上述 Bearer token。`web.launch` 只经已认证 IPC 签发 60 秒单次票据，CLI 把票据放在
-URL fragment；SPA 以严格 Host/Origin 校验交换 HttpOnly、SameSite=Strict Cookie 与内存 CSRF token，
-然后移除 fragment。Cookie 写请求必须同时通过同源和 CSRF header。静态壳启用 CSP、nosniff、
+浏览器不接触上述 Bearer token。`web.launch` 经已认证 IPC 返回固定 loopback URL；SPA 首次请求时在
+严格 Host 校验下自动建立 HttpOnly、SameSite=Strict Cookie 与内存 CSRF token。Cookie 写请求必须
+同时通过同源和 CSRF header。静态壳启用 CSP、nosniff、
 referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API binding，也不提供公网监听参数。
 
-`core/projects.py` 保存用户级 `~/.coderook/projects.json`。项目切换不在同一进程混用多个 workspace：
-空闲 Core 签发目标目录绑定的一次性 handoff ticket，有序退出后由内部 helper 从目标目录启动新 Core，
-SPA 使用该 ticket 重连。活动 run 会阻止切换，因此现有 SessionManager、工具、权限、Artifact 和
-Change Center 仍维持单一工作区不变量。新建空白项目默认落到 `~/CodeRookProjects/`；登记已有目录
-不复制、不移动文件，忘记项目记录也不删除磁盘内容。
+`core/projects.py` 保存用户级 `~/.coderook/projects.json`。项目切换不在同一时刻混用多个 workspace：
+空闲 Core 先销毁旧工作区的 SessionManager、工具扩展、Shell、Worker、Artifact 与 Runtime API facade，
+再为目标目录创建新实例；HTTP/IPC listener、浏览器认证会话、全局 Provider Catalog 和用户状态库保持
+在线。SessionManager 接受显式 workspace 并只重建该目录的会话，因此切回项目会恢复其原会话而不会
+混入其他项目。活动 run 会阻止切换，以维持单一活动工作区不变量。新建空白项目默认落到
+`~/CodeRookProjects/`；登记已有目录不复制、不移动文件，忘记项目记录也不删除磁盘内容。
+
+从可编辑源码仓库无参数启动 Web 时，CLI 先切换到 `~/.coderook/welcome-workspace`。该目录只承载
+未选择项目的欢迎页，不注册为项目，也不开放文件、变更或任务入口。当前运行的 CodeRook 源码根、
+其子目录及会暴露该源码的父目录均不能登记，并会从旧的最近项目投影中隐藏。
 
 ## 4. Agent 执行链
 

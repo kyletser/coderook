@@ -11,6 +11,7 @@ import {
   resolveWebLocale,
   resolveWebTheme,
   resultStatusIsFailure,
+  workspaceHasUserProject,
   workspacePathIsDirectoryError,
 } from "./App";
 import type { RuntimeEvent, ThreadRecord } from "./types";
@@ -120,5 +121,11 @@ describe("Web task submission", () => {
     expect(isSimpleProductQuestion("你能做什么？")).toBe(true);
     expect(isSimpleProductQuestion("What model are you? ")).toBe(true);
     expect(isSimpleProductQuestion("Fix the model router tests")).toBe(false);
+  });
+
+  it("keeps file and task entry points closed in the neutral welcome workspace", () => {
+    expect(workspaceHasUserProject("C:\\Users\\demo\\.coderook\\welcome-workspace")).toBe(false);
+    expect(workspaceHasUserProject("/home/demo/.coderook/welcome-workspace/")).toBe(false);
+    expect(workspaceHasUserProject("C:\\Users\\demo\\project")).toBe(true);
   });
 });

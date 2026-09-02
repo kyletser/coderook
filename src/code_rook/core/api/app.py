@@ -121,6 +121,11 @@ class HttpApiServer:
         self._bound_host = host
         self._bound_port = port
 
+    # 原地替换工作区 API facade，使浏览器连接与认证会话无需重建
+    def rebind_service(self, service: RuntimeApiService) -> None:
+        self._service = service
+        self._web_auth.set_workspace(Path(service.workspace_root))
+
     # 校验绑定安全条件并启动监听
     async def start(self) -> tuple[str, int]:
         validate_api_binding(self._host, self._token)
@@ -131,17 +136,13 @@ class HttpApiServer:
         self._bound_port = int(address[1])
         return self._bound_host, self._bound_port
 
-    # 签发仅本机可用的 Web 启动 URL，票据只进入 fragment 而不进入 HTTP 日志
-    def issue_web_launch_url(self) -> tuple[str, int]:
+    # 返回可重复打开的本机 Web URL，浏览器会在首次 API 请求时自动建立会话
+    def issue_web_launch_url(self) -> str:
         if not is_loopback_host(self._bound_host):
             raise ValueError("CodeRook Web is available only on a loopback API binding")
-        ticket = self._web_auth.issue_launch_ticket()
         host = "127.0.0.1" if self._bound_host in {"0.0.0.0", "::"} else self._bound_host
         rendered_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-        return (
-            f"http://{rendered_host}:{self._bound_port}/#launch={ticket}",
-            self._web_auth.launch_ttl_seconds,
-        )
+        return f"http://{rendered_host}:{self._bound_port}/"
 
     # 停止接受请求并关闭所有普通与 SSE 连接
     async def stop(self) -> None:
@@ -184,6 +185,9 @@ class HttpApiServer:
             if request.method in {"GET", "HEAD"} and self._is_static_path(path):
                 await self._send_static(writer, request.method, path, request.headers)
                 return
+            if request.method == "GET" and path == "/v1/web/session":
+                await self._open_web_session(writer, request)
+                return
             if request.method == "POST" and path == "/v1/web/bootstrap":
                 await self._bootstrap_web_session(writer, request)
                 return
@@ -194,24 +198,6 @@ class HttpApiServer:
                 return
             if web_session is not None and not bearer:
                 self._validate_web_request(request, web_session)
-            if request.method == "GET" and path == "/v1/web/session":
-                if web_session is None:
-                    await self._send_json(
-                        writer,
-                        HTTPStatus.UNAUTHORIZED,
-                        {"error": "browser session cookie is required"},
-                    )
-                    return
-                await self._send_json(
-                    writer,
-                    HTTPStatus.OK,
-                    {
-                        "authenticated": True,
-                        "csrf_token": web_session.csrf_token,
-                        "workspace": str(self._service.workspace_root),
-                    },
-                )
-                return
             if request.method == "GET" and _THREAD_EVENTS.fullmatch(path):
                 streaming = True
                 await self._stream_events(reader, writer, request, headers_sent)
@@ -318,7 +304,30 @@ class HttpApiServer:
         ):
             raise ValueError("invalid Web CSRF token")
 
-    # 消费 fragment 传入的一次性票据并设置 HttpOnly 浏览器会话 Cookie
+    # 直接建立或恢复本机浏览器会话，避免启动链接过期阻断产品入口
+    async def _open_web_session(
+        self,
+        writer: asyncio.StreamWriter,
+        request: _HttpRequest,
+    ) -> None:
+        self._validate_web_host(request.headers)
+        session = self._web_auth.authenticate(request.headers.get("cookie"))
+        extra_headers: dict[str, str] = {}
+        if session is None:
+            session = self._web_auth.create_session()
+            extra_headers["Set-Cookie"] = self._web_auth.cookie_header(session)
+        await self._send_json(
+            writer,
+            HTTPStatus.OK,
+            {
+                "authenticated": True,
+                "csrf_token": session.csrf_token,
+                "workspace": str(self._service.workspace_root),
+            },
+            extra_headers=extra_headers,
+        )
+
+    # 兼容旧前端的 bootstrap 请求，并直接建立本机浏览器会话
     async def _bootstrap_web_session(
         self,
         writer: asyncio.StreamWriter,
@@ -328,18 +337,11 @@ class HttpApiServer:
         origin = request.headers.get("origin", "").strip().lower()
         if origin != f"http://{host}":
             raise ValueError("invalid Web bootstrap origin")
-        body = _json_object(request.body)
-        launch_token = body.get("launch_token")
-        if not isinstance(launch_token, str) or not launch_token:
-            raise ValueError("launch_token is required")
-        session = self._web_auth.exchange(launch_token)
+        session = self._web_auth.authenticate(request.headers.get("cookie"))
+        extra_headers: dict[str, str] = {}
         if session is None:
-            await self._send_json(
-                writer,
-                HTTPStatus.UNAUTHORIZED,
-                {"error": "launch token is invalid or expired"},
-            )
-            return
+            session = self._web_auth.create_session()
+            extra_headers["Set-Cookie"] = self._web_auth.cookie_header(session)
         await self._send_json(
             writer,
             HTTPStatus.OK,
@@ -348,7 +350,7 @@ class HttpApiServer:
                 "csrf_token": session.csrf_token,
                 "workspace": str(self._service.workspace_root),
             },
-            extra_headers={"Set-Cookie": self._web_auth.cookie_header(session)},
+            extra_headers=extra_headers,
         )
 
     # 从打包目录提供固定静态资源并拒绝路径穿越和未知文件
@@ -449,7 +451,7 @@ class HttpApiServer:
                 _json_object(request.body),
             )
         if request.method == "POST" and path == "/v1/projects/activate":
-            return HTTPStatus.ACCEPTED, await self._dispatch_control(
+            return HTTPStatus.OK, await self._dispatch_control(
                 "project.activate",
                 _json_object(request.body),
             )

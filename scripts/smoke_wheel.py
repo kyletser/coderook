@@ -237,7 +237,8 @@ print(package)
                 cwd=root,
             )
             launch_url = web_launch.stdout.strip()
-            if not launch_url.startswith("http://127.0.0.1:") or "#launch=" not in launch_url:
+            expected_launch_url = f"http://127.0.0.1:{env['CODEROOK_API_PORT']}/"
+            if launch_url != expected_launch_url:
                 raise RuntimeError(f"unexpected wheel Web launch URL: {launch_url!r}")
             web_shell = _run_python(
                 "import os, urllib.request; "

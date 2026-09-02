@@ -10,7 +10,6 @@ import logging
 import os
 import signal
 import sqlite3
-import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -241,7 +240,7 @@ from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.processes import ProcessSupervisor
-from code_rook.core.projects import ProjectHandoffTickets, ProjectRegistry
+from code_rook.core.projects import ProjectRegistry
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
 from code_rook.core.runtime.service import RuntimeService
@@ -251,6 +250,7 @@ from code_rook.core.session import Session, SessionManager, SessionStore
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.state_paths import (
     StatePathSecurityError,
+    UserStateLayout,
     prepare_user_state_layout,
 )
 from code_rook.core.subagent.backends import AcpWorkerBackend, WorkerBackendRegistry
@@ -348,7 +348,7 @@ class CoreApp:
         self._broadcaster: IpcEventBroadcaster | None = None
         self._trace: TraceWriter | None = None
         self._config: CodeRookConfig | None = None
-        self._env_file = env_file
+        self._env_file = None if env_file is None else env_file.expanduser().resolve()
         self._labs_enabled = labs_enabled()
         self._capability_kernel = CapabilityKernel()
         self._capability_scope = CapabilityScope(
@@ -386,8 +386,10 @@ class CoreApp:
         self._http_api: HttpApiServer | None = None
         self._runtime_api: RuntimeApiService | None = None
         self._socket_server: SocketServer | None = None
+        self._state_layout: UserStateLayout | None = None
+        self._session_store: SessionStore | None = None
+        self._workspace_switch_lock = asyncio.Lock()
         self._project_registry = ProjectRegistry()
-        self._project_handoff_tickets = ProjectHandoffTickets()
 
     # 将审计故障转换为不含异常正文的全局可见事件
     async def _publish_audit_incident(self, incident: AuditIncident) -> None:
@@ -580,18 +582,17 @@ class CoreApp:
             self._shutdown_event.set()
         return CoreShutdownResult()
 
-    # 经已认证 IPC 签发一次性本地浏览器启动 URL
+    # 经已认证 IPC 返回固定的本机浏览器地址
     async def _web_launch_handler(self, params: dict[str, Any]) -> WebLaunchResult:
         WebLaunchCommand.model_validate(params)
         if self._http_api is None:
             raise HandlerError(INVALID_PARAMS, "Web API is unavailable")
         try:
-            url, expires_in_seconds = self._http_api.issue_web_launch_url()
+            url = self._http_api.issue_web_launch_url()
         except ValueError as exc:
             raise HandlerError(INVALID_PARAMS, str(exc)) from exc
         return WebLaunchResult(
             url=url,
-            expires_in_seconds=expires_in_seconds,
             workspace=str(Path.cwd().resolve()),
         )
 
@@ -705,7 +706,278 @@ class CoreApp:
         except (OSError, ValueError) as exc:
             raise HandlerError(INVALID_PARAMS, str(exc)) from exc
 
-    # 激活项目并通过短期票据把浏览器交接给目标工作区 Core
+    # 为指定工作区加载项目配置，同时保持已监听的传输与用户级凭据配置不漂移
+    def _load_workspace_config(self, workspace: Path) -> CodeRookConfig:
+        assert self._config is not None
+        config = get_config(env_file=self._env_file, workspace=workspace)
+        config.host = self._config.host
+        config.port = self._config.port
+        config.ipc_token_file = self._config.ipc_token_file
+        config.api.host = self._config.api.host
+        config.api.port = self._config.api.port
+        config.api.token = self._config.api.token
+        config.trace = self._config.trace
+        return config
+
+    # 关闭只属于当前工作区的运行时组件，保留 HTTP、IPC、认证和全局状态服务
+    async def _stop_workspace_runtime(self) -> None:
+        if self._subagent_registry is not None:
+            self._subagent_registry.begin_shutdown()
+        if self._runtime_api is not None:
+            self._bus.unsubscribe(self._runtime_api.notify_runtime_event)
+        if self._runtime is not None:
+            self._bus.unsubscribe(self._runtime.record_bus_event)
+        steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
+            ("fleet", None if self._fleet is None else self._fleet.shutdown),
+            (
+                "sessions_cancel",
+                None if self._sessions is None else self._sessions.cancel_all,
+            ),
+            ("runtime_api", None if self._runtime_api is None else self._runtime_api.close),
+        ]
+        for name, step in steps:
+            if step is None:
+                continue
+            try:
+                await step()
+            except Exception:
+                logger.exception("workspace teardown step failed: %s", name)
+        if self._runtime is not None:
+            try:
+                await self._runtime.drain_pending_writes()
+            except Exception:
+                logger.exception("workspace teardown step failed: runtime_drain")
+        late_steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
+            ("mcp", None if self._mcp_manager is None else self._mcp_manager.stop_all),
+            ("background_registry", self._background_registry.cancel_all),
+            (
+                "subagent_registry",
+                None if self._subagent_registry is None else self._subagent_registry.cancel_all,
+            ),
+            ("worker_backends", self._worker_backends.close),
+            ("hooks", None if self._hooks is None else self._hooks.close),
+            ("persistent_shells", self._persistent_shell_pool.aclose_all),
+        ]
+        for name, step in late_steps:
+            if step is None:
+                continue
+            try:
+                await step()
+            except Exception:
+                logger.exception("workspace teardown step failed: %s", name)
+        self._capability_kernel.dispose_scope(self._capability_scope)
+        self._sessions = None
+        self._runtime = None
+        self._runtime_api = None
+        self._worker_controller = None
+        self._subagent_registry = None
+        self._fleet_registry = None
+        self._fleet = None
+        self._mcp_manager = None
+        self._hooks = None
+
+    # 为当前工作区装配 Session、工具、扩展、Worker 与 Runtime API 投影
+    async def _start_workspace_runtime(
+        self,
+        workspace: Path,
+        *,
+        recover_stale_turns: bool,
+    ) -> None:
+        assert self._config is not None
+        assert self._state_layout is not None
+        assert self._session_store is not None
+        assert self._permission_manager is not None
+        assert self._route_registry is not None
+        boundary = WorkspaceBoundary(workspace)
+        self._capability_scope = CapabilityScope(workspace=str(boundary.root))
+        self._artifact_store = ArtifactStore(
+            boundary.root / ".coderook" / "artifacts"
+        )
+        self._persistent_shell_pool = PersistentShellPool(
+            process_supervisor=self._process_supervisor,
+            artifact_store=self._artifact_store,
+        )
+        self._background_registry = BackgroundJobRegistry(
+            self._bus,
+            self._process_supervisor,
+            artifact_store=self._artifact_store,
+        )
+        self._worker_backends = WorkerBackendRegistry(
+            self._capability_kernel,
+            scope=self._capability_scope,
+        )
+        self._hooks = cast(
+            HookManager,
+            self._register_workspace_capability(
+                CapabilityKind.HOOK_MANAGER,
+                "default",
+                self._build_hook_manager(boundary.root),
+                stability=CapabilityStability.LABS,
+            ),
+        )
+        self._runtime = RuntimeService(
+            RuntimeStore(self._state_layout.runtime_database),
+            workspace=boundary.root,
+            bus=self._bus,
+            authority_provider=self._permission_manager.get_authority_snapshot,
+            audit_health=self._audit_health,
+        )
+        self._bus.subscribe(self._runtime.record_bus_event)
+        if recover_stale_turns:
+            try:
+                await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
+            except (OSError, RuntimeStoreError, sqlite3.DatabaseError, ValueError) as exc:
+                incident = await self._audit_health.degrade("runtime.recovery", exc)
+                logger.error(
+                    "runtime recovery failed closed; diagnostic_id=%s",
+                    incident.diagnostic_id,
+                )
+        self._route_registry = cast(
+            RouteRegistry,
+            self._register_workspace_capability(
+                CapabilityKind.PROVIDER_CATALOG,
+                "default",
+                self._route_registry,
+                stability=CapabilityStability.STABLE,
+            ),
+        )
+        self._mcp_manager = cast(
+            McpServerManager,
+            self._register_workspace_capability(
+                CapabilityKind.MCP_MANAGER,
+                "default",
+                McpServerManager(
+                    self._process_supervisor,
+                    enable_labs=self._labs_enabled,
+                ),
+                stability=CapabilityStability.STABLE,
+            ),
+        )
+        if self._config.mcp.servers:
+            logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
+            await self._mcp_manager.start_all(self._config.mcp.servers)
+        sessions_root = self._state_layout.sessions
+        self._subagent_registry = BackgroundTaskRegistry(
+            store_path=sessions_root.parent / "workers"
+        )
+        acp_command = os.environ.get("CODEROOK_ACP_COMMAND", "").strip()
+        if self._labs_enabled and acp_command:
+            self._worker_backends.register(AcpWorkerBackend(acp_command))
+        self._fleet_registry = BackgroundTaskRegistry(
+            store=SQLiteWorkerStore(sessions_root.parent / "fleet.db")
+        )
+        fleet_scheduler = LocalFleetScheduler(
+            self._fleet_registry,
+            LocalProcessHost(
+                (sys.executable, "-m", "code_rook.core.fleet.worker_process"),
+                cwd=boundary.root,
+                process_supervisor=self._process_supervisor,
+                sandbox_plan=plan_sandbox(
+                    detect_sandbox_capability(),
+                    SandboxTier.WORKSPACE_WRITE,
+                    str(boundary.root),
+                    network=True,
+                ),
+            ),
+            workspace=boundary.root,
+            profiles=self._build_fleet_profiles(),
+        )
+        self._fleet = LocalFleet(
+            WorkflowLedger(sessions_root.parent / "workflow.db"),
+            fleet_scheduler,
+        )
+        self._resume_labs_workflows()
+        self._sessions = SessionManager(
+            self._session_store,
+            runner_factory=lambda: AgentRunner(
+                self._config,  # type: ignore[arg-type]
+                bus=self._bus,
+                trace=self._trace,
+                permission_manager=self._permission_manager,
+                mcp_manager=self._mcp_manager,
+                background_registry=self._background_registry,
+                subagent_registry=self._subagent_registry,
+                interaction_manager=self._interaction_manager,
+                route_registry=self._route_registry,
+                runtime_service=self._runtime,
+                hooks=self._hooks,
+                process_supervisor=self._process_supervisor,
+                persistent_shell_pool=self._persistent_shell_pool,
+                goal_service=self._goal_service,
+                audit_health=self._audit_health,
+                capability_kernel=self._capability_kernel,
+            ),
+            bus=self._bus,
+            subagent_registry=self._subagent_registry,
+            runtime_service=self._runtime,
+            interaction_manager=self._interaction_manager,
+            route_registry=self._route_registry,
+            hooks=self._hooks,
+            goal_service=self._goal_service,
+            authority_provider=self._permission_manager.get_authority_snapshot,
+            workspace=boundary.root,
+        )
+        self._worker_controller = WorkerController(
+            registry=self._subagent_registry,
+            sessions=self._sessions,
+            session_store=self._session_store,
+            route_registry=self._route_registry,
+            permission_manager=self._permission_manager,
+            bus=self._bus,
+            workspace_boundary=boundary,
+            max_steps=self._config.agent.max_steps,
+            hooks=self._hooks,
+            interaction_manager=self._interaction_manager,
+            goal_service=self._goal_service,
+            backend_registry=self._worker_backends,
+        )
+        self._runtime_api = RuntimeApiService(
+            self._runtime,
+            self._sessions,
+            permission_manager=self._permission_manager,
+            workspace_boundary=boundary,
+            interaction_manager=self._interaction_manager,
+            configuration=self._route_registry.configuration_service(),
+            process_supervisor=self._process_supervisor,
+            artifact_store=self._artifact_store,
+            labs_enabled=self._labs_enabled,
+        )
+        self._bus.subscribe(self._runtime_api.notify_runtime_event)
+
+    # 在不关闭 HTTP 与 IPC 监听的情况下原地切换唯一活动工作区
+    async def _switch_workspace(self, target: Path) -> None:
+        async with self._workspace_switch_lock:
+            current = Path.cwd().resolve()
+            config = self._load_workspace_config(target)
+            await self._stop_workspace_runtime()
+            try:
+                os.chdir(target)
+                self._config = config
+                recovered = recover_file_transactions(target)
+                if recovered:
+                    logger.warning(
+                        "recovered %d interrupted file transaction(s)", recovered
+                    )
+                await self._start_workspace_runtime(
+                    target,
+                    recover_stale_turns=False,
+                )
+            except Exception:
+                logger.exception("workspace activation failed; restoring %s", current)
+                await self._stop_workspace_runtime()
+                os.chdir(current)
+                self._config = self._load_workspace_config(current)
+                await self._start_workspace_runtime(
+                    current,
+                    recover_stale_turns=False,
+                )
+                if self._http_api is not None and self._runtime_api is not None:
+                    self._http_api.rebind_service(self._runtime_api)
+                raise
+            if self._http_api is not None and self._runtime_api is not None:
+                self._http_api.rebind_service(self._runtime_api)
+
+    # 激活项目并在同一 Core 进程内原地重绑定工作区运行时
     async def _project_activate_handler(self, params: dict[str, Any]) -> dict[str, Any]:
         project_id = params.get("project_id")
         if not isinstance(project_id, str) or not project_id:
@@ -718,37 +990,19 @@ class CoreApp:
         current = Path.cwd().resolve()
         if os.path.normcase(str(target)) == os.path.normcase(str(current)):
             self._project_registry.register(target)
-            return {"switching": False, "workspace": str(target)}
+            return {"workspace": str(target)}
         active_runs = self._sessions.active_run_count() if self._sessions is not None else 0
         if active_runs:
             raise HandlerError(
                 INVALID_PARAMS,
                 "finish or cancel the active task before switching projects",
             )
-        if self._shutdown_event is None:
-            raise HandlerError(INVALID_PARAMS, "Core shutdown coordinator is unavailable")
-        launch_token = self._project_handoff_tickets.issue(target)
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "code_rook.core.project_switch",
-                "--workspace",
-                str(target),
-                "--old-pid",
-                str(os.getpid()),
-            ],
-            cwd=current,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        asyncio.get_running_loop().call_later(0.5, self._shutdown_event.set)
-        return {
-            "switching": True,
-            "workspace": str(target),
-            "launch_token": launch_token,
-        }
+        try:
+            await self._switch_workspace(target)
+        except (OSError, RuntimeError, SystemExit, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        self._project_registry.register(target)
+        return {"workspace": str(target)}
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
     async def _trace_event_handler(self, event: BaseModel) -> None:
@@ -2499,9 +2753,10 @@ class CoreApp:
             raise SystemExit(
                 f"unsafe CodeRook user state; run coderook doctor runtime: {exc}"
             ) from None
+        self._state_layout = state_layout
         self._project_registry = ProjectRegistry(state_layout.root)
-        self._project_handoff_tickets = ProjectHandoffTickets(state_layout.root)
-        self._project_registry.register(Path.cwd(), kind="existing")
+        if not self._project_registry.is_protected_workspace(Path.cwd()):
+            self._project_registry.register(Path.cwd(), kind="existing")
 
         if self._daemon_lock is None:
             self._daemon_lock = DaemonLock(state_layout.root / "core.lock")
@@ -2543,156 +2798,21 @@ class CoreApp:
             self._config.permission.timeout_s,
             len(load_policy_file(policy_file)),
         )
-        self._hooks = cast(
-            HookManager,
-            self._register_workspace_capability(
-                CapabilityKind.HOOK_MANAGER,
-                "default",
-                self._build_hook_manager(Path.cwd()),
-                stability=CapabilityStability.LABS,
-            ),
-        )
-
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = state_layout.sessions
-        store = SessionStore(sessions_root)
+        self._session_store = SessionStore(sessions_root)
         self._goal_service = GoalService(GoalStore(state_layout.goals))
         recovered_goals = self._goal_service.recover_interrupted()
         if recovered_goals:
             logger.info("recovered %d interrupted goals", len(recovered_goals))
         self._bus.subscribe(self._goal_usage_event_handler)
-        self._runtime = RuntimeService(
-            RuntimeStore(state_layout.runtime_database),
-            workspace=Path.cwd(),
-            bus=self._bus,
-            authority_provider=self._permission_manager.get_authority_snapshot,
-            audit_health=self._audit_health,
-        )
-        self._bus.subscribe(self._runtime.record_bus_event)
-        try:
-            await self._runtime.recover_stale_turns(datetime.datetime.now(UTC))
-        except (OSError, RuntimeStoreError, sqlite3.DatabaseError, ValueError) as exc:
-            incident = await self._audit_health.degrade("runtime.recovery", exc)
-            logger.error(
-                "runtime recovery failed closed; diagnostic_id=%s",
-                incident.diagnostic_id,
-            )
         await self._initialize_provider_catalog(state_layout.root)
-        assert self._route_registry is not None
-        self._route_registry = cast(
-            RouteRegistry,
-            self._register_workspace_capability(
-                CapabilityKind.PROVIDER_CATALOG,
-                "default",
-                self._route_registry,
-                stability=CapabilityStability.STABLE,
-            ),
+        await self._start_workspace_runtime(
+            Path.cwd().resolve(),
+            recover_stale_turns=True,
         )
-
-        self._mcp_manager = cast(
-            McpServerManager,
-            self._register_workspace_capability(
-                CapabilityKind.MCP_MANAGER,
-                "default",
-                McpServerManager(
-                    self._process_supervisor,
-                    enable_labs=self._labs_enabled,
-                ),
-                stability=CapabilityStability.STABLE,
-            ),
-        )
-        if self._config.mcp.servers:
-            logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
-            await self._mcp_manager.start_all(self._config.mcp.servers)
-
-        # daemon 级 Worker 控制面跨 turn 和重启持久化，内存仅保留本次 boot 任务句柄
-        self._subagent_registry = BackgroundTaskRegistry(
-            store_path=sessions_root.parent / "workers"
-        )
-        acp_command = os.environ.get("CODEROOK_ACP_COMMAND", "").strip()
-        if self._labs_enabled and acp_command:
-            self._worker_backends.register(AcpWorkerBackend(acp_command))
-        self._fleet_registry = BackgroundTaskRegistry(
-            store=SQLiteWorkerStore(sessions_root.parent / "fleet.db")
-        )
-        fleet_scheduler = LocalFleetScheduler(
-            self._fleet_registry,
-            LocalProcessHost(
-                (sys.executable, "-m", "code_rook.core.fleet.worker_process"),
-                cwd=Path.cwd(),
-                process_supervisor=self._process_supervisor,
-                sandbox_plan=plan_sandbox(
-                    detect_sandbox_capability(),
-                    SandboxTier.WORKSPACE_WRITE,
-                    str(Path.cwd()),
-                    network=True,
-                ),
-            ),
-            workspace=Path.cwd(),
-            profiles=self._build_fleet_profiles(),
-        )
-        self._fleet = LocalFleet(
-            WorkflowLedger(sessions_root.parent / "workflow.db"),
-            fleet_scheduler,
-        )
-        self._resume_labs_workflows()
-
-        self._sessions = SessionManager(
-            store,
-            runner_factory=lambda: AgentRunner(
-                self._config,  # type: ignore[arg-type]
-                bus=self._bus,
-                trace=self._trace,
-                permission_manager=self._permission_manager,
-                mcp_manager=self._mcp_manager,
-                background_registry=self._background_registry,
-                subagent_registry=self._subagent_registry,
-                interaction_manager=self._interaction_manager,
-                route_registry=self._route_registry,
-                runtime_service=self._runtime,
-                hooks=self._hooks,
-                process_supervisor=self._process_supervisor,
-                persistent_shell_pool=self._persistent_shell_pool,
-                goal_service=self._goal_service,
-                audit_health=self._audit_health,
-                capability_kernel=self._capability_kernel,
-            ),
-            bus=self._bus,
-            subagent_registry=self._subagent_registry,
-            runtime_service=self._runtime,
-            interaction_manager=self._interaction_manager,
-            route_registry=self._route_registry,
-            hooks=self._hooks,
-            goal_service=self._goal_service,
-            authority_provider=self._permission_manager.get_authority_snapshot,
-        )
-        self._worker_controller = WorkerController(
-            registry=self._subagent_registry,
-            sessions=self._sessions,
-            session_store=store,
-            route_registry=self._route_registry,
-            permission_manager=self._permission_manager,
-            bus=self._bus,
-            workspace_boundary=WorkspaceBoundary.current(),
-            max_steps=self._config.agent.max_steps,
-            hooks=self._hooks,
-            interaction_manager=self._interaction_manager,
-            goal_service=self._goal_service,
-            backend_registry=self._worker_backends,
-        )
-        self._runtime_api = RuntimeApiService(
-            self._runtime,
-            self._sessions,
-            permission_manager=self._permission_manager,
-            workspace_boundary=WorkspaceBoundary.current(),
-            interaction_manager=self._interaction_manager,
-            configuration=self._route_registry.configuration_service(),
-            process_supervisor=self._process_supervisor,
-            artifact_store=self._artifact_store,
-            labs_enabled=self._labs_enabled,
-        )
-        self._bus.subscribe(self._runtime_api.notify_runtime_event)
+        assert self._runtime_api is not None
         api_token = self._ensure_runtime_api_token()
         self._http_api = HttpApiServer(
             self._config.api.host,
@@ -2838,43 +2958,12 @@ class CoreApp:
                 await step()
             except Exception:
                 logger.exception("teardown step failed: %s", name)
-        # 先阻断新子 Agent 注册，再取消会话和关闭 Worker，避免退出阶段产生新后台任务
-        if self._subagent_registry is not None:
-            self._subagent_registry.begin_shutdown()
-        steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
-            ("fleet", None if self._fleet is None else self._fleet.shutdown),
-            (
-                "sessions_cancel",
-                None if self._sessions is None else self._sessions.cancel_all,
-            ),
-            ("runtime_api", None if self._runtime_api is None else self._runtime_api.close),
-        ]
-        for name, step in steps:
-            if step is None:
-                continue
-            try:
-                await step()
-            except Exception:
-                logger.exception("teardown step failed: %s", name)
         for run_task in list(self._running_runs):
             run_task.cancel()
         if self._running_runs:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
-        if self._runtime is not None:
-            try:
-                await self._runtime.drain_pending_writes()
-            except Exception:
-                logger.exception("teardown step failed: runtime_drain")
+        await self._stop_workspace_runtime()
         late_steps: list[tuple[str, Callable[[], Awaitable[None]] | None]] = [
-            ("mcp", None if self._mcp_manager is None else self._mcp_manager.stop_all),
-            ("background_registry", self._background_registry.cancel_all),
-            (
-                "subagent_registry",
-                None if self._subagent_registry is None else self._subagent_registry.cancel_all,
-            ),
-            ("worker_backends", self._worker_backends.close),
-            ("hooks", None if self._hooks is None else self._hooks.close),
-            ("persistent_shells", self._persistent_shell_pool.aclose_all),
             ("process_supervisor", self._process_supervisor.close),
             ("trace", None if self._trace is None else self._trace.stop),
         ]
@@ -2885,7 +2974,6 @@ class CoreApp:
                 await step()
             except Exception:
                 logger.exception("teardown step failed: %s", name)
-        self._capability_kernel.dispose_scope(self._capability_scope)
         if self._daemon_lock is not None:
             self._daemon_lock.release()
 

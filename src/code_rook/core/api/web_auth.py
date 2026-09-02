@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from pathlib import Path
 
-from code_rook.core.projects import ProjectHandoffTickets
-
 _COOKIE_NAME = "coderook_web_session"
 _LAUNCH_TTL_SECONDS = 60
 _SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -28,14 +26,16 @@ class WebAuthManager:
         launch_ttl_seconds: int = _LAUNCH_TTL_SECONDS,
         session_ttl_seconds: int = _SESSION_TTL_SECONDS,
         workspace: Path | None = None,
-        handoff_tickets: ProjectHandoffTickets | None = None,
     ) -> None:
         self._launch_ttl_seconds = launch_ttl_seconds
         self._session_ttl_seconds = session_ttl_seconds
         self._launch_tickets: dict[str, float] = {}
         self._sessions: dict[str, WebSession] = {}
         self._workspace = workspace
-        self._handoff_tickets = handoff_tickets or ProjectHandoffTickets()
+
+    # 更新当前 Web 会话对应的工作区，同时保留已认证浏览器会话
+    def set_workspace(self, workspace: Path) -> None:
+        self._workspace = workspace.resolve()
 
     @property
     # 返回公开给 CLI 的一次性启动票据有效期
@@ -68,18 +68,10 @@ class WebAuthManager:
         self._launch_tickets[token] = now + self._launch_ttl_seconds
         return token
 
-    # 原子消费启动票据并创建独立的 Cookie 与 CSRF 会话凭据
-    def exchange(self, launch_token: str) -> WebSession | None:
+    # 创建本机浏览器会话，不要求用户先交换一次性启动票据
+    def create_session(self) -> WebSession:
         now = time.monotonic()
         self._purge(now)
-        expires_at = self._launch_tickets.pop(launch_token, None)
-        local_ticket = expires_at is not None and expires_at > now
-        handoff_ticket = (
-            self._workspace is not None
-            and self._handoff_tickets.consume(launch_token, self._workspace)
-        )
-        if not local_ticket and not handoff_ticket:
-            return None
         session = WebSession(
             token=secrets.token_urlsafe(32),
             csrf_token=secrets.token_urlsafe(24),
@@ -87,6 +79,16 @@ class WebAuthManager:
         )
         self._sessions[session.token] = session
         return session
+
+    # 原子消费启动票据并创建独立的 Cookie 与 CSRF 会话凭据
+    def exchange(self, launch_token: str) -> WebSession | None:
+        now = time.monotonic()
+        self._purge(now)
+        expires_at = self._launch_tickets.pop(launch_token, None)
+        local_ticket = expires_at is not None and expires_at > now
+        if not local_ticket:
+            return None
+        return self.create_session()
 
     # 从 Cookie header 提取会话并用常量时间比较确认其仍然有效
     def authenticate(self, cookie_header: str | None) -> WebSession | None:

@@ -117,7 +117,11 @@ async def test_daemon_boot_recovers_stale_runtime(
     env["CODEROOK_LLM_BASE_URL"] = ""
     env["CODEROOK_LLM_API_KEY_ENV"] = "ANTHROPIC_API_KEY"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
-    process = subprocess.Popen([sys.executable, "-m", "code_rook.core"], env=env)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "code_rook.core"],
+        env=env,
+        cwd=daemon_home,
+    )
     writer: asyncio.StreamWriter | None = None
     try:
         await _wait_until_ready(process, free_port)

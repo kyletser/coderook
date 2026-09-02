@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-import secrets
 import string
 import time
 from dataclasses import asdict, dataclass
@@ -13,6 +11,7 @@ from typing import Any
 
 _PROJECTS_FILE = "projects.json"
 _PROJECTS_DIRECTORY = "CodeRookProjects"
+_WELCOME_WORKSPACE = "welcome-workspace"
 _INVALID_NAME_CHARS = set('<>:"/\\|?*')
 _WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -52,9 +51,41 @@ class ProjectRegistry:
     def default_projects_root(self) -> Path:
         return self._default_projects_root
 
+    @property
+    # 返回未选择用户项目时使用的隔离欢迎工作区
+    def welcome_workspace(self) -> Path:
+        return self._state_root / _WELCOME_WORKSPACE
+
+    # 创建并返回不包含任何 Agent 源码的隔离欢迎工作区
+    def prepare_welcome_workspace(self) -> Path:
+        self._state_root.mkdir(parents=True, exist_ok=True)
+        self.welcome_workspace.mkdir(parents=False, exist_ok=True)
+        return self.welcome_workspace.resolve(strict=True)
+
+    # 判断目录是内部欢迎区或包含当前运行的 CodeRook 源码
+    def is_protected_workspace(self, root: Path) -> bool:
+        try:
+            resolved = root.expanduser().resolve(strict=False)
+        except OSError:
+            return False
+        if os.path.normcase(str(resolved)) == os.path.normcase(
+            str(self.welcome_workspace.resolve(strict=False))
+        ):
+            return True
+        source_checkout = _running_source_checkout()
+        return source_checkout is not None and (
+            source_checkout.is_relative_to(resolved)
+            or resolved.is_relative_to(source_checkout)
+        )
+
     # 读取注册表并忽略已不存在的项目目录
     def list_projects(self) -> list[ProjectRecord]:
-        records = [record for record in self._load() if Path(record.root).is_dir()]
+        records = [
+            record
+            for record in self._load()
+            if Path(record.root).is_dir()
+            and not self.is_protected_workspace(Path(record.root))
+        ]
         return sorted(records, key=lambda item: item.last_opened_at, reverse=True)
 
     # 注册已有目录或刷新同路径项目的最近打开时间
@@ -66,6 +97,8 @@ class ProjectRegistry:
         kind: str = "existing",
     ) -> ProjectRecord:
         resolved = self._existing_directory(root)
+        if self.is_protected_workspace(resolved):
+            raise ValueError("CodeRook's internal source or welcome workspace cannot be opened")
         now = time.time()
         records = self._load()
         project_id = self._project_id(resolved)
@@ -89,6 +122,8 @@ class ProjectRegistry:
         if not base.is_dir():
             raise ValueError("project parent is not a directory")
         target = base / clean_name
+        if self.is_protected_workspace(target):
+            raise ValueError("CodeRook's internal source cannot be used as a project")
         target.mkdir(parents=False, exist_ok=False)
         return self.register(target, name=clean_name, kind="blank")
 
@@ -102,7 +137,11 @@ class ProjectRegistry:
     # 按稳定 ID 查询仍存在的项目目录
     def get(self, project_id: str) -> ProjectRecord:
         for record in self._load():
-            if record.id == project_id and Path(record.root).is_dir():
+            if (
+                record.id == project_id
+                and Path(record.root).is_dir()
+                and not self.is_protected_workspace(Path(record.root))
+            ):
                 return record
         raise ValueError("project is not available")
 
@@ -209,58 +248,13 @@ class ProjectRegistry:
         os.replace(temporary, self._path)
 
 
-class ProjectHandoffTickets:
-    # 初始化跨 Core 重启使用的短期一次性浏览器票据目录
-    def __init__(self, state_root: Path | None = None, ttl_seconds: int = 60) -> None:
-        root = (state_root or Path("~/.coderook")).expanduser().absolute()
-        self._directory = root / "web-handoffs"
-        self._ttl_seconds = ttl_seconds
-
-    # 为目标工作区签发只保存摘要的跨进程启动票据
-    def issue(self, workspace: Path) -> str:
-        resolved = workspace.resolve(strict=True)
-        token = secrets.token_urlsafe(32)
-        digest = self._digest(token)
-        self._directory.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "token_digest": digest,
-            "workspace": str(resolved),
-            "expires_at": time.time() + self._ttl_seconds,
-        }
-        path = self._directory / f"{digest}.json"
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        return token
-
-    # 仅在当前 Core 工作区匹配时原子消费跨进程启动票据
-    def consume(self, token: str, workspace: Path) -> bool:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", token):
-            return False
-        digest = self._digest(token)
-        path = self._directory / f"{digest}.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return False
-        try:
-            target = Path(str(payload["workspace"])).resolve(strict=True)
-            matches = os.path.normcase(str(target)) == os.path.normcase(
-                str(workspace.resolve(strict=True))
-            )
-            valid = (
-                payload.get("token_digest") == digest
-                and float(payload.get("expires_at", 0)) > time.time()
-                and matches
-            )
-        except (OSError, TypeError, ValueError):
-            valid = False
-        if not valid:
-            return False
-        try:
-            path.unlink()
-        except OSError:
-            return False
-        return True
-
-    # 对启动票据做单向摘要以避免明文落盘
-    def _digest(self, token: str) -> str:
-        return hashlib.sha256(token.encode("ascii")).hexdigest()
+# 定位当前可编辑安装对应的 CodeRook 源码根，普通 wheel 安装返回 None
+def _running_source_checkout() -> Path | None:
+    candidate = Path(__file__).resolve().parents[3]
+    if (
+        (candidate / ".git").is_dir()
+        and (candidate / "pyproject.toml").is_file()
+        and (candidate / "src" / "code_rook").is_dir()
+    ):
+        return candidate
+    return None

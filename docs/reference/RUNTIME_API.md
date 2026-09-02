@@ -17,10 +17,10 @@ SSE 接口。默认监听 `127.0.0.1:7438`；TUI、IPC 和 HTTP 读取同一个
 - 外部集成的每个 HTTP/JSON 和 SSE 请求都必须发送 `Authorization: Bearer <token>`。
 - token 不进入项目配置、日志、事件或 Turn Receipt。
 
-CodeRook Web 不读取 Bearer token。`coderook web` 经已认证 IPC 获取 60 秒单次票据，并只把它放在
-URL fragment；`POST /v1/web/bootstrap` 通过严格 Host/Origin 校验后交换 HttpOnly、SameSite=Strict
-Cookie 与内存 CSRF token。浏览器写请求必须带 `X-CodeRook-CSRF`，静态资源与 Web API 只接受当前
-loopback Host。票据交换后 fragment 被删除，Provider API Key 也不进入 URL 或浏览器存储。
+CodeRook Web 不读取 Bearer token。`coderook web` 经已认证 IPC 获取固定 loopback URL；浏览器首次调用
+`GET /v1/web/session` 时自动获得 HttpOnly、SameSite=Strict Cookie 与内存 CSRF token。浏览器写请求
+必须带 `X-CodeRook-CSRF`，静态资源与 Web API 只接受当前 loopback Host。旧版
+`POST /v1/web/bootstrap` 保留兼容但不再要求有效的一次性票据；Provider API Key 不进入 URL 或浏览器存储。
 
 ```powershell
 $env:CODEROOK_API_HOST = "127.0.0.1"
@@ -35,7 +35,7 @@ uv run coderook-core
 | `GET` | `/v1/projects` | 列出用户登记的项目、当前活动工作区和默认空白项目目录 |
 | `POST` | `/v1/projects` | 创建空白项目目录，body: `{"name":"...","parent":"..."}`；parent 可省略 |
 | `POST` | `/v1/projects/open` | 登记电脑上已有的目录，body: `{"path":"..."}`；不复制文件 |
-| `POST` | `/v1/projects/activate` | 在无活动 run 时切换单一活动工作区并返回浏览器 handoff ticket |
+| `POST` | `/v1/projects/activate` | 在无活动 run 时原地切换单一活动工作区；浏览器认证与监听端口保持不变 |
 | `DELETE` | `/v1/projects` | 忘记非活动项目记录，不删除磁盘文件 |
 | `GET` | `/v1/filesystem/directories` | 为本机 Web 目录选择器列出驱动器或直接子目录 |
 | `GET` | `/v1/threads` | 列出 durable threads；摘要包含 `turn_count`，供客户端优先恢复非空会话 |

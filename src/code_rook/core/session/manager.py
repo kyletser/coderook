@@ -160,6 +160,7 @@ class SessionManager:
         authority_provider: Callable[[str], AuthoritySnapshot] | None = None,
         workspace_mutation_guard: WorkspaceMutationGuard | None = None,
         workspace_mutation_lock: asyncio.Lock | None = None,
+        workspace: Path | None = None,
     ) -> None:
         if workspace_mutation_guard is not None and workspace_mutation_lock is not None:
             raise ValueError(
@@ -194,10 +195,12 @@ class SessionManager:
         self._pending_plans: dict[str, _PendingPlan] = {}
         self._pending_plans_loaded: set[str] = set()
         self._pending_recoveries: set[str] = set()
-        workspace = WorkspaceBoundary.current().root
-        self._workspace = workspace.resolve()
+        workspace_root = workspace or WorkspaceBoundary.current().root
+        self._workspace = workspace_root.resolve()
         self._skill_loader = SkillLoader(self._workspace)
-        self._artifact_store = ArtifactStore(workspace / ".coderook" / "artifacts")
+        self._artifact_store = ArtifactStore(
+            self._workspace / ".coderook" / "artifacts"
+        )
         self._rehydrate()
 
     # 将升级后发生摘要漂移的稳定 Preset 自动迁移到当前定义，避免历史会话无法继续使用

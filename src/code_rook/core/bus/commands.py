@@ -60,7 +60,7 @@ class WebLaunchCommand(BaseModel):
 
 class WebLaunchResult(BaseModel):
     url: str
-    expires_in_seconds: int = Field(ge=1, le=300)
+    expires_in_seconds: int | None = Field(default=None, ge=1, le=300)
     workspace: str
 
 
