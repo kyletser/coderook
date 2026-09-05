@@ -9,6 +9,7 @@ from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.strategy import (
     TaskIntent,
     TaskRisk,
+    TaskScope,
     TaskStrategy,
     TaskStrategyRouter,
 )
@@ -101,6 +102,68 @@ def test_directory_listing_routes_to_direct_read(goal: str) -> None:
     assert profile.strategy == TaskStrategy.DIRECT
     assert "list_dir" in (profile.model_tool_allowlist() or frozenset())
     assert profile.confidence >= 0.9
+
+
+# 功能：验证否定动作、名词化“实现”和路径中的 web 不会伪造修改或外部访问风险
+# 设计：覆盖真实误判措辞并比较意图、范围和风险，防止子串规则再次扩大执行权限
+@pytest.mark.parametrize(
+    ("goal", "intent", "risk"),
+    [
+        ("解释 src/auth.py 里的登录流程，不要修改代码。", TaskIntent.EXPLAIN, TaskRisk.READ),
+        ("定位 Provider 路由选择的实现和调用方。", TaskIntent.INSPECT, TaskRisk.READ),
+        ("修改 web/src/App.tsx 的发送按钮。", TaskIntent.FIX, TaskRisk.MUTATE),
+        (
+            "Describe RequestSnapshot without running commands or editing code.",
+            TaskIntent.EXPLAIN,
+            TaskRisk.READ,
+        ),
+    ],
+)
+def test_router_respects_negation_and_token_boundaries(
+    goal: str,
+    intent: TaskIntent,
+    risk: TaskRisk,
+) -> None:
+    profile = TaskStrategyRouter().classify_rules(goal)
+    expected_scope = TaskScope.READ_ONLY if risk == TaskRisk.READ else TaskScope.SINGLE_FILE
+
+    assert profile.intent == intent
+    assert profile.scope == expected_scope
+    assert profile.risk == risk
+
+
+# 功能：验证跨文件任务只有明确独立且不存在兼容耦合时才允许委派
+# 设计：对比同一协议的耦合修改和无共享文件的并行修改，证明路由不会见到多文件就盲目启动 Worker
+def test_router_delegates_only_independent_non_overlapping_work() -> None:
+    router = TaskStrategyRouter()
+
+    coupled = router.classify_rules(
+        "同时修改 Python 编码器和 TypeScript 解码器，保持同一个 JSON 协议。"
+    )
+    independent = router.classify_rules(
+        "分别重构互不依赖的缓存模块和日志模块，各自有独立测试，可以并行处理。"
+    )
+
+    assert coupled.scope == TaskScope.MULTI_FILE
+    assert coupled.strategy == TaskStrategy.PLAN_FIRST
+    assert not coupled.delegation_allowed
+    assert independent.scope == TaskScope.MULTI_FILE
+    assert independent.strategy == TaskStrategy.DELEGATE
+    assert independent.delegation_allowed
+
+
+# 功能：验证新增测试属于测试交付而修复后运行测试仍属于修复交付
+# 设计：用相同 mutate 与 test 信号构造不同主目标，确保 Router 按用户交付物而非关键词优先级分类
+def test_router_uses_primary_deliverable_for_fix_and_test_tasks() -> None:
+    router = TaskStrategyRouter()
+
+    add_test = router.classify_rules("给 tests/test_cache.py 增加一个并发回归测试。")
+    fix_then_test = router.classify_rules("修复 src/cache.py 的过期判断并运行对应 pytest。")
+
+    assert add_test.intent == TaskIntent.TEST
+    assert add_test.risk == TaskRisk.MUTATE
+    assert fix_then_test.intent == TaskIntent.FIX
+    assert fix_then_test.risk == TaskRisk.SHELL
 
 
 # 功能：验证编码任务画像会按具体意图和用户目标生成不同的执行说明

@@ -17,36 +17,74 @@ from code_rook.core.strategy.models import (
 )
 
 _READ_RE = re.compile(
-    r"(?i)(解释|说明|分析|理解|检查|审查|查看|列出|文件夹|目录|有哪些|是什么|为什么|"
-    r"explain|inspect|review|list|directory|folder|analy[sz]e|why|what)"
+    r"(?i)(解释|说明|分析|理解|检查|审查|查看|列出|定位|搜索|文件夹|目录|有哪些|是什么|为什么|"
+    r"\b(?:explain|inspect|review|list|locate|search|read|describe|analy[sz]e|why|what)\b)"
 )
 _MUTATE_RE = re.compile(
-    r"(?i)(修复|修改|实现|增加|删除|重构|改造|补全|记住|保存记忆|"
-    r"fix|change|implement|add|remove|refactor|update|remember)"
+    r"(?i)(修复|修改|实现|增加|新增|删除|重构|改造|补(?:充|齐|全)?|接入|迁移|记住|保存记忆|"
+    r"\b(?:fix|change|implement|add|remove|refactor|update|integrate|migrate|edit|expand|remember)\b)"
 )
-_TEST_RE = re.compile(r"(?i)(测试|验证|pytest|mypy|ruff|test|verify|lint|build)")
+_TEST_RE = re.compile(
+    r"(?i)(测试|验证|诊断|pytest|mypy|ruff|\b(?:test|tests|testing|verify|lint|build|diagnostic|coverage)\b)"
+)
+_TEST_DELIVERABLE_RE = re.compile(
+    r"(?i)(给.{0,40}(?:增加|新增|补充).{0,30}测试|"
+    r"给.{0,40}测试.{0,20}(?:增加|新增|补充)|补齐.{0,20}测试|执行.{0,20}(ruff|mypy|pytest)|"
+    r"运行.{0,30}(测试|pytest|mypy|ruff)|"
+    r"\b(?:add|write|expand).{0,50}\b(?:test|tests|coverage)\b|"
+    r"\b(?:run|execute).{0,30}\b(?:pytest|mypy|ruff|tests?|lint)\b)"
+)
+_FIX_PRIMARY_RE = re.compile(r"(?i)(修复|修好|\bfix\b)")
 _SHELL_RE = re.compile(
-    r"(?i)(命令|终端|运行|启动|安装|构建|提交|推送|shell|terminal|command|run|install|build|commit|push)"
+    r"(?i)(命令|终端|运行|启动|安装|构建|提交|推送|执行.{0,20}(ruff|mypy|pytest)|"
+    r"\b(?:shell|terminal|command|commands|run|execute|install|build|commit|push)\b)"
 )
 _EXTERNAL_RE = re.compile(
-    r"(?i)(联网|网站|网页|下载|api|github|http[s]?://|web|internet|download|fetch)"
+    r"(?i)(联网|网站|网页|浏览器|下载|官网|官方仓库|"
+    r"github|http[s]?://|\b(?:website|online|internet|download|fetch)\b)"
 )
-_REFACTOR_RE = re.compile(r"(?i)(重构|架构|模块化|refactor|architecture|modular)")
+_REFACTOR_RE = re.compile(
+    r"(?i)(重构|架构调整|模块化|迁移.{0,20}(类型|命名|接口)|"
+    r"\b(?:refactor|restructure|modularize|migrate)\b)"
+)
+_REPOSITORY_RE = re.compile(
+    r"(?i)(整个项目|整个代码库|整个仓库|整个.{0,16}模块|所有调用方|全局|全仓|"
+    r"接入.{0,60}(?:协议|文档)|"
+    r"\b(?:repository|codebase|project.?wide|repo.?wide|throughout|"
+    r"every consumer|all callers|subsystem)\b|"
+    r"\bintegrat(?:e|ing).{0,80}\bacross\b)"
+)
 _MULTI_RE = re.compile(
-    r"(?i)(多文件|跨文件|整个项目|代码库|仓库|全局|模块|multi.?file|repository|codebase|project.?wide|modules?)"
+    r"(?i)(多文件|跨文件|多个(?:文件|模块|组件)|配置.{0,20}(服务|加载器|调用方)|"
+    r"编码器.{0,20}解码器|provider.{0,30}(协议|文档)|协议.{0,30}文档|"
+    r"\b(?:multi.?file|multiple files?|modules|components|encoder.{0,30}decoder|"
+    r"configuration.{0,40}(service|loader|consumer)|across)\b)"
+)
+_PARALLEL_RE = re.compile(
+    r"(?i)(互不依赖|无共享文件|不重叠|独立(?:测试|验收)|可以并行|并行处理|"
+    r"\b(?:independent|unrelated|no shared files?|non.?overlapping|in parallel|separate tests?)\b)"
+)
+_COUPLED_RE = re.compile(
+    r"(?i)(保持同一个|同一(?:协议|接口|契约)|兼容|所有调用方|调用链|"
+    r"\b(?:same contract|one .*contract|compatib|migration|all callers|every consumer|together)\b)"
 )
 _LONG_RE = re.compile(
     r"(?i)(长任务|完整实现|全部完成|不要停止|多轮|恢复|迁移|long.?running|"
     r"complete all|migration|resume)"
 )
-_FILE_RE = re.compile(r"(?:[A-Za-z]:[\\/])?[\w.@+() -]+(?:[\\/][\w.@+() -]+)*\.[A-Za-z0-9]{1,10}")
+_FILE_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"
+)
 _CONVERSATION_RE = re.compile(
     r"(?i)(你好|您好|你是谁|你是什么模型|什么模型|具体型号|你能做什么|你能干什么|"
     r"你会什么|有什么功能|怎么使用|如何使用|"
     r"who are you|what model|hello|how do i use|what can you do)"
 )
-_CODE_CONTEXT_RE = re.compile(
-    r"(?i)(代码|文件|函数|类|模块|仓库|项目|报错|测试|code|file|function|class|module|repo|project|error|test)"
+_CHINESE_NEGATION_RE = re.compile(
+    r"(?:不要|无需|不用|禁止|(?<!分)别|不可|只读(?:即可)?)\s*[^，。；;.!?]{0,16}$"
+)
+_ENGLISH_NEGATION_RE = re.compile(
+    r"(?i)(?:do not|don't|dont|without|never|no need to)\s+(?:\w+[ -]?){0,4}$"
 )
 
 _SCOPE_RANK = {
@@ -122,19 +160,20 @@ class TaskStrategyRouter:
         preset_id: str = "standard",
     ) -> TaskProfile:
         signals: list[str] = []
-        read = bool(_READ_RE.search(goal))
-        mutate = bool(_MUTATE_RE.search(goal))
-        shell = bool(_SHELL_RE.search(goal))
-        external = bool(_EXTERNAL_RE.search(goal))
-        multi = bool(_MULTI_RE.search(goal))
+        read = _has_unnegated_match(_READ_RE, goal)
+        mutate = _has_unnegated_match(_MUTATE_RE, goal)
+        shell = _has_unnegated_match(_SHELL_RE, goal)
+        external = _has_unnegated_match(_EXTERNAL_RE, goal)
+        repository = bool(_REPOSITORY_RE.search(goal))
+        parallel = bool(_PARALLEL_RE.search(goal))
+        multi = repository or parallel or bool(_MULTI_RE.search(goal))
+        coupled = bool(_COUPLED_RE.search(goal))
         files = sorted(set(_FILE_RE.findall(goal)))
         conversational = bool(_CONVERSATION_RE.search(goal)) and not (
             mutate
             or shell
             or external
-            or multi
             or files
-            or _CODE_CONTEXT_RE.search(goal)
         )
         if conversational:
             signals.append("conversation_answer")
@@ -148,6 +187,12 @@ class TaskStrategyRouter:
             signals.append("external_intent")
         if multi:
             signals.append("multi_file_signal")
+        if repository:
+            signals.append("repository_scope_signal")
+        if parallel:
+            signals.append("independent_parallel_signal")
+        if coupled:
+            signals.append("coupled_change_signal")
         if len(files) > 1:
             multi = True
             signals.append("multiple_explicit_files")
@@ -160,11 +205,16 @@ class TaskStrategyRouter:
         if preset_id == "minimal":
             signals.append("minimal_preset")
 
+        refactor = _has_unnegated_match(_REFACTOR_RE, goal)
+        test_deliverable = bool(_TEST_DELIVERABLE_RE.search(goal))
+        fix_primary = bool(_FIX_PRIMARY_RE.search(goal))
         if conversational:
             intent = TaskIntent.ANSWER
-        elif _REFACTOR_RE.search(goal):
+        elif refactor:
             intent = TaskIntent.REFACTOR
-        elif _TEST_RE.search(goal) and not mutate:
+        elif parallel and multi and mutate:
+            intent = TaskIntent.MULTI_FILE_CHANGE
+        elif (test_deliverable and not fix_primary) or (_TEST_RE.search(goal) and not mutate):
             intent = TaskIntent.TEST
         elif multi and mutate:
             intent = TaskIntent.MULTI_FILE_CHANGE
@@ -173,7 +223,10 @@ class TaskStrategyRouter:
         elif read:
             intent = (
                 TaskIntent.EXPLAIN
-                if re.search(r"(?i)(解释|说明|是什么|为什么|explain|why|what)", goal)
+                if re.search(
+                    r"(?i)(解释|说明|是什么|为什么|\b(?:explain|describe|why|what)\b)",
+                    goal,
+                )
                 else TaskIntent.INSPECT
             )
         else:
@@ -190,15 +243,10 @@ class TaskStrategyRouter:
 
         if not mutate:
             scope = TaskScope.READ_ONLY
+        elif repository:
+            scope = TaskScope.REPOSITORY
         elif multi:
-            scope = (
-                TaskScope.REPOSITORY
-                if re.search(
-                    r"(?i)(整个项目|代码库|仓库|全局|repository|codebase|project.?wide)",
-                    goal,
-                )
-                else TaskScope.MULTI_FILE
-            )
+            scope = TaskScope.MULTI_FILE
         elif len(files) == 1:
             scope = TaskScope.SINGLE_FILE
         else:
@@ -208,8 +256,13 @@ class TaskStrategyRouter:
         confidence = 0.96 if conversational else 0.92 if clear else 0.55
         if read and mutate:
             confidence = 0.78
-        delegation_allowed = (
-            multi and mutate and runtime_mode != RuntimeMode.PLAN and preset_id != "minimal"
+        delegation_allowed = bool(
+            multi
+            and mutate
+            and parallel
+            and not coupled
+            and runtime_mode != RuntimeMode.PLAN
+            and preset_id != "minimal"
         )
         if runtime_mode == RuntimeMode.PLAN or not clear:
             strategy = TaskStrategy.PLAN_FIRST
@@ -366,6 +419,26 @@ class TaskStrategyRouter:
                 "digest": "",
             }
         ).with_digest()
+
+
+# 判断动作词是否没有被同一短语中的中英文否定词约束
+def _has_unnegated_match(pattern: re.Pattern[str], text: str) -> bool:
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 64) : match.start()]
+        boundary = max(prefix.rfind(mark) for mark in "，。；;.!?\n")
+        clause_prefix = prefix[boundary + 1 :]
+        if _CHINESE_NEGATION_RE.search(clause_prefix):
+            continue
+        if _ENGLISH_NEGATION_RE.search(clause_prefix):
+            continue
+        noun_context = re.search(
+            r"(?:当前|相关|这个|现有|实际|具体|压缩|的)\s*$",
+            clause_prefix,
+        )
+        if match.group(0) == "实现" and noun_context:
+            continue
+        return True
+    return False
 
 
 # 返回任务类型对应的默认可交付结果说明
