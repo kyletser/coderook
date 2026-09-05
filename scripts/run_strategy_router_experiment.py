@@ -33,10 +33,12 @@ class _CountingProvider:
         self.output_tokens = 0
         self.cache_read_tokens = 0
         self.cache_write_tokens = 0
+        self.calls = 0
 
     # 转发一次模型调用并从统一 UsageStats 累计真实用量
     async def chat(self, *args: Any, **kwargs: Any) -> LlmResponse:
         response = await self._provider.chat(*args, **kwargs)
+        self.calls += 1
         if response.usage is not None:
             self.input_tokens += response.usage.input_tokens
             self.output_tokens += response.usage.output_tokens
@@ -211,6 +213,7 @@ async def _run(
                     str(item["prompt"]),
                     provider=provider,
                     method=method,
+                    run_id=f"router:{method}:{repeat}:{item['id']}",
                 )
                 expected = dict(item["expected"])
                 rows.append(
@@ -286,6 +289,7 @@ async def _run(
             "spent_usd": provider.cost_usd() if provider is not None else 0.0,
             "input_tokens": provider.input_tokens if provider is not None else 0,
             "output_tokens": provider.output_tokens if provider is not None else 0,
+            "model_calls": provider.calls if provider is not None else 0,
         },
         "requested_repeats": args.repeats,
         "completed_blocks": completed_blocks,

@@ -332,9 +332,19 @@ class TaskStrategyRouter:
         run_id: str,
     ) -> TaskProfile | None:
         prompt = (
-            "Classify this coding task. Return one compact JSON object only, under 256 tokens, "
-            "with intent, scope, risk, strategy, context_policy, confidence, signals, "
-            "delegation_allowed. Never lower stated shell/external risk. Task:\n" + goal
+            "Classify the user's primary deliverable. Return exactly one JSON object with "
+            "these fields and enum values: "
+            'intent=["answer","explain","inspect","fix","test","refactor",'
+            '"multi_file_change"]; scope=["read_only","single_file","multi_file",'
+            '"repository"]; risk=["read","mutate","shell","external"]; '
+            'strategy=["direct","plan_first","delegate"]; '
+            'context_policy=["standard","long_task"]; confidence=number from 0 to 1; '
+            "signals=array of short strings; delegation_allowed=boolean. "
+            "Use direct for bounded work, plan_first for coupled or repository-wide work, "
+            "and delegate only for independently verifiable work with no shared files. "
+            "A negated action is not required. Never lower stated shell or external risk. "
+            "Do not invent enum values or add fields. User task:\n"
+            + goal
         )
         try:
             response = await provider.chat(
