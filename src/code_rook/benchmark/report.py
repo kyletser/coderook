@@ -74,6 +74,8 @@ def write_markdown_report(report: BenchmarkReport, path: Path) -> None:
         f"`{report.run_config.budget_fingerprint}`",
         f"- Benchmark/dataset: `{report.run_config.benchmark_name}` / "
         f"`{report.run_config.dataset_name}` @ `{report.run_config.dataset_commit}`",
+        f"- Execution environment / isolation: "
+        f"`{report.run_config.execution_environment}` / `{report.run_config.isolation}`",
         f"- Contracted tasks: **{report.run_config.task_count}**",
         f"- Pass@1: **{report.passed}/{report.total} ({report.pass_rate:.1%})**",
         f"- Verifier pass rate: **{summary.verifier_pass_rate:.1%}**",

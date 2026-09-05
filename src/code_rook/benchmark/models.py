@@ -209,6 +209,8 @@ class BenchmarkRunConfig(BaseModel):
     benchmark_name: str = "coderook-50"
     dataset_name: str = "benchmarks/fixtures/coding-katas-v1"
     dataset_commit: str = "unknown"
+    execution_environment: str = "unknown"
+    isolation: str = "unknown"
     task_count: int = Field(default=0, ge=0)
     task_catalog_fingerprint: str = "unknown"
     fixture_fingerprint: str = "unknown"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ from code_rook.benchmark.polyglot import (
     load_polyglot_exercise,
     load_polyglot_tasks,
     polyglot_dataset_commit,
+    verified_polyglot_isolation,
 )
 
 
@@ -110,3 +112,24 @@ def test_load_polyglot_exercise_rejects_unsafe_config_paths(tmp_path: Path) -> N
             language="python",
             dataset_commit=commit,
         )
+
+
+# 功能：验证 WSL2 公开评测只有在真实 bwrap 命名空间探针通过后才记录隔离环境
+# 设计：替换平台、可执行路径与探针进程，覆盖环境声明到报告标签的最小可信链路
+def test_verified_polyglot_isolation_accepts_probed_wsl2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("code_rook.benchmark.polyglot.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "code_rook.benchmark.polyglot.platform.release",
+        lambda: "6.6.0-microsoft-standard-WSL2",
+    )
+    monkeypatch.setattr("code_rook.benchmark.polyglot.shutil.which", lambda _name: "/bin/bwrap")
+    monkeypatch.setattr(
+        "code_rook.benchmark.polyglot.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    assert verified_polyglot_isolation(
+        {"CODEROOK_BENCHMARK_ISOLATION": "wsl2_bwrap"}
+    ) == ("wsl2-linux", "bwrap-user-namespace")

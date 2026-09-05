@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from code_rook.benchmark.loader import LoadedBenchmarkTask
@@ -21,6 +25,51 @@ _DIRECT_TEST_COMMANDS: dict[str, list[str]] = {
     ".go": ["go", "test", "./..."],
     ".java": ["./gradlew", "test"],
 }
+
+
+# 探测公开基准真实运行边界，只接受一次性容器或已通过命名空间探针的 WSL2+bwrap
+def verified_polyglot_isolation(environ: Mapping[str, str] | None = None) -> tuple[str, str]:
+    source = os.environ if environ is None else environ
+    requested = source.get("CODEROOK_BENCHMARK_ISOLATION", "").strip().casefold()
+    if requested == "disposable_container":
+        if source.get("CODEROOK_BENCHMARK_CONTAINER") != "1":
+            raise RuntimeError("disposable_container requires CODEROOK_BENCHMARK_CONTAINER=1")
+        return "linux-container", "disposable_container"
+    if requested != "wsl2_bwrap":
+        raise RuntimeError(
+            "public benchmark requires CODEROOK_BENCHMARK_ISOLATION="
+            "disposable_container or wsl2_bwrap"
+        )
+    if platform.system() != "Linux" or "microsoft" not in platform.release().casefold():
+        raise RuntimeError("wsl2_bwrap was requested outside WSL2")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        raise RuntimeError("wsl2_bwrap requires bwrap on PATH")
+    probe = [
+        bwrap,
+        "--ro-bind",
+        "/usr",
+        "/usr",
+    ]
+    for runtime_root in ("/lib", "/lib64"):
+        if Path(runtime_root).exists():
+            probe.extend(("--ro-bind", runtime_root, runtime_root))
+    probe.extend(
+        (
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--unshare-all",
+            "--die-with-parent",
+            "--",
+            "/usr/bin/true",
+        )
+    )
+    result = subprocess.run(probe, check=False, capture_output=True, timeout=10.0)
+    if result.returncode != 0:
+        raise RuntimeError("WSL2 bwrap isolation probe failed")
+    return "wsl2-linux", "bwrap-user-namespace"
 
 
 # 读取 Git 数据集当前提交并拒绝未提交修改，保证公开结果可以复现

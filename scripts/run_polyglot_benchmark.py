@@ -12,7 +12,7 @@ from pathlib import Path
 from code_rook.benchmark.executor import CodeRookBenchmarkExecutor
 from code_rook.benchmark.loader import LoadedBenchmarkTask
 from code_rook.benchmark.models import BenchmarkRunConfig
-from code_rook.benchmark.polyglot import load_polyglot_tasks
+from code_rook.benchmark.polyglot import load_polyglot_tasks, verified_polyglot_isolation
 from code_rook.benchmark.report import write_json_report, write_markdown_report
 from code_rook.benchmark.runner import BenchmarkRunner, verify_benchmark_baseline
 from code_rook.core.config import get_config
@@ -112,6 +112,8 @@ def _repository_commit(root: Path, explicit: str | None) -> str:
 def _run_config(
     temperature: float,
     dataset_commit: str,
+    execution_environment: str,
+    isolation: str,
 ) -> BenchmarkRunConfig:
     config = get_config()
     route = RouteRegistry(config.llm, temperature_override=temperature).route()
@@ -125,6 +127,8 @@ def _run_config(
         "temperature": route.temperature,
         "router": config.llm.router,
         "dataset_commit": dataset_commit,
+        "execution_environment": execution_environment,
+        "isolation": isolation,
     }
     fingerprint = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
@@ -140,16 +144,17 @@ def _run_config(
         benchmark_name="aider-polyglot-pass@1",
         dataset_name="Aider-AI/polyglot-benchmark",
         dataset_commit=dataset_commit,
+        execution_environment=execution_environment,
+        isolation=isolation,
     )
 
 
 # 在明确的容器边界内运行固定切片并写出统一 benchmark 证据
 async def _run(args: argparse.Namespace, root: Path) -> int:
-    if os.environ.get("CODEROOK_BENCHMARK_CONTAINER") != "1":
-        raise SystemExit(
-            "Refusing to execute model-generated code on the host. "
-            "Run inside a disposable container and set CODEROOK_BENCHMARK_CONTAINER=1."
-        )
+    try:
+        execution_environment, isolation = verified_polyglot_isolation()
+    except RuntimeError as exc:
+        raise SystemExit(f"Refusing unsafe public benchmark execution: {exc}") from exc
     dataset = args.dataset.resolve()
     tasks = load_polyglot_tasks(
         dataset,
@@ -184,7 +189,12 @@ async def _run(args: argparse.Namespace, root: Path) -> int:
         tasks,
         repository_commit=_repository_commit(root, args.agent_commit),
         suite="aider-polyglot-pass@1",
-        run_config=_run_config(args.temperature, args.expected_commit),
+        run_config=_run_config(
+            args.temperature,
+            args.expected_commit,
+            execution_environment,
+            isolation,
+        ),
     )
     write_json_report(report, output / "report.json")
     write_markdown_report(report, output / "report.md")
