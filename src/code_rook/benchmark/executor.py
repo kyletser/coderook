@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import subprocess
 import time
 import uuid
@@ -31,6 +32,8 @@ from code_rook.core.runner import AgentRunner
 from code_rook.core.strategy import TaskStrategy
 from code_rook.core.subagent import BackgroundTaskRegistry, WorkerStatus
 from code_rook.core.worktree import WorktreeBatchApplyItem, WorktreeManager
+
+logger = logging.getLogger(__name__)
 
 
 class CodeRookBenchmarkExecutor:
@@ -234,8 +237,11 @@ class CodeRookBenchmarkExecutor:
                     )
                 if batch_items:
                     applied = await manager.apply_many(tuple(batch_items))
+                    worker_apply_count = len(batch_items)
                     digests = dict(applied.item_digests)
                     for worker in completed:
+                        if worker.verification_status != "verified":
+                            continue
                         worker_registry.mark_handoff_applied(
                             worker.id,
                             state_digest=digests[worker.worktree],
@@ -247,8 +253,12 @@ class CodeRookBenchmarkExecutor:
                                 )
                             ),
                         )
-                    worker_apply_count = len(batch_items)
-            except (TimeoutError, ValueError, RuntimeError):
+            except (TimeoutError, ValueError, RuntimeError) as exc:
+                logger.warning(
+                    "benchmark worker handoff apply failed task_id=%s: %s",
+                    task.id,
+                    exc,
+                )
                 worker_conflicts += 1
 
         input_tokens = sum(event.input_tokens for event in usage_events)
