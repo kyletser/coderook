@@ -350,6 +350,7 @@ def test_agent_plan_schema_describes_nested_task_contract(tmp_path: Path) -> Non
         "token_budget",
     }
     claim_schema = task_schema["properties"]["write_claim"]
+    assert task_schema["properties"]["token_budget"]["minimum"] == 8_000
     assert set(claim_schema["properties"]) == {
         "read_only",
         "exact_files",

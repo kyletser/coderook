@@ -133,6 +133,7 @@ class BackgroundTaskRegistry:
         heartbeat_interval_s: float = 10.0,
         lease_timeout_s: float = 30.0,
         token_budget: int | None = None,
+        root_token_budget: int | None = None,
         max_attempts: int = 3,
         retry_backoff_s: float = 1.0,
     ) -> WorkerRecord:
@@ -174,6 +175,7 @@ class BackgroundTaskRegistry:
             lease_timeout_s=lease_timeout_s,
             boot_id=self.boot_id,
             token_budget=token_budget,
+            root_token_budget=root_token_budget,
             max_attempts=max_attempts,
             retry_backoff_s=retry_backoff_s,
             handoff_status=("read_only" if effective_claim.read_only else "pending_execution"),
@@ -276,18 +278,21 @@ class BackgroundTaskRegistry:
             if item.root_goal_id == worker.root_goal_id
         ]
         known_budgets = {
-            item.token_budget for item in same_goal if item.token_budget is not None
+            self._root_budget(item)
+            for item in same_goal
+            if self._root_budget(item) is not None
         }
-        if worker.token_budget is not None:
-            known_budgets.add(worker.token_budget)
+        candidate_root_budget = self._root_budget(worker)
+        if candidate_root_budget is not None:
+            known_budgets.add(candidate_root_budget)
         if len(known_budgets) > 1:
             raise WorkerConflictError("root goal workers must share one token budget")
         shared_budget = next(iter(known_budgets), None)
         if shared_budget is not None:
-            worker.token_budget = shared_budget
+            worker.root_token_budget = shared_budget
             for sibling in same_goal:
-                if sibling.token_budget is None:
-                    sibling.token_budget = shared_budget
+                if sibling.root_token_budget is None:
+                    sibling.root_token_budget = shared_budget
                     sibling.updated_at = _now()
                     self._save(sibling)
         for dependency_id in worker.dependencies:
@@ -684,7 +689,12 @@ class BackgroundTaskRegistry:
             limit=limit,
         )
 
-    # 累加 token 使用量，并在根预算耗尽时终止全部活跃 descendant
+    # 返回显式根预算；旧记录没有该字段时兼容沿用原 token_budget
+    @staticmethod
+    def _root_budget(worker: WorkerRecord) -> int | None:
+        return worker.root_token_budget or worker.token_budget
+
+    # 累加 token 使用量，并在单 Worker 或根预算耗尽时终止对应任务
     def add_token_usage(self, worker_id: str, tokens: int) -> bool:
         if tokens < 0:
             raise WorkerBudgetError("worker token usage must be non-negative")
@@ -700,29 +710,46 @@ class BackgroundTaskRegistry:
             if item.root_goal_id == worker.root_goal_id
         ]
         budget = next(
-            (item.token_budget for item in descendants if item.token_budget is not None),
+            (
+                self._root_budget(item)
+                for item in descendants
+                if self._root_budget(item) is not None
+            ),
             None,
         )
-        if budget is None:
-            return False
-        exhausted = sum(item.token_usage for item in descendants) >= budget
-        if not exhausted:
-            return False
-        for item in descendants:
-            if item.status not in ACTIVE_WORKER_STATUSES:
-                continue
+        root_exhausted = budget is not None and (
+            sum(item.token_usage for item in descendants) >= budget
+        )
+        if root_exhausted:
+            for item in descendants:
+                if item.status not in ACTIVE_WORKER_STATUSES:
+                    continue
+                self.update_status(
+                    item.id,
+                    WorkerStatus.BUDGET_LIMITED,
+                    reason=f"root goal token budget exhausted: {budget}",
+                )
+                live = self._tasks.get(item.id)
+                if live is not None:
+                    live.context.status = WorkerStatus.BUDGET_LIMITED.value
+                    live.context.reason = "root goal token budget exhausted"
+                    if not live.task.done():
+                        live.task.cancel()
+            return True
+        if worker.token_budget is not None and worker.token_usage >= worker.token_budget:
             self.update_status(
-                item.id,
+                worker.id,
                 WorkerStatus.BUDGET_LIMITED,
-                reason=f"root goal token budget exhausted: {budget}",
+                reason=f"worker token budget exhausted: {worker.token_budget}",
             )
-            live = self._tasks.get(item.id)
+            live = self._tasks.get(worker.id)
             if live is not None:
                 live.context.status = WorkerStatus.BUDGET_LIMITED.value
-                live.context.reason = "root goal token budget exhausted"
+                live.context.reason = "worker token budget exhausted"
                 if not live.task.done():
                     live.task.cancel()
-        return True
+            return True
+        return False
 
     # 累加细分 LLM usage 与可解释成本，再复用根预算硬上限
     def add_llm_usage(

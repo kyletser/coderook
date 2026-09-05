@@ -296,6 +296,7 @@ class SpawnAgentParams(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
     token_budget: int | None = Field(default=None, ge=1)
+    root_token_budget: int | None = Field(default=None, ge=1)
     wall_time_s: int = Field(default=900, ge=1, le=86_400)
     max_attempts: int = Field(default=3, ge=1, le=10)
     retry_backoff_s: float = Field(default=1.0, ge=0, le=300)
@@ -572,8 +573,11 @@ class SpawnAgentTool(BaseTool):
             if parent_worker
             else self._root_goal_id or self._parent_run_id
         )
-        inherited_budget = (
-            parent_worker.token_budget if parent_worker else p.token_budget
+        individual_budget = p.token_budget
+        root_token_budget = (
+            (parent_worker.root_token_budget or parent_worker.token_budget)
+            if parent_worker
+            else (p.root_token_budget or p.token_budget)
         )
         parent_authority = (
             parent_worker.authority_ceiling
@@ -1009,7 +1013,8 @@ class SpawnAgentTool(BaseTool):
                     depth=self._depth + 1,
                     max_steps=self._max_steps,
                     wall_time_s=p.wall_time_s,
-                    token_budget=inherited_budget,
+                    token_budget=individual_budget,
+                    root_token_budget=root_token_budget,
                     max_attempts=p.max_attempts,
                     retry_backoff_s=p.retry_backoff_s,
                 )

@@ -61,7 +61,11 @@ def _delegation_plan_input_schema() -> dict[str, object]:
                 "minItems": 1,
                 "description": "Concrete checks that prove this worker task is complete.",
             },
-            "token_budget": {"type": "integer", "minimum": 256},
+            "token_budget": {
+                "type": "integer",
+                "minimum": 8_000,
+                "description": "Per-worker budget; use at least 8000 for a coding task.",
+            },
             "wall_time_s": {
                 "type": "integer",
                 "minimum": 1,
@@ -82,8 +86,21 @@ def _delegation_plan_input_schema() -> dict[str, object]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "tasks": {"type": "array", "items": task, "minItems": 1, "maxItems": 3},
-            "total_token_budget": {"type": "integer", "minimum": 256},
+            "tasks": {
+                "type": "array",
+                "items": task,
+                "minItems": 1,
+                "maxItems": 3,
+                "description": (
+                    "Independent work units only. Do not create a worker merely to verify "
+                    "another worker's unmerged changes; the parent verifies after review/apply."
+                ),
+            },
+            "total_token_budget": {
+                "type": "integer",
+                "minimum": 8_000,
+                "description": "Shared hard budget across all tasks; must cover their sum.",
+            },
             "max_workers": {"type": "integer", "minimum": 1, "maximum": 3},
             "allow_nested_delegation": {"type": "boolean", "default": False},
         },
@@ -140,6 +157,7 @@ def _status_object(worker: WorkerRecord) -> dict[str, object]:
         "heartbeat_at": worker.heartbeat_at,
         "lease_timeout_s": worker.lease_timeout_s,
         "token_budget": worker.token_budget,
+        "root_token_budget": worker.root_token_budget,
         "token_usage": worker.token_usage,
         "input_tokens": worker.input_tokens,
         "output_tokens": worker.output_tokens,
@@ -462,6 +480,7 @@ class AgentTool(BaseTool):
                     payload.setdefault("dependencies", existing.dependencies)
                     payload.setdefault("acceptance", existing.acceptance)
                     payload.setdefault("token_budget", existing.token_budget)
+                    payload.setdefault("root_token_budget", existing.root_token_budget)
                     payload.setdefault("wall_time_s", existing.wall_time_s)
                     payload.setdefault("max_attempts", existing.max_attempts)
                     payload.setdefault("retry_backoff_s", existing.retry_backoff_s)
@@ -523,6 +542,7 @@ class AgentTool(BaseTool):
                             "dependencies": list(task.dependencies),
                             "acceptance": list(task.acceptance),
                             "token_budget": task.token_budget,
+                            "root_token_budget": ticket_plan.total_token_budget,
                             "wall_time_s": task.wall_time_s,
                         }
                     )

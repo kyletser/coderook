@@ -47,7 +47,7 @@ class WriteClaim(BaseModel):
 class WorkerRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
-    schema_version: int = 6
+    schema_version: int = 7
     id: str = Field(min_length=1)
     parent_turn_id: str = Field(min_length=1)
     parent_worker_id: str = ""
@@ -85,6 +85,7 @@ class WorkerRecord(BaseModel):
     lease_timeout_s: float = Field(default=30.0, gt=0)
     boot_id: str = Field(min_length=1)
     token_budget: int | None = Field(default=None, ge=1)
+    root_token_budget: int | None = Field(default=None, ge=1)
     token_usage: int = Field(default=0, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)

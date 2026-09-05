@@ -29,6 +29,7 @@ def _record(
     merge_owner: str = "",
     merge_reviewer: str = "",
     token_budget: int | None = None,
+    root_token_budget: int | None = None,
 ) -> WorkerRecord:
     if claim is not None and not claim.read_only:
         worktree = worktree or "shared"
@@ -49,6 +50,7 @@ def _record(
         merge_owner=merge_owner,
         merge_reviewer=merge_reviewer,
         token_budget=token_budget,
+        root_token_budget=root_token_budget,
     )
 
 
@@ -291,16 +293,44 @@ def test_retry_respects_attempt_limit_and_backoff(tmp_path: Path) -> None:
         registry.prepare_retry("worker-delayed")
 
 
-# 功能：同一 root goal 的 Worker 自动继承唯一共享 token budget
-# 设计：先创建无预算 sibling，再创建有预算 sibling，验证 registry 回填并拒绝冲突预算
+# 功能：同一 root goal 的 Worker 自动继承唯一共享根 token budget
+# 设计：先创建无预算 sibling，再创建旧格式预算 sibling，验证兼容回填并拒绝冲突根预算
 def test_root_goal_budget_is_single_shared_ledger(tmp_path: Path) -> None:
     registry = BackgroundTaskRegistry(store_path=tmp_path / "workers")
     registry.create(_record(registry, tmp_path, "worker-a"))
     registry.create(_record(registry, tmp_path, "worker-b", token_budget=20))
 
-    assert registry.record("worker-a").token_budget == 20  # type: ignore[union-attr]
+    assert registry.record("worker-a").root_token_budget == 20  # type: ignore[union-attr]
     with pytest.raises(WorkerConflictError, match="share one token budget"):
         registry.create(_record(registry, tmp_path, "worker-c", token_budget=30))
+
+
+# 功能：同一委派计划允许每个 Worker 使用不同额度，同时共享独立的总预算
+# 设计：给两个 sibling 配置不同单项预算和相同根预算，耗尽较小额度后确认只停止对应 Worker
+def test_worker_budget_is_independent_from_shared_root_budget(tmp_path: Path) -> None:
+    registry = BackgroundTaskRegistry(store_path=tmp_path / "workers")
+    registry.create(
+        _record(
+            registry,
+            tmp_path,
+            "worker-a",
+            token_budget=6,
+            root_token_budget=20,
+        )
+    )
+    registry.create(
+        _record(
+            registry,
+            tmp_path,
+            "worker-b",
+            token_budget=12,
+            root_token_budget=20,
+        )
+    )
+
+    assert registry.add_token_usage("worker-a", 6) is True
+    assert registry.record("worker-a").status == WorkerStatus.BUDGET_LIMITED  # type: ignore[union-attr]
+    assert registry.record("worker-b").status == WorkerStatus.QUEUED  # type: ignore[union-attr]
 
 
 # 功能：WorkerStore 持久化细分 token、缓存用量和可解释的模型成本

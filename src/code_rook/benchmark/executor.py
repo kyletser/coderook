@@ -206,14 +206,11 @@ class CodeRookBenchmarkExecutor:
                     and worker.verification_status == "verified"
                 ]
                 manager = WorktreeManager(workspace)
-                if worker_registry.list_records():
-                    unreviewed_workspace_writes = len(
-                        [
-                            path
-                            for path in await manager.workspace_changes()
-                            if path != ".coderook" and not path.startswith(".coderook/")
-                        ]
-                    )
+                unreviewed_workspace_writes = sum(
+                    not worker.write_claim.read_only
+                    and Path(worker.workspace).resolve() == workspace.resolve()
+                    for worker in worker_registry.list_records()
+                )
                 batch_items: list[WorktreeBatchApplyItem] = []
                 for worker in completed:
                     preview = await manager.preview_apply(
