@@ -151,7 +151,12 @@ async def _run(
     all_multi = [
         loaded for loaded in multi_catalog if loaded.task.category == "multi_file_change"
     ]
-    all_quick = [loaded for loaded in quick_catalog if "quick" in loaded.task.suites]
+    all_quick = [
+        loaded
+        for loaded in quick_catalog
+        if "quick" in loaded.task.suites
+        and loaded.task.category != "multi_file_change"
+    ]
     if len(all_multi) < args.multi_limit or len(all_quick) < args.quick_limit:
         raise SystemExit(
             "not enough fixed tasks for the requested cohorts: "
@@ -182,6 +187,10 @@ async def _run(
                 else [_with_agent_tool(loaded) for loaded in base_tasks]
             )
             block_dir = args.output / policy / cohort
+            print(
+                f"Running {policy}/{cohort}: {len(selected)} fixed tasks",
+                flush=True,
+            )
             runner = BenchmarkRunner(
                 CodeRookBenchmarkExecutor(
                     config,
@@ -204,6 +213,12 @@ async def _run(
             write_markdown_report(report, block_dir / "report.md")
             metrics = _report_metrics(report)
             rows.append({"policy": policy, "cohort": cohort, **metrics})
+            print(
+                f"Completed {policy}/{cohort}: "
+                f"{metrics['passed']}/{metrics['total']} passed, "
+                f"{metrics['tokens']} tokens, {metrics['elapsed_s']:.1f}s",
+                flush=True,
+            )
             block_cost = metrics["cost_usd"]
             if isinstance(block_cost, (int, float)):
                 previous_block_cost = float(block_cost)
@@ -228,15 +243,16 @@ def _markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Routed Multi-Agent Experiment",
         "",
-        "| Policy | Cohort | Pass@1 | Time | Tokens | Cost | Workers | Conflicts | Unreviewed writes |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Policy | Cohort | Pass@1 | Time | Tokens | Cost | Workers | Applied | Conflicts | Unreviewed writes |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in report["rows"]:
         cost = "unknown" if row["cost_usd"] is None else f"${row['cost_usd']:.4f}"
         lines.append(
             f"| {row['policy']} | {row['cohort']} | {row['pass_rate']:.1%} | "
             f"{row['elapsed_s']:.1f}s | {row['tokens']} | {cost} | {row['workers']} | "
-            f"{row['worker_conflicts']} | {row['unreviewed_workspace_writes']} |"
+            f"{row['worker_applies']} | {row['worker_conflicts']} | "
+            f"{row['unreviewed_workspace_writes']} |"
         )
     lines.extend(
         [
