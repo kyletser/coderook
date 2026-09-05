@@ -295,3 +295,22 @@ def test_plan_gate_filters_mutating_family_actions() -> None:
     registry.resolve_call("File", {"action": "read"})
     with pytest.raises(ToolCatalogError, match="hidden"):
         registry.resolve_call("File", {"action": "write"})
+
+
+# 功能：验证委派策略只允许父 Agent 只读探索并一次性执行已校验 DAG
+# 设计：检查顶层工具与 action 白名单，证明 Worker 失败后父 Agent 不能绕过 Worktree 直接修改
+def test_delegate_profile_blocks_parent_mutation_and_manual_polling() -> None:
+    profile = TaskStrategyRouter().classify_rules(
+        "并行修改三个互不依赖的文件并分别验证"
+    )
+
+    assert profile.strategy == TaskStrategy.DELEGATE
+    tools = profile.model_tool_allowlist() or frozenset()
+    actions = profile.model_action_allowlist()
+    assert "agent" in tools
+    assert "Bash" not in tools
+    assert "Run" not in tools
+    assert actions["File"] == frozenset(
+        {"read", "list", "search_name", "search_content"}
+    )
+    assert actions["agent"] == frozenset({"validate_plan", "execute_plan"})

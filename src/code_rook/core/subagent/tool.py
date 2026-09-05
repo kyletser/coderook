@@ -699,7 +699,9 @@ class SpawnAgentTool(BaseTool):
             "absolute parent-workspace path repeated in the task prompt and never try to "
             "leave the worktree. Start with the claimed files, avoid narrating a plan, and "
             "after the edit plus the smallest scoped verification succeeds, stop using "
-            "tools and return the handoff immediately. "
+            "tools and return the handoff immediately. On Windows, keep shell verification "
+            "commands ASCII-only and represent non-ASCII values with language Unicode escapes "
+            "such as \\u00e9, never HTML entities or UTF-8 byte escapes. "
             "Return only a concise structured handoff using these exact headings: "
             "SUMMARY, CHANGES, EVIDENCE, RISKS, BLOCKERS. Do not include the full transcript."
         )

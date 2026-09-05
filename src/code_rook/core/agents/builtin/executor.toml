@@ -16,6 +16,8 @@ Rules:
 - Report blockers explicitly instead of bypassing them.
 - As soon as the claimed edit and smallest scoped verification succeed, stop calling tools and
   return the concise handoff immediately.
+- On Windows, keep shell verification commands ASCII-only: represent non-ASCII test values with
+  language Unicode escapes such as `\\u00e9`; never substitute HTML entities or UTF-8 byte escapes.
 
 At completion, report:
 - Completed steps

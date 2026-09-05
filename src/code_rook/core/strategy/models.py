@@ -76,6 +76,25 @@ class TaskProfile(BaseModel):
     def model_tool_allowlist(self) -> frozenset[str] | None:
         if self.intent == TaskIntent.ANSWER:
             return frozenset()
+        if self.strategy == TaskStrategy.DELEGATE:
+            return frozenset(
+                {
+                    "File",
+                    "Git",
+                    "agent",
+                    "artifact_read",
+                    "git_diff",
+                    "glob",
+                    "grep",
+                    "list_dir",
+                    "read_file",
+                    "repository",
+                    "task_get",
+                    "task_list",
+                    "tool_search",
+                    "ask_user_question",
+                }
+            )
         if self.risk == TaskRisk.READ:
             return frozenset(
                 {
@@ -104,6 +123,12 @@ class TaskProfile(BaseModel):
 
     # 返回只读画像对 action family 的精确动作裁剪表
     def model_action_allowlist(self) -> dict[str, frozenset[str]]:
+        if self.strategy == TaskStrategy.DELEGATE:
+            return {
+                "File": frozenset({"read", "list", "search_name", "search_content"}),
+                "Git": frozenset({"status", "diff", "log", "show", "blame"}),
+                "agent": frozenset({"validate_plan", "execute_plan"}),
+            }
         if self.risk != TaskRisk.READ:
             return {}
         return {
