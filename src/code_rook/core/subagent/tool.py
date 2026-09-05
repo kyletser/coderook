@@ -261,6 +261,26 @@ def _bounded_event_summary(event: BaseModel) -> str:
     return kind
 
 
+# 为精确文件执行任务裁掉搜索、目录和 Git 工具，减少模型反复检查与 Schema Token
+def _focused_executor_profile(
+    profile: AgentProfile | None,
+    *,
+    exact_files: list[str],
+    write_roots: list[str],
+) -> AgentProfile | None:
+    if (
+        profile is None
+        or profile.name != "executor"
+        or not exact_files
+        or write_roots
+    ):
+        return profile
+    focused = {"bash", "read_file", "edit_file", "apply_patch", "write_file"}
+    return profile.model_copy(
+        update={"allowed_tools": [name for name in profile.allowed_tools if name in focused]}
+    )
+
+
 # 删除子事件中的工具参数、输出和过长推理后再桥接给父 TUI
 def _sanitized_parent_event(event: BaseModel) -> BaseModel | None:
     kind = str(getattr(event, "type", ""))
@@ -929,10 +949,15 @@ class SpawnAgentTool(BaseTool):
             )
 
         try:
+            execution_profile = _focused_executor_profile(
+                profile,
+                exact_files=p.exact_files,
+                write_roots=p.write_roots,
+            )
             child_registry = self._build_child_registry(
                 child_bus,
                 child_run_id,
-                profile,
+                execution_profile,
                 child_boundary,
                 task_manager,
                 child_provider,

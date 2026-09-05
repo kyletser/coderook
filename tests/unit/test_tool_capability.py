@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
-from code_rook.core.subagent.tool import SpawnAgentTool
+from code_rook.core.subagent.tool import SpawnAgentTool, _focused_executor_profile
 from code_rook.core.tools.base import BaseTool, ToolSideEffect
 from code_rook.core.tools.registry import ToolRegistry
 
@@ -233,6 +233,31 @@ def test_allowed_tools_alone_filters_by_name(tmp_path: Path) -> None:
     assert "list_dir" not in names
     assert "bash" not in names
     assert _visible_file_actions(registry) == {"read", "search_name"}
+
+
+# 功能：验证精确文件 Executor 只保留读写和验证工具，不再暴露搜索、目录与 Git
+# 设计：直接裁剪内建角色副本并核对原 Profile 不变，覆盖动态 Schema 缩减的核心边界
+def test_exact_file_executor_gets_focused_tool_catalog(tmp_path: Path) -> None:
+    from code_rook.core.agents.loader import AgentProfileLoader
+
+    profile = AgentProfileLoader(tmp_path).load("executor")
+    assert profile is not None
+
+    focused = _focused_executor_profile(
+        profile,
+        exact_files=["src/auth.py"],
+        write_roots=[],
+    )
+
+    assert focused is not None
+    assert set(focused.allowed_tools) == {
+        "bash",
+        "read_file",
+        "edit_file",
+        "apply_patch",
+        "write_file",
+    }
+    assert "git_diff" in profile.allowed_tools
 
 
 # 功能：profile=None 时无任何过滤，所有可能工具注册
