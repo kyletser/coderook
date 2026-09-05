@@ -325,6 +325,7 @@ def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
     tool, _, _ = _agent(tmp_path, _ResultProvider())
     assert [action.name for action in tool.build_spec().actions] == [
         "validate_plan",
+        "execute_plan",
         "start",
         "retry",
         "status",
@@ -333,6 +334,39 @@ def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
         "cancel",
         "followup",
     ]
+
+
+# 功能：验证 Core 能按计划一次性启动并等待全部独立 Worker，而不要求父模型轮询
+# 设计：用两个确定性只读 Worker 走真实后台 registry，断言单次 execute_plan 返回两个完成态
+async def test_agent_execute_plan_schedules_and_joins_workers(tmp_path: Path) -> None:
+    tool, registry, _ = _agent(tmp_path, _ResultProvider())
+    validated = await tool.invoke(
+        {
+            "action": "validate_plan",
+            "tasks": [
+                {
+                    "id": task_id,
+                    "role": "reviewer",
+                    "prompt": f"inspect {task_id}",
+                    "write_claim": {"read_only": True},
+                    "acceptance": [f"{task_id} inspected"],
+                    "token_budget": 8_000,
+                }
+                for task_id in ("left", "right")
+            ],
+            "total_token_budget": 16_000,
+        }
+    )
+    ticket = str(json.loads(validated.content)["plan_ticket"])
+
+    result = await tool.invoke({"action": "execute_plan", "plan_ticket": ticket})
+
+    assert not result.is_error, result.content
+    payload = json.loads(result.content)
+    assert payload["status"] == "completed"
+    assert payload["failed_tasks"] == []
+    assert {worker["status"] for worker in payload["workers"]} == {"completed"}
+    assert len(registry.list_records()) == 2
 
 
 # 功能：委派计划 schema 向模型完整公开任务、验收条件和 Write Claim 字段

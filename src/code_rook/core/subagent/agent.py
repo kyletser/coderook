@@ -139,6 +139,11 @@ class _WaitParams(BaseModel):
     timeout_s: float = Field(default=30.0, ge=0, le=60)
 
 
+class _ExecutePlanParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    plan_ticket: str = Field(min_length=64, max_length=64)
+
+
 class _CancelParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
     worker_id: str = Field(min_length=1)
@@ -180,6 +185,22 @@ def _status_object(worker: WorkerRecord) -> dict[str, object]:
         "summary": worker.summary[:1_000],
         "blockers": worker.blockers[:10],
     }
+
+
+# 从后台启动结果兼容提取 JSON 或旧文本格式的 Worker ID
+def _worker_id_from_start_result(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if isinstance(payload, dict):
+        worker_id = str(payload.get("worker_id", payload.get("run_id", "")))
+        if worker_id:
+            return worker_id
+    marker = "worker_id="
+    if marker not in content:
+        return ""
+    return content.split(marker, 1)[1].split(".", 1)[0].strip()
 
 
 class AgentTool(BaseTool):
@@ -229,6 +250,29 @@ class AgentTool(BaseTool):
                 capabilities=read,
                 permission_policy_aliases=("agent_result",),
                 approval_requirement=ApprovalRequirement.NEVER,
+                parallel_policy=ParallelPolicy.SERIAL,
+            ),
+            ToolActionSpec(
+                name="execute_plan",
+                description=(
+                    "Start every task in a validated delegation plan by DAG wave, wait "
+                    "inside Core instead of model polling, and return one bounded result."
+                ),
+                input_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "plan_ticket": {
+                            "type": "string",
+                            "minLength": 64,
+                            "maxLength": 64,
+                        }
+                    },
+                    "required": ["plan_ticket"],
+                },
+                capabilities=external,
+                permission_policy_aliases=("spawn_agent",),
+                approval_requirement=ApprovalRequirement.POLICY,
                 parallel_policy=ParallelPolicy.SERIAL,
             ),
             ToolActionSpec(
@@ -426,6 +470,89 @@ class AgentTool(BaseTool):
             ),
         )
 
+    # 在 Core 内按 DAG 波次启动并等待全部 Worker，避免父模型轮询浪费上下文和 Token
+    async def _execute_plan(self, params: dict[str, object]) -> ToolResult:
+        request = _ExecutePlanParams.model_validate(params)
+        plan = self._plan_tickets.get(request.plan_ticket)
+        if plan is None:
+            return ToolResult(
+                "agent.execute_plan requires a valid delegation plan ticket",
+                is_error=True,
+                error_type="permission_required",
+            )
+
+        workers: list[WorkerRecord] = []
+        failed_tasks: list[str] = []
+        skipped_tasks: list[str] = []
+        start_errors: dict[str, str] = {}
+        waves = plan.execution_waves()
+        for wave_index, wave in enumerate(waves):
+            wave_workers: list[tuple[str, str]] = []
+            for task_id in wave:
+                started = await self.invoke(
+                    {
+                        "action": "start",
+                        "plan_ticket": request.plan_ticket,
+                        "task_id": task_id,
+                    }
+                )
+                if started.is_error:
+                    failed_tasks.append(task_id)
+                    start_errors[task_id] = started.content[:1_000]
+                    continue
+                worker_id = _worker_id_from_start_result(started.content)
+                if not worker_id:
+                    failed_tasks.append(task_id)
+                    continue
+                wave_workers.append((task_id, worker_id))
+
+            # 等待本波 Worker 终态并返回稳定任务映射，超时则显式取消
+            async def _await_worker(
+                task_id: str,
+                worker_id: str,
+            ) -> tuple[str, WorkerRecord | None]:
+                live = self._registry.get(worker_id)
+                record = self._registry.record(worker_id)
+                if live is not None and not live[0].done():
+                    timeout_s = float(record.wall_time_s + 5 if record is not None else 905)
+                    try:
+                        await asyncio.wait_for(asyncio.shield(live[0]), timeout_s)
+                    except TimeoutError:
+                        await self._registry.cancel(worker_id)
+                return task_id, self._registry.record(worker_id)
+
+            wave_results = await asyncio.gather(
+                *(_await_worker(task_id, worker_id) for task_id, worker_id in wave_workers)
+            )
+            for task_id, worker in wave_results:
+                if worker is None or worker.status != WorkerStatus.COMPLETED:
+                    failed_tasks.append(task_id)
+                if worker is not None:
+                    workers.append(worker)
+            if failed_tasks:
+                skipped_tasks.extend(
+                    task_id
+                    for later_wave in waves[wave_index + 1 :]
+                    for task_id in later_wave
+                )
+                break
+
+        unique_failed = list(dict.fromkeys(failed_tasks))
+        status = "completed" if not unique_failed and not skipped_tasks else "partial"
+        payload = {
+            "status": status,
+            "execution_waves": waves,
+            "workers": [_status_object(worker) for worker in workers],
+            "failed_tasks": unique_failed,
+            "skipped_tasks": skipped_tasks,
+            "start_errors": start_errors,
+        }
+        return ToolResult(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            is_error=status != "completed",
+            error_type="runtime_error" if status != "completed" else None,
+        )
+
     # 校验 action 并分派到 Durable Worker 控制面
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         action = params.get("action")
@@ -459,6 +586,8 @@ class AgentTool(BaseTool):
                         indent=2,
                     )
                 )
+            if action == "execute_plan":
+                return await self._execute_plan(payload)
             if action in {"start", "retry"}:
                 worker_id = payload.get("worker_id")
                 if action == "retry" and (not isinstance(worker_id, str) or not worker_id):
@@ -561,13 +690,7 @@ class AgentTool(BaseTool):
                 result = await self._spawn.invoke(payload)
                 if action == "start" and not result.is_error:
                     self._started_tasks.add(task_key)
-                    try:
-                        result_payload = json.loads(result.content)
-                    except (json.JSONDecodeError, TypeError):
-                        result_payload = {}
-                    result_worker_id = str(
-                        result_payload.get("worker_id", result_payload.get("run_id", ""))
-                    )
+                    result_worker_id = _worker_id_from_start_result(result.content)
                     if result_worker_id:
                         self._task_workers[task_key] = result_worker_id
                 return result

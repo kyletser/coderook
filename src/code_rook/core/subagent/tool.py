@@ -694,6 +694,12 @@ class SpawnAgentTool(BaseTool):
         )
         child_context.runtime_mode = child_authority.mode
         result_contract = (
+            "Work directly from the current execution directory. For isolated workers, "
+            "claimed exact_files are paths relative to the worktree root; ignore any "
+            "absolute parent-workspace path repeated in the task prompt and never try to "
+            "leave the worktree. Start with the claimed files, avoid narrating a plan, and "
+            "after the edit plus the smallest scoped verification succeeds, stop using "
+            "tools and return the handoff immediately. "
             "Return only a concise structured handoff using these exact headings: "
             "SUMMARY, CHANGES, EVIDENCE, RISKS, BLOCKERS. Do not include the full transcript."
         )

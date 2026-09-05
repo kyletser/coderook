@@ -723,8 +723,10 @@ class AgentRunner:
                         sort_keys=True,
                     )
                     + "\nFollow this frozen strategy. For plan_first, establish an explicit "
-                    "bounded plan before mutation. For delegate, call agent.validate_plan before "
-                    "starting any worker; if validation fails, continue as one agent."
+                    "bounded plan before mutation. For delegate, call agent.validate_plan, then "
+                    "call agent.execute_plan exactly once so Core schedules and waits for the DAG; "
+                    "do not manually start, poll, retry, or reimplement Worker tasks. If plan "
+                    "validation fails, continue as one agent."
                 )
                 turn_authority_active = False
                 if permission_manager is not None and session_id_str:
