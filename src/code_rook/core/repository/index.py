@@ -86,6 +86,36 @@ _SENSITIVE_NAMES = {
     "runtime.db",
 }
 _QUERY_TERM = re.compile(r"(?:_|[^\W\d])\w*", re.UNICODE)
+_QUERY_PATH = re.compile(
+    r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+"
+    r"(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"
+)
+_QUERY_STOP_TERMS = frozenset(
+    {
+        "app",
+        "code",
+        "current",
+        "file",
+        "files",
+        "fix",
+        "js",
+        "json",
+        "lib",
+        "module",
+        "modules",
+        "project",
+        "py",
+        "repo",
+        "repository",
+        "src",
+        "test",
+        "tests",
+        "ts",
+        "tsx",
+        "update",
+    }
+)
+_MAX_CONTEXT_FILES = 12
 _GENERIC_IDENTIFIER = r"(?:[$_]|[^\W\d])[\w$]*"
 _GENERIC_SYMBOLS = (
     re.compile(rf"\b(?:export\s+)?(?:async\s+)?function\s+({_GENERIC_IDENTIFIER})\s*\(([^)]*)\)"),
@@ -872,7 +902,16 @@ class RepositoryIndex:
     # 在字符预算内选择与任务最相关的文件摘要并记录每项选择原因
     def select_context(self, query: str, *, budget_chars: int = 12_000) -> ContextSelection:
         snapshot = self.refresh()
-        terms = {term.casefold() for term in _QUERY_TERM.findall(query)}
+        terms = {
+            term.casefold()
+            for term in _QUERY_TERM.findall(query)
+            if term.casefold() not in _QUERY_STOP_TERMS
+            and (len(term) >= 3 or not term.isascii())
+        }
+        explicit_paths = {
+            value.casefold().replace("\\", "/") for value in _QUERY_PATH.findall(query)
+        }
+        explicit_stems = {Path(value).stem for value in explicit_paths}
         changed = set(snapshot.changed_paths)
         ranked: list[tuple[int, RepositoryFile, list[str]]] = []
         for repository_file in snapshot.files:
@@ -880,10 +919,21 @@ class RepositoryIndex:
             reasons: list[str] = []
             path_folded = repository_file.path.casefold()
             symbol_names = {symbol.name.casefold() for symbol in repository_file.symbols}
+            exact_path = any(
+                path_folded == value or value.endswith("/" + path_folded)
+                for value in explicit_paths
+            )
+            sibling_path = bool(explicit_stems) and Path(path_folded).stem in explicit_stems
             path_hits = sorted(term for term in terms if term in path_folded)
             symbol_hits = sorted(
                 term for term in terms if any(term in name for name in symbol_names)
             )
+            if exact_path:
+                score += 140
+                reasons.append("explicit_path")
+            elif sibling_path:
+                score += 90
+                reasons.append("explicit_path_sibling")
             if path_hits:
                 score += 30 + 5 * len(path_hits)
                 reasons.append("query_path:" + ",".join(path_hits[:4]))
@@ -917,6 +967,8 @@ class RepositoryIndex:
         selected_paths: list[str] = []
         selection_reasons: list[dict[str, object]] = []
         for score, repository_file, reasons in ranked:
+            if len(selected_paths) >= _MAX_CONTEXT_FILES:
+                break
             symbol_text = (
                 "; ".join(symbol.signature for symbol in repository_file.symbols[:12])
                 or "no indexed symbols"

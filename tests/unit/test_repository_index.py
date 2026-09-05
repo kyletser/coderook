@@ -106,6 +106,32 @@ def test_repository_context_selection_is_budgeted_and_explainable(tmp_path: Path
     assert selection.repository_hash
 
 
+# 功能：验证显式文件任务不会因通用路径词命中而注入整个同名前缀文件族
+# 设计：构造二十组同前缀双语言文件，断言目标及同 stem 文件优先且总选择数有硬上限
+def test_repository_context_prioritizes_explicit_path_and_bounds_file_count(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    source = tmp_path / "src"
+    source.mkdir()
+    for index in range(1, 21):
+        stem = f"mixed-kata-{index:02d}"
+        (source / f"{stem}.py").write_text("def solve(value): return value\n", encoding="utf-8")
+        (source / f"{stem}.ts").write_text(
+            "export function solve(value: unknown) { return value; }\n",
+            encoding="utf-8",
+        )
+    repository = RepositoryIndex(WorkspaceBoundary(tmp_path))
+
+    selection = repository.select_context(
+        "Fix src/mixed-kata-01.py and its same-name TypeScript decoder.",
+    )
+
+    assert selection.paths[:2] == ("src/mixed-kata-01.py", "src/mixed-kata-01.ts")
+    assert len(selection.paths) <= 12
+    assert selection.used_chars < 4_000
+
+
 # 功能：验证 Repository 工具输出结构化符号与文本回退引用结果
 # 设计：通过真实异步工具入口执行两个 action，覆盖 schema 后的 JSON 协议而非直接调用索引
 async def test_repository_tool_searches_symbols_and_references(tmp_path: Path) -> None:

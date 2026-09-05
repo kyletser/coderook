@@ -24,6 +24,14 @@ _MUTATE_RE = re.compile(
     r"(?i)(修复|修改|实现|增加|新增|删除|重构|改造|补(?:充|齐|全)?|接入|迁移|记住|保存记忆|"
     r"\b(?:fix|change|implement|add|remove|refactor|update|integrate|migrate|edit|expand|remember)\b)"
 )
+_WRITE_OUTPUT_RE = re.compile(
+    r"(?i)(写入|写到|写进|生成|创建|产出|"
+    r"在\s*[A-Za-z0-9_.@+()\\/-]+\.(?:md|txt|json|ya?ml)\s*(?:中|里)|"
+    r"\b(?:write|create|generate|save|produce)\b)"
+)
+_EXPLAIN_RE = re.compile(
+    r"(?i)(解释|说明|为什么|\b(?:explain|describe|why)\b)"
+)
 _TEST_RE = re.compile(
     r"(?i)(测试|验证|诊断|pytest|mypy|ruff|\b(?:test|tests|testing|verify|lint|build|diagnostic|coverage)\b)"
 )
@@ -161,7 +169,9 @@ class TaskStrategyRouter:
     ) -> TaskProfile:
         signals: list[str] = []
         read = _has_unnegated_match(_READ_RE, goal)
-        mutate = _has_unnegated_match(_MUTATE_RE, goal)
+        action_mutate = _has_unnegated_match(_MUTATE_RE, goal)
+        write_output = _has_unnegated_match(_WRITE_OUTPUT_RE, goal)
+        mutate = action_mutate or write_output
         shell = _has_unnegated_match(_SHELL_RE, goal)
         external = _has_unnegated_match(_EXTERNAL_RE, goal)
         repository = bool(_REPOSITORY_RE.search(goal))
@@ -193,9 +203,11 @@ class TaskStrategyRouter:
             signals.append("independent_parallel_signal")
         if coupled:
             signals.append("coupled_change_signal")
-        if len(files) > 1:
+        if len(files) > 1 and action_mutate:
             multi = True
             signals.append("multiple_explicit_files")
+        if write_output:
+            signals.append("output_write_intent")
         long_task = bool(_LONG_RE.search(goal)) or multi
         if long_task:
             signals.append("long_task_signal")
@@ -206,6 +218,7 @@ class TaskStrategyRouter:
             signals.append("minimal_preset")
 
         refactor = _has_unnegated_match(_REFACTOR_RE, goal)
+        explain = _has_unnegated_match(_EXPLAIN_RE, goal)
         test_deliverable = bool(_TEST_DELIVERABLE_RE.search(goal))
         fix_primary = bool(_FIX_PRIMARY_RE.search(goal))
         if conversational:
@@ -216,6 +229,8 @@ class TaskStrategyRouter:
             intent = TaskIntent.MULTI_FILE_CHANGE
         elif (test_deliverable and not fix_primary) or (_TEST_RE.search(goal) and not mutate):
             intent = TaskIntent.TEST
+        elif explain and write_output and not action_mutate:
+            intent = TaskIntent.EXPLAIN
         elif multi and mutate:
             intent = TaskIntent.MULTI_FILE_CHANGE
         elif mutate:
@@ -223,10 +238,8 @@ class TaskStrategyRouter:
         elif read:
             intent = (
                 TaskIntent.EXPLAIN
-                if re.search(
-                    r"(?i)(解释|说明|是什么|为什么|\b(?:explain|describe|why|what)\b)",
-                    goal,
-                )
+                if explain
+                or re.search(r"(?i)(是什么|\bwhat\b)", goal)
                 else TaskIntent.INSPECT
             )
         else:

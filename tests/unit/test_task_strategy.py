@@ -166,6 +166,20 @@ def test_router_uses_primary_deliverable_for_fix_and_test_tasks() -> None:
     assert fix_then_test.risk == TaskRisk.SHELL
 
 
+# 功能：验证读取源码并写出解释文档仍保持 explain 主意图但开放单文件写入
+# 设计：复现 Benchmark 中“不要改参考代码但需产出报告”的冲突措辞，分离交付意图与最高权限风险
+def test_explanation_artifact_is_classified_as_bounded_write() -> None:
+    profile = TaskStrategyRouter().classify_rules(
+        "阅读 reference/cache.py，在 report.md 中解释 race 和 lock；不要修改参考代码。"
+    )
+
+    assert profile.intent == TaskIntent.EXPLAIN
+    assert profile.scope == TaskScope.SINGLE_FILE
+    assert profile.risk == TaskRisk.MUTATE
+    assert profile.strategy == TaskStrategy.DIRECT
+    assert profile.model_tool_allowlist() == frozenset({"__all_except_delegation__"})
+
+
 # 功能：验证编码任务画像会按具体意图和用户目标生成不同的执行说明
 # 设计：对比修复与解释任务的标题素材，防止所有任务退化成同一段固定模板
 def test_task_profile_summary_mentions_current_goal_and_intent() -> None:
