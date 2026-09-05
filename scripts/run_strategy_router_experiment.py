@@ -74,6 +74,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cost-usd", type=float, default=1.0)
     parser.add_argument("--expected-model")
     parser.add_argument("--allow-model-calls", action="store_true")
+    parser.add_argument(
+        "--allow-unknown-pricing",
+        action="store_true",
+        help="run with token accounting but without a dollar-denominated hard budget",
+    )
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument(
         "--dataset",
@@ -196,14 +201,16 @@ async def _run(
         else None
     )
     router = TaskStrategyRouter()
+    budget_enforced = bool(candidate.get("pricing_known", False))
     rows: list[dict[str, Any]] = []
     completed_blocks: list[str] = []
     last_block_cost = 0.0
     for method in methods:
         for repeat in range(1, args.repeats + 1):
             spent = (provider.cost_usd() or 0.0) if provider is not None else 0.0
-            if spent >= args.max_cost_usd or (
-                last_block_cost > 0 and spent + last_block_cost > args.max_cost_usd
+            if budget_enforced and (
+                spent >= args.max_cost_usd
+                or (last_block_cost > 0 and spent + last_block_cost > args.max_cost_usd)
             ):
                 break
             block_start_cost = spent
@@ -287,6 +294,12 @@ async def _run(
         "budget": {
             "limit_usd": args.max_cost_usd,
             "spent_usd": provider.cost_usd() if provider is not None else 0.0,
+            "enforced": budget_enforced or not uses_model,
+            "reason": (
+                "model pricing available"
+                if budget_enforced
+                else "model pricing unavailable; token usage remains measured"
+            ),
             "input_tokens": provider.input_tokens if provider is not None else 0,
             "output_tokens": provider.output_tokens if provider is not None else 0,
             "model_calls": provider.calls if provider is not None else 0,
@@ -350,6 +363,7 @@ def main() -> int:
             get_config(),
             temperature=0.0,
             expected_model=args.expected_model,
+            require_pricing=not args.allow_unknown_pricing,
         )
     except RuntimeError as exc:
         raise SystemExit(f"experiment preflight failed: {exc}") from exc
@@ -368,6 +382,7 @@ def main() -> int:
             * sum(method != "rules_only" for method in methods)
         ),
         "max_cost_usd": args.max_cost_usd,
+        "allow_unknown_pricing": args.allow_unknown_pricing,
         "model_calls": False,
         "routing_label_claim": True,
         "coding_effectiveness_claim": False,
@@ -378,7 +393,7 @@ def main() -> int:
     if not git_state["working_tree_clean"]:
         raise SystemExit("experiment requires a clean Git working tree")
     args.output.mkdir(parents=True, exist_ok=True)
-    if uses_model:
+    if uses_model and bool(candidate.get("pricing_known", False)):
         configure_experiment_budget(
             args.output,
             limit_usd=args.max_cost_usd,

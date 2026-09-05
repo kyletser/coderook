@@ -60,9 +60,11 @@ uv run python scripts/run_reliability_suite.py --profile full --execute \
   --polyglot-commit <40-character-commit>
 ```
 
-每个付费阶段使用独立预算账本。Provider 在每次调用前预留 0.25 USD，余额不足时不发送请求；响应
-必须返回 usage 才能结算。预算文件只记录 token、成本和匿名调用 ID，不保存 Prompt、响应或凭据。
-某个阶段失败不会把剩余额度挪给其他阶段。
+每个已知美元价格的付费阶段使用独立预算账本。Provider 在每次调用前预留 0.25 USD，余额不足时
+不发送请求；响应必须返回 usage 才能结算。预算文件只记录 token、成本和匿名调用 ID，不保存
+Prompt、响应或凭据。某个阶段失败不会把剩余额度挪给其他阶段。新模型尚未进入美元价格表时，
+实验默认拒绝启动；显式增加 `--allow-unknown-pricing` 后可继续记录 input/output token，但报告必须写明
+美元硬预算未执行，且不得把未知成本记成 0。该开关适用于路由、压缩和多 Agent 对照脚本。
 
 ## 3. 对照实验
 
