@@ -15,6 +15,7 @@ from code_rook.benchmark.runner import run_benchmark_verifiers
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
+    WorkspaceTrust,
     detect_sandbox_capability,
 )
 from code_rook.core.bus.events import (
@@ -52,6 +53,7 @@ class CodeRookBenchmarkExecutor:
         strategy_override: TaskStrategy | None = None,
         initialize_git_workspace: bool = False,
         require_os_sandbox: bool = False,
+        assume_approved: bool = False,
     ) -> None:
         self._config = config
         self._temperature = temperature
@@ -59,6 +61,7 @@ class CodeRookBenchmarkExecutor:
         self._strategy_override = strategy_override
         self._initialize_git_workspace = initialize_git_workspace
         self._require_os_sandbox = require_os_sandbox
+        self._assume_approved = assume_approved
 
     # 在隔离工作区内运行当前 CodeRook Agent，并收集评分需要的最小事件指标
     async def execute(
@@ -149,6 +152,14 @@ class CodeRookBenchmarkExecutor:
                 AuthoritySnapshot(
                     profile=AuthorityProfile.AUTO_REVIEW,
                     sandbox=sandbox,
+                ),
+            )
+        elif self._assume_approved:
+            permission_manager.set_authority_snapshot(
+                "",
+                AuthoritySnapshot(
+                    profile=AuthorityProfile.FULL_ACCESS,
+                    workspace_trust=WorkspaceTrust.TRUSTED,
                 ),
             )
         permission_manager.set_session_mode(

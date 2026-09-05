@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import platform
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,8 @@ def _run_config(
             if cohort == "independent_multi_file"
             else "coding-katas-v1"
         ),
+        execution_environment=f"{platform.system().lower()}-temporary-workspace",
+        isolation="full-access-no-os-sandbox",
     )
 
 
@@ -201,6 +204,7 @@ async def _run(
                         TaskStrategy.DIRECT if policy == "single" else None
                     ),
                     initialize_git_workspace=policy != "single",
+                    assume_approved=True,
                 ),
                 evidence_root=block_dir / "evidence",
             )

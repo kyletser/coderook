@@ -101,6 +101,35 @@ async def test_private_stream_activity_prevents_false_idle_timeout() -> None:
     assert response.text == "done"
 
 
+# 功能：验证调用方取消 watchdog 时内部活动等待任务也会同步回收
+# 设计：让 Provider 永久等待后取消外层任务，再按显式任务名检查事件循环中没有残留 waiter
+async def test_watchdog_cancellation_reaps_activity_waiter() -> None:
+    async def never_finishes(_bus: EventBus) -> LlmResponse:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    watchdog = StreamWatchdog(
+        WatchdogLimits(idle_timeout_s=10.0, wall_timeout_s=20.0)
+    )
+    call = asyncio.create_task(watchdog.run(never_finishes, EventBus()))
+    await asyncio.sleep(0)
+    call.cancel()
+
+    try:
+        await call
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0)
+
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and task.get_name() == "stream-watchdog-activity"
+        and not task.done()
+    ]
+
+
 # 功能：验证持续有 token 的无限流不会逃过 wall timeout
 # 设计：让 idle 大于 token 间隔、wall 固定 30ms，证明总时长边界独立于活动边界
 async def test_active_never_ending_stream_fails_with_wall_timeout() -> None:

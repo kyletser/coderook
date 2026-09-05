@@ -120,6 +120,7 @@ class StreamWatchdog:
             return await call(_ActivityBus(bus, _touch))
 
         task = asyncio.create_task(_run_call())
+        activity_waiter: asyncio.Task[bool] | None = None
         try:
             while True:
                 now = loop.time()
@@ -134,7 +135,9 @@ class StreamWatchdog:
                         f"stream was idle for {self._limits.idle_timeout_s:g}s"
                     )
                 activity.clear()
-                activity_waiter = asyncio.create_task(activity.wait())
+                activity_waiter = asyncio.create_task(
+                    activity.wait(), name="stream-watchdog-activity"
+                )
                 wait_set: set[asyncio.Future[object]] = {
                     cast(asyncio.Future[object], task),
                     cast(asyncio.Future[object], activity_waiter),
@@ -157,11 +160,16 @@ class StreamWatchdog:
                     return response
                 if activity_waiter in done:
                     await activity_waiter
+                    activity_waiter = None
                     continue
                 activity_waiter.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await activity_waiter
         finally:
+            if activity_waiter is not None and not activity_waiter.done():
+                activity_waiter.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await activity_waiter
             if not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
