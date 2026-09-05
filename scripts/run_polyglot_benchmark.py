@@ -17,6 +17,7 @@ from code_rook.benchmark.report import write_json_report, write_markdown_report
 from code_rook.benchmark.runner import BenchmarkRunner, verify_benchmark_baseline
 from code_rook.core.config import get_config
 from code_rook.core.llm.route_registry import RouteRegistry
+from code_rook.core.strategy import TaskStrategy
 
 
 # 定义固定 commit、隔离容器和小样本优先的 Polyglot benchmark 参数
@@ -182,7 +183,12 @@ async def _run(args: argparse.Namespace, root: Path) -> int:
     output = args.output.resolve()
     config = get_config()
     runner = BenchmarkRunner(
-        CodeRookBenchmarkExecutor(config, temperature=args.temperature),
+        CodeRookBenchmarkExecutor(
+            config,
+            temperature=args.temperature,
+            strategy_override=TaskStrategy.DIRECT,
+            require_os_sandbox=True,
+        ),
         evidence_root=output / "evidence",
     )
     report = await runner.run(

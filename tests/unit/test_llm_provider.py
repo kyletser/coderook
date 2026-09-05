@@ -379,6 +379,73 @@ async def test_openai_compatible_sends_configured_temperature() -> None:
     assert captured[0]["temperature"] == 0.0
 
 
+# 功能：验证 OpenAI-compatible 请求会把 action-family oneOf 降级为单对象参数 schema
+# 设计：捕获真实 Provider 请求并检查 action 枚举与必填字段说明，覆盖弱兼容后端返回空参数的根因
+async def test_openai_compatible_flattens_action_family_schema() -> None:
+    captured: list[dict[str, object]] = []
+
+    # 捕获请求体并返回最小合法响应
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    family_schema = {
+        "name": "File",
+        "description": "File actions",
+        "input_schema": {
+            "type": "object",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["read"]},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["action", "path"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list"]},
+                        "path": {"type": "string"},
+                        "max_depth": {"type": "integer"},
+                    },
+                    "required": ["action"],
+                },
+            ],
+        },
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "test-model",
+            base_url="https://example.test/v1/chat/completions",
+            api_key_env="OPENAI_API_KEY",
+            api_key="test-key",
+            client=client,
+        )
+        await provider.chat(
+            messages=[],
+            tool_schemas=[family_schema],
+            bus=EventBus(),
+            run_id="r-openai-family-schema",
+        )
+
+    tools = captured[0]["tools"]
+    assert isinstance(tools, list)
+    parameters = tools[0]["function"]["parameters"]
+    assert "oneOf" not in parameters
+    assert parameters["required"] == ["action"]
+    assert parameters["properties"]["action"]["enum"] == ["read", "list"]
+    assert "read: path" in parameters["properties"]["action"]["description"]
+    assert "list: none" in parameters["properties"]["action"]["description"]
+
+
 # 功能：验证 OpenAI 官方推理模型使用 max_completion_tokens 请求字段
 # 设计：注入 MockTransport 捕获请求体，确保官方 preset 不发送不兼容的 max_tokens
 async def test_openai_official_uses_max_completion_tokens() -> None:

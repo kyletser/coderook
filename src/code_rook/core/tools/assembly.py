@@ -137,7 +137,7 @@ class RuntimeToolAssembly:
 
     # 依据权限管理层计算当前 session 应施加的 OS 沙箱计划（无权限管理器则返回 None）
     def _shell_sandbox_plan(self, session_id: str) -> SandboxPlan | None:
-        if self._permission_manager is None or not session_id:
+        if self._permission_manager is None:
             return None
         return self._permission_manager.shell_sandbox_plan(
             session_id,
@@ -176,9 +176,7 @@ class RuntimeToolAssembly:
             )
 
         frozen_authority = authority_snapshot or AuthoritySnapshot(mode=runtime_mode)
-        workspace_trusted = (
-            frozen_authority.workspace_trust == WorkspaceTrust.TRUSTED
-        )
+        workspace_trusted = frozen_authority.workspace_trust == WorkspaceTrust.TRUSTED
         registry = ToolRegistry(
             runtime_mode=runtime_mode,
             allowed_authority_actions=frozen_authority.allowed_actions,
@@ -324,9 +322,7 @@ class RuntimeToolAssembly:
                     spec=spawn_tool.build_spec().model_copy(
                         update={
                             "model_visible": False,
-                            "allowed_callers": frozenset(
-                                {ToolCaller.INTERNAL, ToolCaller.REPLAY}
-                            ),
+                            "allowed_callers": frozenset({ToolCaller.INTERNAL, ToolCaller.REPLAY}),
                         }
                     ),
                 )
@@ -337,9 +333,7 @@ class RuntimeToolAssembly:
                     spec=agent_result_tool.build_spec().model_copy(
                         update={
                             "model_visible": False,
-                            "allowed_callers": frozenset(
-                                {ToolCaller.INTERNAL, ToolCaller.REPLAY}
-                            ),
+                            "allowed_callers": frozenset({ToolCaller.INTERNAL, ToolCaller.REPLAY}),
                         }
                     ),
                 )

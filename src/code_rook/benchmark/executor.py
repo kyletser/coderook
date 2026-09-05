@@ -12,6 +12,11 @@ from pydantic import BaseModel
 
 from code_rook.benchmark.models import AgentExecution, BenchmarkTask, VerifierResult
 from code_rook.benchmark.runner import run_benchmark_verifiers
+from code_rook.core.authority import (
+    AuthorityProfile,
+    AuthoritySnapshot,
+    detect_sandbox_capability,
+)
 from code_rook.core.bus.events import (
     ContextCompactedEvent,
     LlmRetryEvent,
@@ -46,12 +51,14 @@ class CodeRookBenchmarkExecutor:
         auto_apply_reviewed_workers: bool = False,
         strategy_override: TaskStrategy | None = None,
         initialize_git_workspace: bool = False,
+        require_os_sandbox: bool = False,
     ) -> None:
         self._config = config
         self._temperature = temperature
         self._auto_apply_reviewed_workers = auto_apply_reviewed_workers
         self._strategy_override = strategy_override
         self._initialize_git_workspace = initialize_git_workspace
+        self._require_os_sandbox = require_os_sandbox
 
     # 在隔离工作区内运行当前 CodeRook Agent，并收集评分需要的最小事件指标
     async def execute(
@@ -127,6 +134,23 @@ class CodeRookBenchmarkExecutor:
 
         bus.subscribe(capture)
         permission_manager = PermissionManager(timeout_s=0)
+        if self._require_os_sandbox:
+            sandbox = detect_sandbox_capability()
+            if not sandbox.available or sandbox.kind not in {
+                "linux_bwrap",
+                "macos_seatbelt",
+            }:
+                raise RuntimeError(
+                    "benchmark requires a fully enforced OS sandbox; "
+                    f"detected {sandbox.kind}: {sandbox.reason}"
+                )
+            permission_manager.set_authority_snapshot(
+                "",
+                AuthoritySnapshot(
+                    profile=AuthorityProfile.AUTO_REVIEW,
+                    sandbox=sandbox,
+                ),
+            )
         permission_manager.set_session_mode(
             "",
             "allow_list",
@@ -321,6 +345,7 @@ class CodeRookBenchmarkExecutor:
             worker_apply_count=worker_apply_count,
             unreviewed_workspace_writes=unreviewed_workspace_writes,
         )
+
     # 将事件中的任意 JSON 数值安全收敛为非负整数
     @staticmethod
     def _nonnegative_int(value: object) -> int:

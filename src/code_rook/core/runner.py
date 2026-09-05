@@ -418,7 +418,7 @@ class AgentRunner:
             permission_manager.get_authority_snapshot(session_id_str).model_copy(
                 update={"mode": runtime_mode}
             )
-            if permission_manager is not None and session_id_str
+            if permission_manager is not None
             else AuthoritySnapshot(mode=runtime_mode)
         )
         workspace_trusted = turn_authority.workspace_trust == WorkspaceTrust.TRUSTED

@@ -29,9 +29,7 @@ _WRITE_OUTPUT_RE = re.compile(
     r"在\s*[A-Za-z0-9_.@+()\\/-]+\.(?:md|txt|json|ya?ml)\s*(?:中|里)|"
     r"\b(?:write|create|generate|save|produce)\b)"
 )
-_EXPLAIN_RE = re.compile(
-    r"(?i)(解释|说明|为什么|\b(?:explain|describe|why)\b)"
-)
+_EXPLAIN_RE = re.compile(r"(?i)(解释|说明|为什么|\b(?:explain|describe|why)\b)")
 _TEST_RE = re.compile(
     r"(?i)(测试|验证|诊断|pytest|mypy|ruff|\b(?:test|tests|testing|verify|lint|build|diagnostic|coverage)\b)"
 )
@@ -48,8 +46,10 @@ _SHELL_RE = re.compile(
     r"\b(?:shell|terminal|command|commands|run|execute|install|build|commit|push)\b)"
 )
 _EXTERNAL_RE = re.compile(
-    r"(?i)(联网|网站|网页|浏览器|下载|官网|官方仓库|"
-    r"github|http[s]?://|\b(?:website|online|internet|download|fetch)\b)"
+    r"(?i)(联网|浏览器|下载|(?:网站|网页|官网|官方仓库|github).{0,24}(?:查看|搜索|下载|读取|对比)|"
+    r"(?:去|从).{0,24}(?:网站|网页|官网|官方仓库|github)|"
+    r"\b(?:website|online|internet|download|fetch|browse)\b|"
+    r"\b(?:search|inspect|review|read|open|compare).{0,60}(?:github|https?://|website)\b)"
 )
 _REFACTOR_RE = re.compile(
     r"(?i)(重构|架构调整|模块化|迁移.{0,20}(类型|命名|接口)|"
@@ -83,6 +83,7 @@ _LONG_RE = re.compile(
 _FILE_RE = re.compile(
     r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"
 )
+_URL_RE = re.compile(r"(?i)https?://\S+")
 _CONVERSATION_RE = re.compile(
     r"(?i)(你好|您好|你是谁|你是什么模型|什么模型|具体型号|你能做什么|你能干什么|"
     r"你会什么|有什么功能|怎么使用|如何使用|"
@@ -178,12 +179,9 @@ class TaskStrategyRouter:
         parallel = bool(_PARALLEL_RE.search(goal))
         multi = repository or parallel or bool(_MULTI_RE.search(goal))
         coupled = bool(_COUPLED_RE.search(goal))
-        files = sorted(set(_FILE_RE.findall(goal)))
+        files = sorted(set(_FILE_RE.findall(_URL_RE.sub("", goal))))
         conversational = bool(_CONVERSATION_RE.search(goal)) and not (
-            mutate
-            or shell
-            or external
-            or files
+            mutate or shell or external or files
         )
         if conversational:
             signals.append("conversation_answer")
@@ -238,8 +236,7 @@ class TaskStrategyRouter:
         elif read:
             intent = (
                 TaskIntent.EXPLAIN
-                if explain
-                or re.search(r"(?i)(是什么|\bwhat\b)", goal)
+                if explain or re.search(r"(?i)(是什么|\bwhat\b)", goal)
                 else TaskIntent.INSPECT
             )
         else:
@@ -356,8 +353,7 @@ class TaskStrategyRouter:
             "Use direct for bounded work, plan_first for coupled or repository-wide work, "
             "and delegate only for independently verifiable work with no shared files. "
             "A negated action is not required. Never lower stated shell or external risk. "
-            "Do not invent enum values or add fields. User task:\n"
-            + goal
+            "Do not invent enum values or add fields. User task:\n" + goal
         )
         try:
             response = await provider.chat(

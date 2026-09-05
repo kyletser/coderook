@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -405,11 +406,73 @@ def _to_openai_tools(tool_schemas: list[dict[str, object]]) -> list[dict[str, ob
             "function": {
                 "name": tool["name"],
                 "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {"type": "object"}),
+                "parameters": _compatible_tool_schema(tool.get("input_schema", {"type": "object"})),
             },
         }
         for tool in tool_schemas
     ]
+
+
+# 将 action-family 的 oneOf 降级为兼容 OpenAI-compatible 后端的单对象 schema
+def _compatible_tool_schema(raw_schema: object) -> object:
+    if not isinstance(raw_schema, dict):
+        return raw_schema
+    schema = deepcopy(raw_schema)
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list) or not variants:
+        return schema
+
+    action_names: list[str] = []
+    merged_properties: dict[str, object] = {}
+    required_sets: list[set[str]] = []
+    requirements: list[str] = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            return schema
+        properties = variant.get("properties")
+        if not isinstance(properties, dict):
+            return schema
+        action_schema = properties.get("action")
+        if not isinstance(action_schema, dict):
+            return schema
+        action_values = action_schema.get("enum")
+        if not isinstance(action_values, list) or len(action_values) != 1:
+            return schema
+        action_name = action_values[0]
+        if not isinstance(action_name, str) or not action_name:
+            return schema
+        action_names.append(action_name)
+
+        raw_required = variant.get("required", [])
+        if not isinstance(raw_required, list) or not all(
+            isinstance(item, str) for item in raw_required
+        ):
+            return schema
+        required = set(raw_required)
+        required_sets.append(required)
+        action_required = sorted(required - {"action"})
+        requirements.append(
+            f"{action_name}: {', '.join(action_required) if action_required else 'none'}"
+        )
+        for name, property_schema in properties.items():
+            if name == "action":
+                continue
+            merged_properties.setdefault(str(name), deepcopy(property_schema))
+
+    common_required = set.intersection(*required_sets) if required_sets else {"action"}
+    merged_properties["action"] = {
+        "type": "string",
+        "enum": action_names,
+        "description": "Required fields by action: " + "; ".join(requirements) + ".",
+    }
+    schema.pop("oneOf", None)
+    schema["type"] = "object"
+    schema["properties"] = {
+        "action": merged_properties.pop("action"),
+        **merged_properties,
+    }
+    schema["required"] = [name for name in schema["properties"] if name in common_required]
+    return schema
 
 
 # 把内部 image block 转为 OpenAI data URI，结构不完整时返回 None

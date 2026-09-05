@@ -35,11 +35,7 @@ class _FileFamily(BaseTool):
                 description=name,
                 input_schema={"type": "object", "properties": {}},
                 capabilities=frozenset(
-                    {
-                        ToolCapability.READ
-                        if name == "read"
-                        else ToolCapability.WRITE
-                    }
+                    {ToolCapability.READ if name == "read" else ToolCapability.WRITE}
                 ),
             )
             for name in ("read", "write")
@@ -130,6 +126,20 @@ def test_router_respects_negation_and_token_boundaries(
     assert profile.intent == intent
     assert profile.scope == expected_scope
     assert profile.risk == risk
+
+
+# 功能：验证题面引用外部文档 URL 不会被误判为联网任务或额外待修改文件
+# 设计：复现 Polyglot 的“文档链接 + 单一目标文件”结构，确保 Router 区分参考文本与用户访问请求
+def test_router_ignores_reference_url_when_scoping_coding_task() -> None:
+    profile = TaskStrategyRouter().classify_rules(
+        "Implement the School class. See [classes](https://docs.python.org/3/classes.html). "
+        "Use the instructions to modify grade_school.py."
+    )
+
+    assert profile.intent == TaskIntent.FIX
+    assert profile.scope == TaskScope.SINGLE_FILE
+    assert profile.risk == TaskRisk.MUTATE
+    assert profile.strategy == TaskStrategy.DIRECT
 
 
 # 功能：验证跨文件任务只有明确独立且不存在兼容耦合时才允许委派
@@ -300,9 +310,7 @@ def test_plan_gate_filters_mutating_family_actions() -> None:
 # 功能：验证委派策略只允许父 Agent 只读探索并一次性执行已校验 DAG
 # 设计：检查顶层工具与 action 白名单，证明 Worker 失败后父 Agent 不能绕过 Worktree 直接修改
 def test_delegate_profile_blocks_parent_mutation_and_manual_polling() -> None:
-    profile = TaskStrategyRouter().classify_rules(
-        "并行修改三个互不依赖的文件并分别验证"
-    )
+    profile = TaskStrategyRouter().classify_rules("并行修改三个互不依赖的文件并分别验证")
 
     assert profile.strategy == TaskStrategy.DELEGATE
     tools = profile.model_tool_allowlist() or frozenset()
@@ -310,7 +318,5 @@ def test_delegate_profile_blocks_parent_mutation_and_manual_polling() -> None:
     assert "agent" in tools
     assert "Bash" not in tools
     assert "Run" not in tools
-    assert actions["File"] == frozenset(
-        {"read", "list", "search_name", "search_content"}
-    )
+    assert actions["File"] == frozenset({"read", "list", "search_name", "search_content"})
     assert actions["agent"] == frozenset({"validate_plan", "execute_plan"})
