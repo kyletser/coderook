@@ -16,7 +16,7 @@ def _task(task_id: str, root: str, *, dependencies: tuple[str, ...] = ()) -> Del
         dependencies=dependencies,
         write_claim=WriteClaim(write_roots=[root]),
         acceptance=("targeted tests pass",),
-        token_budget=1_000,
+        token_budget=16_000,
     )
 
 
@@ -25,7 +25,7 @@ def _task(task_id: str, root: str, *, dependencies: tuple[str, ...] = ()) -> Del
 def test_delegation_plan_parallelizes_disjoint_claims() -> None:
     plan = DelegationPlan(
         tasks=(_task("api", "src/api"), _task("tui", "src/tui")),
-        total_token_budget=2_000,
+        total_token_budget=32_000,
     )
 
     assert plan.execution_waves() == (("api", "tui"),)
@@ -37,7 +37,7 @@ def test_delegation_plan_rejects_overlapping_write_claims() -> None:
     with pytest.raises(ValidationError, match="write claim conflict"):
         DelegationPlan(
             tasks=(_task("root", "src"), _task("child", "src/api")),
-            total_token_budget=2_000,
+            total_token_budget=32_000,
         )
 
 
@@ -50,11 +50,30 @@ def test_delegation_plan_rejects_cycles_and_nested_delegation() -> None:
                 _task("a", "src/a", dependencies=("b",)),
                 _task("b", "src/b", dependencies=("a",)),
             ),
-            total_token_budget=2_000,
+            total_token_budget=32_000,
         )
     with pytest.raises(ValidationError, match="nested delegation"):
         DelegationPlan(
             tasks=(_task("a", "src/a"),),
-            total_token_budget=1_000,
+            total_token_budget=16_000,
             allow_nested_delegation=True,
+        )
+
+
+# 功能：验证写 Worker 的预算不足以完成冷启动工具循环时在签发票据前被拒绝
+# 设计：使用真实写入声明和旧 8k 下限复现线上实验缺陷，避免只修改模型 schema 而运行时仍可绕过
+def test_delegation_plan_rejects_unusable_write_worker_budget() -> None:
+    with pytest.raises(ValidationError, match="writable worker edit token_budget"):
+        DelegationPlan(
+            tasks=(
+                DelegationTask(
+                    id="edit",
+                    role="executor",
+                    prompt="fix one file",
+                    write_claim=WriteClaim(exact_files=["src/value.py"]),
+                    acceptance=("targeted test passes",),
+                    token_budget=8_000,
+                ),
+            ),
+            total_token_budget=8_000,
         )

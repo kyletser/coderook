@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from code_rook.core.subagent.models import WriteClaim
 
+MIN_READ_ONLY_WORKER_TOKENS = 8_000
+MIN_WRITE_WORKER_TOKENS = 16_000
+
 
 class DelegationTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -46,6 +49,16 @@ class DelegationPlan(BaseModel):
             if task.id in task.dependencies:
                 raise ValueError(f"task {task.id} cannot depend on itself")
             _validate_claim_paths(task.write_claim)
+            minimum = (
+                MIN_READ_ONLY_WORKER_TOKENS
+                if task.write_claim.read_only
+                else MIN_WRITE_WORKER_TOKENS
+            )
+            if task.token_budget < minimum:
+                kind = "read-only" if task.write_claim.read_only else "writable"
+                raise ValueError(
+                    f"{kind} worker {task.id} token_budget must be at least {minimum}"
+                )
         if sum(task.token_budget for task in self.tasks) > self.total_token_budget:
             raise ValueError("worker token budgets exceed total_token_budget")
         _validate_acyclic(self.tasks)

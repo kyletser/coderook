@@ -131,8 +131,8 @@ class _BudgetProvider:
         await bus.publish(
             LlmUsageEvent(
                 run_id=str(kwargs["run_id"]),
-                input_tokens=128,
-                output_tokens=128,
+                input_tokens=4_000,
+                output_tokens=4_000,
                 cache_read_input_tokens=0,
                 cache_creation_input_tokens=0,
                 ts="2026-08-04T00:00:00+00:00",
@@ -142,7 +142,7 @@ class _BudgetProvider:
         return LlmResponse(
             stop_reason="end_turn",
             text="SUMMARY\nshould be cancelled",
-            usage=UsageStats(input_tokens=128, output_tokens=128),
+            usage=UsageStats(input_tokens=4_000, output_tokens=4_000),
         )
 
 
@@ -283,7 +283,11 @@ async def _start_with_ticket(
     task_id: str = "task",
 ) -> ToolResult:
     read_only = bool(params.get("read_only", True))
-    token_budget = max(256, int(params.get("token_budget", 256) or 256))
+    minimum_budget = 8_000 if read_only else 16_000
+    token_budget = max(
+        minimum_budget,
+        int(params.get("token_budget", minimum_budget) or minimum_budget),
+    )
     validated = await tool.invoke(
         {
             "action": "validate_plan",
@@ -351,6 +355,9 @@ def test_agent_plan_schema_describes_nested_task_contract(tmp_path: Path) -> Non
     }
     claim_schema = task_schema["properties"]["write_claim"]
     assert task_schema["properties"]["token_budget"]["minimum"] == 8_000
+    assert "16000 for a writable" in task_schema["properties"]["token_budget"][
+        "description"
+    ]
     assert set(claim_schema["properties"]) == {
         "read_only",
         "exact_files",
@@ -589,7 +596,7 @@ async def test_agent_returns_structured_result_and_bounded_events(tmp_path: Path
 
 
 # 功能：usage 达到根 token budget 时 Worker 进入 budget_limited 终态
-# 设计：provider 在一次调用中发布 3+2 tokens，预算设为 5，验证取消和持久终态同步发生
+# 设计：provider 在一次调用中发布 4k+4k tokens，预算设为只读最低 8k，验证取消和持久终态同步发生
 async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
     tool, registry, _ = _agent(tmp_path, _BudgetProvider())
     started = await _start_with_ticket(
@@ -598,7 +605,7 @@ async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
             "action": "start",
             "description": "budgeted",
             "prompt": "use bounded tokens",
-            "token_budget": 256,
+            "token_budget": 8_000,
         }
     )
     worker_id = _worker_id(started.content)
@@ -610,7 +617,7 @@ async def test_agent_budget_exhaustion_stops_worker(tmp_path: Path) -> None:
     assert waited.is_error
     assert worker is not None
     assert worker.status == WorkerStatus.BUDGET_LIMITED
-    assert worker.token_usage == 256
+    assert worker.token_usage == 8_000
     # 预算耗尽时结果常为空，父上下文必须拿到标注 budget_exhausted 的合成收尾回执
     assert "budget_exhausted" in worker.summary
 

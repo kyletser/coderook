@@ -9,7 +9,11 @@ import secrets
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from code_rook.core.subagent.models import WorkerRecord, WorkerStatus
-from code_rook.core.subagent.planning import DelegationPlan
+from code_rook.core.subagent.planning import (
+    MIN_READ_ONLY_WORKER_TOKENS,
+    MIN_WRITE_WORKER_TOKENS,
+    DelegationPlan,
+)
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.subagent.store import WorkerStoreError
 from code_rook.core.subagent.tool import SpawnAgentTool, worker_result_payload
@@ -63,8 +67,12 @@ def _delegation_plan_input_schema() -> dict[str, object]:
             },
             "token_budget": {
                 "type": "integer",
-                "minimum": 8_000,
-                "description": "Per-worker budget; use at least 8000 for a coding task.",
+                "minimum": MIN_READ_ONLY_WORKER_TOKENS,
+                "description": (
+                    f"Per-worker cumulative request budget. Use at least "
+                    f"{MIN_WRITE_WORKER_TOKENS} for a writable coding task and "
+                    f"{MIN_READ_ONLY_WORKER_TOKENS} for a read-only task."
+                ),
             },
             "wall_time_s": {
                 "type": "integer",
@@ -98,8 +106,11 @@ def _delegation_plan_input_schema() -> dict[str, object]:
             },
             "total_token_budget": {
                 "type": "integer",
-                "minimum": 8_000,
-                "description": "Shared hard budget across all tasks; must cover their sum.",
+                "minimum": MIN_READ_ONLY_WORKER_TOKENS,
+                "description": (
+                    "Shared hard budget across all tasks; it must cover the sum of every "
+                    "per-worker budget, including the writable-worker minimum."
+                ),
             },
             "max_workers": {"type": "integer", "minimum": 1, "maximum": 3},
             "allow_nested_delegation": {"type": "boolean", "default": False},
