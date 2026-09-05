@@ -79,7 +79,9 @@ Prompt、响应或凭据。某个阶段失败不会把剩余额度挪给其他�
   10+10。比较 `single`、
   `always_delegate`、`routed`。实验 Harness 只自动应用已完成、已验证、digest 未漂移且 Write Claim
   合法的 Worker；`single` 组固定为无委派的直接执行，避免无会话 Headless Harness 因等待 Plan 审批
-  而天然失败。多个补丁必须同基线且文件互斥，并作为一次批量应用进入临时主工作区。
+  而天然失败。多个补丁必须同基线且文件互斥，并作为一次批量应用进入临时主工作区。同一根 Turn
+  在重新规划后仍累计最多启动 3 个 Worker，达到上限后必须复用已有证据或回到父 Agent，避免预算
+  耗尽后继续生成 Worker。
 - `run_benchmark.py --suite release`：完整 50 任务总评；套件执行两次并保留两份完整报告。
 - `run_polyglot_benchmark.py`：每种语言按 `SHA256(instance_id + "coderook-v1")` 排序，取前三个
   verifier 可执行且原始基线失败的实例，不接受人工挑题。

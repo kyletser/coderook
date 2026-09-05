@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "generated_on": "2026-09-05",
+  "selection_policy": "all completed rows retained; no best-of-N selection",
+  "candidate": {
+    "provider": "openai-compatible",
+    "model": "qwen3.8-flash",
+    "wire_format": "openai_chat",
+    "temperature": 0.0,
+    "pricing_status": "unknown_in_usd_registry"
+  },
+  "external_polyglot": {
+    "repository_commit": "6aa638b046cb14a5a183810b7991398077a8d4eb",
+    "dataset_commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
+    "selection_seed": "coderook-v1",
+    "execution_environment": "wsl2-linux",
+    "isolation": "bwrap-user-namespace",
+    "passed": 3,
+    "total": 3,
+    "total_tokens": 150937,
+    "elapsed_p50_s": 37.307,
+    "elapsed_p95_s": 110.831,
+    "first_edit_correct_rate": 1.0,
+    "non_target_file_changes": 0,
+    "tasks": [
+      {
+        "id": "python-grade-school",
+        "passed": true,
+        "tokens": 42179,
+        "elapsed_s": 18.021,
+        "first_edit_correct": true
+      },
+      {
+        "id": "python-wordy",
+        "passed": true,
+        "tokens": 59497,
+        "elapsed_s": 110.831,
+        "first_edit_correct": true
+      },
+      {
+        "id": "python-scale-generator",
+        "passed": true,
+        "tokens": 49261,
+        "elapsed_s": 37.307,
+        "first_edit_correct": true
+      }
+    ],
+    "historical_same_slice": {
+      "repository_commit": "5c7ce70",
+      "model": "ZHIPU/GLM-5.3-Flash",
+      "passed": 3,
+      "total": 3,
+      "total_tokens": 178564,
+      "elapsed_p50_s": 46.8,
+      "elapsed_p95_s": 444.5,
+      "first_edit_correct_rate": 0.6666666667,
+      "comparison_is_strict": false
+    }
+  },
+  "compaction": {
+    "repository_commit": "6aa638b046cb14a5a183810b7991398077a8d4eb",
+    "dataset_fingerprint": "1fb1a0a59f31ef3ac494228b63ca703444d8f24621cad654ee08ae66c92a7868",
+    "synthetic_data": true,
+    "input_tokens": 273380,
+    "output_tokens": 68738,
+    "policies": {
+      "truncate": {
+        "passed": 0,
+        "total": 12,
+        "fact_retention_rate": 0.25,
+        "median_model_input_tokens": 2733,
+        "duplicate_reads_removed": 0,
+        "fallbacks": 0
+      },
+      "structured": {
+        "passed": 11,
+        "total": 12,
+        "fact_retention_rate": 1.0,
+        "median_model_input_tokens": 13144,
+        "duplicate_reads_removed": 0,
+        "fallbacks": 1
+      },
+      "adaptive_evidence": {
+        "passed": 12,
+        "total": 12,
+        "fact_retention_rate": 1.0,
+        "median_model_input_tokens": 7160,
+        "duplicate_reads_removed": 114,
+        "fallbacks": 2
+      }
+    }
+  },
+  "task_router": {
+    "repository_commit": "1d5e93623bf950406dda16148b33c71a454b0f86",
+    "dataset_size": 56,
+    "annotation_scope": "single-author frozen clear-intent bilingual prompts",
+    "input_tokens": 12927,
+    "output_tokens": 39407,
+    "methods": {
+      "rules_only": {
+        "intent_macro_f1": 1.0,
+        "exact_profile_accuracy": 1.0,
+        "risk_false_negatives": 0,
+        "model_calls": 0,
+        "latency_ms_p50": 0.082
+      },
+      "llm_only": {
+        "intent_macro_f1": 0.9641456583,
+        "exact_profile_accuracy": 0.7142857143,
+        "risk_false_negatives": 0,
+        "model_calls": 56,
+        "latency_ms_p50": 6471.071,
+        "schema_fallbacks": 9
+      },
+      "hybrid": {
+        "intent_macro_f1": 1.0,
+        "exact_profile_accuracy": 1.0,
+        "risk_false_negatives": 0,
+        "model_calls": 0,
+        "latency_ms_p50": 0.139
+      }
+    }
+  },
+  "crash_recovery": {
+    "repository_commit": "6aa638b046cb14a5a183810b7991398077a8d4eb",
+    "platform": "Windows",
+    "completed": 25,
+    "passed": 25,
+    "phases": 5,
+    "duplicate_modifications": 0,
+    "orphaned_tool_calls": 0,
+    "ledger_errors": 0,
+    "orphaned_high_risk_processes": 0,
+    "recovery_ms_p50": 5233,
+    "recovery_ms_p95": 5718
+  },
+  "multiagent_negative_pilot": {
+    "repository_commit": "1d5e93623bf950406dda16148b33c71a454b0f86",
+    "cells_passed": 2,
+    "cells_total": 6,
+    "unreviewed_workspace_writes": 0,
+    "single_independent_multi_file": {
+      "passed": true,
+      "elapsed_s": 53.157,
+      "tokens": 28789,
+      "workers": 0
+    },
+    "routed_independent_multi_file": {
+      "passed": false,
+      "elapsed_s": 280.062,
+      "tokens": 397472,
+      "workers": 7,
+      "failure": "shared token budget exhausted across repeated delegation plans"
+    },
+    "resulting_change": "hard cap of three Worker starts per root Turn, including replanning"
+  }
+}

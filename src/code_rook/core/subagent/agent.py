@@ -26,6 +26,8 @@ from code_rook.core.tools.spec import (
     ToolSpec,
 )
 
+_MAX_WORKERS_PER_TURN = 3
+
 
 # 返回模型可直接填写的完整委派计划 schema，避免靠错误重试猜测 Write Claim 契约
 def _delegation_plan_input_schema() -> dict[str, object]:
@@ -564,6 +566,16 @@ class AgentTool(BaseTool):
         try:
             if action == "validate_plan":
                 plan = DelegationPlan.model_validate(payload)
+                remaining_workers = _MAX_WORKERS_PER_TURN - len(self._started_tasks)
+                if len(plan.tasks) > remaining_workers:
+                    return ToolResult(
+                        "delegation worker limit reached for this turn: "
+                        f"started={len(self._started_tasks)} "
+                        f"remaining={max(0, remaining_workers)}; "
+                        "reuse existing worker evidence or continue with the parent agent",
+                        is_error=True,
+                        error_type="runtime_error",
+                    )
                 ticket = hashlib.sha256(
                     (
                         json.dumps(
@@ -651,6 +663,13 @@ class AgentTool(BaseTool):
                     if task_key in self._started_tasks:
                         return ToolResult(
                             f"delegation task already started: {task_id}",
+                            is_error=True,
+                            error_type="runtime_error",
+                        )
+                    if len(self._started_tasks) >= _MAX_WORKERS_PER_TURN:
+                        return ToolResult(
+                            "delegation worker limit reached for this turn; "
+                            "reuse existing worker evidence or continue with the parent agent",
                             is_error=True,
                             error_type="runtime_error",
                         )

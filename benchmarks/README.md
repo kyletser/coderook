@@ -51,3 +51,7 @@ uv run python scripts/aggregate_benchmark_reports.py \
 可靠长任务的对照入口、默认 8 USD Pilot、显式完整矩阵和 12 个合成长会话场景见
 [`docs/guides/RELIABILITY_EXPERIMENTS.md`](../docs/guides/RELIABILITY_EXPERIMENTS.md)。运行
 `scripts/run_reliability_suite.py` 默认只生成计划；只有显式增加 `--execute` 才调用真实模型。
+
+已完成候选的成功结果、负结果、复现口径和适用边界见
+[`results/2026-09-reliability-candidate/`](results/2026-09-reliability-candidate/)。该报告明确区分公开
+编码任务、合成长上下文实验、路由标注诊断和本地强杀恢复，不把小切片结果冒充完整榜单成绩。

@@ -82,15 +82,20 @@ _REQUIRED_PROJECT_FIELDS = (
 _REQUIRED_PROJECT_URLS = ("Homepage", "Documentation", "Repository", "Issues", "Changelog")
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _SKIP_PARTS = {
+    ".benchmark-results",
+    ".coderook",
     ".git",
+    ".interop-results",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    ".workbuddy",
     "__pycache__",
     "build",
     "dist",
     "node_modules",
+    "reports",
 }
 _DOCS_ROOT_FILES = {"README.md"}
 _DOCS_ROOT_DIRECTORIES = {

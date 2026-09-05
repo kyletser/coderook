@@ -89,6 +89,19 @@ def test_find_broken_markdown_links_reports_only_missing_target(tmp_path: Path) 
     assert find_broken_markdown_links(tmp_path) == ["README.md -> missing.md"]
 
 
+# 功能：验证 Markdown 链接检查不会扫描本地基准结果和第三方数据集
+# 设计：在被约定忽略的结果目录放入断链，断言公开仓库检查只处理可提交文档
+def test_find_broken_markdown_links_skips_local_results(tmp_path: Path) -> None:
+    local_results = tmp_path / ".benchmark-results" / "external-dataset"
+    local_results.mkdir(parents=True)
+    (local_results / "README.md").write_text(
+        "[third-party syntax](not-a-repository-file)\n",
+        encoding="utf-8",
+    )
+
+    assert find_broken_markdown_links(tmp_path) == []
+
+
 # 功能：验证发行元数据检查会报告缺失字段并接受完整最小配置
 # 设计：先写不完整 TOML 再覆盖为完整 TOML，覆盖失败与成功两个确定性分支
 def test_find_project_metadata_issues_requires_public_fields(tmp_path: Path) -> None:

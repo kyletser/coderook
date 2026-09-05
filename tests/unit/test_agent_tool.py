@@ -447,6 +447,49 @@ async def test_agent_start_requires_delegation_ticket(tmp_path: Path) -> None:
     assert registry.list_records() == []
 
 
+# 功能：同一根 Turn 即使反复创建新计划也最多只能启动三个 Worker
+# 设计：用阻塞 Provider 保持前三个 Worker 活跃，再签发第四张票据并断言在创建 Worker 前失败
+async def test_agent_turn_worker_limit_survives_replanning(tmp_path: Path) -> None:
+    provider = _BlockingProvider()
+    tool, registry, _ = _agent(tmp_path, provider)
+    started = [
+        await _start_with_ticket(
+            tool,
+            {
+                "action": "start",
+                "description": f"worker {index}",
+                "prompt": f"inspect task {index}",
+            },
+            task_id=f"task-{index}",
+        )
+        for index in range(3)
+    ]
+
+    fourth = await tool.invoke(
+        {
+            "action": "validate_plan",
+            "tasks": [
+                {
+                    "id": "task-4",
+                    "role": "reviewer",
+                    "prompt": "retry with another worker",
+                    "write_claim": {"read_only": True},
+                    "acceptance": ["task completed"],
+                    "token_budget": 8_000,
+                }
+            ],
+            "total_token_budget": 8_000,
+        }
+    )
+
+    assert fourth.is_error
+    assert fourth.error_type == "runtime_error"
+    assert "worker limit reached" in fourth.content
+    assert len(registry.list_records()) == 3
+    for result in started:
+        await registry.cancel(_worker_id(result.content))
+
+
 # 功能：两个可写 Worker 自动进入不同受管 worktree，不能直接共享主工作区
 # 设计：在真实 Git 仓库并发启动相同 claim，断言后端自动分配不同隔离目录
 async def test_agent_start_isolates_writers_in_distinct_worktrees(tmp_path: Path) -> None:
