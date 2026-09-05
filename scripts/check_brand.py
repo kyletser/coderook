@@ -6,15 +6,20 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SKIP_DIRS = {
+    ".benchmark-results",
+    ".coderook",
     ".git",
+    ".interop-results",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    ".workbuddy",
     "__pycache__",
     "build",
     "dist",
     "node_modules",
+    "reports",
 }
 _ALLOWED = {
     Path("scripts/check_brand.py"),
