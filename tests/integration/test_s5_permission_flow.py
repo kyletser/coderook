@@ -7,6 +7,7 @@ commands must be safe (echo, true).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -159,9 +160,8 @@ async def test_permission_deny_once_tool_not_executed(tmp_path: Path) -> None:
     assert getattr(failed_events[0], "error_class", None) == "permission_denied"
 
 
-# 功能：验证 always_allow 决策在 session 内缓存，第二次同名工具不再触发 permission.requested
-# 设计：两步 bash 调用；第一次 respond("always_allow")，断言 permission.requested 只出现一次；
-#       第二次工具调用命中缓存并直接执行，不挂起 Future
+# 功能：验证 always_allow 缓存不能绕过 Windows 无完整沙箱时的逐次 Shell 审批
+# 设计：连续运行两条安全命令；POSIX 命中会话缓存一次审批，Windows 保持每次审批的公开降级契约
 async def test_always_allow_cached_within_session(tmp_path: Path) -> None:
     manager = PermissionManager()
     bus = EventBus()
@@ -178,7 +178,7 @@ async def test_always_allow_cached_within_session(tmp_path: Path) -> None:
         "run two bash commands"
     )
 
-    assert perm_requested_count == 1
+    assert perm_requested_count == (2 if os.name == "nt" else 1)
     assert outcome.status == "success"
 
 
@@ -223,7 +223,11 @@ async def test_headless_deny_returns_tool_error_but_allows_replanning(tmp_path: 
     assert getattr(failed, "error_class", "") == "permission_denied"
 
 
-async def test_headless_allow_list_executes_explicit_tool(tmp_path: Path) -> None:
+# 功能：验证 headless allow-list 在有沙箱平台执行显式工具但不绕过 Windows Shell 强制审批
+# 设计：使用同一 Bash 调用按平台断言完成或拒绝事件，锁定无人值守模式的安全降级差异
+async def test_headless_allow_list_respects_platform_shell_enforcement(
+    tmp_path: Path,
+) -> None:
     manager = PermissionManager()
     manager.set_session_mode("", "allow_list", allow_tools=["bash"])
     bus = EventBus()
@@ -238,5 +242,11 @@ async def test_headless_allow_list_executes_explicit_tool(tmp_path: Path) -> Non
     )
 
     assert outcome.status == "success"
-    assert "tool.call_finished" in [getattr(event, "type", "") for event in events]
-    assert "permission.requested" not in [getattr(event, "type", "") for event in events]
+    event_types = [getattr(event, "type", "") for event in events]
+    assert "permission.requested" not in event_types
+    if os.name == "nt":
+        assert "tool.call_finished" not in event_types
+        failed = next(event for event in events if getattr(event, "type", "") == "tool.call_failed")
+        assert getattr(failed, "error_class", "") == "permission_denied"
+    else:
+        assert "tool.call_finished" in event_types

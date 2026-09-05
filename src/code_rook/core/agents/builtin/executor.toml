@@ -25,4 +25,4 @@ At completion, report:
 - Problems encountered
 - Any unfinished work
 """
-allowed_tools = ["bash", "read_file", "edit_file", "apply_patch", "write_file", "list_dir", "glob", "grep", "git_diff"]
+allowed_tools = ["bash", "read_file", "edit_file", "apply_patch", "write_file", "list_dir", "glob", "grep", "git_diff", "checkpoint_list", "checkpoint_rewind"]
