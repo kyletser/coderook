@@ -61,6 +61,28 @@ def test_resolve_experiment_candidate_uses_verified_active_route(
     assert candidate["route_digest"] == "a" * 64
 
 
+# 功能：验证实验候选默认接受任意已验证活动模型且可显式锁定模型
+# 设计：复用固定 Route stub，先断言无锁定成功，再用不匹配名称确认在调用模型前失败
+def test_resolve_experiment_candidate_supports_explicit_model_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "RouteRegistry", _Registry)
+    monkeypatch.setattr(
+        experiment,
+        "resolve_pricing_quote",
+        lambda _model: SimpleNamespace(source="builtin", effective_date="2026-01-01"),
+    )
+
+    _resolved, candidate = experiment.resolve_experiment_candidate(CodeRookConfig())
+
+    assert candidate["model"] == "deepseek-v4-flash"
+    with pytest.raises(RuntimeError, match="required-model"):
+        experiment.resolve_experiment_candidate(
+            CodeRookConfig(),
+            expected_model="required-model",
+        )
+
+
 # 功能：验证未通过当前 Doctor 的 Route 在任何付费调用前被预检拒绝
 # 设计：仅切换 stub readiness 状态，证明失败来自候选门禁而非网络或 Provider
 def test_resolve_experiment_candidate_rejects_unverified_route(

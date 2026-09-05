@@ -1,8 +1,9 @@
 # 可靠长任务实验指南
 
 本文只描述可执行实验入口和证据口径，不预填任何成绩。所有真实模型实验使用当前已经通过
-Provider Doctor 的活动 Route，固定模型为 `deepseek-v4-flash`、`temperature=0`；Route ID 和 wire
-format 从候选配置读取，不再硬编码历史值。报告绑定完整 Git commit、Route digest 和数据集指纹。
+Provider Doctor 的活动 Route，固定 `temperature=0`；模型、Route ID 和 wire format 从候选
+配置读取，不再硬编码历史值。需要防止长实验期间模型漂移时，使用
+`--expected-model <model>` 显式锁定。报告绑定完整 Git commit、Route digest 和数据集指纹。
 
 ## 1. 无模型检查
 

@@ -157,6 +157,34 @@ def test_provider_route_allows_loopback_http(url: str) -> None:
     assert route.base_url.scheme == "http"
 
 
+# 功能：验证 OpenAI-compatible 标准 /v1 base URL 会补全为 Chat Completions endpoint
+# 设计：同时覆盖公网兼容网关和已是完整 endpoint 的幂等输入，避免破坏自定义路径
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://gateway.example.test/compatible-mode/v1",
+            "https://gateway.example.test/compatible-mode/v1/chat/completions",
+        ),
+        (
+            "https://gateway.example.test/v1/chat/completions",
+            "https://gateway.example.test/v1/chat/completions",
+        ),
+    ],
+)
+def test_provider_route_normalizes_openai_base_url(url: str, expected: str) -> None:
+    route = ProviderRoute(
+        id="compatible",
+        provider="openai-compatible",
+        wire_format="openai_chat",
+        base_url=AnyHttpUrl(url),
+        model="model",
+        credential_ref="file:compatible",
+    )
+
+    assert str(route.base_url).rstrip("/") == expected
+
+
 # 功能：验证 route 温度进入脱敏 receipt，并拒绝 Anthropic 不支持的范围与 thinking 组合
 # 设计：先检查合法 temperature=0 往返，再用两个非法配置锁定 provider 原生约束
 def test_provider_route_validates_and_receipts_temperature() -> None:

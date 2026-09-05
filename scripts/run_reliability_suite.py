@@ -94,6 +94,8 @@ def _run_stage(
 def _commands(args: argparse.Namespace) -> list[tuple[str, list[str], bool, float]]:
     python = sys.executable
     root = args.output.resolve()
+    expected_model = args.expected_model
+    model_args = ["--expected-model", expected_model] if expected_model else []
     stages: list[tuple[str, list[str], bool, float]] = []
     if args.profile == "pilot":
         stages.extend(
@@ -111,6 +113,7 @@ def _commands(args: argparse.Namespace) -> list[tuple[str, list[str], bool, floa
                         str(_PILOT_BUDGETS["compaction"]),
                         "--output",
                         str(root / "compaction"),
+                        *model_args,
                     ],
                     True,
                     _PILOT_BUDGETS["compaction"],
@@ -128,6 +131,7 @@ def _commands(args: argparse.Namespace) -> list[tuple[str, list[str], bool, floa
                         str(_PILOT_BUDGETS["multiagent"]),
                         "--output",
                         str(root / "multiagent"),
+                        *model_args,
                     ],
                     True,
                     _PILOT_BUDGETS["multiagent"],
@@ -167,6 +171,7 @@ def _commands(args: argparse.Namespace) -> list[tuple[str, list[str], bool, floa
                     str(_FULL_BUDGETS["compaction"]),
                     "--output",
                     str(root / "compaction"),
+                    *model_args,
                 ],
                 True,
                 _FULL_BUDGETS["compaction"],
@@ -184,6 +189,7 @@ def _commands(args: argparse.Namespace) -> list[tuple[str, list[str], bool, floa
                     str(_FULL_BUDGETS["multiagent"]),
                     "--output",
                     str(root / "multiagent"),
+                    *model_args,
                 ],
                 True,
                 _FULL_BUDGETS["multiagent"],
@@ -251,6 +257,7 @@ def main() -> int:
     )
     parser.add_argument("--polyglot-dataset", type=Path)
     parser.add_argument("--polyglot-commit")
+    parser.add_argument("--expected-model")
     args = parser.parse_args()
     if bool(args.polyglot_dataset) != bool(args.polyglot_commit):
         raise SystemExit("polyglot dataset and commit must be supplied together")
@@ -260,10 +267,13 @@ def main() -> int:
         _resolved, candidate = resolve_experiment_candidate(
             get_config(),
             temperature=0.0,
+            expected_model=args.expected_model,
         )
     except RuntimeError as exc:
         raise SystemExit(f"experiment preflight failed: {exc}") from exc
     git_state = candidate_git_state()
+    if args.expected_model is None:
+        args.expected_model = str(candidate["model"])
     commands = _commands(args)
     total_budget = sum(
         budget_usd

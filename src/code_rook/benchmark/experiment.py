@@ -9,14 +9,13 @@ from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.pricing import resolve_pricing_quote
 from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 
-_EXPERIMENT_MODEL = "deepseek-v4-flash"
-
 
 # 解析已通过 Doctor 的当前活动路由并返回不含凭据的实验候选信息
 def resolve_experiment_candidate(
     config: CodeRookConfig,
     *,
     temperature: float = 0.0,
+    expected_model: str | None = None,
 ) -> tuple[ResolvedRoute, dict[str, Any]]:
     configured_registry = RouteRegistry(config.llm)
     configured = configured_registry.resolve()
@@ -27,9 +26,9 @@ def resolve_experiment_candidate(
         )
     registry = RouteRegistry(config.llm, temperature_override=temperature)
     resolved = registry.resolve()
-    if resolved.route.model != _EXPERIMENT_MODEL:
+    if expected_model is not None and resolved.route.model != expected_model:
         raise RuntimeError(
-            f"reliability experiments require model {_EXPERIMENT_MODEL}; "
+            f"reliability experiments require model {expected_model}; "
             f"active model is {resolved.route.model}"
         )
     quote = resolve_pricing_quote(resolved.route.model)

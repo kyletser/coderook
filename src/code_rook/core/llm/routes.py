@@ -4,7 +4,7 @@ import hashlib
 import ipaddress
 import json
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
@@ -83,6 +83,31 @@ class ProviderRoute(BaseModel):
     thinking: ThinkingLevel = "off"
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     doctor_receipt: RouteDoctorReceipt | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    # 兼容用户输入标准 OpenAI base URL，只在路径以 /v1 结尾时补全 Chat endpoint
+    def _normalize_openai_chat_base_url(cls, value: object) -> object:
+        if not isinstance(value, dict) or value.get("wire_format") != "openai_chat":
+            return value
+        raw_url = value.get("base_url")
+        if raw_url is None:
+            return value
+        parsed = urlsplit(str(raw_url).strip())
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/v1"):
+            return value
+        payload = dict(value)
+        payload["base_url"] = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"{path}/chat/completions",
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+        return payload
 
     @model_validator(mode="after")
     # 拒绝 URL 内嵌凭据及非 loopback 明文 HTTP，防止密钥被发送到不安全端点

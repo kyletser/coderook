@@ -70,6 +70,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--task-limit", type=int, default=12)
     parser.add_argument("--max-cost-usd", type=float, default=1.0)
+    parser.add_argument("--expected-model")
     parser.add_argument("--allow-model-calls", action="store_true")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument(
@@ -333,6 +334,7 @@ def main() -> int:
         _resolved, candidate = resolve_experiment_candidate(
             get_config(),
             temperature=0.0,
+            expected_model=args.expected_model,
         )
     except RuntimeError as exc:
         raise SystemExit(f"experiment preflight failed: {exc}") from exc
