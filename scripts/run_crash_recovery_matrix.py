@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import platform
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -15,6 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -349,7 +352,13 @@ def _wait_for_tool_result(api_port: int, token: str, turn_id: str) -> None:
 
 
 # 等待长 Shell 写出子进程 PID，证明故障确实注入在受管进程树运行期间
-def _wait_for_shell_pid(pid_file: Path) -> int:
+def _wait_for_shell_pid(
+    pid_file: Path,
+    api_port: int,
+    token: str,
+    turn_id: str,
+    process_marker: str = "",
+) -> int:
     deadline = time.monotonic() + _MODEL_REQUEST_TIMEOUT_S
     while time.monotonic() < deadline:
         try:
@@ -358,6 +367,43 @@ def _wait_for_shell_pid(pid_file: Path) -> int:
                 return value
         except (OSError, UnicodeError, ValueError):
             pass
+        if os.name == "nt" and process_marker:
+            query = (
+                f"$needle='{process_marker}'; "
+                "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
+                "Where-Object { $_.ProcessId -ne $PID -and "
+                "$_.CommandLine -like ('*' + $needle + '*') } | "
+                "Select-Object -ExpandProperty ProcessId"
+            )
+            encoded_query = base64.b64encode(query.encode("utf-16-le")).decode("ascii")
+            probe = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    encoded_query,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            process_ids = [
+                int(line.strip())
+                for line in probe.stdout.splitlines()
+                if line.strip().isdigit()
+            ]
+            if process_ids:
+                return process_ids[0]
+        items = _request_list(api_port, token, "GET", f"/v1/turns/{turn_id}/items")
+        terminal = [item for item in items if item.get("kind") == "tool_result"]
+        if terminal:
+            raise RuntimeError(
+                "managed shell exited before creating its PID file: "
+                + json.dumps(terminal[-1], ensure_ascii=False)[:1_000]
+            )
         time.sleep(0.05)
     raise RuntimeError("managed shell child did not start")
 
@@ -475,19 +521,46 @@ def run_matrix(
             env = _daemon_environment(home, ipc_port, api_port, model_port)
             process = _start_daemon(env, home, api_port)
             token = (home / ".coderook" / "api-token").read_text(encoding="utf-8").strip()
-            shell_pid_file = home / "managed-shell-child.pid"
+            sandbox_temp = Path(tempfile.gettempdir()) / "coderook-sandbox"
+            sandbox_temp.mkdir(parents=True, exist_ok=True)
+            shell_pid_file = sandbox_temp / f"crash-matrix-{os.getpid()}.pid"
             child_code = (
-                "import os,time,pathlib;"
-                f"pathlib.Path({str(shell_pid_file)!r}).write_text(str(os.getpid()),encoding='utf-8');"
-                "time.sleep(60)"
+                "import os\nimport time\nfrom pathlib import Path\n"
+                f"Path({str(shell_pid_file)!r}).write_text("
+                "str(os.getpid()), encoding='utf-8')\n"
+                "time.sleep(60)\n"
             )
-            parent_code = (
-                "import subprocess,sys,time;"
-                f"subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
-                "time.sleep(60)"
-            )
-            _BlockingModelHandler.shell_command = subprocess.list2cmdline(
-                [sys.executable, "-c", parent_code]
+            if os.name == "nt":
+                process_nonce = f"coderook-crash-{uuid.uuid4().hex}"
+                powershell = (
+                    f"$null = '{process_nonce}'; "
+                    "Start-Sleep -Seconds 60"
+                )
+                encoded_command = base64.b64encode(
+                    powershell.encode("utf-16-le")
+                ).decode("ascii")
+                shell_argv = [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    encoded_command,
+                ]
+                process_marker = encoded_command
+            else:
+                encoded_child = base64.b64encode(child_code.encode("utf-8")).decode(
+                    "ascii"
+                )
+                shell_argv = [
+                    sys.executable,
+                    "-c",
+                    f"import base64;exec(base64.b64decode('{encoded_child}'))",
+                ]
+                process_marker = ""
+            _BlockingModelHandler.shell_command = (
+                subprocess.list2cmdline(shell_argv)
+                if os.name == "nt"
+                else shlex.join(shell_argv)
             )
             phases = (
                 "request_snapshot_in_flight",
@@ -568,13 +641,22 @@ def run_matrix(
                             token,
                             "POST",
                             f"/v1/permissions/{tool_use_id}",
-                            {"decision": "allow_once"},
+                            {
+                                "decision": "allow_once",
+                                "session_id": thread_id,
+                            },
                         )
                         if not response.get("accepted"):
                             raise RuntimeError("permission response was not accepted")
                 if phase == "shell_process_running":
                     current_stage = "wait_for_shell_process"
-                    shell_child_pid = _wait_for_shell_pid(shell_pid_file)
+                    shell_child_pid = _wait_for_shell_pid(
+                        shell_pid_file,
+                        api_port,
+                        token,
+                        turn_id,
+                        process_marker,
+                    )
                 if phase == "tool_result_persisted":
                     current_stage = "wait_for_tool_result"
                     _wait_for_tool_result(api_port, token, turn_id)
