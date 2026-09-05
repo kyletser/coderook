@@ -94,8 +94,16 @@ def _run_config(
         temperature=route.temperature,
         config_fingerprint=fingerprint,
         benchmark_name=f"multiagent-{policy}-{cohort}",
-        dataset_name="coderook-50-fixed-cohorts",
-        dataset_commit="coding-katas-v1",
+        dataset_name=(
+            "coderook-multiagent-independent-v1"
+            if cohort == "independent_multi_file"
+            else "coderook-50-quick-control"
+        ),
+        dataset_commit=(
+            "multiagent-independent-v1"
+            if cohort == "independent_multi_file"
+            else "coding-katas-v1"
+        ),
     )
 
 
@@ -132,19 +140,23 @@ async def _run(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     root = Path(__file__).resolve().parents[1]
-    catalog = load_benchmark_tasks(args.tasks, root)
-    all_multi = [loaded for loaded in catalog if loaded.task.category == "multi_file_change"]
-    all_quick = [loaded for loaded in catalog if "quick" in loaded.task.suites]
-    if len(all_multi) != 10 or len(all_quick) != 10:
+    multi_catalog = load_benchmark_tasks(args.multi_tasks, root)
+    quick_catalog = load_benchmark_tasks(args.tasks, root)
+    all_multi = [
+        loaded for loaded in multi_catalog if loaded.task.category == "multi_file_change"
+    ]
+    all_quick = [loaded for loaded in quick_catalog if "quick" in loaded.task.suites]
+    if len(all_multi) < args.multi_limit or len(all_quick) < args.quick_limit:
         raise SystemExit(
-            f"expected 10 multi-file and 10 quick tasks, found "
-            f"{len(all_multi)} and {len(all_quick)}"
+            "not enough fixed tasks for the requested cohorts: "
+            f"multi={len(all_multi)}/{args.multi_limit}, "
+            f"quick={len(all_quick)}/{args.quick_limit}"
         )
     multi = all_multi[: args.multi_limit]
     quick = all_quick[: args.quick_limit]
     config = get_config()
     policies = tuple(args.policy or ("single", "always_delegate", "routed"))
-    cohorts = {"multi_file": multi, "quick": quick}
+    cohorts = {"independent_multi_file": multi, "quick": quick}
     rows: list[dict[str, Any]] = []
     spent = 0.0
     previous_block_cost = 0.0
@@ -234,6 +246,11 @@ def _markdown(report: dict[str, Any]) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run routed multi-agent ablations")
     parser.add_argument("--tasks", type=Path, default=Path("benchmarks/tasks"))
+    parser.add_argument(
+        "--multi-tasks",
+        type=Path,
+        default=Path("benchmarks/reliability/multiagent/tasks"),
+    )
     parser.add_argument("--max-cost-usd", type=float, default=4.0)
     parser.add_argument("--multi-limit", type=int, default=3)
     parser.add_argument("--quick-limit", type=int, default=3)

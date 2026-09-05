@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "independent-utilities-01",
+  "title": "并行修复三个互不依赖的基础工具",
+  "language": "python",
+  "difficulty": "medium",
+  "category": "multi_file_change",
+  "suites": ["release"],
+  "baseline_commit": "multiagent-independent-v1",
+  "fixture": "benchmarks/reliability/multiagent/fixtures/independent-utilities-01",
+  "goal": "三个缺陷互相独立、文件完全不重叠且各自可以单独验收，请并行委派：修复 text_ops.py 的 slugify，修复 number_ops.py 的 clamp，修复 list_ops.py 的 stable_unique。保持公开函数签名不变，不要修改 verify.py。",
+  "allowed_tools": ["File", "Run", "Bash"],
+  "allowed_change_paths": ["text_ops.py", "number_ops.py", "list_ops.py"],
+  "forbidden_paths": ["verify.py"],
+  "budgets": {
+    "max_steps": 20,
+    "wall_time_s": 600,
+    "max_total_tokens": 90000,
+    "max_cost_usd": 1.0
+  },
+  "verifiers": [
+    {
+      "name": "independent-utilities",
+      "argv": ["{python}", "verify.py"],
+      "timeout_s": 20
+    }
+  ]
+}
