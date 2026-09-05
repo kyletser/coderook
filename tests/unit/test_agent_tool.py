@@ -369,6 +369,39 @@ async def test_agent_execute_plan_schedules_and_joins_workers(tmp_path: Path) ->
     assert len(registry.list_records()) == 2
 
 
+# 功能：验证单个 Worker 因预算取消时不会把取消信号泄漏给父 Agent
+# 设计：让确定性 Provider 精确耗尽预算，断言 execute_plan 返回 partial 结构而非抛 CancelledError
+async def test_agent_execute_plan_contains_child_budget_cancellation(
+    tmp_path: Path,
+) -> None:
+    tool, registry, _ = _agent(tmp_path, _BudgetProvider())
+    validated = await tool.invoke(
+        {
+            "action": "validate_plan",
+            "tasks": [
+                {
+                    "id": "budgeted",
+                    "role": "reviewer",
+                    "prompt": "inspect within budget",
+                    "write_claim": {"read_only": True},
+                    "acceptance": ["inspection completed"],
+                    "token_budget": 8_000,
+                }
+            ],
+            "total_token_budget": 8_000,
+        }
+    )
+    ticket = str(json.loads(validated.content)["plan_ticket"])
+
+    result = await tool.invoke({"action": "execute_plan", "plan_ticket": ticket})
+
+    payload = json.loads(result.content)
+    assert result.is_error
+    assert payload["status"] == "partial"
+    assert payload["failed_tasks"] == ["budgeted"]
+    assert registry.list_records()[0].status == WorkerStatus.BUDGET_LIMITED
+
+
 # 功能：委派计划 schema 向模型完整公开任务、验收条件和 Write Claim 字段
 # 设计：直接检查 validate_plan 的嵌套 JSON Schema，防止模型只能靠失败重试猜参数结构
 def test_agent_plan_schema_describes_nested_task_contract(tmp_path: Path) -> None:

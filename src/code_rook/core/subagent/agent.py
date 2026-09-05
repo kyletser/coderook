@@ -519,6 +519,9 @@ class AgentTool(BaseTool):
                         await asyncio.wait_for(asyncio.shield(live[0]), timeout_s)
                     except TimeoutError:
                         await self._registry.cancel(worker_id)
+                    except asyncio.CancelledError:
+                        if not live[0].cancelled():
+                            raise
                 return task_id, self._registry.record(worker_id)
 
             wave_results = await asyncio.gather(
