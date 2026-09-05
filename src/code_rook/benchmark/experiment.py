@@ -16,6 +16,7 @@ def resolve_experiment_candidate(
     *,
     temperature: float = 0.0,
     expected_model: str | None = None,
+    require_pricing: bool = True,
 ) -> tuple[ResolvedRoute, dict[str, Any]]:
     configured_registry = RouteRegistry(config.llm)
     configured = configured_registry.resolve()
@@ -32,7 +33,7 @@ def resolve_experiment_candidate(
             f"active model is {resolved.route.model}"
         )
     quote = resolve_pricing_quote(resolved.route.model)
-    if quote is None:
+    if quote is None and require_pricing:
         raise RuntimeError(f"pricing is unavailable for model {resolved.route.model}")
     return resolved, {
         "route_id": resolved.route.id,
@@ -41,8 +42,9 @@ def resolve_experiment_candidate(
         "temperature": resolved.route.temperature,
         "route_digest": resolved.route.validation_digest(),
         "doctor_status": readiness.provider_validation,
-        "pricing_source": quote.source,
-        "pricing_effective_date": quote.effective_date,
+        "pricing_known": quote is not None,
+        "pricing_source": quote.source if quote is not None else "unavailable",
+        "pricing_effective_date": quote.effective_date if quote is not None else "",
     }
 
 

@@ -83,6 +83,27 @@ def test_resolve_experiment_candidate_supports_explicit_model_lock(
         )
 
 
+# 功能：验证显式允许未知价格时仍可冻结模型候选并如实标记成本不可估算
+# 设计：让定价解析返回空值，分别覆盖默认拒绝和显式放行，防止实验偷偷采用虚构价格
+def test_resolve_experiment_candidate_can_disclose_unknown_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "RouteRegistry", _Registry)
+    monkeypatch.setattr(experiment, "resolve_pricing_quote", lambda _model: None)
+
+    with pytest.raises(RuntimeError, match="pricing is unavailable"):
+        experiment.resolve_experiment_candidate(CodeRookConfig())
+
+    _resolved, candidate = experiment.resolve_experiment_candidate(
+        CodeRookConfig(),
+        require_pricing=False,
+    )
+
+    assert candidate["pricing_known"] is False
+    assert candidate["pricing_source"] == "unavailable"
+    assert candidate["pricing_effective_date"] == ""
+
+
 # 功能：验证未通过当前 Doctor 的 Route 在任何付费调用前被预检拒绝
 # 设计：仅切换 stub readiness 状态，证明失败来自候选门禁而非网络或 Provider
 def test_resolve_experiment_candidate_rejects_unverified_route(

@@ -144,6 +144,7 @@ async def _run(
     args: argparse.Namespace,
     *,
     candidate: dict[str, Any],
+    budget_enforced: bool,
 ) -> dict[str, Any]:
     root = Path(__file__).resolve().parents[1]
     multi_catalog = load_benchmark_tasks(args.multi_tasks, root)
@@ -232,7 +233,16 @@ async def _run(
         "route": {
             **candidate,
         },
-        "budget": {"limit_usd": args.max_cost_usd, "spent_usd": spent},
+        "budget": {
+            "limit_usd": args.max_cost_usd,
+            "spent_usd": spent if budget_enforced else None,
+            "enforced": budget_enforced,
+            "reason": (
+                "registered model pricing and shared hard budget"
+                if budget_enforced
+                else "model pricing unavailable; token usage remains measured"
+            ),
+        },
         "completed_blocks": completed_blocks,
         "rows": rows,
     }
@@ -279,6 +289,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--quick-limit", type=int, default=3)
     parser.add_argument("--expected-model")
     parser.add_argument(
+        "--allow-unknown-pricing",
+        action="store_true",
+        help="run with token accounting but without a dollar-denominated hard budget",
+    )
+    parser.add_argument(
         "--policy",
         action="append",
         choices=("single", "always_delegate", "routed"),
@@ -305,6 +320,7 @@ def main() -> int:
             get_config(),
             temperature=0.0,
             expected_model=args.expected_model,
+            require_pricing=not args.allow_unknown_pricing,
         )
     except RuntimeError as exc:
         raise SystemExit(f"experiment preflight failed: {exc}") from exc
@@ -320,6 +336,7 @@ def main() -> int:
             * (args.multi_limit + args.quick_limit)
         ),
         "max_cost_usd": args.max_cost_usd,
+        "budget_enforced": bool(candidate["pricing_known"]),
         "model_calls": False,
     }
     if args.preflight:
@@ -328,12 +345,16 @@ def main() -> int:
     if not git_state["working_tree_clean"]:
         raise SystemExit("experiment requires a clean Git working tree")
     args.output.mkdir(parents=True, exist_ok=True)
-    configure_experiment_budget(
-        args.output,
-        limit_usd=args.max_cost_usd,
-        expected_model=str(candidate["model"]),
+    budget_enforced = bool(candidate["pricing_known"])
+    if budget_enforced:
+        configure_experiment_budget(
+            args.output,
+            limit_usd=args.max_cost_usd,
+            expected_model=str(candidate["model"]),
+        )
+    report = asyncio.run(
+        _run(args, candidate=candidate, budget_enforced=budget_enforced)
     )
-    report = asyncio.run(_run(args, candidate=candidate))
     (args.output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
