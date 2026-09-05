@@ -117,6 +117,9 @@ def cmd_provider_add(
             get_route_preset(preset),
             {
                 "id": route_id,
+                **({"provider": provider} if provider is not None else {}),
+                **({"wire_format": wire_format} if wire_format is not None else {}),
+                **({"base_url": base_url} if base_url is not None else {}),
                 **({"model": model} if model is not None else {}),
                 **({"temperature": temperature} if temperature is not None else {}),
                 **({"credential_ref": credential_ref} if credential_ref is not None else {}),

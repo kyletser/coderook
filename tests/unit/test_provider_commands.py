@@ -121,6 +121,35 @@ def test_provider_first_write_creates_pre_mutation_backup(tmp_path: Path) -> Non
     assert {route.id for route in routes.list()} == {"existing", "new-local"}
 
 
+# 功能：验证自定义兼容端点可以覆盖 preset 的默认本地地址与协议字段
+# 设计：从 openai-compatible 模板新增路由后读取持久记录，防止 CLI 悄悄拿 Ollama 地址做 Doctor
+def test_provider_preset_accepts_explicit_endpoint_overrides(tmp_path: Path) -> None:
+    routes = RouteStore(tmp_path / "routes.json")
+    credentials = CredentialStore(
+        tmp_path / "credentials.json",
+        backend=_MemoryKeyring(),
+    )
+
+    cmd_provider_add(
+        "dashscope",
+        preset="openai-compatible",
+        provider="openai-compatible",
+        wire_format="openai_chat",
+        base_url="https://dashscope.example/v1/chat/completions",
+        model="qwen3.8-flash",
+        credential_ref="env:DASHSCOPE_API_KEY",
+        set_key=False,
+        activate=True,
+        route_store=routes,
+        credential_store=credentials,
+    )
+
+    route = routes.get("dashscope")
+    assert route is not None
+    assert str(route.base_url) == "https://dashscope.example/v1/chat/completions"
+    assert route.model == "qwen3.8-flash"
+
+
 # 功能：验证 Provider CLI 遇到用户状态锁竞争时不会绕过备份直接写 route
 # 设计：持有生产同名 OS 文件锁后调用 add，断言明确异常、route 缺失且迁移 marker 未产生
 def test_provider_write_lock_conflict_fails_closed(tmp_path: Path) -> None:
