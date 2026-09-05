@@ -9,15 +9,35 @@ def main() -> int:
     task_id = sys.argv[1]
     root = Path(__file__).resolve().parent
     answer = (root / f"{task_id}.md").read_text(encoding="utf-8").lower()
-    required = {
-        "explain-cache": ("ttl", "monotonic", "expired"),
-        "explain-lock": ("atomic", "replace", "process"),
-        "explain-cache-concurrency": ("thread", "race", "lock"),
-        "explain-cache-memory": ("expired", "lazy", "memory"),
-        "explain-atomic-durability": ("fsync", "directory", "durability"),
-        "explain-atomic-failure": ("temporary", "cleanup", "exception"),
+    required_groups = {
+        "explain-cache": (("ttl",), ("monotonic",), ("expired", "过期")),
+        "explain-lock": (("atomic", "原子"), ("replace", "替换"), ("process", "进程")),
+        "explain-cache-concurrency": (
+            ("thread", "线程"),
+            ("race", "竞态", "竞争"),
+            ("lock", "锁"),
+        ),
+        "explain-cache-memory": (
+            ("expired", "过期"),
+            ("lazy", "惰性"),
+            ("memory", "内存"),
+        ),
+        "explain-atomic-durability": (
+            ("fsync",),
+            ("directory", "目录"),
+            ("durability", "持久"),
+        ),
+        "explain-atomic-failure": (
+            ("temporary", "临时"),
+            ("cleanup", "清理"),
+            ("exception", "异常"),
+        ),
     }[task_id]
-    missing = [term for term in required if term not in answer]
+    missing = [
+        "/".join(group)
+        for group in required_groups
+        if not any(term in answer for term in group)
+    ]
     if len(answer.strip()) < 120 or missing:
         print(f"answer too short or missing facts: {missing}")
         return 1
