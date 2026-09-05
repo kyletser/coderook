@@ -47,6 +47,8 @@ from code_rook.core.tools.spec import ParallelPolicy, ResourceClaim, ToolCatalog
 from code_rook.core.turn import (
     NoContentResponseError,
     ReadRepeatGuard,
+    StreamIdleTimeoutError,
+    StreamWallTimeoutError,
     StreamWatchdog,
     StreamWatchdogError,
     StuckGuard,
@@ -173,7 +175,7 @@ _TODO_END_TURN_REMINDER = (
 _MAX_TODO_DEFERS = 3
 # 交互模式经结构化提问最多允许的步数续段次数，防止无限续跑
 _MAX_ASK_STEP_CONTINUES = 3
-_MAX_TRANSIENT_RETRIES = 2
+_MAX_TRANSIENT_RETRIES = 1
 _MAX_NO_CONTENT_RETRIES = 2
 _LENGTH_CONTINUE_PROMPT = (
     "The previous model response reached its output limit and is incomplete. "
@@ -356,6 +358,8 @@ class AgentLoop:
     # 判断异常是否适合短暂退避后重试
     @staticmethod
     def _is_transient_error(exc: Exception) -> bool:
+        if isinstance(exc, (StreamIdleTimeoutError, StreamWallTimeoutError)):
+            return True
         message = f"{type(exc).__name__} {exc}".lower()
         return any(marker in message for marker in _TRANSIENT_ERROR_MARKERS)
 

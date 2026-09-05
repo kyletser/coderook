@@ -10,7 +10,7 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse
 from code_rook.core.loop import AgentLoop
 from code_rook.core.tools.registry import ToolRegistry
-from code_rook.core.turn import StreamWatchdog, WatchdogLimits
+from code_rook.core.turn import StreamIdleTimeoutError, StreamWatchdog, WatchdogLimits
 
 
 # 创建最小运行上下文以隔离 watchdog 行为
@@ -161,6 +161,40 @@ async def test_transient_and_no_content_retries_are_counted_separately() -> None
     assert provider.calls == 3
     assert [event.kind for event in retries] == ["transient", "no_content"]  # type: ignore[attr-defined]
     assert [event.attempt for event in retries] == [1, 1]  # type: ignore[attr-defined]
+
+
+# 功能：验证 Provider 首次流空闲超时会在同一步透明重试一次并保留结构化证据
+# 设计：让伪 Provider 先直接抛 watchdog 异常再成功，避免等待真实时钟并精确断言调用次数
+async def test_stream_idle_timeout_retries_once_and_recovers_turn() -> None:
+    provider = _SequenceProvider(
+        [
+            StreamIdleTimeoutError("temporary idle stream"),
+            LlmResponse(stop_reason="end_turn", text="recovered"),
+        ]
+    )
+    bus = EventBus()
+    events: list[BaseModel] = []
+
+    # 收集 retry 事件以确认超时没有被静默吞掉
+    async def _collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(_collect)
+    loop = AgentLoop(
+        provider,  # type: ignore[arg-type]
+        ToolRegistry(),
+        bus,
+        retry_backoff_s=0,
+    )
+    context = _context()
+
+    await loop.run(context)
+
+    retries = [event for event in events if event.type == "llm.retry"]  # type: ignore[attr-defined]
+    assert context.status == "success"
+    assert provider.calls == 2
+    assert [event.kind for event in retries] == ["transient"]  # type: ignore[attr-defined]
+    assert [event.attempt for event in retries] == [1]  # type: ignore[attr-defined]
 
 
 # 功能：验证空响应重试耗尽后以 no_content 明确失败而不是伪装成功
