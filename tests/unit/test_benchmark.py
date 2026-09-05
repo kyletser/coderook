@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from code_rook.benchmark.contract import (
     find_candidate_contract_issues,
     require_candidate_contract,
 )
+from code_rook.benchmark.executor import _prepare_git_workspace
 from code_rook.benchmark.loader import (
     BenchmarkManifestError,
     LoadedBenchmarkTask,
@@ -26,6 +28,32 @@ def test_benchmark_cli_help_renders() -> None:
 
     assert "without gating on 100%" in help_text
     assert "task success." in help_text
+
+
+# 功能：多 Agent 基准 fixture 会获得可创建 Worktree 的干净基线提交
+# 设计：在临时目录连续初始化两次并检查 HEAD 与 porcelain，覆盖幂等和无脏文件约束
+def test_prepare_git_workspace_creates_clean_idempotent_baseline(tmp_path: Path) -> None:
+    (tmp_path / "source.py").write_text("value = 1\n", encoding="utf-8")
+
+    _prepare_git_workspace(tmp_path)
+    first_head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    _prepare_git_workspace(tmp_path)
+    status = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+
+    assert len(first_head) == 40
+    assert status == ""
 
 
 class _EditingExecutor:

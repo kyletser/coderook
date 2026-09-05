@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -41,11 +42,13 @@ class CodeRookBenchmarkExecutor:
         temperature: float = 0.0,
         auto_apply_reviewed_workers: bool = False,
         strategy_override: TaskStrategy | None = None,
+        initialize_git_workspace: bool = False,
     ) -> None:
         self._config = config
         self._temperature = temperature
         self._auto_apply_reviewed_workers = auto_apply_reviewed_workers
         self._strategy_override = strategy_override
+        self._initialize_git_workspace = initialize_git_workspace
 
     # 在隔离工作区内运行当前 CodeRook Agent，并收集评分需要的最小事件指标
     async def execute(
@@ -57,6 +60,8 @@ class CodeRookBenchmarkExecutor:
         config = copy.deepcopy(self._config)
         config.agent.max_steps = task.budgets.max_steps
         config.agent.max_step_continues = 0
+        if self._initialize_git_workspace:
+            _prepare_git_workspace(workspace)
 
         run_id = f"benchmark-{task.id}-{uuid.uuid4().hex[:10]}"
         bus = EventBus()
@@ -310,7 +315,6 @@ class CodeRookBenchmarkExecutor:
             worker_apply_count=worker_apply_count,
             unreviewed_workspace_writes=unreviewed_workspace_writes,
         )
-
     # 将事件中的任意 JSON 数值安全收敛为非负整数
     @staticmethod
     def _nonnegative_int(value: object) -> int:
@@ -359,3 +363,45 @@ class CodeRookBenchmarkExecutor:
                 cache_write_tokens=event.cache_creation_input_tokens,
             )
         return total, sorted(evidence)
+
+
+# 将基准 fixture 初始化为具备稳定基线提交的本地 Git 仓库，供 Worker Worktree 隔离使用
+def _prepare_git_workspace(workspace: Path) -> None:
+    if (workspace / ".git").exists():
+        return
+    commands = (
+        ["git", "-C", str(workspace), "init", "--quiet"],
+        ["git", "-C", str(workspace), "config", "user.name", "CodeRook Benchmark"],
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "config",
+            "user.email",
+            "benchmark@coderook.invalid",
+        ],
+        ["git", "-C", str(workspace), "add", "--all"],
+        [
+            "git",
+            "-C",
+            str(workspace),
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "--no-verify",
+            "-m",
+            "benchmark baseline",
+        ],
+    )
+    for argv in commands:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(f"unable to prepare benchmark Git workspace: {detail}")

@@ -23,6 +23,74 @@ from code_rook.core.tools.spec import (
 )
 
 
+# 返回模型可直接填写的完整委派计划 schema，避免靠错误重试猜测 Write Claim 契约
+def _delegation_plan_input_schema() -> dict[str, object]:
+    string_array = {"type": "array", "items": {"type": "string"}}
+    write_claim = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "read_only": {"type": "boolean", "default": False},
+            "exact_files": {
+                **string_array,
+                "description": "Exact workspace-relative files this worker may modify.",
+            },
+            "write_roots": {
+                **string_array,
+                "description": "Workspace-relative directory roots this worker may modify.",
+            },
+            "coordination_contract": {"type": "string", "default": ""},
+        },
+    }
+    task = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_.-]+$",
+            },
+            "role": {"type": "string", "minLength": 1, "maxLength": 80},
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 8_000},
+            "dependencies": string_array,
+            "write_claim": write_claim,
+            "acceptance": {
+                **string_array,
+                "minItems": 1,
+                "description": "Concrete checks that prove this worker task is complete.",
+            },
+            "token_budget": {"type": "integer", "minimum": 256},
+            "wall_time_s": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3_600,
+                "default": 900,
+            },
+        },
+        "required": [
+            "id",
+            "role",
+            "prompt",
+            "write_claim",
+            "acceptance",
+            "token_budget",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "tasks": {"type": "array", "items": task, "minItems": 1, "maxItems": 3},
+            "total_token_budget": {"type": "integer", "minimum": 256},
+            "max_workers": {"type": "integer", "minimum": 1, "maximum": 3},
+            "allow_nested_delegation": {"type": "boolean", "default": False},
+        },
+        "required": ["tasks", "total_token_budget"],
+    }
+
+
 class _StatusParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
     worker_id: str = ""
@@ -128,16 +196,7 @@ class AgentTool(BaseTool):
                     "Validate a bounded delegation DAG, budgets, acceptance gates, and "
                     "non-overlapping write claims before starting workers."
                 ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "tasks": {"type": "array", "minItems": 1, "maxItems": 3},
-                        "total_token_budget": {"type": "integer", "minimum": 256},
-                        "max_workers": {"type": "integer", "minimum": 1, "maximum": 3},
-                        "allow_nested_delegation": {"type": "boolean"},
-                    },
-                    "required": ["tasks", "total_token_budget"],
-                },
+                input_schema=_delegation_plan_input_schema(),
                 capabilities=read,
                 permission_policy_aliases=("agent_result",),
                 approval_requirement=ApprovalRequirement.NEVER,

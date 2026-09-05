@@ -34,7 +34,12 @@ from code_rook.benchmark.models import (
     VerifierSpec,
 )
 
-_IGNORED_WORKSPACE_PATHS = (".coderook/**", ".pytest_cache/**", "**/__pycache__/**")
+_IGNORED_WORKSPACE_PATHS = (
+    ".coderook/**",
+    ".git/**",
+    ".pytest_cache/**",
+    "**/__pycache__/**",
+)
 _MAX_CAPTURE_CHARS = 20_000
 
 

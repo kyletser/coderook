@@ -331,6 +331,33 @@ def test_agent_tool_exposes_control_actions(tmp_path: Path) -> None:
     ]
 
 
+# 功能：委派计划 schema 向模型完整公开任务、验收条件和 Write Claim 字段
+# 设计：直接检查 validate_plan 的嵌套 JSON Schema，防止模型只能靠失败重试猜参数结构
+def test_agent_plan_schema_describes_nested_task_contract(tmp_path: Path) -> None:
+    tool, _, _ = _agent(tmp_path, _ResultProvider())
+    action = tool.build_spec().action("validate_plan")
+
+    assert action is not None
+    schema = action.input_schema
+    assert schema is not None
+    task_schema = schema["properties"]["tasks"]["items"]  # type: ignore[index]
+    assert set(task_schema["required"]) == {
+        "id",
+        "role",
+        "prompt",
+        "write_claim",
+        "acceptance",
+        "token_budget",
+    }
+    claim_schema = task_schema["properties"]["write_claim"]
+    assert set(claim_schema["properties"]) == {
+        "read_only",
+        "exact_files",
+        "write_roots",
+        "coordination_contract",
+    }
+
+
 # 功能：验证模型不能跳过 Delegation Plan 票据直接启动 Worker
 # 设计：对 start 提交完整旧参数但不提供票据，断言在创建进程和 worktree 前失败关闭
 async def test_agent_start_requires_delegation_ticket(tmp_path: Path) -> None:

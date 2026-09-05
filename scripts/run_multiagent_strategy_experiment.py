@@ -150,6 +150,7 @@ async def _run(
                     strategy_override=(
                         TaskStrategy.DIRECT if policy == "single" else None
                     ),
+                    initialize_git_workspace=policy != "single",
                 ),
                 evidence_root=block_dir / "evidence",
             )
