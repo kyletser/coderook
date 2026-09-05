@@ -35,6 +35,28 @@ def _commit() -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
+# 对任务契约和全部非 Git fixture 文件计算稳定指纹，避免 Verifier 变化后报告仍冒充同一数据集
+def _dataset_fingerprint(tasks: list[LoadedBenchmarkTask]) -> str:
+    digest = hashlib.sha256()
+    seen: set[Path] = set()
+    for loaded in sorted(tasks, key=lambda item: item.task.id):
+        manifest = loaded.manifest_path.resolve()
+        if manifest not in seen:
+            digest.update(str(manifest.name).encode("utf-8"))
+            digest.update(manifest.read_bytes())
+            seen.add(manifest)
+        for path in sorted(loaded.fixture_path.rglob("*")):
+            if not path.is_file() or ".git" in path.relative_to(loaded.fixture_path).parts:
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            digest.update(path.relative_to(loaded.fixture_path).as_posix().encode("utf-8"))
+            digest.update(path.read_bytes())
+            seen.add(resolved)
+    return digest.hexdigest()
+
+
 # 给非单 Agent 组补充受控 agent 工具，同时保留原任务工具边界
 def _with_agent_tool(loaded: LoadedBenchmarkTask) -> LoadedBenchmarkTask:
     allowed = list(dict.fromkeys([*loaded.task.allowed_tools, "agent"]))
@@ -173,11 +195,7 @@ async def _run(
         "schema_version": 1,
         "experiment": "routed-multi-agent",
         "commit": _commit(),
-        "dataset_fingerprint": hashlib.sha256(
-            "\n".join(
-                loaded.manifest_path.read_text(encoding="utf-8") for loaded in [*multi, *quick]
-            ).encode("utf-8")
-        ).hexdigest(),
+        "dataset_fingerprint": _dataset_fingerprint([*multi, *quick]),
         "route": {
             **candidate,
         },
