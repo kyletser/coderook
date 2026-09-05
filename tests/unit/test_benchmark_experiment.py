@@ -107,11 +107,20 @@ def test_configure_experiment_budget_sets_matching_environment(
     monkeypatch.delenv("CODEROOK_EXPERIMENT_BUDGET_USD", raising=False)
 
     try:
-        ledger = experiment.configure_experiment_budget(tmp_path, limit_usd=2.0)
+        ledger = experiment.configure_experiment_budget(
+            tmp_path,
+            limit_usd=2.0,
+            expected_model="deepseek-v4-flash-0731",
+        )
 
         assert ledger == (tmp_path / "budget.json").resolve()
         assert experiment.os.environ["CODEROOK_EXPERIMENT_BUDGET_FILE"] == str(ledger)
         assert experiment.os.environ["CODEROOK_EXPERIMENT_BUDGET_USD"] == "2.0"
+        assert (
+            experiment.os.environ["CODEROOK_EXPERIMENT_EXPECTED_MODEL"]
+            == "deepseek-v4-flash-0731"
+        )
     finally:
         experiment.os.environ.pop("CODEROOK_EXPERIMENT_BUDGET_FILE", None)
         experiment.os.environ.pop("CODEROOK_EXPERIMENT_BUDGET_USD", None)
+        experiment.os.environ.pop("CODEROOK_EXPERIMENT_EXPECTED_MODEL", None)

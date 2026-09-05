@@ -269,7 +269,11 @@ def main() -> int:
     if not git_state["working_tree_clean"]:
         raise SystemExit("experiment requires a clean Git working tree")
     args.output.mkdir(parents=True, exist_ok=True)
-    configure_experiment_budget(args.output, limit_usd=args.max_cost_usd)
+    configure_experiment_budget(
+        args.output,
+        limit_usd=args.max_cost_usd,
+        expected_model=str(candidate["model"]),
+    )
     report = asyncio.run(_run(args, candidate=candidate))
     (args.output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",

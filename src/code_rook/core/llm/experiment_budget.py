@@ -47,10 +47,6 @@ class ExperimentBudgetProvider:
         ledger_path: Path,
         limit_usd: float,
     ) -> None:
-        if model != "deepseek-v4-flash":
-            raise ExperimentBudgetExceeded(
-                "reliability experiments are locked to deepseek-v4-flash"
-            )
         if not 0 < limit_usd <= 35:
             raise ExperimentBudgetExceeded("experiment cost limit must be in (0, 35]")
         if resolve_pricing_quote(model) is None:
@@ -78,6 +74,7 @@ class ExperimentBudgetProvider:
             return {
                 "schema_version": 1,
                 "limit_usd": self._limit_usd,
+                "model": self._model,
                 "spent_usd": 0.0,
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -91,6 +88,8 @@ class ExperimentBudgetProvider:
             raise ExperimentBudgetExceeded("unsupported experiment budget ledger")
         if float(state.get("limit_usd", 0.0)) != self._limit_usd:
             raise ExperimentBudgetExceeded("experiment budget limit changed mid-run")
+        if state.get("model") != self._model:
+            raise ExperimentBudgetExceeded("experiment model changed mid-run")
         return state
 
     # 使用临时文件替换持久化不含凭据和 Prompt 的预算状态
@@ -185,11 +184,16 @@ def maybe_wrap_experiment_budget(
 ) -> LLMProvider:
     raw_path = os.environ.get("CODEROOK_EXPERIMENT_BUDGET_FILE", "").strip()
     raw_limit = os.environ.get("CODEROOK_EXPERIMENT_BUDGET_USD", "").strip()
-    if not raw_path and not raw_limit:
+    expected_model = os.environ.get("CODEROOK_EXPERIMENT_EXPECTED_MODEL", "").strip()
+    if not raw_path and not raw_limit and not expected_model:
         return provider
-    if not raw_path or not raw_limit:
+    if not raw_path or not raw_limit or not expected_model:
         raise ExperimentBudgetExceeded(
-            "both CODEROOK_EXPERIMENT_BUDGET_FILE and CODEROOK_EXPERIMENT_BUDGET_USD are required"
+            "experiment budget file, limit and expected model are required"
+        )
+    if model != expected_model:
+        raise ExperimentBudgetExceeded(
+            f"experiment model changed from {expected_model} to {model}"
         )
     try:
         limit = float(raw_limit)

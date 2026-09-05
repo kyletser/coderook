@@ -46,6 +46,7 @@ async def test_experiment_budget_records_usage_without_content(tmp_path: Path) -
     state = json.loads(text)
     assert state["input_tokens"] == 1_000
     assert state["output_tokens"] == 100
+    assert state["model"] == "deepseek-v4-flash"
     assert state["reservations"] == {}
     assert "secret prompt" not in text
     assert "secret response" not in text

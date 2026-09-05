@@ -47,12 +47,14 @@ def _stage_environment(
     output: Path,
     stage: str,
     budget_usd: float,
+    expected_model: str,
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["CODEROOK_EXPERIMENT_BUDGET_FILE"] = str(
         (output / "budgets" / f"{stage}.json").resolve()
     )
     env["CODEROOK_EXPERIMENT_BUDGET_USD"] = str(budget_usd)
+    env["CODEROOK_EXPERIMENT_EXPECTED_MODEL"] = expected_model
     return env
 
 
@@ -64,15 +66,17 @@ def _run_stage(
     *,
     real_model: bool,
     budget_usd: float,
+    expected_model: str,
 ) -> dict[str, Any]:
     env = (
-        _stage_environment(output, stage, budget_usd)
+        _stage_environment(output, stage, budget_usd, expected_model)
         if real_model
         else dict(os.environ)
     )
     if not real_model:
         env.pop("CODEROOK_EXPERIMENT_BUDGET_FILE", None)
         env.pop("CODEROOK_EXPERIMENT_BUDGET_USD", None)
+        env.pop("CODEROOK_EXPERIMENT_EXPECTED_MODEL", None)
     started = datetime.now(UTC).isoformat()
     result = subprocess.run(command, check=False, env=env)
     return {
@@ -318,6 +322,7 @@ def main() -> int:
             command,
             real_model=real_model,
             budget_usd=budget_usd,
+            expected_model=str(candidate["model"]),
         )
         results.append(result)
         if not result["completed"]:

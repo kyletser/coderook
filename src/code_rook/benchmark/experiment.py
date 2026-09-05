@@ -51,21 +51,30 @@ def configure_experiment_budget(
     output: Path,
     *,
     limit_usd: float,
+    expected_model: str,
     ledger_name: str = "budget.json",
 ) -> Path:
     raw_path = os.environ.get("CODEROOK_EXPERIMENT_BUDGET_FILE", "").strip()
     raw_limit = os.environ.get("CODEROOK_EXPERIMENT_BUDGET_USD", "").strip()
-    if bool(raw_path) != bool(raw_limit):
-        raise RuntimeError("experiment budget path and limit must be configured together")
+    raw_model = os.environ.get("CODEROOK_EXPERIMENT_EXPECTED_MODEL", "").strip()
+    if len({bool(raw_path), bool(raw_limit), bool(raw_model)}) != 1:
+        raise RuntimeError(
+            "experiment budget path, limit and expected model must be configured together"
+        )
     if raw_path:
         if float(raw_limit) != limit_usd:
             raise RuntimeError(
                 "experiment stage budget does not match the script --max-cost-usd value"
             )
+        if raw_model != expected_model:
+            raise RuntimeError(
+                "experiment stage model does not match the frozen candidate model"
+            )
         return Path(raw_path).resolve()
     ledger = (output / ledger_name).resolve()
     os.environ["CODEROOK_EXPERIMENT_BUDGET_FILE"] = str(ledger)
     os.environ["CODEROOK_EXPERIMENT_BUDGET_USD"] = str(limit_usd)
+    os.environ["CODEROOK_EXPERIMENT_EXPECTED_MODEL"] = expected_model
     return ledger
 
 
