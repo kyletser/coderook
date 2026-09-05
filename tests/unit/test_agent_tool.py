@@ -283,7 +283,7 @@ async def _start_with_ticket(
     task_id: str = "task",
 ) -> ToolResult:
     read_only = bool(params.get("read_only", True))
-    minimum_budget = 8_000 if read_only else 16_000
+    minimum_budget = 8_000 if read_only else 20_000
     token_budget = max(
         minimum_budget,
         int(params.get("token_budget", minimum_budget) or minimum_budget),
@@ -355,7 +355,7 @@ def test_agent_plan_schema_describes_nested_task_contract(tmp_path: Path) -> Non
     }
     claim_schema = task_schema["properties"]["write_claim"]
     assert task_schema["properties"]["token_budget"]["minimum"] == 8_000
-    assert "16000 for a writable" in task_schema["properties"]["token_budget"][
+    assert "20000 for a writable" in task_schema["properties"]["token_budget"][
         "description"
     ]
     assert set(claim_schema["properties"]) == {

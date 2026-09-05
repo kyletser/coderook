@@ -241,8 +241,9 @@ def _markdown(report: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "The experiment harness may approve only completed, verified, digest-bound Worker "
-            "handoffs. It never pushes changes.",
+        "The disposable experiment harness reviews and digest-binds completed Worker "
+        "handoffs, applies them atomically, and then runs the task-level verifier. It never "
+        "pushes changes.",
         ]
     )
     return "\n".join(lines) + "\n"

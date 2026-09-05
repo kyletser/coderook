@@ -203,7 +203,6 @@ class CodeRookBenchmarkExecutor:
                     for worker in worker_registry.list_records()
                     if worker.status == WorkerStatus.COMPLETED
                     and worker.handoff_status == "pending_review"
-                    and worker.verification_status == "verified"
                 ]
                 manager = WorktreeManager(workspace)
                 unreviewed_workspace_writes = sum(

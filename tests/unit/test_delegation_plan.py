@@ -16,7 +16,7 @@ def _task(task_id: str, root: str, *, dependencies: tuple[str, ...] = ()) -> Del
         dependencies=dependencies,
         write_claim=WriteClaim(write_roots=[root]),
         acceptance=("targeted tests pass",),
-        token_budget=16_000,
+        token_budget=20_000,
     )
 
 
@@ -25,7 +25,7 @@ def _task(task_id: str, root: str, *, dependencies: tuple[str, ...] = ()) -> Del
 def test_delegation_plan_parallelizes_disjoint_claims() -> None:
     plan = DelegationPlan(
         tasks=(_task("api", "src/api"), _task("tui", "src/tui")),
-        total_token_budget=32_000,
+        total_token_budget=40_000,
     )
 
     assert plan.execution_waves() == (("api", "tui"),)
@@ -37,7 +37,7 @@ def test_delegation_plan_rejects_overlapping_write_claims() -> None:
     with pytest.raises(ValidationError, match="write claim conflict"):
         DelegationPlan(
             tasks=(_task("root", "src"), _task("child", "src/api")),
-            total_token_budget=32_000,
+            total_token_budget=40_000,
         )
 
 
@@ -50,12 +50,12 @@ def test_delegation_plan_rejects_cycles_and_nested_delegation() -> None:
                 _task("a", "src/a", dependencies=("b",)),
                 _task("b", "src/b", dependencies=("a",)),
             ),
-            total_token_budget=32_000,
+            total_token_budget=40_000,
         )
     with pytest.raises(ValidationError, match="nested delegation"):
         DelegationPlan(
             tasks=(_task("a", "src/a"),),
-            total_token_budget=16_000,
+            total_token_budget=20_000,
             allow_nested_delegation=True,
         )
 

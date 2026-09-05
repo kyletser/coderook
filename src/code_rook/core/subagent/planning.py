@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from code_rook.core.subagent.models import WriteClaim
 
 MIN_READ_ONLY_WORKER_TOKENS = 8_000
-MIN_WRITE_WORKER_TOKENS = 16_000
+MIN_WRITE_WORKER_TOKENS = 20_000
 
 
 class DelegationTask(BaseModel):

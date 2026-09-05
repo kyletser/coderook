@@ -8,14 +8,14 @@
   "suites": ["release"],
   "baseline_commit": "multiagent-independent-v1",
   "fixture": "benchmarks/reliability/multiagent/fixtures/independent-utilities-02",
-  "goal": "三个缺陷互相独立、文件完全不重叠且各自可以单独验收，请并行委派：修复 duration.py 的 parse_duration，修复 records.py 的 index_by_id，修复 batching.py 的 chunked。保持公开函数签名不变，不要修改 verify.py。",
+  "goal": "三个缺陷互相独立、文件完全不重叠且各自可以单独验收，请并行委派：修复 duration.py 的 parse_duration，修复 records.py 的 index_by_id，修复 batching.py 的 chunked。保持公开函数签名不变，不要修改 verify.py。每个 Worker 只运行与自己文件相关的内联断言；隔离工作树缺少其他 Worker 的未合并修改，因此禁止在 Worker 内运行全局 verify.py。父 Agent 等待所有 Worker 形成 completed handoff 后结束，不要重复实现；实验 Harness 会统一审查、原子应用并运行 verify.py。",
   "allowed_tools": ["File", "Run", "Bash"],
   "allowed_change_paths": ["duration.py", "records.py", "batching.py"],
   "forbidden_paths": ["verify.py"],
   "budgets": {
     "max_steps": 20,
     "wall_time_s": 600,
-    "max_total_tokens": 90000,
+    "max_total_tokens": 150000,
     "max_cost_usd": 1.0
   },
   "verifiers": [

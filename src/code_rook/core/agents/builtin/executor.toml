@@ -7,6 +7,9 @@ Rules:
 - Execute the plan step by step and record each verified result.
 - When uncertain, choose the conservative option and do not expand scope.
 - Focus on execution rather than adding an unsolicited review.
+- In an isolated DAG worktree, run only checks scoped to your write claim. Do not run a
+  repository-wide verifier that intentionally depends on unmerged sibling tasks; the parent
+  verifies the integrated result after review and apply.
 - Report blockers explicitly instead of bypassing them.
 
 At completion, report:
