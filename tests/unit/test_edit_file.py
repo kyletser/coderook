@@ -50,6 +50,22 @@ async def test_edit_file_replaces_unique_text_and_returns_diff(tmp_path: Path) -
     assert data["deletions"] == 1
 
 
+# 功能：验证模型以 LF 提交的多行编辑可以命中 Windows CRLF 文件并保留原行尾
+# 设计：直接写入 CRLF 字节后跨两行替换，断言未触发整文件重写且结果仍全部使用 CRLF
+async def test_edit_file_adapts_multiline_match_to_existing_crlf(tmp_path: Path) -> None:
+    target = tmp_path / "value.py"
+    target.write_bytes(b"def value():\r\n    return 41\r\n")
+
+    result = await EditFileTool(workspace_root=tmp_path).invoke({
+        "path": "value.py",
+        "old_text": "def value():\n    return 41\n",
+        "new_text": "def value():\n    return 42\n",
+    })
+
+    assert not result.is_error
+    assert target.read_bytes() == b"def value():\r\n    return 42\r\n"
+
+
 async def test_read_hash_can_be_passed_directly_to_edit(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("old value\n", encoding="utf-8")

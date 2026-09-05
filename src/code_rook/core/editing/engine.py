@@ -104,7 +104,16 @@ class EditEngine:
                     f"file changed after it was read: expected {normalized_hash}, found {old_hash}",
                 )
 
-        occurrences = text.count(old_text)
+        match_text = old_text
+        replacement_text = new_text
+        occurrences = text.count(match_text)
+        if occurrences == 0:
+            match_text, replacement_text = _adapt_edit_newlines(
+                text,
+                old_text,
+                new_text,
+            )
+            occurrences = text.count(match_text)
         if occurrences == 0:
             raise EditError("match_not_found", "old_text was not found in the current file")
         if occurrences > 1 and not replace_all:
@@ -115,7 +124,11 @@ class EditEngine:
             )
 
         replacements = occurrences if replace_all else 1
-        updated = text.replace(old_text, new_text, -1 if replace_all else 1)
+        updated = text.replace(
+            match_text,
+            replacement_text,
+            -1 if replace_all else 1,
+        )
         encoded = updated.encode("utf-8")
         if len(encoded) > self._max_bytes:
             raise EditError(
@@ -158,6 +171,26 @@ class EditEngine:
             deletions=deletions,
             checkpoint_id=checkpoint_id,
         )
+
+
+# 将模型统一换行的多行匹配适配到文件现有行尾，同时保持未编辑区域字节语义不变
+def _adapt_edit_newlines(text: str, old_text: str, new_text: str) -> tuple[str, str]:
+    if "\n" not in old_text and "\r" not in old_text:
+        return old_text, new_text
+    if "\r\n" in text:
+        newline = "\r\n"
+    elif "\r" in text:
+        newline = "\r"
+    elif "\n" in text:
+        newline = "\n"
+    else:
+        return old_text, new_text
+
+    # 将一种文本的混合行尾统一映射成目标文件的行尾
+    def adapt(value: str) -> str:
+        return value.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
+
+    return adapt(old_text), adapt(new_text)
 
 
 def atomic_write_bytes(
