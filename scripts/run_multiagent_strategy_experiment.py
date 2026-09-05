@@ -46,12 +46,18 @@ def _dataset_fingerprint(tasks: list[LoadedBenchmarkTask]) -> str:
             digest.update(manifest.read_bytes())
             seen.add(manifest)
         for path in sorted(loaded.fixture_path.rglob("*")):
-            if not path.is_file() or ".git" in path.relative_to(loaded.fixture_path).parts:
+            relative = path.relative_to(loaded.fixture_path)
+            ignored_parts = {".git", ".coderook", ".pytest_cache", "__pycache__"}
+            if (
+                not path.is_file()
+                or ignored_parts.intersection(relative.parts)
+                or path.suffix in {".pyc", ".pyo"}
+            ):
                 continue
             resolved = path.resolve()
             if resolved in seen:
                 continue
-            digest.update(path.relative_to(loaded.fixture_path).as_posix().encode("utf-8"))
+            digest.update(relative.as_posix().encode("utf-8"))
             digest.update(path.read_bytes())
             seen.add(resolved)
     return digest.hexdigest()

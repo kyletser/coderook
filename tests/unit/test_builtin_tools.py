@@ -47,6 +47,24 @@ async def test_bash_success_stdout() -> None:
     assert "hello" in result.content
 
 
+# 功能：验证受管 Bash 只继承显式允许的非敏感环境覆盖
+# 设计：通过真实 Python 子进程读取 Worker 使用的防字节码变量，覆盖构造参数到进程环境的完整链路
+@pytest.mark.asyncio
+async def test_bash_passes_sanitized_environment_override() -> None:
+    command = (
+        f'"{sys.executable}" -c "import os; '
+        "print(os.environ.get('PYTHONDONTWRITEBYTECODE', 'missing'))\""
+    )
+
+    result = await BashTool(
+        environment={"PYTHONDONTWRITEBYTECODE": "1", "OPENAI_API_KEY": "secret"}
+    ).invoke({"command": command})
+
+    assert not result.is_error
+    assert result.content.strip() == "1"
+    assert "secret" not in result.content
+
+
 # 功能：验证一次性 Bash 在完成前报告有界实时输出尾部
 # 设计：通过 tool_invocation 注入内存 progress 回调执行真实 echo，避免依赖 daemon 或模型
 @pytest.mark.asyncio

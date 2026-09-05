@@ -41,6 +41,16 @@ _IGNORED_WORKSPACE_PATHS = (
     "**/__pycache__/**",
 )
 _MAX_CAPTURE_CHARS = 20_000
+_FIXTURE_COPY_IGNORE = shutil.ignore_patterns(
+    ".git",
+    ".coderook",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+)
 
 
 # 为每个选中任务固化清单、允许工具、预算和 fixture 内容指纹
@@ -154,7 +164,11 @@ class BenchmarkRunner:
             root = Path(temp_dir)
             workspace = root / "workspace"
             runs_dir = root / "runs"
-            shutil.copytree(loaded.fixture_path, workspace)
+            shutil.copytree(
+                loaded.fixture_path,
+                workspace,
+                ignore=_FIXTURE_COPY_IGNORE,
+            )
             before = _snapshot_workspace(workspace)
             execution = await self._executor.execute(
                 loaded.task,
@@ -224,7 +238,11 @@ async def verify_benchmark_baseline(
         dir=temp_root,
     ) as temp_dir:
         workspace = Path(temp_dir) / "workspace"
-        shutil.copytree(loaded.fixture_path, workspace)
+        shutil.copytree(
+            loaded.fixture_path,
+            workspace,
+            ignore=_FIXTURE_COPY_IGNORE,
+        )
         return await run_benchmark_verifiers(loaded.task, workspace)
 
 

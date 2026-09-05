@@ -1486,7 +1486,11 @@ class SpawnAgentTool(BaseTool):
                 SandboxTier.WORKSPACE_WRITE,
                 str(boundary.root),
             )
-        shell = BashTool(boundary.root, sandbox_plan=sandbox_plan)
+        shell = BashTool(
+            boundary.root,
+            sandbox_plan=sandbox_plan,
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+        )
         if not restrict_read_only:
             register_run_family(
                 registry,

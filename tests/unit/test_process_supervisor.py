@@ -158,6 +158,7 @@ def test_sanitized_shell_environment_removes_credentials() -> None:
     environment = sanitized_shell_environment(
         {
             "PATH": "test-path",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "OPENAI_API_KEY": "provider-secret",
             "GITHUB_TOKEN": "git-secret",
             "SSH_AUTH_SOCK": "agent-socket",
@@ -165,6 +166,7 @@ def test_sanitized_shell_environment_removes_credentials() -> None:
     )
 
     assert environment["PATH"] == "test-path"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
     assert "OPENAI_API_KEY" not in environment
     assert "GITHUB_TOKEN" not in environment
     assert "SSH_AUTH_SOCK" not in environment

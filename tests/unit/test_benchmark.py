@@ -251,6 +251,34 @@ async def test_verify_benchmark_baseline_requires_failure(tmp_path: Path) -> Non
     assert results[0].passed is False
 
 
+# 功能：验证 fixture 中的 Python 缓存不会进入候选工作区或变更审计
+# 设计：在冻结 fixture 注入可识别的 pyc 文件后运行真实复制路径，断言执行器看不到缓存且报告不含伪变更
+async def test_benchmark_copy_excludes_transient_python_cache(tmp_path: Path) -> None:
+    loaded = _loaded_task(tmp_path)
+    cache = loaded.fixture_path / "__pycache__"
+    cache.mkdir()
+    (cache / "answer.cpython-312.pyc").write_bytes(b"stale-bytecode")
+    seen_cache: list[bool] = []
+
+    class CacheAwareExecutor(_EditingExecutor):
+        # 在候选工作区执行前记录 fixture 缓存是否被复制
+        async def execute(
+            self,
+            task: BenchmarkTask,
+            workspace: Path,
+            runs_dir: Path,
+        ) -> AgentExecution:
+            seen_cache.append((workspace / "__pycache__").exists())
+            return await super().execute(task, workspace, runs_dir)
+
+    report = await BenchmarkRunner(
+        CacheAwareExecutor("answer.txt", "right\n")
+    ).run([loaded], repository_commit="abc123", suite="quick")
+
+    assert seen_cache == [False]
+    assert all("__pycache__" not in change.path for change in report.results[0].changes)
+
+
 # 功能：验证真实候选合同绑定完整 commit、route、配置、任务、fixture 与预算指纹
 # 设计：用确定性执行器生成有效报告再篡改 candidate hash，覆盖成功合同与防人工改报告两个分支
 async def test_candidate_contract_rejects_unknown_or_tampered_identity(

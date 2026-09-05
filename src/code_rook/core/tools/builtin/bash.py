@@ -153,6 +153,7 @@ class BashTool(BaseTool):
         sandbox_plan: SandboxPlan | None = None,
         process_supervisor: ProcessSupervisor | None = None,
         artifact_store: ArtifactStore | None = None,
+        environment: dict[str, str] | None = None,
     ) -> None:
         self._cwd = cwd
         self._persistent_pool = persistent_pool
@@ -161,6 +162,7 @@ class BashTool(BaseTool):
         self._sandbox_plan = sandbox_plan
         self._process_supervisor = process_supervisor
         self._artifact_store = artifact_store
+        self._environment = dict(environment or {})
 
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -185,6 +187,7 @@ class BashTool(BaseTool):
                     command=command,
                     label="isolated-shell",
                     cwd=self._cwd,
+                    env=self._environment,
                 ),
                 self._process_supervisor,
             )
