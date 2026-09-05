@@ -74,9 +74,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-model-calls", action="store_true")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument(
-        "--tasks",
+        "--dataset",
         type=Path,
-        default=Path("benchmarks/tasks"),
+        default=Path("benchmarks/reliability/task_strategy_intents.json"),
     )
     parser.add_argument(
         "--output",
@@ -86,40 +86,35 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-# 从现有 50 任务类别和允许工具生成冻结的预期标签
-def _expected(task: dict[str, Any]) -> dict[str, object]:
-    category = str(task["category"])
-    intent = {
-        "explain": "explain",
-        "single_file_fix": "fix",
-        "multi_file_change": "multi_file_change",
-        "test_and_verify": "test",
-        "refactor": "refactor",
-        "security_negative": "inspect",
-    }[category]
-    scope = {
-        "explain": "read_only",
-        "security_negative": "read_only",
-        "single_file_fix": "single_file",
-        "test_and_verify": "single_file",
-        "refactor": "multi_file",
-        "multi_file_change": "multi_file",
-    }[category]
-    allowed = {str(value).casefold() for value in task.get("allowed_tools", [])}
-    if any(value in allowed for value in {"web_fetch", "web_search"}):
-        risk = "external"
-    elif any(value in allowed for value in {"bash", "run", "run_tests", "run_verifiers"}):
-        risk = "shell"
-    elif scope == "read_only":
-        risk = "read"
-    else:
-        risk = "mutate"
-    return {
-        "intent": intent,
-        "scope": scope,
-        "risk": risk,
-        "delegation_allowed": category in {"multi_file_change", "refactor"},
-    }
+_EXPECTED_FIELDS = frozenset(
+    {"intent", "scope", "risk", "strategy", "delegation_allowed"}
+)
+
+
+# 加载人工标注路由集并校验 ID、双语规模和完整预期字段
+def _load_dataset(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid task strategy dataset: {exc}") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("items"), list):
+        raise SystemExit("task strategy dataset must contain an items array")
+    items = raw["items"]
+    if len(items) < 40:
+        raise SystemExit("task strategy dataset must contain at least 40 labelled prompts")
+    ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("prompt"), str):
+            raise SystemExit("every task strategy item requires an id and prompt")
+        ids.append(str(item.get("id", "")))
+        expected = item.get("expected")
+        if not isinstance(expected, dict) or set(expected) != _EXPECTED_FIELDS:
+            raise SystemExit(
+                f"task strategy item {item.get('id')} has an incomplete expected label"
+            )
+    if any(not item_id for item_id in ids) or len(ids) != len(set(ids)):
+        raise SystemExit("task strategy item ids must be non-empty and unique")
+    return raw
 
 
 # 对每个类别计算 one-vs-rest F1 后返回宏平均
@@ -156,22 +151,17 @@ def _commit() -> str:
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
-# 对任务目录内容计算稳定数据集指纹
-def _dataset_fingerprint(paths: list[Path]) -> str:
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+# 对冻结标注文件计算稳定数据集指纹
+def _dataset_fingerprint(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# 按任务类别轮询选择小规模诊断样本，避免目录顺序造成类别偏置
-def _stratified_paths(paths: list[Path], limit: int) -> list[Path]:
-    groups: dict[str, list[Path]] = {}
-    for path in paths:
-        task = json.loads(path.read_text(encoding="utf-8"))
-        groups.setdefault(str(task["category"]), []).append(path)
-    selected: list[Path] = []
+# 按人工标注意图轮询选择 Pilot 样本，避免文件顺序造成类别偏置
+def _stratified_items(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        groups.setdefault(str(item["expected"]["intent"]), []).append(item)
+    selected: list[dict[str, Any]] = []
     while len(selected) < limit:
         advanced = False
         for category in sorted(groups):
@@ -190,11 +180,8 @@ async def _run(
     candidate: dict[str, Any],
 ) -> dict[str, Any]:
     methods = args.method or ["rules_only"]
-    all_paths = sorted(args.tasks.glob("*.json"))
-    if len(all_paths) != 50:
-        raise SystemExit(f"expected 50 frozen tasks, found {len(all_paths)}")
-    paths = _stratified_paths(all_paths, args.task_limit)
-    tasks = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    dataset = _load_dataset(args.dataset)
+    items = _stratified_items(list(dataset["items"]), args.task_limit)
     config = get_config()
     resolved = RouteRegistry(config.llm, temperature_override=0.0).resolve()
     uses_model = any(method != "rules_only" for method in methods)
@@ -218,19 +205,20 @@ async def _run(
             ):
                 break
             block_start_cost = spent
-            for task in tasks:
+            for item in items:
                 started = time.perf_counter()
                 profile = await router.classify(
-                    str(task["goal"]),
+                    str(item["prompt"]),
                     provider=provider,
                     method=method,
                 )
-                expected = _expected(task)
+                expected = dict(item["expected"])
                 rows.append(
                     {
                         "method": method,
                         "repeat": repeat,
-                        "task_id": task["id"],
+                        "task_id": item["id"],
+                        "prompt": item["prompt"],
                         "expected": expected,
                         "actual": profile.model_dump(mode="json"),
                         "latency_ms": round((time.perf_counter() - started) * 1_000, 3),
@@ -256,11 +244,26 @@ async def _run(
             bool(row["actual"]["delegation_allowed"]) == bool(row["expected"]["delegation_allowed"])
             for row in selected
         )
+        strategy_correct = sum(
+            str(row["actual"]["strategy"]) == str(row["expected"]["strategy"])
+            for row in selected
+        )
+        scope_correct = sum(
+            str(row["actual"]["scope"]) == str(row["expected"]["scope"])
+            for row in selected
+        )
+        exact_profiles = sum(
+            all(row["actual"][key] == row["expected"][key] for key in _EXPECTED_FIELDS)
+            for row in selected
+        )
         summaries[method] = {
             "samples": len(selected),
             "macro_f1": _macro_f1(expected_intents, actual_intents),
             "risk_false_negatives": risk_false_negatives,
             "delegation_accuracy": delegation_correct / len(selected) if selected else 0.0,
+            "strategy_accuracy": strategy_correct / len(selected) if selected else 0.0,
+            "scope_accuracy": scope_correct / len(selected) if selected else 0.0,
+            "exact_profile_accuracy": exact_profiles / len(selected) if selected else 0.0,
             "latency_ms_p50": (
                 sorted(float(row["latency_ms"]) for row in selected)[len(selected) // 2]
                 if selected
@@ -270,10 +273,13 @@ async def _run(
         }
     return {
         "schema_version": 1,
-        "experiment": "task-strategy-router-diagnostic",
-        "effectiveness_claim": False,
+        "experiment": "task-strategy-router-labelled-ablation",
+        "routing_label_claim": True,
+        "coding_effectiveness_claim": False,
         "commit": _commit(),
-        "dataset_fingerprint": _dataset_fingerprint(paths),
+        "dataset_name": dataset.get("dataset_name", args.dataset.stem),
+        "dataset_fingerprint": _dataset_fingerprint(args.dataset),
+        "annotation": dataset.get("annotation", {}),
         "route": candidate,
         "budget": {
             "limit_usd": args.max_cost_usd,
@@ -291,25 +297,28 @@ async def _run(
 # 将聚合指标和诚实门禁结果渲染为简洁 Markdown
 def _markdown(report: dict[str, Any]) -> str:
     lines = [
-        "# Task Strategy Router Category-Proxy Diagnostic",
+        "# Task Strategy Router Labelled Ablation",
         "",
         f"Commit: `{report['commit']}`",
         f"Dataset: `{report['dataset_fingerprint']}`",
         "",
-        "| Method | Samples | Macro-F1 | Risk FN | Delegation accuracy |",
-        "|---|---:|---:|---:|---:|",
+        "| Method | Samples | Intent Macro-F1 | Risk FN | Scope | Strategy | Delegation | Exact profile |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for method, summary in report["summaries"].items():
         lines.append(
             f"| {method} | {summary['samples']} | {summary['macro_f1']:.3f} | "
-            f"{summary['risk_false_negatives']} | {summary['delegation_accuracy']:.1%} |"
+            f"{summary['risk_false_negatives']} | {summary['scope_accuracy']:.1%} | "
+            f"{summary['strategy_accuracy']:.1%} | {summary['delegation_accuracy']:.1%} | "
+            f"{summary['exact_profile_accuracy']:.1%} |"
         )
     lines.extend(
         [
             "",
             "Numbers above are computed from every retained raw row; no best run is selected.",
-            "This is a routing diagnostic, not evidence that coding task outcomes improved.",
-            "Expected labels are benchmark-category proxies and must not be reported as user-intent accuracy.",
+            "Labels follow the annotation rubric embedded in the frozen dataset.",
+            "This measures routing agreement, not evidence that coding-task outcomes improved.",
+            "The current labels are single-author annotations and are reported with that limitation.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -322,8 +331,10 @@ def main() -> int:
         raise SystemExit("--repeats must be positive")
     if args.max_cost_usd <= 0 or args.max_cost_usd > 35:
         raise SystemExit("--max-cost-usd must be in (0, 35]")
-    if not 1 <= args.task_limit <= 50:
-        raise SystemExit("--task-limit must be between 1 and 50")
+    dataset = _load_dataset(args.dataset)
+    dataset_size = len(dataset["items"])
+    if not 1 <= args.task_limit <= dataset_size:
+        raise SystemExit(f"--task-limit must be between 1 and {dataset_size}")
     methods = args.method or ["rules_only"]
     uses_model = any(method != "rules_only" for method in methods)
     if uses_model and not args.allow_model_calls:
@@ -343,6 +354,8 @@ def main() -> int:
         "candidate": candidate,
         "git": git_state,
         "methods": methods,
+        "dataset": str(args.dataset),
+        "dataset_size": dataset_size,
         "task_limit": args.task_limit,
         "repeats": args.repeats,
         "maximum_model_calls": (
@@ -352,7 +365,8 @@ def main() -> int:
         ),
         "max_cost_usd": args.max_cost_usd,
         "model_calls": False,
-        "effectiveness_claim": False,
+        "routing_label_claim": True,
+        "coding_effectiveness_claim": False,
     }
     if args.preflight:
         print(json.dumps(preflight, ensure_ascii=False, indent=2))
