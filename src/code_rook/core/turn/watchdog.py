@@ -69,6 +69,10 @@ class _ActivityBus(EventBus):
             self._on_activity(len(str(getattr(event, "content", "")).encode("utf-8")))
         await self._inner.publish(event)
 
+    # 记录 reasoning 或工具参数等尚未形成公开事件的 SSE 增量
+    def mark_stream_activity(self, byte_count: int) -> None:
+        self._on_activity(max(0, byte_count))
+
 
 class StreamWatchdog:
     # 初始化流式空闲、总时长与响应大小三重边界
@@ -107,8 +111,7 @@ class StreamWatchdog:
             streamed_bytes += size
             if streamed_bytes > self._limits.max_response_bytes:
                 raise ResponseTooLargeError(
-                    "stream response exceeded "
-                    f"{self._limits.max_response_bytes} bytes"
+                    f"stream response exceeded {self._limits.max_response_bytes} bytes"
                 )
             activity.set()
 
@@ -149,8 +152,7 @@ class StreamWatchdog:
                     size = self._response_size(response)
                     if size > self._limits.max_response_bytes:
                         raise ResponseTooLargeError(
-                            "response exceeded "
-                            f"{self._limits.max_response_bytes} bytes"
+                            f"response exceeded {self._limits.max_response_bytes} bytes"
                         )
                     return response
                 if activity_waiter in done:

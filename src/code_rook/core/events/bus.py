@@ -40,6 +40,10 @@ class EventBus:
         except ValueError:
             return
 
+    # 接收 Provider 已收到但尚不适合发布为用户事件的流活动，普通总线无需处理
+    def mark_stream_activity(self, byte_count: int) -> None:
+        del byte_count
+
     # 按注册顺序依次调用所有订阅者；单个订阅者异常被隔离，不中断后续订阅者
     async def publish(self, event: BaseModel) -> None:
         for handler in tuple(self._subscribers):
@@ -51,6 +55,4 @@ class EventBus:
             except Exception:
                 if handler in self._critical:
                     raise
-                logger.exception(
-                    "event subscriber failed on %s", type(event).__name__
-                )
+                logger.exception("event subscriber failed on %s", type(event).__name__)

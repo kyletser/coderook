@@ -74,7 +74,7 @@ _PARALLEL_RE = re.compile(
 )
 _COUPLED_RE = re.compile(
     r"(?i)(保持同一个|同一(?:协议|接口|契约)|兼容|所有调用方|调用链|"
-    r"\b(?:same contract|one .*contract|compatib|migration|all callers|every consumer|together)\b)"
+    r"\b(?:same contract|one .*contract|compatib|migration|all callers|every consumer)\b)"
 )
 _LONG_RE = re.compile(
     r"(?i)(长任务|完整实现|全部完成|不要停止|多轮|恢复|迁移|long.?running|"
@@ -179,7 +179,13 @@ class TaskStrategyRouter:
         parallel = bool(_PARALLEL_RE.search(goal))
         multi = repository or parallel or bool(_MULTI_RE.search(goal))
         coupled = bool(_COUPLED_RE.search(goal))
-        files = sorted(set(_FILE_RE.findall(_URL_RE.sub("", goal))))
+        files = sorted(
+            {
+                value
+                for value in _FILE_RE.findall(_URL_RE.sub("", goal))
+                if value.casefold().lstrip("(") not in {"i.e", "e.g"}
+            }
+        )
         conversational = bool(_CONVERSATION_RE.search(goal)) and not (
             mutate or shell or external or files
         )

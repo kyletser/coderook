@@ -32,9 +32,7 @@ class _ActiveForeverProvider:
         run_id = str(kwargs["run_id"])
         assert isinstance(bus, EventBus)
         while True:
-            await bus.publish(
-                LlmTokenEvent(run_id=run_id, token="x", ts="2026-08-03T00:00:00Z")
-            )
+            await bus.publish(LlmTokenEvent(run_id=run_id, token="x", ts="2026-08-03T00:00:00Z"))
             await asyncio.sleep(0.002)
 
 
@@ -80,6 +78,27 @@ async def test_never_ending_stream_fails_with_idle_timeout() -> None:
 
     assert context.status == "failed"
     assert context.reason == "stream_idle_timeout"
+
+
+# 功能：验证未公开的 reasoning/tool SSE 增量也能刷新 watchdog 活动时间
+# 设计：调用方只上报内部流字节而不发布 token，跨越原空闲阈值后正常返回以复现慢思考模型
+async def test_private_stream_activity_prevents_false_idle_timeout() -> None:
+    async def active_call(bus: EventBus) -> LlmResponse:
+        for _ in range(3):
+            await asyncio.sleep(0.015)
+            bus.mark_stream_activity(1)
+        return LlmResponse(stop_reason="end_turn", text="done")
+
+    watchdog = StreamWatchdog(
+        WatchdogLimits(
+            idle_timeout_s=0.02,
+            wall_timeout_s=0.2,
+        )
+    )
+
+    response = await watchdog.run(active_call, EventBus())
+
+    assert response.text == "done"
 
 
 # 功能：验证持续有 token 的无限流不会逃过 wall timeout
@@ -200,9 +219,7 @@ async def test_stream_idle_timeout_retries_once_and_recovers_turn() -> None:
 # 功能：验证空响应重试耗尽后以 no_content 明确失败而不是伪装成功
 # 设计：连续提供三次空 end_turn，覆盖初次调用加两次独立 no-content retry 的边界
 async def test_no_content_retry_exhaustion_fails_explicitly() -> None:
-    provider = _SequenceProvider(
-        [LlmResponse(stop_reason="end_turn") for _ in range(3)]
-    )
+    provider = _SequenceProvider([LlmResponse(stop_reason="end_turn") for _ in range(3)])
     loop = AgentLoop(
         provider,  # type: ignore[arg-type]
         ToolRegistry(),

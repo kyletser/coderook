@@ -340,6 +340,7 @@ class OpenAICompatibleProvider:
             reasoning = delta.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning:
                 reasoning_parts.append(reasoning)
+                bus.mark_stream_activity(len(reasoning.encode("utf-8")))
             raw_calls = delta.get("tool_calls")
             if isinstance(raw_calls, list):
                 for raw_call in raw_calls:
@@ -351,14 +352,17 @@ class OpenAICompatibleProvider:
                     call_id = raw_call.get("id")
                     if isinstance(call_id, str) and call_id:
                         slot["id"] = call_id
+                        bus.mark_stream_activity(len(call_id.encode("utf-8")))
                     function = raw_call.get("function")
                     if isinstance(function, dict):
                         name = function.get("name")
                         if isinstance(name, str) and name:
                             slot["name"] = name
+                            bus.mark_stream_activity(len(name.encode("utf-8")))
                         arguments = function.get("arguments")
-                        if isinstance(arguments, str):
+                        if isinstance(arguments, str) and arguments:
                             slot["arguments"] += arguments
+                            bus.mark_stream_activity(len(arguments.encode("utf-8")))
         raw_tool_calls: list[dict[str, Any]] = [
             {
                 "id": slot["id"],

@@ -142,6 +142,20 @@ def test_router_ignores_reference_url_when_scoping_coding_task() -> None:
     assert profile.strategy == TaskStrategy.DIRECT
 
 
+# 功能：验证自然语言缩写和普通 together 不会伪造第二个文件或跨模块耦合
+# 设计：复现 Wordy 题面的 i.e. 与“add numbers together”，确保单文件目标仍走直接修复
+def test_router_ignores_prose_abbreviation_and_non_coupling_together() -> None:
+    profile = TaskStrategyRouter().classify_rules(
+        "Add two numbers together, left-to-right (i.e. not precedence). "
+        "Use the instructions to modify wordy.py."
+    )
+
+    assert profile.intent == TaskIntent.FIX
+    assert profile.scope == TaskScope.SINGLE_FILE
+    assert profile.risk == TaskRisk.MUTATE
+    assert profile.strategy == TaskStrategy.DIRECT
+
+
 # 功能：验证跨文件任务只有明确独立且不存在兼容耦合时才允许委派
 # 设计：对比同一协议的耦合修改和无共享文件的并行修改，证明路由不会见到多文件就盲目启动 Worker
 def test_router_delegates_only_independent_non_overlapping_work() -> None:
