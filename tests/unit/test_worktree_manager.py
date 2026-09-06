@@ -5,11 +5,62 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.worktree import (
     WorktreeBatchApplyItem,
     WorktreeError,
     WorktreeManager,
 )
+
+
+# 功能：未跟踪的真实工具输出 Artifact 不阻断已审查的 Worker 修改应用
+# 设计：在最小 Git 仓库中通过生产存储写入 Artifact，再走完整 preview/apply 且验证输出未丢失
+async def test_output_artifact_allows_reviewed_apply(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    manager = WorktreeManager(tmp_path)
+    base = await manager.resolve_ref()
+    worker = await manager.create("artifact-review", base)
+    (worker / "README.md").write_text("reviewed\n", encoding="utf-8")
+    artifact = await ArtifactStore(tmp_path / ".coderook" / "artifacts").put(b"worker output")
+
+    preview = await manager.preview_apply("artifact-review", base_commit=base)
+    applied = await manager.apply(
+        "artifact-review", base_commit=base,
+        expected_digest=preview.state_digest, reviewed_files=preview.changed_files,
+    )
+
+    assert applied.changed_files == ("README.md",)
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "reviewed\n"
+    assert (tmp_path / ".coderook" / "artifacts" / artifact.sha256).read_bytes() == b"worker output"
+
+
+# 功能：已跟踪的 Artifact、普通项目配置和非内容寻址文件仍会阻断未审查应用
+# 设计：在相同 Git 流程中只改变脏文件种类，确保修复没有通过忽略整个 .coderook 来放宽边界
+@pytest.mark.parametrize("kind", ["tracked-artifact", "config", "non-artifact"])
+async def test_artifact_exception_keeps_user_changes_visible(tmp_path: Path, kind: str) -> None:
+    _init_repo(tmp_path)
+    relative = {
+        "tracked-artifact": ".coderook/artifacts/" + "a" * 64,
+        "config": ".coderook/config.toml",
+        "non-artifact": ".coderook/artifacts/notes.txt",
+    }[kind]
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "tracked-artifact":
+        path.write_text("tracked\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(tmp_path), "add", relative], check=True)
+        subprocess.run([
+            "git", "-C", str(tmp_path), "-c", "user.name=CodeRook Test",
+            "-c", "user.email=coderook@example.invalid", "commit", "-qm", "track artifact",
+        ], check=True)
+    manager = WorktreeManager(tmp_path)
+    base = await manager.resolve_ref()
+    worker = await manager.create("user-change", base)
+    (worker / "README.md").write_text("worker change\n", encoding="utf-8")
+    path.write_text("user change\n", encoding="utf-8")
+
+    with pytest.raises(WorktreeError, match="workspace must be clean"):
+        await manager.preview_apply("user-change", base_commit=base)
 
 
 # 初始化包含一次提交的最小 Git 仓库

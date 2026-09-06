@@ -455,9 +455,9 @@ class WorktreeManager:
                     paths.append(source)
         return paths
 
-    # 返回排除 CodeRook 自身受管 worktree 目录后的主仓库状态
+    # 排除受管 worktree 和未跟踪的内容寻址输出，仍保留已跟踪 Artifact 与项目配置变更
     async def _workspace_status(self) -> str:
-        return await self._git(
+        status = await self._git(
             "status",
             "--porcelain=v1",
             "-z",
@@ -465,6 +465,12 @@ class WorktreeManager:
             "--",
             ".",
             ":(exclude).coderook/worktrees",
+        )
+        return "".join(
+            entry + "\x00"
+            for entry in status.split("\x00")
+            if entry
+            and not re.fullmatch(r"\?\? \.coderook/artifacts/[0-9a-f]{64}", entry)
         )
 
     # 列出由 CodeRook 固定目录管理的 worktree 名称和路径
