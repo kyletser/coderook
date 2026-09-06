@@ -36,6 +36,7 @@ _SHELL_ENV_ALLOWLIST = frozenset(
         "PYTHONIOENCODING",
         "PYTHONUTF8",
         "PYTHONDONTWRITEBYTECODE",
+        "PYTHONPYCACHEPREFIX",
         "NO_COLOR",
         "FORCE_COLOR",
     }

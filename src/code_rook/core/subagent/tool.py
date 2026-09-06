@@ -1522,7 +1522,7 @@ class SpawnAgentTool(BaseTool):
         shell = BashTool(
             boundary.root,
             sandbox_plan=sandbox_plan,
-            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            isolate_python_cache=True,
         )
         if not restrict_read_only:
             register_run_family(

@@ -669,6 +669,8 @@ def run_confined(
         child_environment = dict(os.environ)
         child_environment["TEMP"] = str(private_temp)
         child_environment["TMP"] = str(private_temp)
+        if "PYTHONPYCACHEPREFIX" in child_environment:
+            child_environment["PYTHONPYCACHEPREFIX"] = str(private_temp / "python-cache")
         child_environment["CODEROOK_WINDOWS_ACL"] = "1"
         child_environment["PYTHONPATH"] = str(
             Path(__file__).with_name("windows_python_compat").resolve()

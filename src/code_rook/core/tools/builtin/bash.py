@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -154,6 +155,7 @@ class BashTool(BaseTool):
         process_supervisor: ProcessSupervisor | None = None,
         artifact_store: ArtifactStore | None = None,
         environment: dict[str, str] | None = None,
+        isolate_python_cache: bool = False,
     ) -> None:
         self._cwd = cwd
         self._persistent_pool = persistent_pool
@@ -163,6 +165,7 @@ class BashTool(BaseTool):
         self._process_supervisor = process_supervisor
         self._artifact_store = artifact_store
         self._environment = dict(environment or {})
+        self._isolate_python_cache = isolate_python_cache
 
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -175,10 +178,34 @@ class BashTool(BaseTool):
                 is_error=True,
                 error_type="schema_error",
             )
+        if self._isolate_python_cache:
+            # 显式 py_compile 不遵守 dont_write_bytecode，缓存必须离开受审查工作树。
+            plan = self._sandbox_plan
+            temporary_root = (
+                "/tmp"
+                if plan is not None
+                and plan.enforced
+                and plan.capability.kind in {"linux_bwrap", "macos_seatbelt"}
+                else None
+            )
+            with tempfile.TemporaryDirectory(
+                prefix="coderook-python-cache-", dir=temporary_root,
+            ) as cache:
+                return await self._run_isolated(
+                    p.command,
+                    p.timeout,
+                    environment={
+                        **self._environment,
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                        "PYTHONPYCACHEPREFIX": cache,
+                    },
+                )
         return await self._run_isolated(p.command, p.timeout)
 
     # 走一次性子进程的原有执行路径；有真实沙箱时对命令施加 OS 包裹
-    async def _run_isolated(self, command: str, timeout: int) -> ToolResult:
+    async def _run_isolated(
+        self, command: str, timeout: int, *, environment: dict[str, str] | None = None,
+    ) -> ToolResult:
         process_usage: dict[str, object] | None = None
         try:
             proc = await spawn_sandboxed_shell(
@@ -187,7 +214,7 @@ class BashTool(BaseTool):
                     command=command,
                     label="isolated-shell",
                     cwd=self._cwd,
-                    env=self._environment,
+                    env=self._environment if environment is None else environment,
                 ),
                 self._process_supervisor,
             )
