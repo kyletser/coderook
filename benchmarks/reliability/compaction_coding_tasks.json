@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "dataset": "coderook-compaction-coding-v1",
+  "synthetic": true,
+  "policies": ["structured", "adaptive_evidence"],
+  "repeats": 1,
+  "selection": "all four tasks; frozen before model execution",
+  "tasks": [
+    {
+      "id": "json-record",
+      "history_rounds": 12,
+      "goal": "Fix parse_record(text) in target.py to parse a JSON object and reject other JSON values or malformed input.",
+      "constraints": ["Keep parse_record(text) as the public signature.", "All rejected inputs must raise ValueError with exactly E_RECORD, without leaking input text.", "Accept surrounding whitespace and preserve Unicode string values; do not add dependencies."],
+      "source": "import json\n\ndef parse_record(text):\n    return json.loads(text)\n",
+      "smoke": "from target import parse_record\nassert parse_record('{\"name\": \"Ada\"}') == {'name': 'Ada'}\nprint('smoke passed')\n",
+      "verifier": "import inspect\nfrom target import parse_record\nassert str(inspect.signature(parse_record)) == '(text)'\nassert parse_record('  {\"name\": \"中文\", \"count\": 0} \\n') == {'name': '中文', 'count': 0}\nfor text in ('[]', 'null', '1', '\"x\"', '{\"secret\":', '{bad}'):\n    try:\n        parse_record(text)\n    except ValueError as exc:\n        assert str(exc) == 'E_RECORD', repr(exc)\n    else:\n        raise AssertionError('invalid record accepted')\nprint('constraints passed')\n"
+    },
+    {
+      "id": "stable-unique",
+      "history_rounds": 14,
+      "goal": "Fix stable_unique(values) in target.py so it removes duplicates including unhashable values while preserving first-occurrence order.",
+      "constraints": ["Keep stable_unique(values) as the public signature and return a new list.", "Use Python equality semantics: True and 1 are duplicates; preserve the identity of each first retained object.", "Support nested lists and dictionaries without modifying the caller's input; do not add dependencies."],
+      "source": "def stable_unique(values):\n    return list(dict.fromkeys(values))\n",
+      "smoke": "from target import stable_unique\nassert stable_unique([2, 1, 2]) == [2, 1]\nprint('smoke passed')\n",
+      "verifier": "import copy, inspect\nfrom target import stable_unique\nassert str(inspect.signature(stable_unique)) == '(values)'\nfirst = {'a': [1, 2]}\nitems = [first, {'a': [1, 2]}, [1], [1], True, 1, 0, False]\nbefore = copy.deepcopy(items)\nresult = stable_unique(items)\nassert result == [first, [1], True, 0]\nassert result[0] is first\nassert result[1] is items[2]\nassert result is not items and items == before\nassert stable_unique([]) == []\nprint('constraints passed')\n"
+    },
+    {
+      "id": "duration",
+      "history_rounds": 18,
+      "goal": "Fix parse_duration(text) in target.py to convert duration strings with an ms or s suffix to integer milliseconds.",
+      "constraints": ["Keep parse_duration(text) as the public signature.", "Accept surrounding whitespace, decimal nonnegative numbers and suffixes ms or s; accept only values that convert to an exact integer millisecond, with no rounding or float precision loss.", "Reject negatives, missing/unknown units, NaN, infinity and fractional milliseconds with ValueError whose message is exactly E_DURATION; use only the standard library."],
+      "source": "def parse_duration(text):\n    return int(text.strip().rstrip('ms'))\n",
+      "smoke": "from target import parse_duration\nassert parse_duration('12ms') == 12\nprint('smoke passed')\n",
+      "verifier": "import inspect\nfrom target import parse_duration\nassert str(inspect.signature(parse_duration)) == '(text)'\nfor text, expected in [(' 1.25s ',1250), ('0ms',0), ('1.0ms',1), ('9007199254740993ms',9007199254740993), ('0.001s',1)]:\n    assert parse_duration(text) == expected, text\n    assert type(parse_duration(text)) is int\nfor text in ('-1ms','1','1m','NaNs','infs','0.1ms','0.0001s',''):\n    try:\n        parse_duration(text)\n    except ValueError as exc:\n        assert str(exc) == 'E_DURATION', repr(exc)\n    else:\n        raise AssertionError('invalid duration accepted: ' + text)\nprint('constraints passed')\n"
+    },
+    {
+      "id": "settings-update",
+      "history_rounds": 20,
+      "goal": "Fix update_settings(current, changes) in target.py to apply explicit values to existing settings and reject unknown keys.",
+      "constraints": ["Keep update_settings(current, changes) as the public signature and return a new dictionary.", "Preserve explicit None, False, zero and empty strings; never mutate either input dictionary, including on rejection.", "Any unknown change key must raise ValueError with exactly E_SETTING before applying changes; use only the standard library."],
+      "source": "def update_settings(current, changes):\n    current.update({k: v for k, v in changes.items() if v})\n    return current\n",
+      "smoke": "from target import update_settings\nassert update_settings({'port': 80}, {'port': 443}) == {'port': 443}\nprint('smoke passed')\n",
+      "verifier": "import copy, inspect\nfrom target import update_settings\nassert str(inspect.signature(update_settings)) == '(current, changes)'\ncurrent = {'a': 1, 'b': True, 'c': 'old', 'd': 4}\nchanges = {'a': 0, 'b': False, 'c': '', 'd': None}\nbefore = copy.deepcopy(current), copy.deepcopy(changes)\nresult = update_settings(current, changes)\nassert result == changes and result is not current\nassert (current, changes) == before\ntry:\n    update_settings(current, {'a': 9, 'unknown': 1})\nexcept ValueError as exc:\n    assert str(exc) == 'E_SETTING'\nelse:\n    raise AssertionError('unknown key accepted')\nassert current == before[0]\nassert update_settings({}, {}) == {}\nprint('constraints passed')\n"
+    }
+  ]
+}

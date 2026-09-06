@@ -1,0 +1,1345 @@
+{
+  "experiment": "synthetic-compaction-coding",
+  "candidate": {
+    "route_id": "resume-eval-qwen",
+    "model": "qwen3.8-flash",
+    "wire_format": "openai_chat",
+    "temperature": 0.0,
+    "route_digest": "f749e707219b23c01aec327951ad3120f16af236652438ac074f25b8aac327d9",
+    "doctor_status": "verified_passed",
+    "pricing_known": false,
+    "pricing_source": "unavailable",
+    "pricing_effective_date": ""
+  },
+  "git": {
+    "commit": "65ec75ba11e9d35e246f37722e5d13c55cde0928",
+    "working_tree_clean": true,
+    "dirty_paths": []
+  },
+  "dataset_sha256": "ee5d3ea33afc02bda4b0e0732a5bb9a3af6edf44a3c8ded555e9f39678ff6792",
+  "harness_sha256": "a68a1c0dfa0e9359edc5f8e9781445ac19071ae17b3a61de24078952e7923e0a",
+  "controls": [
+    {
+      "id": "json-record",
+      "baseline_smoke": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "smoke passed\n"
+      },
+      "baseline_verifier": {
+        "passed": false,
+        "exit_code": 1,
+        "output": "Traceback (most recent call last):\n  File \"<verifier>\\verify.py\", line 11, in <module>\n    raise AssertionError('invalid record accepted')\nAssertionError: invalid record accepted\n"
+      },
+      "positive_verifier": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      }
+    },
+    {
+      "id": "stable-unique",
+      "baseline_smoke": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "smoke passed\n"
+      },
+      "baseline_verifier": {
+        "passed": false,
+        "exit_code": 1,
+        "output": "Traceback (most recent call last):\n  File \"<verifier>\\verify.py\", line 7, in <module>\n    result = stable_unique(items)\n             ^^^^^^^^^^^^^^^^^^^^\n  File \"<verifier>\\target.py\", line 2, in stable_unique\n    return list(dict.fromkeys(values))\n                ^^^^^^^^^^^^^^^^^^^^^\nTypeError: unhashable type: 'dict'\n"
+      },
+      "positive_verifier": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      }
+    },
+    {
+      "id": "duration",
+      "baseline_smoke": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "smoke passed\n"
+      },
+      "baseline_verifier": {
+        "passed": false,
+        "exit_code": 1,
+        "output": "Traceback (most recent call last):\n  File \"<verifier>\\verify.py\", line 5, in <module>\n    assert parse_duration(text) == expected, text\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"<verifier>\\target.py\", line 2, in parse_duration\n    return int(text.strip().rstrip('ms'))\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nValueError: invalid literal for int() with base 10: '1.25'\n"
+      },
+      "positive_verifier": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      }
+    },
+    {
+      "id": "settings-update",
+      "baseline_smoke": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "smoke passed\n"
+      },
+      "baseline_verifier": {
+        "passed": false,
+        "exit_code": 1,
+        "output": "Traceback (most recent call last):\n  File \"<verifier>\\verify.py\", line 8, in <module>\n    assert result == changes and result is not current\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n"
+      },
+      "positive_verifier": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      }
+    }
+  ],
+  "cost_usd": null,
+  "rows": [
+    {
+      "id": "json-record",
+      "policy": "structured",
+      "status": "failed",
+      "reason": "exceeded_max_steps",
+      "passed": false,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 18828,
+      "after_estimated_tokens": 5349,
+      "deduplicated_reads": 0,
+      "pinned_count": 0,
+      "pinned_retained": 0,
+      "elapsed_seconds": 100.4220000000023,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 24743,
+          "output_tokens": 3836,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1933046875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:26.080194+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 11490,
+          "output_tokens": 845,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.089765625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:34.953842+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12358,
+          "output_tokens": 559,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.096546875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:41.505029+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12788,
+          "output_tokens": 64,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.09990625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:43.436275+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12850,
+          "output_tokens": 332,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.100390625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:46.886561+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 13194,
+          "output_tokens": 1085,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.103078125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:57.211974+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14277,
+          "output_tokens": 101,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1115390625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:59.823994+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14450,
+          "output_tokens": 436,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.112890625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:04.673909+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14893,
+          "output_tokens": 129,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1163515625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:06.488105+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 15831,
+          "output_tokens": 198,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1236796875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:10.364685+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16353,
+          "output_tokens": 139,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1277578125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:14.902505+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16753,
+          "output_tokens": 703,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1308828125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:22.461807+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17432,
+          "output_tokens": 437,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1361875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:35:28.537441+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 24743,
+          "output_tokens": 3836,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1933046875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:34:26.080194+00:00"
+        }
+      ],
+      "input_tokens": 197412,
+      "output_tokens": 8864
+    },
+    {
+      "id": "json-record",
+      "policy": "adaptive_evidence",
+      "status": "success",
+      "reason": null,
+      "passed": true,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 18828,
+      "after_estimated_tokens": 5316,
+      "deduplicated_reads": 8,
+      "pinned_count": 1,
+      "pinned_retained": 1,
+      "elapsed_seconds": 96.43699999999808,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 5171,
+          "output_tokens": 2474,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0403984375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:03.270121+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 11496,
+          "output_tokens": 448,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0898125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:13.059643+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 11750,
+          "output_tokens": 422,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.091796875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:18.974704+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12205,
+          "output_tokens": 118,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0953515625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:22.821023+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12480,
+          "output_tokens": 54,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0975,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:24.856600+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 12534,
+          "output_tokens": 608,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.097921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:30.455888+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14437,
+          "output_tokens": 1063,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1127890625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:39.945138+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 15696,
+          "output_tokens": 393,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.122625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:46.743756+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16105,
+          "output_tokens": 161,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1258203125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:51.425986+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16163,
+          "output_tokens": 872,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1262734375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:37:05.181809+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 5171,
+          "output_tokens": 2474,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0403984375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:36:03.270121+00:00"
+        }
+      ],
+      "input_tokens": 128037,
+      "output_tokens": 6613
+    },
+    {
+      "id": "stable-unique",
+      "policy": "adaptive_evidence",
+      "status": "success",
+      "reason": null,
+      "passed": true,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 21961,
+      "after_estimated_tokens": 6764,
+      "deduplicated_reads": 9,
+      "pinned_count": 1,
+      "pinned_retained": 1,
+      "elapsed_seconds": 160.7970000000023,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 5536,
+          "output_tokens": 2488,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.04325,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:37:45.417741+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14024,
+          "output_tokens": 991,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1095625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:37:59.791727+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14281,
+          "output_tokens": 2755,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1115703125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:38:42.190596+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 15572,
+          "output_tokens": 2133,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.12165625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:39:19.282687+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17016,
+          "output_tokens": 648,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1329375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:39:26.501736+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17555,
+          "output_tokens": 687,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1371484375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:39:32.041738+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18666,
+          "output_tokens": 1062,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.145828125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:39:40.928149+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19967,
+          "output_tokens": 454,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1559921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:39:45.965630+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 5536,
+          "output_tokens": 2488,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.04325,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:37:45.417741+00:00"
+        }
+      ],
+      "input_tokens": 122617,
+      "output_tokens": 11218
+    },
+    {
+      "id": "stable-unique",
+      "policy": "structured",
+      "status": "success",
+      "reason": null,
+      "passed": true,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 21961,
+      "after_estimated_tokens": 6793,
+      "deduplicated_reads": 0,
+      "pinned_count": 0,
+      "pinned_retained": 0,
+      "elapsed_seconds": 63.8279999999977,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 27562,
+          "output_tokens": 2608,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.215328125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:14.241480+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 13977,
+          "output_tokens": 82,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1091953125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:17.449659+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14234,
+          "output_tokens": 1182,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.111203125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:29.171072+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14698,
+          "output_tokens": 41,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.114828125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:31.617838+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 14728,
+          "output_tokens": 88,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1150625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:34.137938+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 15003,
+          "output_tokens": 286,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1172109375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:37.428354+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 15633,
+          "output_tokens": 496,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1221328125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:42.371106+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16383,
+          "output_tokens": 776,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1279921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:49.819114+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 27562,
+          "output_tokens": 2608,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.215328125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:40:14.241480+00:00"
+        }
+      ],
+      "input_tokens": 132218,
+      "output_tokens": 5559
+    },
+    {
+      "id": "duration",
+      "policy": "structured",
+      "status": "failed",
+      "reason": "exceeded_max_steps",
+      "passed": false,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 28229,
+      "after_estimated_tokens": 8364,
+      "deduplicated_reads": 0,
+      "pinned_count": 0,
+      "pinned_retained": 0,
+      "elapsed_seconds": 127.125,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 35726,
+          "output_tokens": 3874,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.279109375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:41:36.211583+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16687,
+          "output_tokens": 1025,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1303671875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:41:51.043776+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16936,
+          "output_tokens": 1767,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1323125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:11.307105+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17287,
+          "output_tokens": 357,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1350546875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:15.168256+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17860,
+          "output_tokens": 620,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.13953125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:22.482549+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18334,
+          "output_tokens": 496,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.143234375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:29.316342+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18565,
+          "output_tokens": 246,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1450390625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:31.655914+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18995,
+          "output_tokens": 327,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1483984375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:35.151083+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19322,
+          "output_tokens": 535,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.150953125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:39.976564+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20059,
+          "output_tokens": 303,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1567109375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:44.686645+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20759,
+          "output_tokens": 105,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1621796875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:47.951829+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20819,
+          "output_tokens": 304,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1626484375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:53.016817+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20889,
+          "output_tokens": 314,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1631953125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:42:56.843101+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 35726,
+          "output_tokens": 3874,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.279109375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:41:36.211583+00:00"
+        }
+      ],
+      "input_tokens": 262238,
+      "output_tokens": 10273
+    },
+    {
+      "id": "duration",
+      "policy": "adaptive_evidence",
+      "status": "failed",
+      "reason": "exceeded_max_steps",
+      "passed": false,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 28229,
+      "after_estimated_tokens": 8547,
+      "deduplicated_reads": 12,
+      "pinned_count": 1,
+      "pinned_retained": 1,
+      "elapsed_seconds": 173.34400000000096,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 6339,
+          "output_tokens": 2386,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0495234375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:43:20.350717+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16838,
+          "output_tokens": 73,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.131546875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:43:24.216844+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17087,
+          "output_tokens": 2041,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1334921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:43:43.279211+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17853,
+          "output_tokens": 208,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1394765625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:43:48.583828+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18436,
+          "output_tokens": 1396,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.14403125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:06.605719+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18934,
+          "output_tokens": 241,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.147921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:10.788112+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19519,
+          "output_tokens": 1677,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1524921875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:28.050908+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20088,
+          "output_tokens": 303,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1569375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:33.020353+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20673,
+          "output_tokens": 907,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1615078125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:45.142354+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 21314,
+          "output_tokens": 240,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.166515625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:49.472204+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 21935,
+          "output_tokens": 758,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1713671875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:44:58.476827+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 22005,
+          "output_tokens": 5303,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1719140625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:45:45.059433+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 22472,
+          "output_tokens": 312,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1755625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:45:50.168273+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 6339,
+          "output_tokens": 2386,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0495234375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:43:20.350717+00:00"
+        }
+      ],
+      "input_tokens": 243493,
+      "output_tokens": 15845
+    },
+    {
+      "id": "settings-update",
+      "policy": "adaptive_evidence",
+      "status": "success",
+      "reason": null,
+      "passed": true,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 31586,
+      "after_estimated_tokens": 8539,
+      "deduplicated_reads": 14,
+      "pinned_count": 1,
+      "pinned_retained": 1,
+      "elapsed_seconds": 103.53100000000268,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 6931,
+          "output_tokens": 3750,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0541484375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:46:24.764539+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16997,
+          "output_tokens": 2773,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1327890625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:01.533421+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17262,
+          "output_tokens": 417,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.134859375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:08.012633+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18050,
+          "output_tokens": 44,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.141015625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:10.908289+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18080,
+          "output_tokens": 393,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.14125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:15.856888+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19024,
+          "output_tokens": 359,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.148625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:20.019092+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19248,
+          "output_tokens": 301,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.150375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:23.220175+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19880,
+          "output_tokens": 340,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1553125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:26.861783+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20660,
+          "output_tokens": 169,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.16140625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:29.250550+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 21073,
+          "output_tokens": 482,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1646328125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:33.867077+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 6931,
+          "output_tokens": 3750,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.0541484375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:46:24.764539+00:00"
+        }
+      ],
+      "input_tokens": 177205,
+      "output_tokens": 9028
+    },
+    {
+      "id": "settings-update",
+      "policy": "structured",
+      "status": "success",
+      "reason": null,
+      "passed": true,
+      "verification": {
+        "passed": true,
+        "exit_code": 0,
+        "output": "constraints passed\n"
+      },
+      "smoke_intact": true,
+      "compaction_applied": true,
+      "append_only": true,
+      "projection_replay_equal": true,
+      "before_estimated_tokens": 31586,
+      "after_estimated_tokens": 8587,
+      "deduplicated_reads": 0,
+      "pinned_count": 0,
+      "pinned_retained": 0,
+      "elapsed_seconds": 162.2029999999977,
+      "usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 41226,
+          "output_tokens": 2109,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.322078125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:59.564418+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 16955,
+          "output_tokens": 349,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1324609375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:04.858823+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17220,
+          "output_tokens": 343,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.13453125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:09.386217+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17664,
+          "output_tokens": 90,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.138,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:14.469596+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17694,
+          "output_tokens": 73,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.138234375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:17.638853+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 17944,
+          "output_tokens": 877,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1401875,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:32.817496+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 18849,
+          "output_tokens": 1114,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1472578125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:48:51.632269+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 19285,
+          "output_tokens": 4862,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1506640625,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:50:04.480645+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20763,
+          "output_tokens": 116,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.1622109375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:50:08.530159+00:00"
+        },
+        {
+          "type": "llm.usage",
+          "run_id": "coding",
+          "input_tokens": 20844,
+          "output_tokens": 465,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.16284375,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:50:16.067575+00:00"
+        }
+      ],
+      "summary_usage": [
+        {
+          "type": "llm.usage",
+          "run_id": "summary",
+          "input_tokens": 41226,
+          "output_tokens": 2109,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0,
+          "context_pct": 0.322078125,
+          "model": "qwen3.8-flash",
+          "ts": "2026-09-06T07:47:59.564418+00:00"
+        }
+      ],
+      "input_tokens": 208444,
+      "output_tokens": 10398
+    }
+  ]
+}

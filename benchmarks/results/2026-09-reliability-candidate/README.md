@@ -4,6 +4,11 @@ This report keeps the successful and unsuccessful measurements produced while va
 reliability-oriented agent design. It does not claim production readiness or leaderboard parity.
 Every number below comes from a retained JSON report, and no best-of-N result was selected.
 
+Follow-up: [2026-09-06 product continuation](../2026-09-product-continuation/README.md)
+adds actual coding after compaction, natural-phrasing risk challenges and three multi-agent
+replications. In particular, the clear-intent router scores below do not generalize to the
+new challenge set. The historical results and their original commits are retained unchanged.
+
 ## Candidate results
 
 | Experiment | Commit | Result | What it supports |

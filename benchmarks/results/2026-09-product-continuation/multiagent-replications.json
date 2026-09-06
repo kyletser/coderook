@@ -1,0 +1,329 @@
+{
+  "cost_usd": null,
+  "accounting_note": "Tokens are measured; the first run used conservative budget weights, not actual billing. Dollar proxy fields are excluded from this export.",
+  "replications": [
+    {
+      "name": "multiagent-postfix",
+      "commit": "af36e44b62c98bbe77d0e221d8f6733a4f52d977",
+      "source_report_sha256": "ced26dcd9c66e3aef1643141626f3c91fc120cb892886dc3d79c6179b55cca97",
+      "dataset_fingerprint": "775a833424d3d24fd70fa3d075248e4f3918caae7899bf4c229691eb17c433c1",
+      "rows": [
+        {
+          "policy": "single",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "elapsed_s": 120.21900000000096,
+          "tokens": 31951,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": null,
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "list_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "number_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "text_ops.py",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "single",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "elapsed_s": 39.21900000000096,
+          "tokens": 12854,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": null,
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "routed",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 146.40699999999924,
+          "tokens": 207933,
+          "workers": 3,
+          "worker_conflicts": 0,
+          "worker_applies": 1,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": false,
+          "changes": [
+            {
+              "path": "number_ops.py",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "routed",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 49.5,
+          "tokens": 27086,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multiagent-cache-isolation",
+      "commit": "65ec75ba11e9d35e246f37722e5d13c55cde0928",
+      "source_report_sha256": "bcdfaee1e928d197d888f3a8deee140c474d1467a0e53de503ad2bf296aa043a",
+      "dataset_fingerprint": "775a833424d3d24fd70fa3d075248e4f3918caae7899bf4c229691eb17c433c1",
+      "rows": [
+        {
+          "policy": "single",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "elapsed_s": 41.65599999999904,
+          "tokens": 36121,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": null,
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "list_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "number_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "text_ops.py",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "single",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 38.65599999999904,
+          "tokens": 24399,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "routed",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 96.48400000000038,
+          "tokens": 129471,
+          "workers": 3,
+          "worker_conflicts": 1,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": "retrieval_failure",
+          "runtime_status": "success",
+          "code_verifiers_passed": false,
+          "changes": []
+        },
+        {
+          "policy": "routed",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 29.485000000000582,
+          "tokens": 29103,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "multiagent-artifact-fix",
+      "commit": "a7c9ef64dad95331e205bf2ea60a223720064b39",
+      "source_report_sha256": "82ad4838b3bebc47fdcfd08ab8ba050dbbc294777ca462d2e53beffa0b4cd9ca",
+      "dataset_fingerprint": "775a833424d3d24fd70fa3d075248e4f3918caae7899bf4c229691eb17c433c1",
+      "rows": [
+        {
+          "policy": "single",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "elapsed_s": 47.48400000000038,
+          "tokens": 36048,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": null,
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "list_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "number_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "text_ops.py",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "single",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 55.0779999999977,
+          "tokens": 25009,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "routed",
+          "cohort": "independent_multi_file",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 65.0,
+          "tokens": 93630,
+          "workers": 3,
+          "worker_conflicts": 0,
+          "worker_applies": 2,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "independent-utilities-01",
+          "failure_class": "incorrect_edit",
+          "runtime_status": "success",
+          "code_verifiers_passed": false,
+          "changes": [
+            {
+              "path": "list_ops.py",
+              "kind": "modified"
+            },
+            {
+              "path": "number_ops.py",
+              "kind": "modified"
+            }
+          ]
+        },
+        {
+          "policy": "routed",
+          "cohort": "quick",
+          "total": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "elapsed_s": 50.48399999999674,
+          "tokens": 24814,
+          "workers": 0,
+          "worker_conflicts": 0,
+          "worker_applies": 0,
+          "unreviewed_workspace_writes": 0,
+          "task_id": "explain-cache-concurrency",
+          "failure_class": "token_budget_exceeded",
+          "runtime_status": "success",
+          "code_verifiers_passed": true,
+          "changes": [
+            {
+              "path": "explain-cache-concurrency.md",
+              "kind": "modified"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
