@@ -176,9 +176,9 @@ async def test_non_stream_response_fails_when_too_large() -> None:
     assert context.reason == "response_too_large"
 
 
-# 功能：验证 transient 与 no-content 使用独立计数器并产生不同 retry 事件
-# 设计：按 429 异常、空响应、成功响应排列，确认两类 attempt 都从一开始且最终成功
-async def test_transient_and_no_content_retries_are_counted_separately() -> None:
+# 功能：验证临时网络错误与空响应共享次数而非各自叠加重试预算
+# 设计：按限流、空响应、成功排列，断言编号递增且仍在原步骤内
+async def test_transient_and_no_content_share_retry_budget() -> None:
     provider = _SequenceProvider(
         [
             RuntimeError("429 rate limit"),
@@ -208,7 +208,7 @@ async def test_transient_and_no_content_retries_are_counted_separately() -> None
     assert context.status == "success"
     assert provider.calls == 3
     assert [event.kind for event in retries] == ["transient", "no_content"]  # type: ignore[attr-defined]
-    assert [event.attempt for event in retries] == [1, 1]  # type: ignore[attr-defined]
+    assert [event.attempt for event in retries] == [1, 2]  # type: ignore[attr-defined]
 
 
 # 功能：验证 Provider 首次流空闲超时会在同一步透明重试一次并保留结构化证据
@@ -246,9 +246,9 @@ async def test_stream_idle_timeout_retries_once_and_recovers_turn() -> None:
 
 
 # 功能：验证空响应重试耗尽后以 no_content 明确失败而不是伪装成功
-# 设计：连续提供三次空 end_turn，覆盖初次调用加两次独立 no-content retry 的边界
+# 设计：连续提供六次空响应，覆盖首次请求加默认五次重试的边界
 async def test_no_content_retry_exhaustion_fails_explicitly() -> None:
-    provider = _SequenceProvider([LlmResponse(stop_reason="end_turn") for _ in range(3)])
+    provider = _SequenceProvider([LlmResponse(stop_reason="end_turn") for _ in range(6)])
     loop = AgentLoop(
         provider,  # type: ignore[arg-type]
         ToolRegistry(),
@@ -259,6 +259,6 @@ async def test_no_content_retry_exhaustion_fails_explicitly() -> None:
 
     await loop.run(context)
 
-    assert provider.calls == 3
+    assert provider.calls == 6
     assert context.status == "failed"
     assert context.reason == "no_content"

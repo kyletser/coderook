@@ -13,7 +13,7 @@ from typing import Any
 
 from rich.markup import escape
 from textual.css.query import NoMatches
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
 
 from code_rook.tui.product import tr
 from code_rook.tui.widgets import _preview as _preview
@@ -39,6 +39,55 @@ def render_event(app: Any, event: dict[str, Any]) -> None:
 # 处理 LLM 流式前段事件（命中则返回 True，调用方跳过 break_llm 换块）
 def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
     t = event.get("type", "")
+    if t == "agent.message":
+        blocks = getattr(app, "_pi_message_blocks", None)
+        if blocks is None:
+            blocks = {}
+            app._pi_message_blocks = blocks
+        ordinals: dict[str, int] = {}
+        for part in event.get("content", []):
+            kind = part.get("type")
+            if kind not in {"text", "thinking"}:
+                continue
+            ordinal = ordinals.get(kind, 0)
+            ordinals[kind] = ordinal + 1
+            text = str(part.get("text" if kind == "text" else "thinking", ""))
+            if not text:
+                continue
+            if event.get("role") == "custom" and kind == "text" and ordinal == 0:
+                text = f"Extension · {event.get('custom_type', '')}\n\n{text}"
+            key = (event.get("run_id"), event.get("message_id"), kind, ordinal)
+            block = blocks.get(key)
+            if block is None:
+                block = LLMStreamBlock(locale=_locale(app))
+                block.set_kind("answer" if kind == "text" else "reasoning")
+                if kind == "thinking":
+                    block.add_class("collapsed")
+                blocks[key] = block
+                app._append(block)
+            block.set_content(text, finalized=event.get("phase") == "end")
+        if event.get("phase") == "end" and event.get("role") != "custom":
+            answer = "\n".join(
+                str(part.get("text", "")) for part in event.get("content", [])
+                if part.get("type") == "text"
+            ).strip()
+            if answer:
+                app._last_assistant_text = answer
+                answer_runs = getattr(app, "_native_answer_runs", None)
+                if answer_runs is None:
+                    answer_runs = set()
+                    app._native_answer_runs = answer_runs
+                answer_runs.add(str(event.get("run_id", "")))
+        return True
+    if t == "llm.attempt_finished":
+        if (
+            event.get("status") != "succeeded"
+            and app._current_llm is not None
+            and event.get("run_id") == getattr(app, "_current_llm_run_id", None)
+        ):
+            app._current_llm.remove()
+            app._current_llm = None
+        return True
     if t == "llm.reasoning":
         content = str(event.get("content") or "")
         app._break_llm()
@@ -56,6 +105,7 @@ def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
             llm_block = LLMStreamBlock(locale=_locale(app))
             app._append(llm_block)
             app._current_llm = llm_block
+            app._current_llm_run_id = event.get("run_id")
         app._current_llm.append_token(token)
         return True
 
@@ -70,8 +120,8 @@ def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
         run_id = event.get("run_id", "")
         if run_id in app._subagent_run_ids:
             return True
-        pct = float(event.get("context_pct") or 0.0)
-        app._last_context_pct = pct
+        if event.get("purpose", "response") == "response":
+            app._last_context_pct = float(event.get("context_pct") or 0.0)
         app._accumulate_cost(event)
         app._update_header(app._header_state)
         return True
@@ -95,12 +145,21 @@ def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
             kind=escape(kind),
             attempt=attempt,
         )
+        delay = float(event.get("delay_ms") or 0) / 1000
+        retry += tr("event.llm.retry_delay", _locale(app), seconds=f"{delay:.1f}")
         app._append(
             Static(
                 f"[dim]{retry}[/dim]",
                 classes="log-line",
             )
         )
+
+    elif t == "agent.repeat_notice":
+        app._append(Static(
+            tr("event.agent.repeat_notice", _locale(app),
+               count=int(event.get("repeat_count") or 0)),
+            classes="log-line",
+        ))
 
     elif t == "agent.stuck":
         tool_name = escape(str(event.get("tool_name") or "tool"))
@@ -139,6 +198,13 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
         flush_queue = getattr(app, "_flush_queued_message", None)
         if callable(call_later) and callable(flush_queue):
             call_later(flush_queue)
+
+    elif t == "session.navigated":
+        if not getattr(app, "_navigation_inflight", False):
+            app.run_worker(
+                app._load_session(app._session_id, resume=True, title=app._session_title),
+                name="session-navigation", exclusive=True,
+            )
 
     elif t == "session.interrupted":
         app._busy = False
@@ -291,42 +357,10 @@ def _render_user_question(app: Any, event: dict[str, Any]) -> None:
 def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
     if t == "run.phase_changed":
         phase = str(event.get("phase") or "running")
-        previous = getattr(app, "_run_phase", "")
         app._run_phase = phase
         app._run_phase_current = int(event.get("current") or 0)
         app._run_phase_total = int(event.get("total") or 0)
         app._update_header(phase)
-        if phase != previous and phase not in {"completed", "failed", "interrupted"}:
-            labels = {
-                "zh-CN": {
-                    "understanding": "理解任务",
-                    "exploring": "定位问题",
-                    "planning": "制定计划",
-                    "waiting_confirmation": "等待确认",
-                    "executing": "修改与执行",
-                    "verifying": "验证结果",
-                    "reviewing": "审查变更",
-                },
-                "en-US": {
-                    "understanding": "Understand task",
-                    "exploring": "Locate problem",
-                    "planning": "Build plan",
-                    "waiting_confirmation": "Wait for approval",
-                    "executing": "Edit and execute",
-                    "verifying": "Verify result",
-                    "reviewing": "Review changes",
-                },
-            }
-            locale = "en-US" if _locale(app) == "en-US" else "zh-CN"
-            label = labels[locale].get(phase, phase)
-            summary = escape(str(event.get("summary") or ""))
-            detail = f"  [dim]{summary}[/dim]" if summary else ""
-            app._append(
-                Static(
-                    f"[bold cyan]● {label}[/bold cyan]{detail}",
-                    classes="log-line",
-                )
-            )
 
     elif t == "run.started":
         run_id = str(event.get("run_id", ""))
@@ -348,6 +382,12 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         reason = str(event.get("reason") or "")
         run_id = str(event.get("run_id", ""))
         app._current_steps.pop(run_id, None)
+        pi_blocks = getattr(app, "_pi_message_blocks", {})
+        answer_runs: set[str] = getattr(app, "_native_answer_runs", set())
+        has_native_answer = run_id in answer_runs
+        answer_runs.discard(run_id)
+        for key in [key for key in pi_blocks if key[0] == run_id]:
+            pi_blocks.pop(key)
         for group_key in [
             key for key in app._tool_step_groups if key[0] == run_id
         ]:
@@ -355,8 +395,17 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         app._active_run_id = None
         app._cancel_requested = False
         app._cancel_armed = False
+        result_summary = str(event.get("result_summary") or "").strip()
+        if status == "success" and not has_native_answer and result_summary:
+            app._last_assistant_text = result_summary
+            app._append(Markdown(result_summary, classes="history-assistant"))
+            has_native_answer = True
         schedule_result = getattr(app, "_schedule_run_result", None)
-        scheduled = bool(schedule_result(event)) if callable(schedule_result) else False
+        scheduled = (
+            bool(schedule_result(event))
+            if callable(schedule_result) and not (has_native_answer and status == "success")
+            else False
+        )
         if status == "success":
             app._maybe_autotitle_session()
             return
@@ -511,6 +560,14 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
         raw_presentation = event.get("presentation") or {}
         presentation = raw_presentation if isinstance(raw_presentation, dict) else {}
         run_id = str(event.get("run_id", ""))
+        rendered = getattr(app, "_rendered_tool_blocks", None)
+        if rendered is None:
+            rendered = {}
+            app._rendered_tool_blocks = rendered
+        existing = rendered.get((run_id, tool_use_id))
+        if existing is not None:
+            app._pending_tool_blocks[tool_use_id] = existing
+            return
         tc_block = ToolCallBlock(
             tool_name,
             params,
@@ -521,7 +578,7 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
             tc_block.styles.padding = (0, 2, 0, 6)
             app._append(tc_block)
         else:
-            step = app._current_steps.get(run_id, 0)
+            step = int(event.get("step") or app._current_steps.get(run_id, 0))
             group_key = (run_id, step)
             group = app._tool_step_groups.get(group_key)
             if group is None:
@@ -532,6 +589,7 @@ def _render_tool(app: Any, t: str, event: dict[str, Any]) -> None:
             else:
                 group.add_tool(tc_block)
         app._pending_tool_blocks[tool_use_id] = tc_block
+        rendered[(run_id, tool_use_id)] = tc_block
 
     elif t == "tool.call_progress":
         tool_use_id = str(event.get("tool_use_id", ""))
@@ -781,7 +839,15 @@ def _render_misc(app: Any, t: str, event: dict[str, Any]) -> None:
 # 在 break_llm 之后按事件族分派剩余渲染分支
 def _render_rest(app: Any, event: dict[str, Any]) -> None:
     t = event.get("type", "")
-    if t.startswith("llm.") or t == "agent.stuck":
+    if t == "extension.notification":
+        severity = str(event.get("severity") or "info")
+        app.notify(
+            str(event.get("message") or ""),
+            severity=severity if severity in {"information", "warning", "error"} else (
+                "information" if severity == "info" else "warning"
+            ),
+        )
+    elif t.startswith("llm.") or t in {"agent.stuck", "agent.repeat_notice"}:
         _render_llm_tail(app, t, event)
     elif t.startswith("session."):
         _render_session(app, t, event)

@@ -92,6 +92,24 @@ def test_registry_applies_ephemeral_temperature_override(tmp_path: Path) -> None
     assert routes.get("deterministic").temperature is None
 
 
+# 功能：验证会话级模型覆盖只作用于本次解析，不修改共享 Provider 路由。
+# 设计：用同一路由解析两个模型并回读持久存储，证明多会话选择互不污染。
+def test_registry_applies_ephemeral_model_override(tmp_path: Path) -> None:
+    registry, routes, _credentials = _registry(tmp_path)
+    route = get_route_preset("ollama").model_copy(
+        update={"id": "local", "model": "default-model"}
+    )
+    routes.add(route, activate=True)
+
+    first = registry.resolve("local", model="session-a-model")
+    second = registry.resolve("local", model="session-b-model")
+
+    assert first.route.model == "session-a-model"
+    assert first.receipt.model == "session-a-model"
+    assert second.route.model == "session-b-model"
+    assert routes.get("local").model == "default-model"
+
+
 # 功能：验证切换 route 只改变选择，不覆盖任何另一 route 凭据
 # 设计：保存两条独立 file ref，来回切换后分别解析并比较原始值
 def test_registry_switches_routes_without_overwriting_credentials(tmp_path: Path) -> None:

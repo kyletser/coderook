@@ -84,11 +84,6 @@ _FILE_RE = re.compile(
     r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"
 )
 _URL_RE = re.compile(r"(?i)https?://\S+")
-_CONVERSATION_RE = re.compile(
-    r"(?i)(你好|您好|你是谁|你是什么模型|什么模型|具体型号|你能做什么|你能干什么|"
-    r"你会什么|有什么功能|怎么使用|如何使用|"
-    r"who are you|what model|hello|how do i use|what can you do)"
-)
 _CHINESE_NEGATION_RE = re.compile(
     r"(?:不要|无需|不用|禁止|(?<!分)别|不可|只读(?:即可)?)\s*[^，。；;.!?]{0,16}$"
 )
@@ -111,6 +106,21 @@ _RISK_RANK = {
 
 
 class TaskStrategyRouter:
+    # 将普通执行画像降为提示，不用关键词判断关闭工具或强迫规划
+    def for_execution(self, profile: TaskProfile) -> TaskProfile:
+        if "explicit_plan_mode" in profile.signals:
+            return profile
+        return profile.model_copy(
+            update={
+                "source": "model_led",
+                "strategy": TaskStrategy.DIRECT,
+                "delegation_allowed": False,
+                "user_summary": "根据完整请求与实际结果决定下一步。",
+                "deliverable": "处理用户完整请求",
+                "success_criteria": (),
+            }
+        ).with_digest()
+
     # 初始化混合任务路由器并设置低置信度安全回退阈值
     def __init__(self, *, confidence_threshold: float = 0.75) -> None:
         self._confidence_threshold = confidence_threshold
@@ -186,9 +196,15 @@ class TaskStrategyRouter:
                 if value.casefold().lstrip("(") not in {"i.e", "e.g"}
             }
         )
-        conversational = bool(_CONVERSATION_RE.search(goal)) and not (
-            mutate or shell or external or files
-        )
+        conversational = bool(
+            re.fullmatch(
+                r"\s*(?:你好|您好|你是谁|你是什么模型|什么模型|具体型号呢?|你能做什么|"
+                r"你能干什么|你会什么|你有什么功能|有什么功能|怎么使用|如何使用|"
+                r"who are you|what model(?: are you)?|hello|what can you do)[?？!！。．.\s]*",
+                goal,
+                re.IGNORECASE,
+            )
+        ) and not (mutate or shell or external or files)
         if conversational:
             signals.append("conversation_answer")
         if read:
@@ -503,7 +519,7 @@ def _user_summary_for(
     target = normalized_goal[:42] + ("…" if len(normalized_goal) > 42 else "")
     subject = f"围绕“{target}”" if target else "围绕当前任务"
     if intent == TaskIntent.ANSWER:
-        return "直接回答，不执行工具。"
+        return "回答用户问题；需要实际信息时使用工具。"
     if strategy == TaskStrategy.DELEGATE:
         return f"{subject}确认可独立验收的子任务，再决定是否并行处理。"
     if strategy == TaskStrategy.PLAN_FIRST:

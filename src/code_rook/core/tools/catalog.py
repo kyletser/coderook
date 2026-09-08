@@ -41,6 +41,11 @@ class ToolCatalog:
     def get(self, name: str) -> ToolSpec | None:
         return self._specs.get(name)
 
+    # 删除指定工具声明并刷新模型 schema 缓存
+    def unregister(self, name: str) -> None:
+        self._specs.pop(name, None)
+        self._schema_cache.clear()
+
     # 返回按名称稳定排序的全部 ToolSpec
     def specs(self) -> tuple[ToolSpec, ...]:
         return tuple(self._specs[name] for name in sorted(self._specs))
@@ -71,7 +76,10 @@ class ToolCatalog:
                     raise ToolCatalogError(
                         f"invalid required schema for {spec.name}.{action.name}"
                     )
-                if "action" not in required:
+                if action.name == spec.default_action:
+                    properties["action"]["default"] = action.name
+                    required[:] = [name for name in required if name != "action"]
+                elif "action" not in required:
                     required.insert(0, "action")
                 variants.append(variant)
             input_schema: dict[str, object] = {
@@ -177,7 +185,7 @@ class ToolCatalog:
         if len(spec.actions) == 1 and spec.actions[0].name == "invoke":
             action_name = spec.actions[0].name
         else:
-            raw_action = params.get("action")
+            raw_action = params.get("action", spec.default_action)
             if not isinstance(raw_action, str) or not raw_action:
                 raise ToolCatalogError(f"action is required for tool: {name}")
             action_name = raw_action

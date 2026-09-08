@@ -146,6 +146,16 @@ class ToolCallStartedEvent(BaseModel):
     ts: str
 
 
+class AgentRepeatNoticeEvent(BaseModel):
+    type: Literal["agent.repeat_notice"] = "agent.repeat_notice"
+    run_id: str
+    step: int
+    tool_name: str
+    signature: str
+    repeat_count: int
+    ts: str
+
+
 class ToolCallProgressEvent(BaseModel):
     type: Literal["tool.call_progress"] = "tool.call_progress"
     run_id: str
@@ -227,6 +237,22 @@ class LlmTokenEvent(BaseModel):
     ts: str
 
 
+class AgentMessageEvent(BaseModel):
+    type: Literal["agent.message"] = "agent.message"
+    run_id: str
+    session_id: str | None = None
+    message_id: str
+    phase: Literal["start", "update", "end"]
+    role: str
+    custom_type: str | None = None
+    content: list[dict[str, Any]]
+    stop_reason: str | None = None
+    backend: Literal["pi", "python"] = "python"
+    step: int = 0
+    ledger_seq: int | None = Field(default=None, ge=1)
+    ts: str
+
+
 class LlmReasoningEvent(BaseModel):
     type: Literal["llm.reasoning"] = "llm.reasoning"
     run_id: str
@@ -242,6 +268,7 @@ class LlmUsageEvent(BaseModel):
     cache_read_input_tokens: int
     cache_creation_input_tokens: int
     context_pct: float = 0.0
+    purpose: Literal["response", "summary"] = "response"
     # 计费模型名，供成本估算；旧事件可能缺省
     model: str = ""
     ts: str
@@ -262,7 +289,7 @@ class LlmRouteSelectedEvent(BaseModel):
     wire_format: str
     base_url_origin: str
     model: str
-    credential_source: Literal["keyring", "file", "env", "missing"]
+    credential_source: Literal["keyring", "file", "env", "extension", "missing"]
     strategy: str = "static"
     candidates: list[str] = Field(default_factory=list)
     reason: str = "active_route"
@@ -280,6 +307,23 @@ class LlmRetryEvent(BaseModel):
     kind: Literal["transient", "no_content"]
     attempt: int
     reason: str
+    delay_ms: int = 0
+    max_retries: int = 5
+    failure_code: str = ""
+    request_snapshot_digest: str = ""
+    ledger_seq: int | None = None
+    ts: str
+
+
+class LlmAttemptFinishedEvent(BaseModel):
+    type: Literal["llm.attempt_finished"] = "llm.attempt_finished"
+    run_id: str
+    step: int
+    attempt: int
+    status: Literal["succeeded", "failed", "cancelled"]
+    failure_code: str = ""
+    request_snapshot_digest: str
+    ledger_seq: int | None = None
     ts: str
 
 
@@ -681,6 +725,15 @@ class SkillInvokedEvent(BaseModel):
     ts: str
 
 
+class ExtensionNotificationEvent(BaseModel):
+    type: Literal["extension.notification"] = "extension.notification"
+    run_id: str
+    session_id: str
+    message: str
+    severity: Literal["info", "warning", "error"] = "info"
+    ts: str
+
+
 class HookExecutedEvent(BaseModel):
     type: Literal["hook.executed"] = "hook.executed"
     hook_id: str
@@ -719,17 +772,20 @@ Event = Annotated[
     | StepFinishedEvent
     | AgentDecisionEvent
     | AgentStuckEvent
+    | AgentRepeatNoticeEvent
     | ToolCallStartedEvent
     | ToolCallProgressEvent
     | ToolCallFinishedEvent
     | ToolCallFailedEvent
     | LlmRequestPreparedEvent
     | LlmTokenEvent
+    | AgentMessageEvent
     | LlmReasoningEvent
     | LlmUsageEvent
     | LlmModelSelectedEvent
     | LlmRouteSelectedEvent
     | LlmRetryEvent
+    | LlmAttemptFinishedEvent
     | LogLineEvent
     | SessionCreatedEvent
     | SessionMessageReceivedEvent
@@ -770,6 +826,7 @@ Event = Annotated[
     | BackgroundJobStartedEvent
     | BackgroundJobFinishedEvent
     | SkillInvokedEvent
+    | ExtensionNotificationEvent
     | HookExecutedEvent
     | RuntimeEventAppendedEvent,
     Discriminator("type"),

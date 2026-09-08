@@ -14,6 +14,7 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.openai_compatible import _to_openai_tools
 from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.repository import (
@@ -27,7 +28,7 @@ from code_rook.core.tools.base import BaseTool, ToolResult
 from code_rook.core.tools.families import FileTool
 from code_rook.core.tools.invocation import invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
-from code_rook.core.tools.spec import ToolCaller, ToolCapability
+from code_rook.core.tools.spec import ToolCaller, ToolCapability, ToolCatalogError
 from code_rook.core.workspace import WorkspaceBoundary
 
 
@@ -337,6 +338,68 @@ def test_runner_exposes_bash_lifecycle_family(tmp_path: Path) -> None:
     assert _file_actions(schema) == {"run", "wait", "interact", "cancel"}
     assert registry.get("bash") is not None
     assert registry.get("background_interact") is not None
+
+
+# 功能：验证缺省 Bash.run 经真实参数校验和权限审批后才执行
+# 设计：重放 Pilot 的 command-only 参数，仅替换 Shell 后端并分别允许与拒绝，避免执行历史命令
+@pytest.mark.parametrize("decision", ["allow_once", "deny"])
+async def test_bash_default_action_keeps_permission_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: str,
+) -> None:
+    manager = PermissionManager(timeout_s=0)
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, permission_manager=manager)
+    registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
+    backend = registry.get("bash")
+    assert backend is not None
+    executed: list[dict[str, object]] = []
+
+    # 捕获已通过审批的执行参数而不创建进程
+    async def execute(params: dict[str, object]) -> ToolResult:
+        executed.append(params)
+        return ToolResult("command completed")
+
+    monkeypatch.setattr(backend, "invoke", execute)
+    bus = EventBus()
+    events: list[str] = []
+
+    # 按参数化决策响应真实权限请求
+    async def respond(event: object) -> None:
+        events.append(str(getattr(event, "type", "")))
+        if getattr(event, "type", "") == "permission.requested":
+            manager.respond("implicit-run", decision)
+
+    bus.subscribe(respond)
+    call = ToolCallBlock("implicit-run", "Bash", {"command": "echo probe"})
+    resolved = registry.resolve_call("Bash", call.input)
+    assert resolved.permission_scope.key == "Bash.run"
+    result = await invoke_tool(registry, call, bus, "run", permission_manager=manager,
+                               session_id="session")
+    assert "permission.requested" in events
+    assert bool(executed) == (decision == "allow_once")
+    assert result.is_error == (decision == "deny")
+    assert call.input == {"command": "echo probe"}  # 保留原始模型调用以便重放
+
+
+# 功能：验证 Bash 缺省动作在三种线协议共用目录中明确声明且不扩大隐藏权限
+# 设计：检查原始和 OpenAI 扁平 Schema，并用 Plan 与 action allowlist 拒绝同一命令
+def test_bash_default_schema_and_frozen_action_restriction(tmp_path: Path) -> None:
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
+    registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
+    schema = next(item for item in registry.tool_schemas() if item["name"] == "Bash")
+    variant = schema["input_schema"]["oneOf"][0]
+    assert variant["required"] == ["command"]
+    assert variant["properties"]["action"]["default"] == "run"
+    parameters = _to_openai_tools([schema])[0]["function"]["parameters"]
+    assert parameters["required"] == ["command"]
+    assert parameters["properties"]["action"]["default"] == "run"
+    registry.set_model_action_allowlist({"Bash": frozenset({"wait"})})
+    with pytest.raises(ToolCatalogError, match="hidden"):
+        registry.resolve_call("Bash", {"command": "echo probe"})
+    plan = runner._build_registry(TaskManager(tmp_path / ".plan"), runtime_mode=RuntimeMode.PLAN)
+    with pytest.raises(ToolCatalogError):
+        plan.resolve_call("Bash", {"command": "echo probe"})
+    with pytest.raises(ToolCatalogError):
+        plan.resolve_call("Bash", {"action": "unknown", "command": "echo probe"})
 
 
 # 功能：验证 Bash family 可完成 background run、interact 与 wait 生命周期

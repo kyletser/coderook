@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -209,6 +209,14 @@ def _apply_v6(connection: sqlite3.Connection) -> None:
     )
 
 
+# 保存扩展输入的字面文本语义，旧队列保持原有模板展开行为
+def _apply_v7(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection, "runtime_message_queue", "expand_prompt_templates",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+
+
 # 将 runtime 数据库迁移到当前 schema 版本
 def migrate_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,3 +250,7 @@ def migrate_database(path: Path) -> None:
         if version == 5:
             _apply_v6(connection)
             connection.execute("PRAGMA user_version = 6")
+            version = 6
+        if version == 6:
+            _apply_v7(connection)
+            connection.execute("PRAGMA user_version = 7")

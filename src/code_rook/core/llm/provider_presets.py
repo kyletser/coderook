@@ -60,6 +60,16 @@ PROVIDER_PRESETS = (
         preferred_models=("deepseek-v4-pro", "deepseek-v4-flash"),
     ),
     ProviderPreset(
+        id="aliyun",
+        name="阿里云百炼 / Alibaba Cloud",
+        description="DashScope OpenAI-compatible API（中国内地）",
+        chat_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        models_url="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        api_key_env="DASHSCOPE_API_KEY",
+        preferred_models=("qwen3.8-flash", "qwen-plus", "qwen-flash"),
+        aliases=("dashscope", "bailian", "alibaba"),
+    ),
+    ProviderPreset(
         id="openai",
         name="OpenAI",
         description="OpenAI 官方 API",

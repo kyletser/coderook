@@ -38,7 +38,9 @@ _THREAD_READ = re.compile(r"/v1/threads/([^/]+)")
 _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
 _THREAD_QUEUE = re.compile(r"/v1/threads/([^/]+)/queue")
 _THREAD_QUEUE_ITEM = re.compile(r"/v1/threads/([^/]+)/queue/([^/]+)(?:/(retry))?")
-_THREAD_ACTION = re.compile(r"/v1/threads/([^/]+)/(fork|export|context)")
+_THREAD_ACTION = re.compile(
+    r"/v1/threads/([^/]+)/(fork|export|context|tree|navigate|reload|command|model|thinking)"
+)
 _THREAD_PLAN = re.compile(r"/v1/threads/([^/]+)/turns/([^/]+)/plan")
 _THREAD_CHECKPOINT = re.compile(
     r"/v1/threads/([^/]+)/checkpoints/([^/]+)/(preview|rewind)"
@@ -479,14 +481,32 @@ class HttpApiServer:
             )
             return HTTPStatus.CREATED, thread
         match = _THREAD_ACTION.fullmatch(path)
+        if match and match.group(2) == "tree" and request.method == "GET":
+            return HTTPStatus.OK, await self._service.thread_tree(match.group(1))
+        if match and match.group(2) == "navigate" and request.method == "POST":
+            body = _json_object(request.body)
+            target_seq = body.get("target_seq")
+            if type(target_seq) is not int or target_seq < 1:
+                raise ValueError("target_seq must be a positive integer")
+            summarize = body.get("summarize", False)
+            focus = body.get("focus", "")
+            if not isinstance(summarize, bool) or not isinstance(focus, str):
+                raise ValueError("summarize must be boolean and focus must be text")
+            return HTTPStatus.OK, await self._service.navigate_thread(
+                match.group(1), target_seq, summarize=summarize, focus=focus,
+            )
         if match and match.group(2) == "fork" and request.method == "POST":
             body = _json_object(request.body)
             title = body.get("title", "")
             if not isinstance(title, str):
                 raise ValueError("title must be a string")
+            leaf_seq = body.get("leaf_seq")
+            if leaf_seq is not None and (type(leaf_seq) is not int or leaf_seq < 1):
+                raise ValueError("leaf_seq must be a positive integer")
             return HTTPStatus.CREATED, await self._service.fork_thread(
                 match.group(1),
                 title=title,
+                leaf_seq=leaf_seq,
             )
         if match and match.group(2) == "export" and request.method == "GET":
             query = parse_qs(urlsplit(request.target).query)
@@ -499,6 +519,33 @@ class HttpApiServer:
             )
         if match and match.group(2) == "context" and request.method == "GET":
             return HTTPStatus.OK, await self._service.thread_context(match.group(1))
+        if match and match.group(2) == "reload" and request.method == "POST":
+            return HTTPStatus.OK, await self._service.reload_thread_resources(match.group(1))
+        if match and match.group(2) == "command" and request.method == "POST":
+            content = _json_object(request.body).get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("content must be non-empty text")
+            return HTTPStatus.OK, await self._service.execute_thread_command(
+                match.group(1), content,
+            )
+        if match and match.group(2) == "model" and request.method == "POST":
+            body = _json_object(request.body)
+            route_id = body.get("route_id")
+            model = body.get("model", "")
+            if not isinstance(route_id, str) or not route_id.strip():
+                raise ValueError("route_id must be non-empty text")
+            if not isinstance(model, str):
+                raise ValueError("model must be text")
+            return HTTPStatus.OK, await self._service.set_thread_model(
+                match.group(1), route_id, model,
+            )
+        if match and match.group(2) == "thinking" and request.method == "POST":
+            thinking_level = _json_object(request.body).get("thinking_level")
+            if thinking_level not in {"off", "low", "medium", "high"}:
+                raise ValueError("thinking_level must be off, low, medium, or high")
+            return HTTPStatus.OK, await self._service.set_thread_thinking(
+                match.group(1), str(thinking_level),
+            )
         queue_match = _THREAD_QUEUE.fullmatch(path)
         if queue_match and request.method == "GET":
             return HTTPStatus.OK, await self._service.list_queued_messages(
@@ -678,8 +725,10 @@ class HttpApiServer:
             )
         provider_action = _PROVIDER_ACTION.fullmatch(path)
         if request.method == "POST" and provider_action:
+            body = _json_object(request.body)
             return HTTPStatus.OK, await self._service.activate_provider(
-                provider_action.group(1)
+                provider_action.group(1),
+                thread_id=str(body.get("thread_id", "")),
             )
         provider_match = _PROVIDER_READ.fullmatch(path)
         if request.method == "DELETE" and provider_match:
@@ -816,6 +865,8 @@ class HttpApiServer:
                 question_match.group(1),
                 answer,
             )
+        if request.method == "GET" and path == "/v1/workspace/input-commands":
+            return HTTPStatus.OK, await self._service.workspace_input_commands()
         if request.method == "GET" and path == "/v1/workspace/files":
             query = parse_qs(urlsplit(request.target).query)
             raw_limit = query.get("limit", ["300"])[0]

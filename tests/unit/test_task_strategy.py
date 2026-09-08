@@ -84,6 +84,32 @@ def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) 
     assert profile.confidence >= 0.95
 
 
+# 功能：验证混合请求不能因身份关键词覆盖实际操作且普通执行保持工具可用
+# 设计：交换子句顺序并覆盖中英文、文件查询和编辑，防止只修复桌面一个样例
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "你是什么模型，我的桌面上有什么。",
+        "我的桌面有什么，你是什么模型？",
+        "你好，列出下载目录",
+        "你能干什么，顺便检查磁盘空间",
+        "What model are you? List my files.",
+        "Hello, fix the login bug.",
+        "具体型号是什么，读取 README",
+        "你有什么功能，创建一个新文件",
+    ],
+)
+def test_mixed_intent_is_not_conversation_gate(goal: str) -> None:
+    router = TaskStrategyRouter()
+    profile = router.classify_rules(goal)
+    assert profile.intent != TaskIntent.ANSWER
+    effective = router.for_execution(profile)
+    assert effective.source == "model_led"
+    assert effective.strategy == TaskStrategy.DIRECT
+    assert effective.model_tool_allowlist() == frozenset({"__all_except_delegation__"})
+    assert effective.model_action_allowlist() == {}
+
+
 # 功能：验证目录内容询问被识别为直接只读检查并开放目录读取工具
 # 设计：覆盖用户真实中文表达和常见同义句，防止无修改意图的简单查询误入 Plan 门禁
 @pytest.mark.parametrize(

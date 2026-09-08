@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 # 按 thread 订阅的持久事件，llm.token 与 session 生命周期由下方实时通道补齐
 _THREAD_TOPICS = [
+    "session.navigated",
     "run.*",
     "step.*",
     "agent.*",
@@ -32,6 +33,8 @@ _THREAD_TOPICS = [
     "llm.usage",
     "llm.route_selected",
     "llm.retry",
+    "llm.attempt_finished",
+    "agent.repeat_notice",
     "log.*",
     "permission.*",
     "context.*",
@@ -216,7 +219,7 @@ class TuiConnection:
                 state.pending_permissions.clear()
                 state.pending_question = None
                 state.pending_plan = None
-        elif event_type in {"session.interrupted", "session.closed"}:
+        elif event_type in {"session.interrupted", "session.closed", "session.navigated"}:
             state.active_run_id = None
             state.pending_permissions.clear()
             state.pending_question = None
@@ -263,7 +266,7 @@ class TuiConnection:
                 state.pending_plan is not None
                 and state.pending_plan.get("run_id") == payload.get("run_id")
             )
-        if event_type == "plan.resolved":
+        if event_type in {"plan.resolved", "session.navigated"}:
             return False
         return True
 
@@ -672,7 +675,9 @@ class TuiConnection:
             "session.get_history",
             {"session_id": session_id},
         )
-        raw_messages = history.get("messages", [])
+        raw_messages = history.get("display_messages")
+        if not isinstance(raw_messages, list):
+            raw_messages = history.get("messages", [])
         messages = raw_messages if isinstance(raw_messages, list) else []
         prepare_view = getattr(self._app, "_prepare_session_view", None)
 

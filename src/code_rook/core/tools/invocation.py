@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
+from code_rook.core.agent_runtime.images import normalize_tool_images
 from code_rook.core.artifacts import ArtifactError, ArtifactStore
 from code_rook.core.bus.events import (
     PermissionDeniedEvent,
@@ -101,6 +104,8 @@ def _summary_result(
         parent_tool_call_id=result.parent_tool_call_id,
         node_id=result.node_id,
         commit_order=result.commit_order,
+        details=result.details,
+        terminate=result.terminate,
     )
 
 
@@ -142,6 +147,7 @@ async def _fail(
     process_usage: dict[str, object] | None = None,
     step: int = 0,
     sandbox_enforcement: Literal["full", "partial", "unavailable"] = "unavailable",
+    terminal_result: ToolResult | None = None,
 ) -> ToolResult:
     failure_category = _execution_failure_category(error_class)
     metadata = current_tool_metadata()
@@ -153,6 +159,7 @@ async def _fail(
             operation_id=tool_call.id,
             error_class=error_class,
             error_message=error_message,
+            presentation=terminal_result.presentation if terminal_result else None,
             elapsed_ms=elapsed_ms,
             process_usage=process_usage or {},
             attempt=attempt,
@@ -170,6 +177,10 @@ async def _fail(
         content=error_message,
         is_error=True,
         error_type=error_class,
+        details=terminal_result.details if terminal_result else None,
+        terminate=terminal_result.terminate if terminal_result else False,
+        images=terminal_result.images if terminal_result else None,
+        presentation=terminal_result.presentation if terminal_result else None,
         process_usage=process_usage,
         sandbox_enforcement=sandbox_enforcement,
         failure_category=failure_category,
@@ -195,6 +206,28 @@ def _execution_failure_category(error_class: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class PreparedToolArguments:
+    call: ToolCallBlock
+    error: str | None = None
+
+
+# 每次调用只预处理一次，调度与执行共享同一份参数且不改写模型消息
+def prepare_tool_arguments(
+    registry: ToolRegistry, tool_call: ToolCallBlock,
+) -> PreparedToolArguments:
+    tool = registry.get(tool_call.name)
+    if tool is None:
+        return PreparedToolArguments(tool_call)
+    try:
+        prepared = tool.prepare_arguments(deepcopy(tool_call.input))
+        if not isinstance(prepared, dict):
+            raise ToolCatalogError("prepared tool arguments must be an object")
+        return PreparedToolArguments(replace(tool_call, input=deepcopy(prepared)))
+    except Exception as exc:
+        return PreparedToolArguments(tool_call, str(exc))
+
+
 # 校验参数、检查权限、限时调用工具、发布进度事件，失败时指数退避重试，返回 ToolResult（不抛异常）
 async def invoke_tool(
     registry: ToolRegistry,
@@ -210,6 +243,7 @@ async def invoke_tool(
     artifact_store: ArtifactStore | None = None,
     authority_snapshot: AuthoritySnapshot | None = None,
     step: int = 0,
+    prepared_arguments: PreparedToolArguments | None = None,
 ) -> ToolResult:
     t0 = time.monotonic()
     metadata = current_tool_metadata()
@@ -218,13 +252,17 @@ async def invoke_tool(
     resolve_error: ToolCatalogError | None = None
     if tool is not None:
         try:
+            prepared_arguments = prepared_arguments or prepare_tool_arguments(registry, tool_call)
+            if prepared_arguments.error is not None:
+                raise ToolCatalogError(prepared_arguments.error)
+            tool_call = prepared_arguments.call
             resolved_call = registry.resolve_call(
                 tool_call.name,
                 dict(tool_call.input),
                 caller=caller,
             )
-        except ToolCatalogError as exc:
-            resolve_error = exc
+        except Exception as exc:
+            resolve_error = ToolCatalogError(str(exc))
     pending_presentation = (
         build_tool_presentation(
             resolved_call,
@@ -345,6 +383,23 @@ async def invoke_tool(
             step=step,
         )
 
+    if registry.before_tool_call is not None:
+        try:
+            extension_block = await registry.before_tool_call(tool_call)
+        except Exception as exc:
+            extension_block = ToolResult(
+                f"Extension failed, blocking execution: {exc}", is_error=True,
+            )
+        if extension_block is not None:
+            extension_block.presentation = build_tool_presentation(
+                resolved_call, dict(tool_call.input), extension_block,
+            ).model_dump(mode="json")
+            return await _fail(
+                bus, run_id, tool_call, "hook_denied", extension_block.content, elapsed(),
+                step=step,
+                terminal_result=extension_block,
+            )
+
     if hooks is not None:
         hook_decision = await hooks.emit(
             "tool_call_before",
@@ -433,6 +488,7 @@ async def invoke_tool(
             )
 
     for attempt in range(1, _MAX_RETRIES + 2):
+        terminal_result = None
         error_class: str | None = None
         error_message: str | None = None
         attempt_process_usage: dict[str, object] | None = None
@@ -444,13 +500,28 @@ async def invoke_tool(
                 else execution_tool.timeout_s
             )
             with tool_invocation(tool_call.id, progress=publish_progress):
-                if effective_timeout > 0:
-                    result = await asyncio.wait_for(
-                        execution_tool.invoke(dict(invoke_params)),
-                        timeout=effective_timeout,
+                try:
+                    if effective_timeout > 0:
+                        result = await asyncio.wait_for(
+                            execution_tool.invoke(dict(invoke_params)),
+                            timeout=effective_timeout,
+                        )
+                    else:
+                        result = await execution_tool.invoke(dict(invoke_params))
+                except RateLimitedError as exc:
+                    result = ToolResult(str(exc), is_error=True, error_type="rate_limited")
+                except PermissionError as exc:
+                    result = ToolResult(str(exc), is_error=True, error_type="permission_denied")
+                except TimeoutError:
+                    result = ToolResult(
+                        f"tool timed out after {effective_timeout}s",
+                        is_error=True, error_type="timeout",
                     )
-                else:
-                    result = await execution_tool.invoke(dict(invoke_params))
+                except Exception as exc:
+                    result = ToolResult(str(exc), is_error=True, error_type="runtime_error")
+            if registry.after_tool_call is not None:
+                result = await registry.after_tool_call(tool_call, result)
+            result = await normalize_tool_images(result, auto_resize=registry.image_auto_resize)
             result = await _apply_output_policy(
                 result,
                 execution_tool.build_spec().output_policy,
@@ -474,6 +545,7 @@ async def invoke_tool(
                 result,
             ).model_dump(mode="json")
             ms = elapsed()
+            terminal_result = result
 
             if result.is_error:
                 error_class = result.error_type or "runtime_error"
@@ -567,6 +639,7 @@ async def invoke_tool(
             process_usage=attempt_process_usage,
             step=step,
             sandbox_enforcement=sandbox_enforcement,
+            terminal_result=terminal_result,
         )
 
     # unreachable, but keeps mypy happy

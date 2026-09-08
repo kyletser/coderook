@@ -1,0 +1,13 @@
+{
+  "runtime_commit": "7cda2be6bc07b45845f9fd9bf196db2b1593e25f",
+  "runtime_image": "sha256:b4ca8693500111465a2655417d5f5ba1b7e0605f823a94e53a1583ea20bca351",
+  "runner_sha256": "696f46d4732f1732087ca817ac066e1c360f45b213a021c518e2d3d240a989cc",
+  "agent_adapter_sha256": "2d8e796bcffe3235ec7b682553ad704a2e6f7380f35d0007bc7ef05d840ba2dd",
+  "attempts_per_task": 1,
+  "max_steps": 80,
+  "wall_time": 1800,
+  "model": "qwen3.8-flash",
+  "temperature": 0.0,
+  "strategy": "single/direct",
+  "dollar_cost": "unavailable; user authorized experiments without a dollar cap"
+}

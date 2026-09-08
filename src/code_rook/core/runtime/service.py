@@ -5,9 +5,9 @@ import json
 import logging
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel, JsonValue, TypeAdapter
 
@@ -213,6 +213,51 @@ class RuntimeService:
             )
             await self._publish_runtime_event(event)
 
+    # 持久化会话路径切换并通知所有订阅该会话的前端。
+    async def record_navigation(self, thread_id: str, target_seq: int, ledger_seq: int) -> None:
+        async with self._write_lock:
+            event = await self._run_persistent_write(
+                self._store.append_event,
+                thread_id=thread_id, turn_id=None, event_type="session.navigated",
+                payload={"target_seq": target_seq, "ledger_seq": ledger_seq},
+                ts=datetime.now(UTC),
+            )
+            await self._publish_runtime_event(event)
+
+    # 保存无编码 Turn 的模型用量并广播会话事件。
+    async def record_auxiliary_usage(
+        self, thread_id: str, payload: dict[str, Any], ledger_seq: int,
+    ) -> None:
+        usage = dict(payload)
+        model = str(usage.get("model", ""))
+        quote = resolve_pricing_quote(model)
+        usage["models"] = [model] if model else []
+        usage["cost_status"] = "estimated" if quote else "unknown"
+        usage["estimated_cost_usd"] = estimate_cost(
+            quote.pricing, input_tokens=_json_count(usage.get("input_tokens")),
+            output_tokens=_json_count(usage.get("output_tokens")),
+            cache_read_tokens=_json_count(usage.get("cache_read_input_tokens")),
+            cache_write_tokens=_json_count(usage.get("cache_creation_input_tokens")),
+        ) if quote else "unknown"
+        usage["ledger_seq"] = ledger_seq
+        async with self._write_lock:
+            event = await self._run_persistent_write(
+                self._store.append_auxiliary_usage, thread_id=thread_id,
+                payload=usage, ts=_parse_time(str(payload["ts"])),
+            )
+            if event is not None:
+                await self._publish_runtime_event(event)
+
+    # 分页读取会话独立模型调用的用量，不计入编码 Turn 数量。
+    async def list_auxiliary_usage(self, thread_id: str) -> list[dict[str, Any]]:
+        usage: list[dict[str, Any]] = []
+        cursor = 0
+        while events := await self.list_events(thread_id, after_seq=cursor):
+            usage.extend(dict(event.payload) for event in events
+                         if event.type == "session.auxiliary_usage")
+            cursor = events[-1].seq
+        return usage
+
     # 查询指定 thread 的持久消息队列
     async def list_queued_messages(self, thread_id: str) -> list[QueuedMessageRecord]:
         return await asyncio.to_thread(self._store.list_queued_messages, thread_id)
@@ -381,6 +426,10 @@ class RuntimeService:
         total = 0.0
         for turn in turns:
             value = turn.usage.get("estimated_cost_usd")
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                total += float(value)
+        for usage in await self.list_auxiliary_usage(thread_id):
+            value = usage.get("estimated_cost_usd")
             if isinstance(value, int | float) and not isinstance(value, bool):
                 total += float(value)
         return total
@@ -595,6 +644,7 @@ class RuntimeService:
             title=session.title,
             workspace=self._workspace,
             status=status,
+            default_route_id=session.route_id or None,
             turn_count=len(session.run_ids),
             created_at=_parse_time(session.created_at),
             updated_at=_parse_time(session.updated_at),
@@ -689,6 +739,24 @@ class RuntimeService:
         if event_type.startswith("subagent."):
             payload["worker_run_id"] = source_run_id
         ts = _parse_time(str(raw["ts"]))
+        if (
+            source_run_id.startswith("extension:")
+            and event_type in {
+                "user_question.asked",
+                "agent.message",
+                "extension.notification",
+            }
+        ):
+            thread_id = str(payload.get("session_id", ""))
+            if not thread_id:
+                raise RecordNotFoundError("extension event has no thread")
+            return self._store.append_event(
+                thread_id=thread_id,
+                turn_id=None,
+                event_type=event_type,
+                payload=payload,
+                ts=ts,
+            )
         turn = self._store.get_turn(run_id)
         if event_type == "llm.usage":
             usage = dict(turn.usage)
@@ -703,7 +771,12 @@ class RuntimeService:
                 previous_count = int(previous) if isinstance(previous, (int, float)) else 0
                 current_count = int(current) if isinstance(current, (int, float)) else 0
                 usage[key] = previous_count + current_count
-            usage["context_pct"] = payload.get("context_pct", 0.0)
+                if payload.get("purpose") == "summary":
+                    usage[f"summary_{key}"] = (
+                        _json_count(usage.get(f"summary_{key}")) + current_count
+                    )
+            if payload.get("purpose", "response") == "response":
+                usage["context_pct"] = payload.get("context_pct", 0.0)
             model = str(payload.get("model") or (turn.route.model if turn.route else ""))
             models: list[JsonValue] = [
                 item for item in _json_list(usage.get("models")) if isinstance(item, str)

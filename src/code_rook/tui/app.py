@@ -18,6 +18,7 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Label, Markdown, Static
 
+from code_rook.core.agent_runtime.user_shell import parse_user_shell
 from code_rook.core.artifacts import ArtifactError, ArtifactStore, inspect_image
 from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
@@ -42,7 +43,6 @@ from code_rook.core.llm.provider_presets import (
 )
 from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import ProviderRoute, get_route_preset
-from code_rook.core.skills.loader import SkillLoader
 from code_rook.core.skills.manager import (
     InstallScope,
     SkillConfirmationRequired,
@@ -208,6 +208,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     Static.error-card { border: round #78434a; }
     Static.readiness-card { border: round #73652e; }
     Static.result-card { border: round #386a70; }
+    Static.result-card.compact { border: none; padding: 0 2; margin: 0; height: auto; }
     Static.permission-pending { display: none; }
     #attachment-strip {
         display: none;
@@ -249,6 +250,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         provider_doctor: ProviderDoctor | None = None,
         core_recovery: Callable[[], object] | None = None,
         locale: str | None = None,
+        initial_prompt: str = "",
+        initial_thinking_level: Literal["off", "low", "medium", "high"] | None = None,
     ) -> None:
         super().__init__()
         self._host = host
@@ -263,6 +266,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._provider = provider
         self._route = route
         self._model = model
+        self._thinking_level: Literal["off", "low", "medium", "high"] = "off"
         self._models = models or ([model] if model else [])
         self._route_store = route_store or RouteStore()
         self._credential_store = credential_store or CredentialStore()
@@ -272,6 +276,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         self._provider_doctor = provider_doctor or ProviderDoctor()
         self._core_recovery = core_recovery
+        self._initial_prompt = initial_prompt.strip()
+        self._initial_prompt_submitted = False
+        self._initial_thinking_level = initial_thinking_level
+        self._initial_thinking_applied = False
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
         self._discovered_config_models: tuple[str, ...] = ()
@@ -280,7 +288,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._input_history_path = _input_history_path(self._workspace)
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
+        self._pi_message_blocks: dict[tuple[str | None, str | None, str, int], LLMStreamBlock] = {}
         self._pending_tool_blocks: dict[str, ToolCallBlock] = {}
+        self._rendered_tool_blocks: dict[tuple[str, str], ToolCallBlock] = {}
         self._current_steps: dict[str, int] = {}
         self._tool_step_groups: dict[tuple[str, int], ToolStepGroup] = {}
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
@@ -324,6 +334,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_question_id: str | None = None
         self._answering_question = False
         self._slash_items: list[CompletionItem] = []
+        self._input_commands: list[dict[str, str]] = []
         self._artifact_store = ArtifactStore(Path.cwd() / ".coderook" / "artifacts")
         self._pending_image_attachments: list[dict[str, object]] = []
         self._session_composer_states: dict[str, dict[str, object]] = {}
@@ -384,6 +395,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.focus()
         self._update_header("plan ready" if self._plan_review_pending else "ready")
         self._show_startup_state()
+        if (
+            prompt is not None
+            and self._initial_prompt
+            and not self._initial_prompt_submitted
+        ):
+            self._initial_prompt_submitted = True
+            prompt.text = self._initial_prompt
+            prompt.post_message(ChatTextArea.Submitted(prompt))
 
     # 连接断开后：禁用输入框并提示正在重试
     def _mark_disconnected(self) -> None:
@@ -458,6 +477,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         title: str,
         history_count: int | None,
     ) -> None:
+        self.run_worker(self._refresh_input_commands(session_id))
         label = tr(f"app.session.{action}", self._locale)
         if label == f"app.session.{action}":
             label = tr("app.session.ready", self._locale)
@@ -681,20 +701,46 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             for cmd in visible_slash_commands(labs_enabled=self._labs_enabled)
         ]
-        try:
-            loader = SkillLoader()
-            for skill in loader.list_all_skills():
-                desc = skill.description.splitlines()[0] if skill.description else ""
-                if len(desc) > 60:
-                    desc = desc[:57] + "..."
-                items.append(CompletionItem(skill.name, desc))
-        except Exception:
-            log.debug("could not load skill completions", exc_info=True)
+        for command in getattr(self, "_input_commands", []):
+            items.append(CompletionItem(
+                command["name"], command.get("description", ""),
+                command.get("argument_hint", ""),
+            ))
         return items
+
+    # 后台执行扩展命令，保持审批事件可处理且不向切换后的会话插入结果
+    async def _do_extension_command(self, session_id: str, content: str) -> None:
+        if self._client is None:
+            return
+        try:
+            result = await self._client.send_command("session.execute_command", {
+                "session_id": session_id, "content": content,
+            })
+            if self._session_id == session_id and result.get("message"):
+                self._append(Static(escape(str(result["message"])), classes="log-line"))
+        except (RuntimeError, OSError) as exc:
+            if self._session_id == session_id:
+                prompt = self._prompt()
+                if prompt is not None and not prompt.text:
+                    prompt.text = content
+                self._show_safe_error("extension command", exc)
+
+    # 从当前 Core 会话加载输入命令，避免客户端 cwd 与项目不一致。
+    async def _refresh_input_commands(self, session_id: str) -> None:
+        if self._client is None:
+            return
+        try:
+            context = await ipc_actions.get_context(self._client, session_id)
+        except Exception:
+            log.warning("could not load input commands", exc_info=True)
+            return
+        if self._session_id == session_id:
+            self._input_commands = context.get("input_commands", [])
+            self._slash_items = self._build_slash_items()
 
     # 构建按产品类别排序的本地化 Ctrl+P 命令候选
     def _build_palette_items(self) -> list[CommandPaletteItem]:
-        return [
+        items = [
             CommandPaletteItem(
                 command=command.name,
                 description=tr(f"command.{command.name}", self._locale),
@@ -705,6 +751,16 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             for command in visible_slash_commands(labs_enabled=self._labs_enabled)
         ]
+        reserved = {item.command for item in items}
+        items.extend(
+            CommandPaletteItem(
+                command=command["name"], description=command.get("description", ""),
+                category="extension", direct=False,
+                usage=command.get("argument_hint", ""),
+            )
+            for command in self._input_commands if command["name"] not in reserved
+        )
+        return items
 
     # 打开或关闭可聚焦的分类命令面板
     def action_command_palette(self) -> None:
@@ -1153,11 +1209,36 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except (SkillManagerError, OSError) as exc:
             self._show_safe_error("skills", exc)
 
+    # 停止运行后把未处理输入还给编辑器，用户可修改后主动重发。
     async def _do_cancel_run(self, run_id: str) -> None:
         if self._client is None:
             return
+        client, session_id = self._client, self._session_id
         try:
-            await self._client.send_command("run.cancel", {"run_id": run_id})
+            await client.send_command("run.cancel", {"run_id": run_id})
+            if not session_id:
+                return
+            result = await client.send_command("session.list_queue", {"session_id": session_id})
+            pending = [item for item in result.get("messages", [])
+                       if item.get("status") == "blocked"
+                       and str(item.get("error", "")).startswith("Run stopped;")]
+            prompt = self._prompt()
+            if not pending or self._session_id != session_id or prompt is None:
+                return
+            texts = [str(item.get("display_content") or item.get("content", ""))
+                     for item in pending]
+            prompt.text = "\n\n".join(text for text in [*texts, prompt.text] if text.strip())
+            for item in pending:
+                for attachment in item.get("attachments", []):
+                    if attachment not in self._pending_image_attachments:
+                        self._pending_image_attachments.append(dict(attachment))
+            self._snapshot_session_composer()
+            self._refresh_attachment_strip()
+            for item in pending:
+                await client.send_command("session.remove_queued_message", {
+                    "session_id": session_id, "message_id": item["id"],
+                })
+            await self._refresh_message_queue()
         except (IpcError, RuntimeError, OSError) as exc:
             self._cancel_requested = False
             self._show_safe_error("submission", exc)
@@ -1186,6 +1267,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             return
         cmd = match_slash_command(content)
+        if cmd is None and content.startswith("/") and any(
+            item.get("kind") == "extension"
+            and item["name"] == (content[1:].split() or [""])[0]
+            for item in self._input_commands
+        ):
+            if self._client is None or self._session_id is None:
+                return
+            event.text_area.text = ""
+            self.run_worker(
+                self._do_extension_command(self._session_id, content),
+                name="extension_command", exclusive=False,
+            )
+            return
         if cmd is not None and cmd.labs and not self._labs_enabled:
             event.text_area.text = ""
             self._append(
@@ -1226,8 +1320,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             event.text_area.record_history(content)
             event.text_area.text = ""
             queue_prefixes = ("queue:", "queue：", "排队:", "排队：")
-            if content.casefold().startswith(queue_prefixes):
-                queued = content.split(":", 1)[-1].split("：", 1)[-1].strip()
+            if parse_user_shell(content) or content.casefold().startswith(queue_prefixes):
+                queued = content if parse_user_shell(content) else (
+                    content.split(":", 1)[-1].split("：", 1)[-1].strip()
+                )
                 if queued:
                     attachments = list(self._pending_image_attachments)
                     self._pending_image_attachments.clear()
@@ -1287,7 +1383,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
             )
             return
-        if not await self._ensure_task_ready():
+        if parse_user_shell(content) is None and not await self._ensure_task_ready():
             return
         event.text_area.record_history(content)
         visible_content = content
@@ -1484,16 +1580,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             + ". Read only the ranges needed for this task; do not inject entire files by default."
         )
 
-    # 将用户可见的 Shell 与文件引用语法转换为模型执行提示，同时保留原始展示文本
+    # 保留直接 Shell 原文，其余输入附加有界文件引用
     def _prepare_model_content(self, visible_content: str) -> str:
         content = visible_content
-        if visible_content.startswith("!") and len(visible_content) > 1:
-            command = visible_content[1:].strip()
-            content = (
-                "The user explicitly requested this exact shell command. Run it through the "
-                "normal permission and sandbox tool pipeline, then report its exit status and "
-                f"important output without changing the command: {command}"
-            )
+        if parse_user_shell(visible_content) is not None:
+            return visible_content
         return self._augment_file_references(content, visible_content)
 
     # 在 Core 完成自动派发后刷新持久队列数量
@@ -3343,6 +3434,44 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             exclusive=False,
         )
 
+    # 将已通过 Doctor 的选择同步给当前会话，避免修改其他会话的模型。
+    async def _bind_session_model(self, route: ProviderRoute) -> bool:
+        if self._client is None or self._session_id is None:
+            return True
+        try:
+            await ipc_actions.set_session_model(
+                self._client, self._session_id, route.id, route.model,
+            )
+        except IpcActionError as exc:
+            self._show_safe_error("model-switch", exc, action="model")
+            return False
+        return True
+
+    # 启动当前会话思考强度切换并由 Core 持久化。
+    def _select_thinking_level(self, level: str) -> None:
+        self.run_worker(
+            self._select_thinking_level_checked(level),
+            name="thinking_switch",
+            exclusive=False,
+        )
+
+    # 校验并持久切换当前会话的模型思考强度。
+    async def _select_thinking_level_checked(self, level: str) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        if level not in {"off", "low", "medium", "high"}:
+            return
+        selected = cast(Literal["off", "low", "medium", "high"], level)
+        try:
+            await ipc_actions.set_session_thinking(
+                self._client, self._session_id, selected,
+            )
+        except IpcActionError as exc:
+            self._show_safe_error("thinking-switch", exc, action="model")
+            return
+        self._thinking_level = selected
+        self._append(Static(f"Thinking: [bold]{escape(selected)}[/bold]"))
+
     # Doctor 成功后才切换后续 turn 使用的活动 route
     async def _select_provider_route_checked(self, route_id: str) -> None:
         try:
@@ -3352,6 +3481,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
         except (RouteStoreError, ConfigurationValidationError) as exc:
             self._show_safe_error("provider-validation", exc)
+            return
+        if not await self._bind_session_model(route):
             return
         self._route = route.id
         self._provider = route.id
@@ -3405,6 +3536,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
         except ConfigurationValidationError as exc:
             self._show_safe_error("provider-validation", exc)
+            return
+        if not await self._bind_session_model(updated):
             return
         self._route = updated.id
         self._model = updated.model
@@ -3640,6 +3773,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 "session.create",
                 {"mode": "chat", "preset_id": preset_id},
             )
+            self._route = str(created.get("route_id", ""))
+            self._provider = self._route
+            self._model = str(created.get("model", ""))
+            created_thinking = str(created.get("thinking_level") or "off")
+            if created_thinking in {"off", "low", "medium", "high"}:
+                self._thinking_level = cast(
+                    Literal["off", "low", "medium", "high"], created_thinking,
+                )
             await self._load_session(str(created["session_id"]), resume=False)
         except (IpcError, RuntimeError, OSError) as exc:
             self._show_safe_error("session-create", exc, action="session")
@@ -3675,14 +3816,66 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             if announce:
                 self._restore_ready_prompt()
 
-    # 复制当前会话为分支并切换到新会话
-    async def _do_fork_session(self, title: str) -> None:
+    # 从同一 Core 获取历史节点并打开键盘选择器。
+    async def _do_session_tree(self) -> None:
+        from code_rook.tui.widgets.history import HistoryPicker
+
+        if self._client is None or self._session_id is None:
+            return
+        try:
+            result = await self._client.send_command(
+                "session.tree", {"session_id": self._session_id}
+            )
+
+            # 默认原地导航，只有显式 Fork 操作创建独立会话。
+            def selected(selection: tuple[str, int] | None) -> None:
+                if selection is not None:
+                    action, sequence = selection
+                    operation = (
+                        self._do_fork_session("", leaf_seq=sequence)
+                        if action == "fork" else self._do_navigate_session(
+                            sequence, summarize=action == "summarize"
+                        )
+                    )
+                    self.run_worker(operation)
+
+            self.push_screen(HistoryPicker(result.get("entries", []), self._locale), selected)
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._show_safe_error("session-tree", exc, action="session")
+
+    # 原地恢复选中路径，并把用户消息放回输入框等待编辑而非自动发送。
+    async def _do_navigate_session(self, sequence: int, *, summarize: bool = False) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        session_id = self._session_id
+        self._navigation_inflight = True
+        try:
+            result = await self._client.send_command(
+                "session.navigate", {
+                    "session_id": session_id, "target_seq": sequence, "summarize": summarize,
+                },
+            )
+            if self._session_id != session_id:
+                return
+            await self._load_session(session_id, resume=True, title=self._session_title)
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.text = str(result.get("editor_text", ""))
+                prompt.focus()
+            self._snapshot_session_composer()
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._show_safe_error("session-navigate", exc, action="session")
+        finally:
+            self._navigation_inflight = False
+
+    # 复制当前会话或指定历史路径为分支并切换到新会话。
+    async def _do_fork_session(self, title: str, *, leaf_seq: int | None = None) -> None:
         if self._client is None or self._session_id is None:
             return
         try:
             result = await self._client.send_command(
                 "session.fork",
-                {"session_id": self._session_id, "title": title},
+                {"session_id": self._session_id, "title": title, "leaf_seq": leaf_seq},
             )
             session = result.get("session", {})
             forked_id = str(session.get("session_id", ""))
@@ -3811,6 +4004,20 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 session_id,
             )
             title = str(info.get("title", ""))
+            session_route = str(info.get("route_id", ""))
+            session_model = str(info.get("model", ""))
+            session_thinking = str(info.get("thinking_level") or "off")
+            if session_route:
+                self._route = session_route
+                self._provider = session_route
+            if session_model:
+                self._model = session_model
+                if session_model not in self._models:
+                    self._models.append(session_model)
+            if session_thinking in {"off", "low", "medium", "high"}:
+                self._thinking_level = cast(
+                    Literal["off", "low", "medium", "high"], session_thinking,
+                )
             await self._load_session(session_id, resume=True, title=title)
         except (IpcError, RuntimeError, OSError) as exc:
             self._show_safe_error("session-switch", exc, action="session")
@@ -3850,11 +4057,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             session_id,
             lambda: self._prepare_session_view(
                 session_id,
-                history.get("messages", []),
+                history.get("display_messages")
+                if isinstance(history.get("display_messages"), list)
+                else history.get("messages", []),
                 resume=resume,
                 title=title,
             ),
         )
+        if self._initial_thinking_level is not None and not self._initial_thinking_applied:
+            await ipc_actions.set_session_thinking(
+                self._client, session_id, self._initial_thinking_level,
+            )
+            self._thinking_level = self._initial_thinking_level
+            self._initial_thinking_applied = True
         await self._refresh_authority()
         await self._refresh_goal_state()
         await self._refresh_session_cost()
@@ -3895,6 +4110,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._clear_pending_permissions()
         log_view = self.query_one("#log-view", VerticalScroll)
         await log_view.remove_children()
+        self._pi_message_blocks.clear()
+        self._rendered_tool_blocks.clear()
+        self._pending_tool_blocks.clear()
+        self._tool_step_groups.clear()
+        self._input_commands = []
+        self._slash_items = self._build_slash_items()
         self._session_id = session_id
         self._resume_session_id = session_id
         self._history_loaded = True
@@ -4003,10 +4224,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             params["display_content"] = shown_content
             if attachments:
                 params["attachments"] = attachments
-            await self._client.send_command(
+            result = await self._client.send_command(
                 "session.send_message",
                 params,
             )
+            if result.get("handled") and self._active_run_id is None:
+                self._busy = False
+                self._update_header("ready")
         except (IpcError, RuntimeError, OSError) as e:
             for attachment in attachments or []:
                 if attachment not in self._pending_image_attachments:
@@ -4051,6 +4275,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 },
             )
             message = result.get("message", {})
+            if result.get("handled"):
+                self.notify("输入已由扩展处理" if self._locale == "zh-CN" else
+                            "Input handled by extension")
             if isinstance(message, dict):
                 self._append(
                     Static(
@@ -4312,7 +4539,33 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._append(Static(f"[dim]── {divider} ──[/dim]", classes="log-line"))
         for message in messages:
             role = str(message.get("role", ""))
+            if role == "bashExecution":
+                prefix = "!!" if message.get("exclude_from_context") else "!"
+                command = str(message.get("command", ""))
+                output = str(message.get("output", ""))
+                self._append(Static(escape(prefix + command), classes="user-turn"))
+                render_event(self, {
+                    "type": "agent.message", "run_id": message.get("run_id"),
+                    "message_id": f"{message.get('run_id', '')}:shell-output",
+                    "phase": "end", "content": [{"type": "text", "text": output}],
+                })
+                continue
             content = message.get("content", "")
+            if role in {"assistant", "custom"} and message.get("native_message_id"):
+                render_event(self, {
+                    "type": "agent.message", "run_id": message.get("run_id"),
+                    "role": role, "custom_type": message.get("custom_type"),
+                    "message_id": message["native_message_id"], "phase": "end",
+                    "content": content if isinstance(content, list) else [
+                        {"type": "text", "text": str(content)},
+                    ],
+                })
+                if role == "custom":
+                    continue
+                if isinstance(content, list):
+                    content = [part for part in content if part.get("type") == "tool_use"]
+                else:
+                    continue
             if isinstance(content, str):
                 if role == "user":
                     self._append(Static(escape(content), classes="user-turn"))
@@ -4336,6 +4589,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     tool_use_id = str(block.get("id", ""))
                     result = tool_results.get(tool_use_id)
                     failed = bool(result and result.get("is_error"))
+                    if message.get("native_message_id"):
+                        run_id = str(message.get("run_id", ""))
+                        step = int(str(message["native_message_id"]).rsplit(":", 1)[-1])
+                        render_event(self, {
+                            "type": "tool.call_started", "run_id": run_id,
+                            "tool_use_id": tool_use_id, "tool_name": block.get("name", ""),
+                            "params": params, "step": step,
+                        })
+                        if result is not None:
+                            render_event(self, {
+                                "type": "tool.call_failed" if failed else "tool.call_finished",
+                                "run_id": run_id, "tool_use_id": tool_use_id,
+                                "output": result.get("content", ""),
+                                "error_message": result.get("content", ""), "step": step,
+                            })
+                        continue
                     action = escape(
                         _tool_action_text(
                             str(block.get("name", "")),

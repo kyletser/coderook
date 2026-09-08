@@ -623,3 +623,7 @@ body { background: #f1f1ee; color: var(--text); }
   .product-dialog-backdrop { align-items: end; padding: 10px; }
   .product-dialog { width: 100%; border-radius: 16px 16px 12px 12px; }
 }
+
+.tree-entry { padding: 16px 0; border-bottom: 1px solid var(--border, #ddd); }
+.tree-entry p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tree-entry small { opacity: .65; }

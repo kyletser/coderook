@@ -1,0 +1,70 @@
+{
+  "cohort": "pilot",
+  "official_run_id": "per-instance; see official_run_ids",
+  "total": 3,
+  "resolved": 1,
+  "unresolved": 2,
+  "ungraded": 0,
+  "runtime_successes": 2,
+  "tool_errors": 14,
+  "schema_errors": 1,
+  "input_tokens": 2300907,
+  "output_tokens": 158043,
+  "median_agent_elapsed_s": 680.9558544169995,
+  "estimated_dollar_cost": null,
+  "results": [
+    {
+      "instance_id": "django__django-15320",
+      "resolved": true,
+      "runtime_status": "failed",
+      "runtime_reason": "wall_time_exceeded",
+      "infrastructure_error": null,
+      "input_tokens": 1233388,
+      "output_tokens": 51565,
+      "elapsed_s": 1800.1794296120024,
+      "tool_calls": 69,
+      "steps": 57,
+      "tool_errors": 4,
+      "schema_errors": 1,
+      "missing_action_errors": 0,
+      "artifact_reads": 0
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "resolved": false,
+      "runtime_status": "success",
+      "runtime_reason": null,
+      "infrastructure_error": null,
+      "input_tokens": 453605,
+      "output_tokens": 48289,
+      "elapsed_s": 648.8369483919996,
+      "tool_calls": 40,
+      "steps": 32,
+      "tool_errors": 3,
+      "schema_errors": 0,
+      "missing_action_errors": 0,
+      "artifact_reads": 0
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "resolved": false,
+      "runtime_status": "success",
+      "runtime_reason": null,
+      "infrastructure_error": null,
+      "input_tokens": 613914,
+      "output_tokens": 58189,
+      "elapsed_s": 680.9558544169995,
+      "tool_calls": 43,
+      "steps": 35,
+      "tool_errors": 7,
+      "schema_errors": 0,
+      "missing_action_errors": 0,
+      "artifact_reads": 0
+    }
+  ],
+  "official_run_ids": {
+    "django__django-15320": "coderook-lite-expanded-20260907-django__django-15320",
+    "psf__requests-3362": "coderook-lite-expanded-20260907-psf__requests-3362",
+    "pallets__flask-5063": "coderook-lite-expanded-20260907-pallets__flask-5063"
+  }
+}

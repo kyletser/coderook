@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 from textual.css.query import NoMatches
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
 
 from code_rook.tui.render import render_event
 from code_rook.tui.widgets.permission import PermissionBlock, PermissionSelect
@@ -16,6 +17,31 @@ from code_rook.tui.widgets.stream import LLMStreamBlock, ToolCallBlock, ToolStep
 # 一个最小 ToolStepGroup 占位，避免测试直接依赖真实控件构造
 class _FakeStepGroup:
     pass
+
+
+# 功能：工具详情面板展示扩展结构化数据而不要求将其拼入工具文本
+# 设计：直接调用真实控件的详情生成函数，覆盖 JSON 序列化和中文标签
+def test_tool_structured_details() -> None:
+    block = ToolCallBlock("extension", {}, locale="zh-CN", presentation={
+        "details": {"files": ["example.py"], "count": 1},
+    })
+    detail = block._detail_text()
+    assert "结构化详情" in detail
+    assert '"count": 1' in detail
+    assert "example.py" in detail
+
+
+# 功能：阶段变化更新状态栏，不再生成重复的固定话术时间线。
+# 设计：连续发送多个真实阶段事件，确认状态可见但未追加虚构的助手说明。
+def test_phase_updates_header_without_timeline_messages() -> None:
+    app = _FakeApp()
+    for phase in ("understanding", "exploring", "executing"):
+        render_event(app, {
+            "type": "run.phase_changed", "run_id": "test", "phase": phase,
+            "current": 1, "total": 8, "summary": "Fixed phase explanation",
+        })
+    assert app._header_calls == ["understanding", "exploring", "executing"]
+    assert app._appended == []
 
 
 # 简化假 App：记录 append/header/mount 等渲染副作用，实现 render_event 依赖的最小成员
@@ -101,6 +127,83 @@ def _new_app() -> _FakeApp:
     return _FakeApp()
 
 
+# 功能：验证 Pi 正文和思考按内容类型分别显示，后到的思考不会折叠最终答案。
+# 设计：以同一消息的更新和完成快照驱动真实控件，断言正文展开、思考折叠且无重复块。
+def test_pi_message_preserves_visible_answer() -> None:
+    app = _new_app()
+    event = {
+        "type": "agent.message", "run_id": "pi-run", "message_id": "message-1",
+        "phase": "update", "content": [{"type": "text", "text": "partial"}],
+    }
+    render_event(app, event)
+    event.update(phase="end", content=[
+        {"type": "text", "text": "Final answer"},
+        {"type": "thinking", "thinking": "Internal analysis"},
+    ])
+    render_event(app, event)
+    assert len(app._appended) == 2
+    answer, thinking = app._appended
+    assert answer.text == "Final answer"
+    assert "answer" in answer.classes
+    assert "collapsed" not in answer.classes
+    assert "collapsed" in thinking.classes
+
+
+# 功能：成功运行缺少流式消息时仍将 run.finished 的权威结果显示为最终回答。
+# 设计：直接发送仅含 result_summary 的完成事件，断言生成普通 Markdown 而非空完成卡。
+def test_run_finished_uses_result_summary_as_answer_fallback() -> None:
+    app = _new_app()
+
+    render_event(app, {
+        "type": "run.finished", "run_id": "fallback-run", "status": "success",
+        "steps": 1, "result_summary": "这是最终回答。",
+    })
+
+    assert len(app._appended) == 1
+    assert isinstance(app._appended[0], Markdown)
+    assert app._last_assistant_text == "这是最终回答。"
+    assert app._maybe_autotitled
+
+
+# 功能：只有思考块的原生消息不能冒充已经展示过的最终回答。
+# 设计：先结束一条纯 thinking 消息再完成运行，验证 result_summary 仍进入时间线。
+def test_thinking_only_message_does_not_hide_result_fallback() -> None:
+    app = _new_app()
+    render_event(app, {
+        "type": "agent.message", "run_id": "thinking-run", "message_id": "m",
+        "role": "assistant", "phase": "end",
+        "content": [{"type": "thinking", "thinking": "分析中"}],
+    })
+    render_event(app, {
+        "type": "run.finished", "run_id": "thinking-run", "status": "success",
+        "steps": 1, "result_summary": "最终结果",
+    })
+
+    answers = [widget for widget in app._appended if isinstance(widget, Markdown)]
+    assert len(answers) == 1
+    assert app._last_assistant_text == "最终结果"
+
+
+# 功能：验证先思考后正文且最终快照重排时，正文仍展开且思考不重复。
+# 设计：故意改变内容数组的位置，防止用数组索引误把回答绑定到折叠的思考控件。
+def test_message_thinking_before_answer_remains_visible() -> None:
+    app = _new_app()
+    event = {"type": "agent.message", "run_id": "r", "message_id": "m", "phase": "update",
+             "content": [{"type": "thinking", "thinking": "Thinking"}]}
+    render_event(app, event)
+    event["content"] = [{"type": "text", "text": "Answer"},
+                        {"type": "thinking", "thinking": "Thinking"}]
+    render_event(app, event)
+    event["phase"] = "end"
+    render_event(app, event)
+    assert len(app._appended) == 2
+    thinking, answer = app._appended
+    assert "collapsed" in thinking.classes
+    assert "answer" in answer.classes and "collapsed" not in answer.classes
+    assert answer.text == "Answer"
+    assert app._last_assistant_text == "Answer"
+
+
 # 提取 Static/日志类控件渲染的纯文本内容，供断言比对
 def _render_text(widget: Any) -> str:
     for name in ("_Static__content", "_content"):
@@ -108,6 +211,21 @@ def _render_text(widget: Any) -> str:
         if isinstance(content, str):
             return content
     return str(widget)
+
+
+# 功能：可见扩展消息带来源且回放不重复，不覆盖复制最终回答的内容
+# 设计：连续两次渲染同一持久消息，检查控件数量和最后回答字段保持不变
+def test_custom_message_replay_keeps_answer() -> None:
+    app = _new_app()
+    app._last_assistant_text = "Original answer"
+    event = {"type": "agent.message", "run_id": "r", "message_id": "r:extension:0",
+             "role": "custom", "custom_type": "notice", "phase": "end",
+             "content": [{"type": "text", "text": "Custom note"}]}
+    render_event(app, event)
+    render_event(app, event)
+    assert len(app._appended) == 1
+    assert app._appended[0].text == "Extension · notice\n\nCustom note"
+    assert app._last_assistant_text == "Original answer"
 
 
 # 功能：验证 llm.token 事件会新建流式块并追加 token
@@ -133,6 +251,37 @@ def test_llm_token_accumulates_into_same_block() -> None:
     assert app._current_llm is not None
     assert app._current_llm.text == "Hello world"
     assert len(app._appended) == 1
+
+
+# 功能：验证失败尝试清除本次临时正文，下一次流式输出不与半条回答拼接
+# 设计：控件替身记录 remove，另一个 run 的失败不影响当前文本块
+def test_failed_attempt_clears_only_matching_live_response() -> None:
+    app = _new_app()
+    block = MagicMock()
+    app._current_llm = block
+    app._current_llm_run_id = "run"
+    render_event(app, {"type": "llm.attempt_finished", "run_id": "other", "status": "failed"})
+    assert app._current_llm is block
+    render_event(app, {"type": "llm.attempt_finished", "run_id": "run", "status": "failed"})
+    block.remove.assert_called_once()
+    assert app._current_llm is None
+    render_event(app, {"type": "llm.token", "run_id": "run", "token": "recovered"})
+    assert app._current_llm.text == "recovered"
+
+
+# 功能：验证重试等待与重复提醒有可读展示，但提醒不会复位运行状态
+# 设计：直接渲染持久事件，检查等待秒数和非阻断提示，不启动真实终端
+def test_retry_delay_and_repeat_notice_are_visible() -> None:
+    app = _new_app()
+    app._locale = "en-US"
+    app._busy = True
+    render_event(app, {"type": "llm.retry", "kind": "transient",
+                       "attempt": 2, "delay_ms": 1500})
+    render_event(app, {"type": "agent.repeat_notice", "tool_name": "read", "repeat_count": 5})
+    texts = [_render_text(w) for w in app._appended]
+    assert any("1.5s" in text for text in texts)
+    assert any("execution continues" in text for text in texts)
+    assert app._busy
 
 
 # 功能：验证 agent.stuck 事件渲染包含工具名与重复次数的日志行

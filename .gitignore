@@ -8,6 +8,9 @@ dist/
 dist-*/
 build/
 web/node_modules/
+vendor/pi/node_modules/
+vendor/pi/*
+!vendor/pi/LICENSE
 web/*.tsbuildinfo
 *.egg-info/
 .mypy_cache/

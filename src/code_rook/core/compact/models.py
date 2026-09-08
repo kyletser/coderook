@@ -16,6 +16,7 @@ class PinnedFact(BaseModel):
 
 class CompactionSummary(BaseModel):
     goal: str = Field(min_length=1)
+    markdown: str = ""
     completed: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
@@ -27,6 +28,8 @@ class CompactionSummary(BaseModel):
 
     # 将结构化摘要渲染成供模型续接和人工审计的 Markdown
     def to_markdown(self) -> str:
+        if self.markdown:
+            return self.markdown
         sections = [f"## Goal\n{self.goal}"]
         sections.append(_render_list("Completed", self.completed))
         sections.append(_render_list("Constraints", self.constraints))

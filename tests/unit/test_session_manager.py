@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from pydantic import BaseModel
 
 from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.checkpoints import CheckpointStore
+from code_rook.core.config import LlmConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.editing import FileMutation, apply_file_transaction
 from code_rook.core.events.bus import EventBus
 from code_rook.core.goal import GoalService, GoalStore
 from code_rook.core.hooks import HookManager
+from code_rook.core.interaction import InteractionManager
+from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.route_registry import RouteRegistry
+from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.routes import get_route_preset
 from code_rook.core.presets import STANDARD_PRESET
 from code_rook.core.runner import RunOutcome
 from code_rook.core.runtime.service import RuntimeService
@@ -394,9 +403,9 @@ async def test_send_message_migrates_stable_preset_digest(tmp_path: Path) -> Non
     assert migrations[0].payload["previous_digest"] == "0" * 64
 
 
-# 功能：验证图片附件只把 artifact 引用写入 transcript，并把 base64 像素临时交给 runner
-# 设计：用内容寻址 PNG 和捕获 runner 串联 send_message，分别检查 durable 与 transient 两侧
-async def test_send_message_delivers_image_artifact_once(
+# 功能：验证首次图片附件以结构化消息持久化，后续请求和会话恢复能继续读取图片。
+# 设计：用内容寻址 PNG 串联 send_message，检查图片数据和引用同处用户历史而非一次性参数。
+async def test_send_message_persists_image_artifact_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -430,8 +439,10 @@ async def test_send_message_delivers_image_artifact_once(
 
     user_content = str(store.read_messages(session.id)[0]["content"])
     assert f"artifact:{artifact.sha256}" in user_content
-    assert "base64" not in user_content
-    assert runner.initial_images[0]["type"] == "image"
+    assert "base64" in user_content
+    content = store.read_messages(session.id)[0]["content"]
+    assert content[1]["type"] == "image"
+    assert runner.initial_images == []
 
 
 # 功能：验证 one_shot session 在单次消息完成后自动 closed
@@ -446,6 +457,32 @@ async def test_one_shot_auto_closes(tmp_path: Path) -> None:
     assert store.read_meta(session.id).status == "closed"
 
 
+# 功能：用户附件按设置归一化后持久保存，原始 Artifact 不被重写
+# 设计：真实生成宽图并经 SessionManager 发送，再从新 Store 验证图片尺寸和坐标说明
+@pytest.mark.parametrize("resize", [True, False])
+async def test_user_attachment_resize_and_replay(tmp_path: Path, resize: bool) -> None:
+    stream = BytesIO()
+    Image.new("RGB", (3000, 900), "white").save(stream, format="PNG")
+    raw = stream.getvalue()
+    artifacts = ArtifactStore(tmp_path / ".coderook" / "artifacts")
+    reference = await artifacts.put(raw, media_type="image/png")
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store, lambda: _ImageRunner(), EventBus(), workspace=tmp_path,
+        image_auto_resize=resize,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+    await manager.send_message(session.id, "Describe", attachments=[ImageArtifactInput(
+        sha256=reference.sha256, media_type="image/png", size=len(raw), width=3000, height=900,
+    )])
+    history = SessionStore(tmp_path / "sessions").read_messages(session.id)
+    content = history[0]["content"]
+    with Image.open(BytesIO(base64.b64decode(content[1]["source"]["data"]))) as image:
+        assert image.size == ((2000, 600) if resize else (3000, 900))
+    assert ("Multiply coordinates" in str(content)) == resize
+    assert await artifacts.read_bytes(reference.sha256, max_bytes=len(raw)) == raw
+
+
 # 功能：验证不存在的 session_id 返回 session_not_found 错误码
 # 设计：直接调用 get_history 的查找路径，断言 HandlerError code，覆盖 IPC handler 可结构化返回错误
 async def test_missing_session_raises_handler_error(tmp_path: Path) -> None:
@@ -453,6 +490,22 @@ async def test_missing_session_raises_handler_error(tmp_path: Path) -> None:
     with pytest.raises(HandlerError) as exc:
         await manager.get_history("missing")
     assert exc.value.code == SESSION_NOT_FOUND
+
+
+# 功能：验证思考强度按会话持久保存且 Fork 继承同一选择
+# 设计：切换源会话后重读 meta 并创建分支，核对两个独立 Session 快照
+async def test_session_thinking_persists_and_fork_inherits(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    source = await manager.create("chat")
+
+    selected = await manager.set_thinking(source.id, "high")
+    forked = await manager.fork(source.id)
+
+    assert selected.thinking_level == "high"
+    assert store.read_meta(source.id).thinking_level == "high"
+    assert forked.thinking_level == "high"
+    assert store.read_meta(forked.id).thinking_level == "high"
 
 
 # 功能：验证 closed session 不能继续 send_message
@@ -1005,6 +1058,10 @@ async def test_goal_pause_during_turn_preparation_cancels_barrier_runner(
     tmp_path: Path,
 ) -> None:
     class _BlockingRuntime:
+        # 返回空队列以隔离 Turn 准备阶段的暂停行为。
+        async def list_queued_messages(self, _sid: str) -> list[object]:
+            return []
+
         # 初始化 runtime 启动阻塞点与终态记录
         def __init__(self) -> None:
             self.started = asyncio.Event()
@@ -1174,9 +1231,59 @@ async def test_session_skill_execution_consumes_workspace_trust(
 
     current_trust = WorkspaceTrust.TRUSTED
     await manager.send_message(session.id, "/local target.py")
-    assert runner.seen_goal == "trusted skill target.py"
+    assert '<skill name="local"' in runner.seen_goal
+    assert "trusted skill $ARGUMENTS" in runner.seen_goal
+    assert runner.seen_goal.endswith("target.py")
 
 
+# 功能：停止后保留未消费纠偏和后续消息，且不会自动启动下一轮。
+# 设计：真实 SQLite 队列配合事件阻塞 Runner，验证取消竞态而不调用模型。
+async def test_cancel_preserves_pending_messages_without_dispatch(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    bus = EventBus()
+    interaction = InteractionManager(bus)
+    runtime = RuntimeService(RuntimeStore(tmp_path / "runtime.db"), Path.cwd(), bus=bus)
+    store = SessionStore(tmp_path / "sessions")
+    calls: list[str] = []
+
+    class BlockingRunner(_Runner):
+        # 注册运行后等待取消，记录意外自动启动的次数。
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            run_id = str(kwargs["run_id"])
+            calls.append(run_id)
+            interaction.register_run(run_id)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                interaction.unregister_run(run_id)
+            raise AssertionError("unreachable")
+
+    manager = SessionManager(
+        store, lambda: BlockingRunner(), bus,
+        runtime_service=runtime, interaction_manager=interaction,
+    )
+    session = await manager.create("chat")
+    sending = asyncio.create_task(manager.send_message(session.id, "active"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        run_id = calls[0]
+        await manager.queue_message(session.id, "follow up")
+        await manager.steer_run(run_id, "correction")
+        await asyncio.wait_for(manager.cancel_run(run_id), timeout=5)
+        await asyncio.wait_for(sending, timeout=5)
+        records = await manager.list_queued_messages(session.id)
+        assert {record.content for record in records} == {"follow up", "correction"}
+        assert all(record.status == "blocked" for record in records)
+        assert calls == [run_id]
+        assert store.read_meta(session.id).run_ids == [run_id]
+    finally:
+        await manager.cancel_all()
+        await asyncio.gather(sending, return_exceptions=True)
+
+
+# 功能：验证取消释放会话锁并允许后续输入。
+# 设计：阻塞 Runner 模拟活动任务，取消后使用第二个 Runner 验证锁释放。
 async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: Path) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -1270,6 +1377,57 @@ async def test_cancel_unknown_or_finished_run_is_rejected(tmp_path: Path) -> Non
     with pytest.raises(HandlerError) as finished_error:
         await manager.cancel_run(run_id)
     assert finished_error.value.code == RUN_NOT_ACTIVE
+
+
+# 功能：指定历史节点 Fork 只继承该路径的模型上下文并保持原会话不变。
+# 设计：直接写入两个回答并从第一个节点创建 Fork，检查实际 Manager 与 Store 的衔接。
+async def test_session_fork_from_history_entry(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    source = await manager.create("chat", "source")
+    store.append_message(source.id, "user", "question")
+    store.append_message(source.id, "assistant", "first answer")
+    leaf = store.read_session_events(source.id)[-1].seq
+    store.append_message(source.id, "user", "later question")
+    forked = await manager.fork(source.id, leaf_seq=leaf)
+    assert store.derive_messages(forked.id)[-1]["content"] == "first answer"
+    assert store.derive_messages(source.id)[-1]["content"] == "later question"
+    assert any(not entry["active"] for entry in await manager.tree(forked.id))
+
+
+# 功能：验证模型选择属于会话，并在 Fork 与磁盘重载后保持一致。
+# 设计：两个会话选择不同模型后 Fork 其中之一，再从 SessionStore 重读元数据比较。
+async def test_session_model_selection_is_isolated_and_persistent(tmp_path: Path) -> None:
+    route_store = RouteStore(tmp_path / "routes.json")
+    route_store.add(
+        get_route_preset("ollama").model_copy(
+            update={"id": "local", "model": "default-model"}
+        ),
+        activate=True,
+    )
+    registry = RouteRegistry(
+        LlmConfig(),
+        route_store=route_store,
+        credential_store=CredentialStore(tmp_path / "credentials.json"),
+    )
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: _Runner(),
+        EventBus(),
+        route_registry=registry,
+    )  # type: ignore[arg-type]
+
+    first = await manager.create("chat", "first")
+    second = await manager.create("chat", "second")
+    await manager.set_model(first.id, "local", "model-a")
+    await manager.set_model(second.id, "local", "model-b")
+    forked = await manager.fork(first.id)
+
+    assert store.read_meta(first.id).model == "model-a"
+    assert store.read_meta(second.id).model == "model-b"
+    assert store.read_meta(forked.id).route_id == "local"
+    assert store.read_meta(forked.id).model == "model-a"
 
 
 async def test_session_lifecycle_rename_fork_export_delete(tmp_path: Path) -> None:

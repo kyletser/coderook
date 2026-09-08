@@ -19,6 +19,7 @@ from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
 from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.processes import mark_agent_process_environment
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.transport.auth import IpcTokenError, read_ipc_token
 from code_rook.tui.app import CodeRookTuiApp, ConfigSwitch, ModelSwitch
@@ -95,12 +96,15 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
                 else lambda: ensure_core_running(config, env_file=env_file)
             )
         ),
+        initial_prompt=" ".join(getattr(args, "message", [])).strip(),
+        initial_thinking_level=getattr(args, "thinking", None),
     )
     return app.run()
 
 
 # coderook-tui 入口：未配置模型也可进入，并支持从 /config 返回后重新加载
 def main() -> None:
+    mark_agent_process_environment()
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook-tui", description="CodeRook TUI")
     parser.add_argument(
@@ -136,6 +140,16 @@ def main() -> None:
         "--no-auto-core",
         action="store_true",
         help="Do not automatically start the local Core daemon",
+    )
+    parser.add_argument(
+        "--thinking",
+        choices=("off", "low", "medium", "high"),
+        help="Set the thinking level for the opened session",
+    )
+    parser.add_argument(
+        "message",
+        nargs="*",
+        help="Optional initial task submitted after the session is ready",
     )
     args = parser.parse_args()
 

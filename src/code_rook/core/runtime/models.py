@@ -152,6 +152,7 @@ class QueuedMessageRecord(BaseModel):
     content: str = Field(min_length=1)
     display_content: str = Field(min_length=1)
     mode: RuntimeMode = RuntimeMode.ACT
+    expand_prompt_templates: bool = True
     attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
     status: Literal["queued", "dispatching", "blocked"] = "queued"
     error: str = ""

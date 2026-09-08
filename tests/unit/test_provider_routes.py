@@ -289,13 +289,14 @@ def test_route_store_isolates_bad_record_without_losing_good_routes(
     assert readiness.route_id == "bad"
 
 
-# 功能：验证 route presets 由统一 catalog 扩展九种正式 Provider 并保留三类自定义模板
+# 功能：验证 route presets 由统一 catalog 扩展正式 Provider 并保留三类自定义模板
 # 设计：检查稳定顺序、来源标识和本地免密语义，防止 CLI 选择与 catalog 定义漂移
 def test_route_presets_cover_v1_provider_families() -> None:
     routes = {route.id: route for route in list_route_presets()}
 
     assert tuple(routes) == (
         "deepseek",
+        "aliyun",
         "openai",
         "anthropic",
         "siliconflow",
@@ -312,6 +313,8 @@ def test_route_presets_cover_v1_provider_families() -> None:
         "https://opencode.ai/zen/v1/chat/completions"
     )
     assert get_route_preset("anthropic").wire_format == "anthropic_messages"
+    assert routes["aliyun"].catalog_id == "aliyun"
+    assert routes["aliyun"].wire_format == "openai_chat"
     assert routes["gemini"].catalog_id == "gemini"
     assert routes["ollama"].credential_required is False
     assert routes["ollama"].credential_ref == "none:ollama"

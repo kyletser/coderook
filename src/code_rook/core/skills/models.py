@@ -17,6 +17,7 @@ class SkillManifest(BaseModel):
     name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     description: str = Field(default="", max_length=2_048)
     allowed_tools: tuple[SkillToolName, ...] = ()
+    disable_model_invocation: bool = False
 
 
 class SkillInstallMetadata(BaseModel):

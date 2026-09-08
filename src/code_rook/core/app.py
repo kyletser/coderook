@@ -111,6 +111,8 @@ from code_rook.core.bus.commands import (
     SessionCreateResult,
     SessionDeleteCommand,
     SessionDeleteResult,
+    SessionExecuteCommand,
+    SessionExecuteCommandResult,
     SessionExportCommand,
     SessionExportResult,
     SessionForkCommand,
@@ -126,6 +128,7 @@ from code_rook.core.bus.commands import (
     SessionQueuedMessageActionResult,
     SessionQueueMessageCommand,
     SessionQueueMessageResult,
+    SessionReloadCommand,
     SessionRemoveQueuedMessageCommand,
     SessionRenameCommand,
     SessionRenameResult,
@@ -139,6 +142,10 @@ from code_rook.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSendMessageResult,
     SessionSetAuthorityCommand,
+    SessionSetModelCommand,
+    SessionSetModelResult,
+    SessionSetThinkingCommand,
+    SessionSetThinkingResult,
     SessionTasksCommand,
     SessionTasksResult,
     ThreadArchiveCommand,
@@ -239,7 +246,7 @@ from code_rook.core.memory import MemoryRecord, MemoryStore
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.permissions.storage import load_policy_file
 from code_rook.core.persistent_shell import PersistentShellPool
-from code_rook.core.processes import ProcessSupervisor
+from code_rook.core.processes import ProcessSupervisor, mark_agent_process_environment
 from code_rook.core.projects import ProjectRegistry
 from code_rook.core.runner import AgentRunner
 from code_rook.core.runs import events_file, new_run_id
@@ -887,8 +894,13 @@ class CoreApp:
             fleet_scheduler,
         )
         self._resume_labs_workflows()
+        self._interaction_manager.set_steering_mode(self._config.agent.steering_mode)
         self._sessions = SessionManager(
             self._session_store,
+            prompt_paths=tuple(Path(path) for path in self._config.agent.prompt_paths),
+            skill_paths=tuple(Path(path) for path in self._config.agent.skill_paths),
+            follow_up_mode=self._config.agent.follow_up_mode,
+            image_auto_resize=self._config.agent.image_auto_resize,
             runner_factory=lambda: AgentRunner(
                 self._config,  # type: ignore[arg-type]
                 bus=self._bus,
@@ -916,6 +928,8 @@ class CoreApp:
             goal_service=self._goal_service,
             authority_provider=self._permission_manager.get_authority_snapshot,
             workspace=boundary.root,
+            compaction_config=self._config.compaction,
+            summary_retry_policy=self._config.llm.retry,
         )
         self._worker_controller = WorkerController(
             registry=self._subagent_registry,
@@ -925,7 +939,7 @@ class CoreApp:
             permission_manager=self._permission_manager,
             bus=self._bus,
             workspace_boundary=boundary,
-            max_steps=self._config.agent.max_steps,
+            max_steps=self._config.agent.step_limit(),
             hooks=self._hooks,
             interaction_manager=self._interaction_manager,
             goal_service=self._goal_service,
@@ -1029,6 +1043,8 @@ class CoreApp:
             if cmd.resume_session_id is not None
             else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
         )
+        if cmd.thinking_level is not None:
+            session = await self._sessions.set_thinking(session.id, cmd.thinking_level)
         run_id = new_run_id()
         self._permission_manager.set_session_mode(
             session.id,
@@ -1043,9 +1059,17 @@ class CoreApp:
                 answers=tuple(cmd.preset_answers),
             ),
         )
+        processed = await self._sessions.process_input(session.id, cmd.goal, source="rpc")
+        if processed is None:
+            self._permission_manager.clear_session_mode(session.id)
+            self._interaction_manager.clear_question_policy(session.id)
+            return AgentRunResult(run_id="", session_id=session.id, handled=True)
+        content, attachments = processed
         await self._sessions.preflight_turn_start(session.id, run_id)
         run_task = asyncio.create_task(
-            self._sessions.send_message(session.id, cmd.goal, run_id=run_id)
+            self._sessions.send_message(
+                session.id, content, run_id=run_id, attachments=attachments, input_processed=True,
+            )
         )
         self._running_runs.add(run_task)
 
@@ -1405,14 +1429,20 @@ class CoreApp:
     async def _turn_start_handler(self, params: dict[str, Any]) -> TurnStartResult:
         assert self._sessions is not None
         cmd = TurnStartCommand.model_validate(params)
+        processed = await self._sessions.process_input(cmd.thread_id, cmd.content, source="rpc")
+        if processed is None:
+            return TurnStartResult(turn_id="", handled=True)
+        content, attachments = processed
         turn_id = new_run_id()
         await self._sessions.preflight_turn_start(cmd.thread_id, turn_id)
         task = asyncio.create_task(
             self._sessions.send_message(
                 cmd.thread_id,
-                cmd.content,
+                content,
                 run_id=turn_id,
                 runtime_mode=cmd.runtime_mode,
+                attachments=attachments,
+                input_processed=True,
             )
         )
         self._running_runs.add(task)
@@ -1566,7 +1596,13 @@ class CoreApp:
             title=cmd.title,
             preset_id=cmd.preset_id,
         )
-        return SessionCreateResult(session_id=session.id, status=session.status)
+        return SessionCreateResult(
+            session_id=session.id,
+            status=session.status,
+            route_id=session.route_id,
+            model=session.model,
+            thinking_level=session.thinking_level,
+        )
 
     # 向 session 发送一条用户消息并同步等待对应 run 完成
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
@@ -1579,7 +1615,7 @@ class CoreApp:
             runtime_mode=cmd.runtime_mode,
             attachments=cmd.attachments,
         )
-        return SessionSendMessageResult(run_id=run_id)
+        return SessionSendMessageResult(run_id=run_id, handled=not run_id)
 
     # 将后续用户消息写入 Core 持久队列并返回权威记录
     async def _session_queue_message_handler(
@@ -1595,7 +1631,7 @@ class CoreApp:
             runtime_mode=cmd.runtime_mode,
             attachments=cmd.attachments,
         )
-        return SessionQueueMessageResult(message=message)
+        return SessionQueueMessageResult(message=message, handled=message is None)
 
     # 列出指定会话由全部前端共享的持久消息队列
     async def _session_list_queue_handler(
@@ -1674,7 +1710,10 @@ class CoreApp:
         assert self._sessions is not None
         cmd = SessionGetHistoryCommand.model_validate(params)
         messages = await self._sessions.get_history(cmd.session_id)
-        return SessionGetHistoryResult(messages=messages)
+        return SessionGetHistoryResult(
+            messages=messages,
+            display_messages=await self._sessions.get_display_history(cmd.session_id),
+        )
 
     @staticmethod
     def _session_info(session: Session) -> SessionInfo:
@@ -1691,6 +1730,9 @@ class CoreApp:
             workspace=session.workspace,
             preset_id=session.preset_id,
             preset_digest=session.preset_digest,
+            route_id=session.route_id,
+            model=session.model,
+            thinking_level=session.thinking_level,
         )
 
     # 列出 daemon 已恢复的持久化 sessions
@@ -1716,6 +1758,45 @@ class CoreApp:
         session = await self._sessions.rename(cmd.session_id, cmd.title)
         return SessionRenameResult(session=self._session_info(session))
 
+    # 持久绑定当前会话的 Provider route 与模型，其他会话的选择不受影响。
+    async def _session_set_model_handler(
+        self, params: dict[str, Any],
+    ) -> SessionSetModelResult:
+        assert self._sessions is not None
+        cmd = SessionSetModelCommand.model_validate(params)
+        session = await self._sessions.set_model(
+            cmd.session_id, cmd.route_id, cmd.model,
+        )
+        return SessionSetModelResult(session=self._session_info(session))
+
+    # 持久切换当前会话的思考强度，不修改共享 Provider 路由。
+    async def _session_set_thinking_handler(
+        self, params: dict[str, Any],
+    ) -> SessionSetThinkingResult:
+        assert self._sessions is not None
+        cmd = SessionSetThinkingCommand.model_validate(params)
+        session = await self._sessions.set_thinking(cmd.session_id, cmd.thinking_level)
+        return SessionSetThinkingResult(session=self._session_info(session))
+
+    # 返回同一 Python 会话树供客户端选择历史继续点。
+    async def _session_tree_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        from code_rook.core.bus.commands import SessionTreeCommand
+
+        assert self._sessions is not None
+        cmd = SessionTreeCommand.model_validate(params)
+        return {"entries": await self._sessions.tree(cmd.session_id)}
+
+    # 在当前会话树中导航并返回编辑器文本与所选路径。
+    async def _session_navigate_handler(self, params: dict[str, Any]) -> dict[str, Any]:
+        from code_rook.core.bus.commands import SessionNavigateCommand
+
+        assert self._sessions is not None
+        cmd = SessionNavigateCommand.model_validate(params)
+        return await self._sessions.navigate_tree(
+            cmd.session_id, cmd.target_seq, summarize=cmd.summarize, focus=cmd.focus
+        )
+
+    # 创建完整副本或从指定历史叶节点创建分支。
     async def _session_fork_handler(self, params: dict[str, Any]) -> SessionForkResult:
         assert self._sessions is not None
         cmd = SessionForkCommand.model_validate(params)
@@ -1725,6 +1806,7 @@ class CoreApp:
             cmd.session_id,
             cmd.title,
             preset_id=cmd.preset_id,
+            leaf_seq=cmd.leaf_seq,
         )
         return SessionForkResult(session=self._session_info(session))
 
@@ -2447,6 +2529,22 @@ class CoreApp:
             )
         return SessionRewindResult.model_validate(result)
 
+    # 将用户扩展命令派发到会话宿主并返回可直接显示的文字
+    async def _session_execute_command_handler(
+        self, params: dict[str, Any],
+    ) -> SessionExecuteCommandResult:
+        assert self._sessions is not None
+        cmd = SessionExecuteCommand.model_validate(params)
+        message = await self._sessions.execute_extension_command(cmd.session_id, cmd.content)
+        return SessionExecuteCommandResult(message=message)
+
+    # 重新加载会话资源并返回与普通上下文查询一致的结果
+    async def _session_reload_handler(self, params: dict[str, Any]) -> SessionContextResult:
+        assert self._sessions is not None
+        cmd = SessionReloadCommand.model_validate(params)
+        await self._sessions.reload_resources(cmd.session_id)
+        return await self._session_context_handler({"session_id": cmd.session_id})
+
     # 返回当前会话的上下文大小和运行概览
     async def _session_context_handler(
         self,
@@ -2454,6 +2552,7 @@ class CoreApp:
     ) -> SessionContextResult:
         assert self._sessions is not None
         cmd = SessionContextCommand.model_validate(params)
+        await self._sessions.prepare_extensions(cmd.session_id)
         context = self._sessions.context_info(cmd.session_id)
         last_run_id = context.get("last_run_id")
         if isinstance(last_run_id, str) and self._runtime is not None:
@@ -2496,8 +2595,10 @@ class CoreApp:
         pricing: list[dict[str, Any]] = []
         known_cost = 0.0
         unknown_cost = False
-        for turn in turns:
-            usage = turn.usage
+        usages = [turn.usage for turn in turns]
+        if self._runtime is not None:
+            usages.extend(await self._runtime.list_auxiliary_usage(session_id))
+        for usage in usages:
             for key in counts:
                 value = usage.get(key, 0)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -2880,7 +2981,11 @@ class CoreApp:
         server.register("session.list", self._session_list_handler)
         server.register("session.resume", self._session_resume_handler)
         server.register("session.rename", self._session_rename_handler)
+        server.register("session.set_model", self._session_set_model_handler)
+        server.register("session.set_thinking", self._session_set_thinking_handler)
         server.register("session.fork", self._session_fork_handler)
+        server.register("session.tree", self._session_tree_handler)
+        server.register("session.navigate", self._session_navigate_handler)
         server.register("session.export", self._session_export_handler)
         server.register("session.delete", self._session_delete_handler)
         server.register("session.close", self._session_close_handler)
@@ -2907,6 +3012,8 @@ class CoreApp:
         server.register("session.rewind_preview", self._session_rewind_preview_handler)
         server.register("session.rewind", self._session_rewind_handler)
         server.register("session.context", self._session_context_handler)
+        server.register("session.reload", self._session_reload_handler)
+        server.register("session.execute_command", self._session_execute_command_handler)
         server.register("turn.inspect", self._turn_inspect_handler)
         server.register("mcp.list", self._mcp_list_handler)
         server.register("hooks.list", self._hooks_list_handler)
@@ -2980,6 +3087,7 @@ class CoreApp:
 
 # 同步入口：启动 CoreApp 事件循环
 def run() -> None:
+    mark_agent_process_environment()
     parser = argparse.ArgumentParser(prog="coderook-core", description="CodeRook Core")
     parser.add_argument(
         "--env-file",

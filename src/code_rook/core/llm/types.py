@@ -56,9 +56,10 @@ def estimate_request_input_tokens(
     tool_schemas: list[dict[str, Any]],
     system: str,
 ) -> int:
+    from code_rook.core.agent_runtime.token_estimate import estimate_conversation_tokens
+
     payload = {
         "system": system,
-        "messages": messages,
         "tools": tool_schemas,
     }
     encoded = json.dumps(
@@ -68,7 +69,7 @@ def estimate_request_input_tokens(
         separators=(",", ":"),
         default=str,
     ).encode("utf-8")
-    return max(1, len(encoded) // 4)
+    return max(1, len(encoded) // 4 + estimate_conversation_tokens(messages))
 
 
 @dataclass

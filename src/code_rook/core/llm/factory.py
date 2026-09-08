@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from code_rook.core.config import LlmConfig
 from code_rook.core.llm.base import LLMProvider
 from code_rook.core.llm.credentials import normalize_provider, resolve_api_key
@@ -11,9 +13,18 @@ from code_rook.core.llm.provider import AnthropicProvider
 from code_rook.core.llm.provider_presets import get_provider_preset
 from code_rook.core.llm.routes import ProviderRoute
 
+if TYPE_CHECKING:
+    from code_rook.core.llm.route_registry import ResolvedRoute
+
 
 # 按 route 的显式 wire format 创建 Provider，绝不从模型 ID 推断协议
-def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvider:
+def create_provider_for_route(
+    route: ProviderRoute,
+    credential: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> LLMProvider:
+    request_headers = dict(headers or {})
     if route.wire_format == "anthropic_messages":
         provider: LLMProvider = AnthropicProvider(
             route.model,
@@ -23,6 +34,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             thinking=route.thinking,
             supports_prompt_cache=route.supports_prompt_cache,
             temperature=route.temperature,
+            headers=request_headers,
         )
     elif route.wire_format == "openai_chat":
         provider = OpenAICompatibleProvider(
@@ -35,6 +47,7 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             context_window=route.context_window,
             thinking=route.thinking,
             temperature=route.temperature,
+            headers=request_headers,
         )
     elif route.wire_format == "openai_responses":
         provider = OpenAIResponsesProvider(
@@ -45,10 +58,20 @@ def create_provider_for_route(route: ProviderRoute, credential: str) -> LLMProvi
             context_window=route.context_window,
             thinking=route.thinking,
             temperature=route.temperature,
+            headers=request_headers,
         )
     else:
         raise SystemExit(f"Unsupported route wire format: {route.wire_format}")
     return maybe_wrap_experiment_budget(provider, model=route.model)
+
+
+# 按冻结路由连同仅驻留内存的扩展请求头创建 Provider。
+def create_provider_for_resolved_route(resolved: ResolvedRoute) -> LLMProvider:
+    return create_provider_for_route(
+        resolved.route,
+        resolved.credential,
+        headers=resolved.request_headers,
+    )
 
 
 # 根据配置创建 provider，并从环境变量或用户凭据文件解析密钥

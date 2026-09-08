@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from rich.markup import escape
@@ -79,6 +80,13 @@ class LLMStreamBlock(Widget):
                 self.query_one(".stream-text", Static).update(self._text)
             except NoMatches:
                 self.refresh(recompose=True)
+
+    # 用上游消息快照替换显示内容，正文类型不再依赖后到的意图事件。
+    def set_content(self, text: str, *, finalized: bool = False) -> None:
+        self._text = text
+        self._finalized = finalized
+        if self.is_attached:
+            self.refresh(recompose=True)
 
     # 将当前可见模型消息标记为意图说明或最终回答
     def set_kind(self, kind: str) -> None:
@@ -346,6 +354,11 @@ class ToolCallBlock(Widget):
             f"{result_label}\n{self._output.strip() or tr('stream.no_output', self._locale)}",
             f"{status_icon} {status} · {self._elapsed_ms} ms",
         ]
+        if self._presentation.get("details") is not None:
+            label = "Details" if self._locale == "en-US" else "结构化详情"
+            parts.append(label + "\n" + json.dumps(
+                self._presentation["details"], ensure_ascii=False, indent=2,
+            ))
         if self._is_error:
             recovery = (
                 "C 复制错误 · R 填入重试建议"

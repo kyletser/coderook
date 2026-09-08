@@ -19,7 +19,7 @@ from code_rook.core.compatibility import build_runtime_capabilities
 from code_rook.core.configuration import ConfigurationService
 from code_rook.core.interaction import InteractionManager
 from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
-from code_rook.core.llm.routes import ProviderRoute, get_route_preset
+from code_rook.core.llm.routes import ProviderRoute, ThinkingLevel, get_route_preset
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.receipts.models import TurnReceipt
@@ -171,6 +171,9 @@ class RuntimeApiService:
             activate=bool(payload.get("activate", True)),
             update=update,
         )
+        thread_id = str(payload.get("thread_id", "")).strip()
+        if thread_id:
+            await self._sessions.set_model(thread_id, saved.id, saved.model)
         active = configuration.routes.active()
         return {
             "route_id": saved.id,
@@ -179,9 +182,16 @@ class RuntimeApiService:
         }
 
     # 对已保存 Provider 执行真实 Doctor 后激活，失败时不改变活动路由
-    async def activate_provider(self, route_id: str) -> dict[str, object]:
+    async def activate_provider(
+        self,
+        route_id: str,
+        *,
+        thread_id: str = "",
+    ) -> dict[str, object]:
         configuration = self._require_configuration()
         route = await configuration.set_active_checked(route_id)
+        if thread_id.strip():
+            await self._sessions.set_model(thread_id.strip(), route.id, route.model)
         return {"route_id": route.id, **self._configuration_snapshot()}
 
     # 删除指定 Provider 路由，并按显式开关决定是否同步删除凭据
@@ -529,7 +539,7 @@ class RuntimeApiService:
             attachments=attachments,
             display_content=display_content,
         )
-        return record.model_dump(mode="json")
+        return record.model_dump(mode="json") if record is not None else {"handled": True}
 
     # 返回当前 thread 在所有前端之间共享的持久消息队列
     async def list_queued_messages(self, thread_id: str) -> list[dict[str, object]]:
@@ -574,9 +584,23 @@ class RuntimeApiService:
             raise ValueError("unarchiving is not supported by the current session ledger")
         return await self._runtime.get_thread(thread_id)
 
+    # 读取历史树节点，游标为 Ledger seq 而非 SSE Runtime seq。
+    async def thread_tree(self, thread_id: str) -> dict[str, object]:
+        return {"entries": await self._sessions.tree(thread_id)}
+
+    # 同一会话内选择对话路径，并返回需要恢复到输入框的用户文本。
+    async def navigate_thread(
+        self, thread_id: str, target_seq: int, *, summarize: bool = False, focus: str = ""
+    ) -> dict[str, object]:
+        return await self._sessions.navigate_tree(
+            thread_id, target_seq, summarize=summarize, focus=focus,
+        )
+
     # 从指定会话创建可独立继续的历史 Fork，并返回新的 durable thread
-    async def fork_thread(self, thread_id: str, *, title: str = "") -> ThreadRecord:
-        session = await self._sessions.fork(thread_id, title)
+    async def fork_thread(
+        self, thread_id: str, *, title: str = "", leaf_seq: int | None = None
+    ) -> ThreadRecord:
+        session = await self._sessions.fork(thread_id, title, leaf_seq=leaf_seq)
         return await self._runtime.get_thread(session.id)
 
     # 导出会话为 Markdown 或 JSON 正文，不在服务端写入用户任意路径
@@ -596,14 +620,52 @@ class RuntimeApiService:
         await self._sessions.delete(thread_id)
         return {"thread_id": thread_id, "deleted": True}
 
+    # 执行已注册的用户扩展命令，保持与 IPC 一致的文字结果
+    async def execute_thread_command(self, thread_id: str, content: str) -> dict[str, object]:
+        return {"message": await self._sessions.execute_extension_command(thread_id, content)}
+
+    # 持久切换当前 Web 会话的 Provider/模型，复用 TUI 的同一会话操作。
+    async def set_thread_model(
+        self, thread_id: str, route_id: str, model: str = "",
+    ) -> dict[str, object]:
+        session = await self._sessions.set_model(thread_id, route_id, model)
+        return {
+            "thread_id": session.id,
+            "route_id": session.route_id,
+            "model": session.model,
+            "thinking_level": session.thinking_level,
+        }
+
+    # 持久切换 Web 会话的思考强度，与 IPC 和扩展 API 共用 Session 状态。
+    async def set_thread_thinking(
+        self, thread_id: str, thinking_level: str,
+    ) -> dict[str, object]:
+        session = await self._sessions.set_thinking(
+            thread_id, cast(ThinkingLevel, thinking_level),
+        )
+        return {
+            "thread_id": session.id,
+            "thinking_level": session.thinking_level,
+        }
+
+    # 重载会话扩展与输入资源，不创建模型请求
+    async def reload_thread_resources(self, thread_id: str) -> dict[str, object]:
+        await self._sessions.reload_resources(thread_id)
+        return await self.thread_context(thread_id)
+
     # 返回会话的上下文摘要与最近 checkpoint 元数据
     async def thread_context(self, thread_id: str) -> dict[str, object]:
+        await self._sessions.prepare_extensions(thread_id)
         run_id, checkpoints = self._sessions.list_checkpoints(thread_id)
         return {
             **self._sessions.context_info(thread_id),
             "checkpoint_run_id": run_id,
             "checkpoints": checkpoints,
         }
+
+    # 无需创建会话即可读取当前工作区可用的输入命令目录。
+    async def workspace_input_commands(self) -> dict[str, object]:
+        return {"input_commands": self._sessions.input_commands()}
 
     # 返回 checkpoint 恢复预览，浏览器确认前不修改工作区
     async def preview_rewind(
@@ -679,7 +741,7 @@ class RuntimeApiService:
         attachments: list[ImageArtifactInput] | None = None,
         *,
         display_content: str | None = None,
-    ) -> TurnRecord:
+    ) -> TurnRecord | dict[str, object]:
         run_id = new_run_id()
         task = self._track(
             self._sessions.send_message(
@@ -698,7 +760,8 @@ class RuntimeApiService:
                 return await self._runtime.get_turn(run_id)
             except RecordNotFoundError:
                 if task.done():
-                    await task
+                    if not await task:
+                        return {"handled": True}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -818,16 +881,20 @@ class RuntimeApiService:
         cost_known = True
         threads = await self._runtime.list_threads()
         for thread in threads:
-            for turn in await self._runtime.list_turns(thread.id):
+            turns = await self._runtime.list_turns(thread.id)
+            for turn in turns:
                 turn_count += 1
                 status_counts[turn.status.value] = status_counts.get(turn.status.value, 0) + 1
-                for key, value in turn.usage.items():
+            usages = [dict(turn.usage) for turn in turns]
+            usages.extend(await self._runtime.list_auxiliary_usage(thread.id))
+            for usage in usages:
+                for key, value in usage.items():
                     if key.endswith("tokens") and isinstance(value, (int, float)):
                         totals[key] = totals.get(key, 0) + int(value)
-                turn_cost = turn.usage.get("estimated_cost_usd")
+                turn_cost = usage.get("estimated_cost_usd")
                 if isinstance(turn_cost, (int, float)):
                     estimated_cost_usd += float(turn_cost)
-                elif turn.usage:
+                elif usage:
                     cost_known = False
         return {
             "threads": len(threads),

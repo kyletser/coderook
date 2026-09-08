@@ -5,24 +5,31 @@ import hashlib
 import json
 import logging
 import sqlite3
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from code_rook.core.agent_runtime.extensions import ExtensionHost
+from code_rook.core.agent_runtime.prompt import build_system_prompt
+from code_rook.core.agent_runtime.shell import CodingShellTool
+from code_rook.core.agent_runtime.user_shell import UserShellCommand, execute_user_shell
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import (
-    ContextRepositoryEvent,
+    AgentMessageEvent,
     LlmRouteSelectedEvent,
     RunFailureCategory,
     RunFinishedEvent,
     RunOutcomeStatus,
     RunPhaseChangedEvent,
     RunStartedEvent,
+    StepFinishedEvent,
+    StepStartedEvent,
     StrategyProposedEvent,
     StrategyResolvedEvent,
     TaskProfiledEvent,
@@ -48,15 +55,19 @@ from code_rook.core.execution import SessionLedgerBridge
 from code_rook.core.features import labs_enabled
 from code_rook.core.goal import GoalBudgetProvider, GoalService
 from code_rook.core.hooks import HookManager
-from code_rook.core.interaction import InteractionManager
+from code_rook.core.interaction import InteractionManager, UserMessageContent
 from code_rook.core.llm.base import LLMProvider
-from code_rook.core.llm.factory import create_llm_provider, create_provider_for_route
+from code_rook.core.llm.factory import (
+    create_llm_provider,
+    create_provider_for_resolved_route,
+)
 from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
 from code_rook.core.llm.router import RoutingPolicy, select_route_id
 from code_rook.core.loop import AgentLoop
 from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.mcp.server import McpServerManager
-from code_rook.core.memory import MemoryStore, load_context_file, load_project_instructions
+from code_rook.core.memory import MemoryStore, load_project_instructions
+from code_rook.core.memory.loader import load_global_instructions, load_system_prompt_files
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.persistent_shell import PersistentShellPool
 from code_rook.core.presets import get_agent_preset
@@ -68,10 +79,11 @@ from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.skills.loader import SkillLoader
-from code_rook.core.strategy import TaskIntent, TaskProfile, TaskStrategy, TaskStrategyRouter
+from code_rook.core.strategy import TaskProfile, TaskStrategy, TaskStrategyRouter
 from code_rook.core.subagent.registry import BackgroundTaskRegistry
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
+from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
 from code_rook.core.tools.families.control import UpdatePlanTool
 from code_rook.core.tools.program import RunToolProgram
@@ -80,12 +92,6 @@ from code_rook.core.trace.provider import TracingProvider
 from code_rook.core.trace.writer import TraceWriter
 from code_rook.core.workspace import WorkspaceBoundary
 from code_rook.core.worktree import WorktreeManager
-
-_CONVERSATION_SYSTEM_PROMPT = (
-    "You are CodeRook, a local coding agent. Answer simple questions about your identity, "
-    "active model, capabilities, or usage directly and concisely. Do not inspect the repository, "
-    "claim actions you did not perform, or suggest tool calls unless the user asks for code work."
-)
 
 
 def _now() -> str:
@@ -159,12 +165,11 @@ def _request_metadata(
         "route_id": receipt.route_id if receipt is not None else "",
         "model": receipt.model if receipt is not None else "",
         "wire_format": receipt.wire_format if receipt is not None else "",
+        "thinking": route.route.thinking if route is not None else "off",
         "execution_contract_digest": digest,
         "preset_id": preset_id,
         "preset_digest": preset_digest,
-        "task_profile": (
-            task_profile.model_dump(mode="json") if task_profile is not None else {}
-        ),
+        "task_profile": (task_profile.model_dump(mode="json") if task_profile is not None else {}),
         "task_profile_digest": task_profile.digest if task_profile is not None else "",
     }
 
@@ -201,6 +206,121 @@ def _public_run_outcome(
 
 
 class AgentRunner:
+    # 用户 Shell 单独运行，不解析模型路由；事件和输出仍写入当前会话账本。
+    async def run_user_shell(
+        self, request: UserShellCommand, *, run_id: str, session: Session,
+        store: SessionStore, runtime_mode: RuntimeMode = RuntimeMode.ACT,
+        extension_host: ExtensionHost | None = None,
+    ) -> RunOutcome:
+        bus = self._bus or EventBus()
+        permissions = self._permission_manager
+        authority = (
+            permissions.get_authority_snapshot(session.id).model_copy(update={"mode": runtime_mode})
+            if permissions else AuthoritySnapshot(mode=runtime_mode)
+        )
+        registry = ToolRegistry(
+            runtime_mode=runtime_mode, allowed_authority_actions=authority.allowed_actions,
+        )
+        status = "failed"
+        reason: str | None = None
+        output = ""
+        cancelled = False
+        path = store.runs_dir(session.id) / run_id
+        path.mkdir(parents=True, exist_ok=True)
+        bridge = SessionLedgerBridge(
+            store, session.id, run_id=run_id, audit_health=self._audit_health,
+        )
+        try:
+            if permissions:
+                permissions.begin_turn(session.id, authority)
+            async with (
+                EventWriter(path / "events.jsonl", audit_health=self._audit_health) as writer,
+                bridge,
+                _ScopedEventHandlers(bus, self._extra_handlers),
+            ):
+                writer.subscribe(bus)
+                bridge.subscribe(bus)
+                await bus.publish(RunStartedEvent(run_id=run_id, goal=request.command, ts=_now()))
+                await bus.publish(StepStartedEvent(run_id=run_id, step=1, ts=_now()))
+                try:
+                    replacement = None
+                    if extension_host is not None:
+                        extension_host.api.run_id = run_id
+                        replacement = await extension_host.emit_user_bash(
+                            request.command,
+                            exclude_from_context=not request.include_in_context,
+                        )
+                    if replacement is not None:
+                        exit_code = replacement["exit_code"]
+                        output = replacement["output"] or "Command completed with no output."
+                        if replacement["truncated"] and replacement["full_output_path"]:
+                            output += (
+                                "\n[Output truncated; full output: "
+                                f"{replacement['full_output_path']}]"
+                            )
+                        result = ToolResult(
+                            output,
+                            is_error=bool(replacement["cancelled"] or exit_code not in {None, 0}),
+                            error_type=(
+                                "cancelled" if replacement["cancelled"]
+                                else "nonzero_exit" if exit_code not in {None, 0}
+                                else None
+                            ),
+                            process_usage={"exit_code": exit_code},
+                            failure_category=(
+                                "cancelled" if replacement["cancelled"]
+                                else "command_failed" if exit_code not in {None, 0}
+                                else None
+                            ),
+                        )
+                    else:
+                        sandbox = permissions.shell_sandbox_plan(
+                            session.id, str(self._workspace_boundary.root),
+                        ) if permissions else None
+                        registry.register(CodingShellTool(
+                            self._workspace_boundary.root, sandbox, self._process_supervisor,
+                        ))
+                        result = await execute_user_shell(
+                            request, registry=registry, bus=bus, run_id=run_id,
+                            operation_id=f"{run_id}:user-shell", session_id=session.id,
+                            permission_manager=permissions, hooks=self._hooks,
+                            artifact_store=self._artifact_store, authority_snapshot=authority,
+                        )
+                    output = result.content or "Command completed with no output."
+                    status = "failed" if result.is_error else "success"
+                    reason = result.error_type if result.is_error else None
+                except asyncio.CancelledError:
+                    cancelled = True
+                    reason = "cancelled"
+                    output = "Command cancelled."
+                except Exception as exc:
+                    reason = "runtime_error"
+                    output = str(exc)
+                store.append_session_event(
+                    session.id, event_type="user.shell_completed", turn_id=run_id,
+                    payload={
+                        "command": request.command, "output": output, "status": status,
+                        "exclude_from_context": not request.include_in_context,
+                    },
+                )
+                await bus.publish(AgentMessageEvent(
+                    run_id=run_id, message_id=f"{run_id}:shell-output", phase="end",
+                    role="assistant", content=[{"type": "text", "text": output}],
+                    stop_reason="error" if status == "failed" else "stop", backend="python",
+                    step=1, ts=_now(),
+                ))
+                await bus.publish(StepFinishedEvent(run_id=run_id, step=1, ts=_now()))
+                await bus.publish(RunFinishedEvent(
+                    run_id=run_id, status=status, reason=reason, steps=1,
+                    result_summary=output[:4000], ts=_now(),
+                ))
+        finally:
+            if permissions:
+                permissions.end_turn(session.id)
+        if cancelled:
+            raise asyncio.CancelledError()
+        return RunOutcome(status=status, result=output, reason=reason)
+
     # 组装所有运行时依赖，准备执行一次完整的 agent run
     def __init__(
         self,
@@ -228,6 +348,7 @@ class AgentRunner:
     ) -> None:
         self._config = config
         self._bus = bus
+        self._process_supervisor = process_supervisor
         self._provider = provider
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._runs_dir = runs_dir or RUNS_DIR
@@ -262,9 +383,7 @@ class AgentRunner:
             resolved_mcp if isinstance(resolved_mcp, McpServerManager) else mcp_manager
         )
         self._hooks = (
-            resolved_hooks
-            if isinstance(resolved_hooks, HookManager)
-            else hooks or HookManager()
+            resolved_hooks if isinstance(resolved_hooks, HookManager) else hooks or HookManager()
         )
         self._memory_store = MemoryStore(self._workspace_boundary.root / ".coderook" / "memory")
         self._repository_index = RepositoryIndex(self._workspace_boundary)
@@ -272,15 +391,16 @@ class AgentRunner:
             self._workspace_boundary.root,
             process_supervisor=process_supervisor,
         )
-        self._skill_loader = SkillLoader(self._workspace_boundary.root)
+        self._skill_loader = SkillLoader(
+            self._workspace_boundary.root,
+            additional_paths=tuple(Path(path) for path in self._config.agent.skill_paths),
+        )
         self._agent_profile_loader = AgentProfileLoader(self._workspace_boundary.root)
         # 跨 run 共享的后台 subagent 任务注册表（可选注入，无注入时自己 new）
         self._task_registry = subagent_registry or BackgroundTaskRegistry()
         self._interaction_manager = interaction_manager
         self._route_registry = (
-            resolved_routes
-            if isinstance(resolved_routes, RouteRegistry)
-            else route_registry
+            resolved_routes if isinstance(resolved_routes, RouteRegistry) else route_registry
         )
         self._runtime = runtime_service
         self._goal_service = goal_service
@@ -293,6 +413,7 @@ class AgentRunner:
             process_supervisor=process_supervisor,
         )
         self._tool_assembly = RuntimeToolAssembly(
+            image_auto_resize=config.agent.image_auto_resize,
             workspace_boundary=self._workspace_boundary,
             artifact_store=self._artifact_store,
             memory_store=self._memory_store,
@@ -300,7 +421,7 @@ class AgentRunner:
             skill_loader=self._skill_loader,
             task_registry=self._task_registry,
             permission_manager=self._permission_manager,
-            max_steps=self._config.agent.max_steps,
+            max_steps=self._config.agent.step_limit(),
             runs_dir=self._runs_dir,
             background_registry=self._background_registry,
             interaction_manager=self._interaction_manager,
@@ -331,6 +452,7 @@ class AgentRunner:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
         authority_snapshot: AuthoritySnapshot | None = None,
+        skill_loader: SkillLoader | None = None,
     ) -> ToolRegistry:
         return self._tool_assembly.build(
             task_manager,
@@ -345,10 +467,9 @@ class AgentRunner:
             checkpoint_store=checkpoint_store,
             runtime_mode=runtime_mode,
             authority_snapshot=authority_snapshot,
+            skill_loader=skill_loader,
             supports_images=(
-                resolved_route.route.supports_images
-                if resolved_route is not None
-                else True
+                resolved_route.route.supports_images if resolved_route is not None else True
             ),
             route_binding=resolved_route,
         )
@@ -356,6 +477,12 @@ class AgentRunner:
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
     async def run(self, goal: str, *, run_id: str | None = None) -> None:
         await self.run_and_capture(goal, run_id=run_id)
+
+    # 为会话创建原生扩展宿主，配置与工作区仍由当前 Runner 提供
+    def create_extension_host(self, run_id: str) -> ExtensionHost:
+        return ExtensionHost(
+            self._config.agent.extension_paths, self._workspace_boundary.root, run_id,
+        )
 
     # 执行 agent run 并返回 RunOutcome（含最终文字结果）
     async def run_and_capture(
@@ -373,6 +500,8 @@ class AgentRunner:
         initial_images: list[dict[str, object]] | None = None,
         persistent_goal_context: str = "",
         strategy_override: TaskStrategy | None = None,
+        extension_host: ExtensionHost | None = None,
+        skill_loader: SkillLoader | None = None,
     ) -> RunOutcome:
         run_id = run_id or new_run_id()
         agent_preset = None
@@ -384,21 +513,13 @@ class AgentRunner:
                 raise ValueError("tool-program preset requires CODEROOK_LABS=1")
             if agent_preset.tool_allowlist is not None:
                 requested_tools = set(tool_whitelist or agent_preset.tool_allowlist)
-                tool_whitelist = sorted(
-                    requested_tools & set(agent_preset.tool_allowlist)
-                )
+                tool_whitelist = sorted(requested_tools & set(agent_preset.tool_allowlist))
+        active_skill_loader = skill_loader or self._skill_loader
         task_router = TaskStrategyRouter()
         rule_profile = task_router.classify_rules(
             goal,
             runtime_mode=runtime_mode,
             preset_id=agent_preset.id if agent_preset is not None else "standard",
-        )
-        simple_answer_profile = (
-            rule_profile
-            if self._config.agent.task_router != "llm_only"
-            and runtime_mode == RuntimeMode.ACT
-            and rule_profile.intent == TaskIntent.ANSWER
-            else None
         )
         if session is not None and store is not None:
             run_path = store.runs_dir(session.id) / run_id
@@ -406,9 +527,6 @@ class AgentRunner:
             notes = store.read_notes(session.id)
         else:
             run_path = self._runs_dir / run_id
-            history = [{"role": "user", "content": goal}]
-            notes = ""
-        if simple_answer_profile is not None:
             history = [{"role": "user", "content": goal}]
             notes = ""
         run_path.mkdir(parents=True, exist_ok=True)
@@ -422,20 +540,19 @@ class AgentRunner:
             else AuthoritySnapshot(mode=runtime_mode)
         )
         workspace_trusted = turn_authority.workspace_trust == WorkspaceTrust.TRUSTED
+        file_system_prompt, append_system_prompt = load_system_prompt_files(
+            self._workspace_boundary.root,
+            workspace_trusted=workspace_trusted,
+        )
 
-        global_ctx = ""
-        project_ctx = ""
-        if simple_answer_profile is None:
-            global_ctx = load_context_file(Path("~/.coderook/context.md").expanduser())
-            project_ctx = load_project_instructions(self._workspace_boundary.root)
-            recalled = self._memory_store.search(goal, limit=5)
-            recalled_context = self._memory_store.format_context(recalled)
-            if recalled_context:
-                project_ctx = (
-                    project_ctx.rstrip()
-                    + "\n\n## Recalled Project Memories\n"
-                    + recalled_context
-                ).strip()
+        global_ctx = load_global_instructions()
+        project_ctx = load_project_instructions(self._workspace_boundary.root)
+        recalled = self._memory_store.search(goal, limit=5)
+        recalled_context = self._memory_store.format_context(recalled)
+        if recalled_context:
+            project_ctx = (
+                project_ctx.rstrip() + "\n\n## Recalled Project Memories\n" + recalled_context
+            ).strip()
 
         task_event_sink = (
             self._runtime.task_event_sink(session.id, run_id)
@@ -453,23 +570,21 @@ class AgentRunner:
         context = ExecutionContext(
             run_id=run_id,
             goal=goal,
-            max_steps=self._config.agent.max_steps,
+            max_steps=self._config.agent.step_limit(
+                interactive=session is not None and session.mode == "chat",
+            ),
             prefill_messages=history,
             session_notes=notes,
             global_context=global_ctx,
             project_context=project_ctx,
-            runtime_context=(
-                ""
-                if simple_answer_profile is not None
-                else build_runtime_context(self._workspace_boundary.root)
+            runtime_context=build_runtime_context(
+                self._workspace_boundary.root,
+                command_shell="Bash (Git Bash on Windows); use Bash syntax, not cmd.exe syntax"
+                if tool_whitelist is None and runtime_mode == RuntimeMode.ACT else None,
             ),
             capability_context=(
-                ""
-                if simple_answer_profile is not None
-                else build_capability_context(
-                    self._skill_loader.list_for_execution(
-                        workspace_trusted=workspace_trusted
-                    ),
+                build_capability_context(
+                    active_skill_loader.list_for_execution(workspace_trusted=workspace_trusted),
                     self._agent_profile_loader.list_for_execution(
                         workspace_trusted=workspace_trusted
                     ),
@@ -477,17 +592,21 @@ class AgentRunner:
             ),
             persistent_goal_context=persistent_goal_context,
             system_prompt_override=(
-                system_prompt_override
-                or (
-                    _CONVERSATION_SYSTEM_PROMPT
-                    if simple_answer_profile is not None
-                    else None
-                )
+                system_prompt_override if system_prompt_override is not None else file_system_prompt
             ),
+            system_prompt_append=append_system_prompt,
             runtime_mode=runtime_mode,
         )
-        for image_block in initial_images or []:
-            context.add_pending_image(dict(image_block))
+        if initial_images:
+            if resolved_route is not None and not resolved_route.route.supports_images:
+                return RunOutcome(
+                    status="failed",
+                    result="当前模型不支持图片，请选择支持图片的模型或移除附件。",
+                    reason="route_capability_error",
+                )
+            context.messages.append({"role": "user", "content": [
+                dict(image_block) for image_block in initial_images
+            ]})
         prompt_decision = (
             await self._hooks.emit(
                 "message_submit",
@@ -502,22 +621,6 @@ class AgentRunner:
                 result="",
                 reason=prompt_decision.reason or "prompt_blocked_by_hook",
             )
-        repository_selection = None
-        if simple_answer_profile is None:
-            repository_selection = await asyncio.to_thread(
-                self._repository_index.select_context,
-                goal,
-            )
-            context.repository_context = repository_selection.content
-            context.repository_context_metadata = {
-                "repository_hash": repository_selection.repository_hash,
-                "budget_chars": repository_selection.budget_chars,
-                "used_chars": repository_selection.used_chars,
-                "paths": list(repository_selection.paths),
-                "selection_reasons": list(repository_selection.reasons),
-                "cache_hits": repository_selection.cache_hits,
-                "parsed_files": repository_selection.parsed_files,
-            }
         transcript = (
             SessionTranscriptSink(store, session.id, run_id)
             if session is not None and store is not None
@@ -542,6 +645,7 @@ class AgentRunner:
             ) as writer,
             ledger_bridge if ledger_bridge is not None else _NullAsyncContext() as active_ledger,
             scoped_handlers,
+            AsyncExitStack() as extension_lifecycle,
         ):
             writer.subscribe(bus)
             if isinstance(active_ledger, SessionLedgerBridge):
@@ -563,7 +667,9 @@ class AgentRunner:
                     summary = "正在核对验证结果"
                 elif isinstance(event, ToolCallStartedEvent):
                     action = str(event.params.get("action", "")).casefold()
-                    if event.tool_name in {"read_file", "list_dir", "grep", "glob"} or action in {
+                    if event.tool_name in {
+                        "read", "read_file", "list_dir", "grep", "glob",
+                    } or action in {
                         "read",
                         "list",
                         "search",
@@ -576,7 +682,7 @@ class AgentRunner:
                         summary = "正在读取和定位相关代码"
                     elif event.tool_name not in {"update_plan", "ask_user_question"}:
                         phase = "executing"
-                        summary = "正在执行已冻结的任务策略"
+                        summary = "正在执行工具操作"
                 if phase is None or phase == tracked_phase:
                     return
                 tracked_phase = phase
@@ -593,31 +699,6 @@ class AgentRunner:
 
             scoped_handlers.subscribe(publish_runtime_phase)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
-            await bus.publish(
-                RunPhaseChangedEvent(
-                    run_id=run_id,
-                    phase="understanding",
-                    current=1,
-                    total=8,
-                    summary="正在理解任务边界和风险",
-                    ts=_now(),
-                )
-            )
-            if repository_selection is not None:
-                await bus.publish(
-                    ContextRepositoryEvent(
-                        run_id=run_id,
-                        repository_hash=repository_selection.repository_hash,
-                        budget_chars=repository_selection.budget_chars,
-                        used_chars=repository_selection.used_chars,
-                        paths=list(repository_selection.paths),
-                        selection_reasons=list(repository_selection.reasons),
-                        cache_hits=repository_selection.cache_hits,
-                        parsed_files=repository_selection.parsed_files,
-                        ts=_now(),
-                    )
-                )
-
             cancelled = False
             plan_approval_pending = False
             try:
@@ -630,10 +711,7 @@ class AgentRunner:
                 if self._provider is not None:
                     provider: LLMProvider = self._provider
                 elif route_binding is not None:
-                    provider = create_provider_for_route(
-                        route_binding.route,
-                        route_binding.credential,
-                    )
+                    provider = create_provider_for_resolved_route(route_binding)
                 else:
                     provider = create_llm_provider(self._config.llm)
                 if route_binding is not None:
@@ -683,51 +761,63 @@ class AgentRunner:
                             self._goal_service,
                             active_goal.id,
                         )
-                task_profile = simple_answer_profile or await task_router.classify(
-                    goal,
-                    provider=provider if self._provider is None else None,
-                    runtime_mode=runtime_mode,
-                    preset_id=agent_preset.id if agent_preset is not None else "standard",
-                    run_id=run_id,
-                    method=self._config.agent.task_router,
-                    delegation_policy=self._config.agent.delegation_policy,
+                task_profile = (
+                    task_router.for_execution(rule_profile)
+                    if self._config.agent.task_router == "rules_only"
+                    else await task_router.classify(
+                        goal,
+                        provider=provider if self._provider is None else None,
+                        runtime_mode=runtime_mode,
+                        preset_id=agent_preset.id if agent_preset is not None else "standard",
+                        run_id=run_id,
+                        method=self._config.agent.task_router,
+                        delegation_policy=self._config.agent.delegation_policy,
+                    )
                 )
                 if strategy_override is not None:
                     task_profile = task_router.override_execution_strategy(
                         task_profile,
                         strategy_override,
                     )
-                await bus.publish(
-                    TaskProfiledEvent(
-                        run_id=run_id,
-                        profile=task_profile.model_dump(mode="json"),
-                        profile_digest=task_profile.digest,
-                        ts=_now(),
-                    )
+                strategy_visible = not (
+                    task_profile.source == "model_led"
+                    and task_profile.strategy == TaskStrategy.DIRECT
+                    and strategy_override is None
                 )
-                await bus.publish(
-                    StrategyProposedEvent(
-                        run_id=run_id,
-                        profile_digest=task_profile.digest,
-                        strategy=task_profile.strategy.value,
-                        summary=task_profile.user_summary,
-                        ts=_now(),
+                if strategy_visible:
+                    await bus.publish(
+                        TaskProfiledEvent(
+                            run_id=run_id,
+                            profile=task_profile.model_dump(mode="json"),
+                            profile_digest=task_profile.digest,
+                            ts=_now(),
+                        )
                     )
-                )
-                context.runtime_context = (
-                    context.runtime_context.rstrip()
-                    + "\n\n## Frozen Task Strategy\n"
-                    + json.dumps(
-                        task_profile.model_dump(mode="json"),
-                        ensure_ascii=False,
-                        sort_keys=True,
+                    await bus.publish(
+                        StrategyProposedEvent(
+                            run_id=run_id,
+                            profile_digest=task_profile.digest,
+                            strategy=task_profile.strategy.value,
+                            summary=task_profile.user_summary,
+                            ts=_now(),
+                        )
                     )
-                    + "\nFollow this frozen strategy. For plan_first, establish an explicit "
-                    "bounded plan before mutation. For delegate, call agent.validate_plan, then "
-                    "call agent.execute_plan exactly once so Core schedules and waits for the DAG; "
-                    "do not manually start, poll, retry, or reimplement Worker tasks. If plan "
-                    "validation fails, continue as one agent."
-                )
+                if strategy_visible:
+                    context.runtime_context = (
+                        context.runtime_context.rstrip()
+                        + "\n\n## Task Strategy\n"
+                        + json.dumps(
+                            task_profile.model_dump(mode="json"),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\nFor plan_first, establish an explicit "
+                        "bounded plan before mutation. For delegate, call agent.validate_plan, "
+                        "then call agent.execute_plan exactly once so Core schedules and waits "
+                        "for the DAG; "
+                        "do not manually start, poll, retry, or reimplement Worker tasks. If plan "
+                        "validation fails, continue as one agent."
+                    )
                 turn_authority_active = False
                 if permission_manager is not None and session_id_str:
                     permission_manager.begin_turn(
@@ -736,6 +826,24 @@ class AgentRunner:
                     )
                     turn_authority_active = True
                 tool_contribution: ContributionHandle | None = None
+                extensions = extension_host or self.create_extension_host(run_id)
+                extensions.api.run_id = run_id
+                if extension_host is None and self._interaction_manager is not None:
+                    interaction = self._interaction_manager
+
+                    # 扩展通过会话绑定的消息入口发送输入，不启动独立代理循环
+                    async def send_extension_message(
+                        content: UserMessageContent, deliver_as: Literal["steer", "follow_up"],
+                        expand: bool,
+                    ) -> None:
+                        await interaction.send_extension_message(
+                            run_id, content, deliver_as, expand,
+                        )
+
+                    extensions.api.message_sender = send_extension_message
+                extension_lifecycle.push_async_callback(
+                    extensions.unbind if extension_host is not None else extensions.close,
+                )
                 child_runs_dir = (
                     store.runs_dir(session.id)
                     if session is not None and store is not None
@@ -756,7 +864,9 @@ class AgentRunner:
                         runtime_mode=runtime_mode,
                         resolved_route=route_binding,
                         authority_snapshot=turn_authority,
+                        skill_loader=active_skill_loader,
                     )
+                    await extensions.load(registry, bus)
                     normal_tool_allowlist = task_profile.model_tool_allowlist()
                     normal_action_allowlist = task_profile.model_action_allowlist()
                     plan_gate_active = (
@@ -766,13 +876,12 @@ class AgentRunner:
                     question_tool = registry.get("ask_user_question")
                     clarification_gate_active = (
                         task_profile.confidence < 0.75
+                        and task_profile.source != "model_led"
                         and runtime_mode == RuntimeMode.ACT
                         and isinstance(question_tool, AskUserQuestionTool)
                     )
                     if clarification_gate_active:
-                        registry.set_model_tool_allowlist(
-                            frozenset({"ask_user_question"})
-                        )
+                        registry.set_model_tool_allowlist(frozenset({"ask_user_question"}))
                         registry.set_model_action_allowlist({})
                     else:
                         registry.set_model_tool_allowlist(
@@ -787,7 +896,6 @@ class AgentRunner:
                         )
                     plan_tool = registry.get("update_plan")
                     if plan_gate_active and isinstance(plan_tool, UpdatePlanTool):
-
                         # 计划持久化后等待会话审批，当前 Turn 始终保持只读目录
                         async def resolve_plan_gate(ticket: str) -> None:
                             nonlocal plan_approval_pending
@@ -798,15 +906,13 @@ class AgentRunner:
                                     phase="waiting_confirmation",
                                     current=4,
                                     total=8,
-                                    summary=(
-                                        "计划已记录，等待用户批准；当前 Turn 不开放修改工具"
-                                    ),
+                                    summary=("计划已记录，等待用户批准；当前 Turn 不开放修改工具"),
                                     ts=_now(),
                                 )
                             )
 
                         plan_tool.set_ticket_handler(resolve_plan_gate)
-                        if not clarification_gate_active:
+                        if not clarification_gate_active and strategy_visible:
                             await bus.publish(
                                 RunPhaseChangedEvent(
                                     run_id=run_id,
@@ -821,7 +927,7 @@ class AgentRunner:
                         if plan_gate_active:
                             registry.set_model_tool_allowlist(normal_tool_allowlist)
                             registry.set_model_action_allowlist(normal_action_allowlist)
-                        if not clarification_gate_active:
+                        if not clarification_gate_active and strategy_visible:
                             await bus.publish(
                                 StrategyResolvedEvent(
                                     run_id=run_id,
@@ -839,9 +945,7 @@ class AgentRunner:
                                         if task_profile.risk.value == "read"
                                         else "executing"
                                     ),
-                                    current=(
-                                        2 if task_profile.risk.value == "read" else 5
-                                    ),
+                                    current=(2 if task_profile.risk.value == "read" else 5),
                                     total=8,
                                     summary=task_profile.user_summary,
                                     ts=_now(),
@@ -851,7 +955,6 @@ class AgentRunner:
                         question_tool,
                         AskUserQuestionTool,
                     ):
-
                         # 用户回答后只推进到画像允许的下一层门禁，不直接扩大修改权限
                         async def resolve_clarification_gate(answer: str) -> None:
                             nonlocal task_profile
@@ -861,9 +964,7 @@ class AgentRunner:
                                 f"{goal}\n\nUser clarification: {answer}",
                                 runtime_mode=runtime_mode,
                                 preset_id=(
-                                    agent_preset.id
-                                    if agent_preset is not None
-                                    else "standard"
+                                    agent_preset.id if agent_preset is not None else "standard"
                                 ),
                                 method="rules_only",
                                 delegation_policy=self._config.agent.delegation_policy,
@@ -989,6 +1090,48 @@ class AgentRunner:
                                 step_provider=lambda: context.step,
                             )
                         )
+                    context.capability_context = build_capability_context(
+                        active_skill_loader.list_for_execution(workspace_trusted=workspace_trusted),
+                        self._agent_profile_loader.list_for_execution(
+                            workspace_trusted=workspace_trusted
+                        ),
+                        tool_names={str(tool["name"]) for tool in registry.tool_schemas()},
+                    )
+                    base_prompt = (
+                        context.system_prompt_override
+                        if context.system_prompt_override is not None
+                        else build_system_prompt(registry.prompt_tools(registry.tool_schemas()))
+                    )
+                    if self._interaction_manager is not None:
+                        self._interaction_manager.register_run(run_id)
+                    startup = await extensions.before_agent_start(
+                        goal, base_prompt, context.pending_images,
+                    )
+                    if startup.system_prompt != base_prompt:
+                        context.system_prompt_override = startup.system_prompt
+                    for message_index, message in enumerate(startup.messages):
+                        message_id = f"{run_id}:extension:{message_index}"
+                        ledger_seq = None
+                        if transcript is not None:
+                            ledger_seq = transcript.append_audit(0, "input.admitted", {
+                                "role": "user", "content": message["content"],
+                                "message_id": message_id,
+                                "source": {
+                                    "kind": "extension", "custom_type": message["custom_type"],
+                                },
+                                "display": bool(message.get("display", False)),
+                                "details": message.get("details"),
+                            })
+                        context.messages.append({"role": "user", "content": message["content"]})
+                        if message.get("display", False):
+                            content = message["content"]
+                            await bus.publish(AgentMessageEvent(
+                                run_id=run_id, message_id=message_id, phase="end",
+                                role="custom", custom_type=message["custom_type"],
+                                content=content if isinstance(content, list) else [
+                                    {"type": "text", "text": content},
+                                ], ledger_seq=ledger_seq, ts=_now(),
+                            ))
                     session_dir = (
                         store.session_dir(session.id)
                         if session is not None and store is not None
@@ -1001,9 +1144,20 @@ class AgentRunner:
                         store=store if session is not None else None,
                         retain_ratio=self._config.compaction.retain_ratio,
                         strategy=self._config.compaction.strategy,
+                        keep_recent_tokens=self._config.compaction.keep_recent_tokens,
+                        reserve_tokens=self._config.compaction.reserve_tokens,
+                        retry_policy=self._config.llm.retry,
+                        lifecycle=extensions.emit_session_event,
                     )
                     loop = AgentLoop(
-                        provider, registry, bus,
+                        provider,
+                        registry,
+                        bus,
+                        transform_context=extensions.transform_context,
+                        transform_provider_request=extensions.transform_provider_request,
+                        provider_response_sink=extensions.observe_provider_response,
+                        agent_event_sink=extensions.emit_agent_event,
+                        retry_policy=self._config.llm.retry,
                         permission_manager=self._permission_manager,
                         compactor=compactor,
                         compact_threshold=self._config.compaction.auto_threshold,
@@ -1020,8 +1174,7 @@ class AgentRunner:
                         artifact_store=self._artifact_store,
                         diagnostics_client=self._diagnostics_client,
                         escalate_plan_thinking=(
-                            route_binding is not None
-                            and route_binding.route.thinking != "off"
+                            route_binding is not None and route_binding.route.thinking != "off"
                         ),
                         supports_tools=(
                             route_binding.route.supports_tools
@@ -1048,6 +1201,10 @@ class AgentRunner:
                             preset_digest=agent_preset.digest if agent_preset is not None else "",
                             task_profile=task_profile,
                         ),
+                    )
+                    extensions.api.update_runtime_context(
+                        system_prompt=loop._render_system(context),
+                        context_window=getattr(provider, "context_window", None),
                     )
                     if self._interaction_manager is not None:
                         self._interaction_manager.register_run(run_id)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ import httpx
 from code_rook.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.errors import ProviderRequestError
 from code_rook.core.llm.types import (
     LlmResponse,
     ToolCallBlock,
@@ -26,8 +26,6 @@ _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-7": 200_000,
 }
 
-_MAX_STREAM_RETRIES = 3
-_RETRY_BACKOFF_S = (1.0, 2.0, 4.0)
 # thinking 档位 -> (budget_tokens, max_tokens)；max_tokens 必须大于 budget_tokens
 _THINKING_BUDGETS: dict[str, tuple[int, int]] = {
     "low": (4_096, 12_288),
@@ -106,6 +104,7 @@ class AnthropicProvider:
         thinking: str = "off",
         supports_prompt_cache: bool = True,
         temperature: float | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._client: Any
         if client is None:
@@ -116,18 +115,35 @@ class AnthropicProvider:
                 self._client = anthropic.AsyncAnthropic(
                     api_key=resolved_key,
                     base_url=base_url,
+                    max_retries=0,
+                    default_headers=dict(headers or {}),
                 )
             else:
-                self._client = anthropic.AsyncAnthropic(api_key=resolved_key)
+                self._client = anthropic.AsyncAnthropic(
+                    api_key=resolved_key,
+                    max_retries=0,
+                    default_headers=dict(headers or {}),
+                )
         else:
-            self._client = client
+            self._client = (
+                client.with_options(
+                    max_retries=0,
+                    default_headers=dict(headers or {}),
+                )
+                if isinstance(client, anthropic.AsyncAnthropic) else client
+            )
         self._model = model
         self._context_window = context_window
         self._thinking = thinking
         self._supports_prompt_cache = supports_prompt_cache
         self._temperature = temperature
 
-    # 流式调用 Anthropic API，逐 token 发布事件并返回 LlmResponse；网络中断时自动重试
+    @property
+    # 返回当前 Provider 模型的窗口，供首次请求前进行压缩判断。
+    def context_window(self) -> int:
+        return self._context_window or _context_window(self._model)
+
+    # 单次流式调用 Anthropic，错误交给主循环统一重试，不在适配器内隐藏重试
     async def chat(
         self,
         messages: list[dict[str, object]],
@@ -193,40 +209,32 @@ class AnthropicProvider:
 
         text_parts: list[str] = []
         final_message: Any = None
+        stream: Any = None
 
-        for attempt in range(1, _MAX_STREAM_RETRIES + 1):
-            text_parts = []
-            try:
-                async with self._client.messages.stream(**kwargs) as stream:
-                    async for text in stream.text_stream:
-                        # Only publish token events on the first attempt to avoid TUI duplicates
-                        if attempt == 1:
-                            await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
-                        text_parts.append(text)
-                    final_message = await stream.get_final_message()
-                break  # success
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError):
-                if attempt == _MAX_STREAM_RETRIES:
-                    log.error(
-                        "stream failed after %d attempts run_id=%s step=%d",
-                        _MAX_STREAM_RETRIES,
-                        run_id,
-                        step,
-                    )
-                    break
-                delay = _RETRY_BACKOFF_S[attempt - 1]
-                log.warning(
-                    "stream dropped (attempt %d/%d) run_id=%s step=%d; retrying in %.0fs",
-                    attempt,
-                    _MAX_STREAM_RETRIES,
-                    run_id,
-                    step,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-
+        failure: ProviderRequestError | None = None
+        try:
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
+                    text_parts.append(text)
+                final_message = await stream.get_final_message()
+        except (httpx.HTTPError, anthropic.APIError) as exc:
+            failure = ProviderRequestError("Anthropic", exc)
+        finally:
+            # 超时和取消也保存 SDK 已接收的推理及工具参数，不只处理 HTTP 异常
+            if final_message is None and stream is not None:
+                try:
+                    snapshot = stream.current_message_snapshot
+                except (AttributeError, AssertionError):
+                    snapshot = None
+                if isinstance(snapshot, anthropic.types.Message):
+                    bus.record_stream_fragment({
+                        "wire_format": "anthropic", "partial_message": snapshot.model_dump(),
+                    })
+        if failure is not None:
+            raise failure
         if final_message is None:
-            raise RuntimeError("Anthropic stream failed after retries")
+            raise RuntimeError("Anthropic returned no final message")
 
         usage = final_message.usage
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -270,6 +278,8 @@ class AnthropicProvider:
                     "thinking": block.thinking,
                     "signature": block.signature,
                 })
+            elif block.type == "redacted_thinking":
+                thinking_blocks.append({"type": "redacted_thinking", "data": block.data})
 
         return LlmResponse(
             stop_reason=(

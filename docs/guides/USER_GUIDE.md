@@ -12,6 +12,125 @@ Release；本文先以源码安装为准。发布状态只以[发布评分卡](.
 
 ## 1. 安装与首次启动
 
+### 网络重试与重复操作提醒
+
+临时断网、超时、限流、服务端错误及空响应默认由 Core 在同一步最多重试 5 次，
+不会因此重新执行已完成的工具。界面显示等待时间，等待期间仍可停止任务；
+认证错误和没有有效结束标记的 SSE 响应不会无限重试。失败的部分回答留作本地审计，
+不与重试后的正常回答拼接，也不带入后续模型历史。
+
+可在用户配置 `~/.coderook/config.toml` 中调整（修改后重启 Core 生效）：
+
+```toml
+[llm.retry]
+max_retries = 5       # 设为 0 关闭自动重试；不包括首次请求
+initial_delay_s = 0.5
+max_delay_s = 10.0
+jitter_ratio = 0.1
+```
+
+连续同参调用同一工具时，Core 在第 3、5、8 次提醒模型重新分析结果。
+提醒不会阻止继续执行，也不会强迫修改代码；发送新的纠偏消息会重置计数。
+正常的权限审批和预算上限仍然有效。未显式配置 `agent.max_steps` 时，交互会话不按固定步数截断，脚本和 Worker 默认最多 20 步；显式配置的步数上限对所有入口生效。交互长任务可能消耗更多 Token，可随时停止。
+
+### 图片尺寸与原图
+
+用户附件和工具返回图片默认按最长边 2000 像素、base64 内容 4.5 MiB 的目标处理。
+缩放后会向模型提供原尺寸和坐标换算说明，用户附件的原始 Artifact 不会被覆盖。
+`read` 支持 PNG、JPEG、WebP、GIF，也可将 BMP/TIFF 转为 PNG。
+用户配置 `[agent] image_auto_resize = false` 可关闭缩放，重启 Core 生效；
+关闭缩放不会关闭格式转换。浏览器上传限制仍独立生效，不代表任意大小附件都可上传。
+
+### 自定义项目指令与系统提示
+
+项目指令从父目录到当前工作目录加载，每层优先选择 `AGENTS.override.md`，其次为 `AGENTS.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD`，同层只加载第一份。全局指令放在 `~/.coderook/`，原有 `context.md` 仍受支持。
+
+需要定制 Agent 的默认角色时，在 `~/.coderook/SYSTEM.md` 中编写替换提示；只想补充要求，使用 `APPEND_SYSTEM.md`。受信项目的 `.coderook/` 下同名文件优先于全局文件，两种文件分别选择。修改后下一轮任务自动读取，无需重启；正在执行的任务不受影响。替换角色不会移除项目指令，也不会改变实际工具权限。
+
+提示模板默认从 `~/.coderook/prompts/` 和受信项目的 `.coderook/prompts/` 加载。额外的模板文件或目录可在用户 `~/.coderook/config.toml` 中设置：
+
+```toml
+[agent]
+prompt_paths = ["~/shared-prompts", "C:/prompts/review.md"]
+skill_paths = ["~/shared-skills", "C:/skills/inspect/SKILL.md"]
+# 可选：只填写你信任的 Python 扩展文件
+# extension_paths = ["C:/my-extensions/greeting.py"]
+steering_mode = "one-at-a-time"
+follow_up_mode = "one-at-a-time"
+```
+
+默认目录优先，额外路径按配置顺序加载，同名只使用第一份可读模板。相对路径以当前项目为基准。更新路径配置后重启 Core；模板内容修改后可用 `/reload` 刷新补全，执行时会读取最新正文。
+
+`steering_mode`（纠偏）与 `follow_up_mode`（后续消息）可分别改为 `all`，一次交付当前排队的消息；默认 `one-at-a-time` 每次交付一条。纠偏在下一次模型决策前生效，后续消息等当前回答与工具调用结束后才进入同一运行。配置变更后重启 Core。
+
+`skill_paths` 支持单个 Markdown Skill、含 `SKILL.md` 的包目录或包含多个 Skill 的目录。用户显式配置的手工维护 Skill 可以直接使用，无需复制安装；受管 Skill 仍保留其安装信任与完整性检查。加载顺序为用户目录、项目目录、显式路径，之后才是内建与旧目录兼容项；同名采用先发现的条目，项目不覆盖用户同名 Skill。使用 `/skill:名称 参数` 调用，其参考文件可通过 `read` 读取。
+
+### Python 扩展与自定义命令
+
+扩展直接使用 Python，不运行 Node/Pi 子进程。将下面的内容保存到你自己的 `greeting.py`，并把完整路径加入用户配置的 `agent.extension_paths`（新增路径配置后重启 Core）：
+
+```python
+# 注册会话局部命令，计数在同一会话的连续任务之间保留
+def setup(api):
+    count = 0
+
+    # 本地返回文字，不调用模型、不创建任务
+    def greet(arguments):
+        nonlocal count
+        count += 1
+        return f"Hello {arguments} · 本会话第 {count} 次"
+
+    # 使用同一会话的正常任务入口提交请求
+    async def ask(arguments):
+        await api.send_user_message(arguments)
+
+    api.register_command("greet", greet, description="本地问候")
+    api.register_command("ask-agent", ask, description="提交 Agent 任务")
+```
+
+打开会话后，TUI/Web 的输入补全会出现 `/greet` 和 `/ask-agent`。`/greet 小明` 直接显示返回文字；
+`/ask-agent 解释当前项目` 才调用模型。扩展命令接收斜杠名称之后的原始参数字符串。
+`send_user_message` 默认按普通文本处理，不展开参数里的斜杠命令；需要展开模板时显式设置
+`expand_prompt_templates=True`。运行中可选 `deliver_as="steer"` 或 `"follow_up"`，空闲时会启动下一轮。
+
+修改扩展源码后，在空闲会话执行 `/reload`，无需再次重启 Core。重载会清除旧扩展的内存计数，
+但不会删除聊天历史。不同会话拥有各自的扩展状态；关闭会话会执行 `api.on_shutdown` 注册的清理函数。
+扩展是你显式信任并加载的本地 Python 代码，具有当前用户的进程权限，不是沙箱脚本。
+更多 Hook、工具、图片和生命周期接口见 [Python Agent Runtime](../reference/PYTHON_AGENT_RUNTIME.md)。
+
+扩展也可以注册只属于当前会话的兼容 Provider，并从命令中切换模型：
+
+```python
+def setup(api):
+    api.register_provider("team-proxy", {
+        "name": "Team Proxy",
+        "baseUrl": "https://proxy.example.com/v1",
+        "apiKey": "$TEAM_PROXY_KEY",
+        "headers": {"X-Workspace": "$TEAM_WORKSPACE_ID"},
+        "api": "openai-completions",
+        "models": [{"id": "team-coder", "contextWindow": 128000}],
+    })
+
+    async def use_team_model(_arguments):
+        await api.set_model("team-proxy", "team-coder")
+        return "已为当前会话切换模型"
+
+    api.register_command("team-model", use_team_model)
+```
+
+该选择也会出现在 Web 的模型抽屉中；不会覆盖其他会话或修改全局默认 Provider。
+若只需要让已有 Provider 经过企业网关，可以省略 `models`：
+
+```python
+def setup(api):
+    api.register_provider("openai", {
+        "baseUrl": "https://gateway.example.com/v1",
+        "headers": {"X-Corp-Auth": "$CORP_AUTH_TOKEN"},
+    })
+```
+
+覆盖只作用于加载该扩展的会话，已有模型能力与用户凭据保持不变。
+
 需要 Python 3.12、Git 和 [`uv`](https://docs.astral.sh/uv/)：
 
 ```bash
@@ -28,6 +147,8 @@ uv run coderook web
 uv run coderook web C:\path\to\repo
 uv run coderook web --no-open
 uv run coderook tui
+uv run coderook "修复登录问题并运行相关测试"
+uv run coderook -p "解释当前项目结构"
 ```
 
 `coderook web` 只绑定本机回环地址，自动启动或复用当前仓库 Core，并打开最近会话。若空闲的
@@ -86,6 +207,7 @@ TUI `/config` 与 CLI route 管理使用同一份 Provider Catalog：
 | 预设 | 凭据 | 协议/说明 |
 |---|---|---|
 | DeepSeek | `DEEPSEEK_API_KEY` | OpenAI Chat compatible |
+| Alibaba Cloud Bailian (China mainland) | `DASHSCOPE_API_KEY` | OpenAI Chat compatible |
 | OpenAI | `OPENAI_API_KEY` | OpenAI route，支持图片能力标记 |
 | Anthropic | `ANTHROPIC_API_KEY` | Anthropic Messages |
 | Gemini | `GEMINI_API_KEY` | Gemini OpenAI-compatible endpoint |
@@ -106,6 +228,7 @@ TUI：
 /config
 /provider
 /model
+/thinking off|low|medium|high
 /doctor
 ```
 
@@ -171,11 +294,21 @@ endpoint 或 overlay 不能指定任意环境变量名来读取其他用户秘�
 `active_route_id`，即使通过显式配置路径指向它也不能绕过限制。
 
 行为配置可选择 `agent.task_router = "rules_only"`、`agent.delegation_policy = "routed"` 和
-`compaction.strategy = "adaptive_evidence"`。默认路由不额外调用分类模型：确定性规则先识别安全边界，
-低置信度任务初始只开放一次结构化提问；用户回答后 Core 用“原请求 + 回答”重新生成画像，但仍保留
-`plan_first` 安全门禁。复杂或含糊修改只开放只读探索和 `update_plan`；计划票据签发后 Core 展示
-计划审阅卡，当前 Turn 仍保持只读。用户批准后 TUI 才创建新的 Act Turn，因此未批准计划不能在原
-Turn 内获得修改工具。
+`compaction.strategy = "session"`。压缩默认按 `compaction.keep_recent_tokens = 20000`
+保留最近完整工具闭环；长任务中途切分时单独总结任务前缀，再次压缩会更新旧摘要。
+`compaction.reserve_tokens = 16384` 用于下一次请求的空间预留；历史摘要与任务前缀摘要
+分别使用其 80% 和 50% 作为输出上限，并受 Provider 及当前任务预算进一步约束。
+手动 `/compact` 和自动压缩共用这些配置。
+修改提示模板、Skills 或已配置的 Python 扩展后，可在会话空闲时输入 `/reload`：TUI/Web 会释放旧扩展，
+重新加载源码并刷新命令候选，不调用模型，也不重载 Provider。运行中的任务需先停止；尚未处理的排队消息会回到输入框，保留已有
+草稿和图片，等待你修改后重新发送。普通 Act 默认使用 `read`、`bash`、`edit`、`write` 与配置的 MCP
+工具，由主模型决定何时调用；最终回答直接显示为正文。
+`structured` 和 `adaptive_evidence` 仍可显式选择以复现旧实验。
+默认 `rules_only` 不额外调用分类模型：普通 Act
+请求的画像标记为 `model_led`，规则仅作辅助提示。主模型结合完整会话决定回答、查询或提问，
+不会因“什么模型”等关键词关闭文件或 Shell 工具，也不会因规则低置信度强制进入计划。
+显式 Plan 模式、执行策略覆盖及权限/沙箱约束继续生效；默认不自动委派 Worker。
+显式 `plan_first` 策略仍需计划审阅，批准后才通过新的 Act Turn 执行修改。
 `hybrid`、`llm_only`、`single`、`always_delegate`、`truncate` 等值主要
 用于可复现实验，不会降低现有权限或沙箱门禁。完整证据入口见
 [可靠长任务实验指南](RELIABILITY_EXPERIMENTS.md)。
@@ -272,7 +405,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 |---|---|
 | 帮助与输入 | `/help`、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]` |
 | 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes` |
-| 模型 | `/config`、`/provider`、`/model`、`/doctor` |
+| 模型 | `/config`、`/provider`、`/model`、`/thinking off\|low\|medium\|high`、`/doctor` |
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
 | 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/compact`、`/cost` |
 | 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
@@ -284,17 +417,20 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 输入历史按工作区保存，可关闭或清空。密钥样式的输入不会写入历史；这是模式脱敏，不是完备的 DLP。
 普通输入中的 `@相对路径` 会建立最多 8 个有界文件引用；只把路径和按需读取约束交给 Agent，不自动把
 整份文件塞入上下文。以 `!` 开头的输入表示用户明确要求执行其后的原始 Shell 命令，但命令仍经过同一
-权限、Sandbox、审计和 Artifact 管线。Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
+权限、Sandbox、审计和 Artifact 管线。`!命令` 由 Python 直接执行，不调用模型、不要求配置 Provider；
+输出进入后续模型上下文。`!!命令` 只保存执行记录，不进入模型上下文。运行中的直接命令会排队单独执行。
+Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
 `排队:` 前缀可把消息放到 Core 持久队列，并在当前 Turn 结束、会话锁释放后按提交顺序自动发送。Web
 运行中可在 composer 切换“纠偏/排队”；队列由 TUI 与 Web 共享，不依赖任一前端进程内存。正在派发的
 消息只能通过停止活动 Turn 处理，不能从队列界面假删除；daemon 在派发结果不确定时会把该消息标为
 `blocked`，由用户确认后重试。
 `/export [md|json]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
 `/export [md|json] --force --yes` 才允许覆盖。该命令不接受自定义输出路径。
-粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息一次性交付；composer
+粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息交付；composer
 上方附件条持续显示序号、尺寸和短 hash。发送前可用 `/attachments remove N` 或
-`/attachments clear` 管理附件；发送失败会恢复附件。永久 transcript 不保存图片 base64，且当前不保证
-读取所有终端的剪贴板位图。
+`/attachments clear` 管理附件；发送失败会恢复附件。图片附件会以结构化块保存在本地 transcript，
+用于后续请求和会话恢复，包括图片 base64；因此会增加本地历史大小及压缩前的模型输入成本。
+当前不保证读取所有终端的剪贴板位图。
 
 ### 会话隔离与重连
 

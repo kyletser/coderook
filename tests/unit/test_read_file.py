@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from code_rook.core.editing import content_hash
 from code_rook.core.tools.builtin.read_file import ReadFileTool
 
 
@@ -90,3 +92,44 @@ async def test_empty_file_returns_empty_content(tmp_path: Path) -> None:
     assert not result.is_error
     assert metadata["bytes"] == 0
     assert text == ""
+
+
+# 功能：验证按一基闭区间读取保留 UTF-8、CRLF、下一行及全文件编辑哈希
+# 设计：读取文件中间两行并与原始字节哈希比较，防止范围哈希被误用于乐观编辑校验
+async def test_read_line_range_preserves_full_file_hash(tmp_path: Path) -> None:
+    raw = "一\r\n二\r\n三\r\n四".encode()
+    (tmp_path / "source.py").write_bytes(raw)
+    result = await ReadFileTool(workspace_root=tmp_path).invoke({
+        "path": "source.py", "start_line": 2, "end_line": 3,
+    })
+    metadata, text = _read_result(result.content)
+    assert text == "二\r\n三\r\n"
+    assert metadata["content_hash"] == content_hash(raw)
+    assert metadata["total_lines"] == 4 and metadata["next_line"] == 4
+    assert metadata["start_line"] == 2 and metadata["end_line"] == 3
+    assert not metadata["truncated"]
+
+
+# 功能：验证只给起始行默认读取 200 行且能继续到文件末尾
+# 设计：用 300 行冻结文件检查默认分页与超出末尾的闭区间截取，避免整文件反复进入上下文
+async def test_read_start_line_defaults_to_bounded_page(tmp_path: Path) -> None:
+    (tmp_path / "large.py").write_text("line\n" * 300, encoding="utf-8")
+    tool = ReadFileTool(workspace_root=tmp_path)
+    first = await tool.invoke({"path": "large.py", "start_line": 1})
+    metadata, text = _read_result(first.content)
+    assert len(text.splitlines()) == 200 and metadata["next_line"] == 201
+    last = await tool.invoke({"path": "large.py", "start_line": 201, "end_line": 900})
+    metadata, text = _read_result(last.content)
+    assert len(text.splitlines()) == 100 and metadata["next_line"] is None
+
+
+# 功能：验证非法行范围不会伪装成成功的空内容
+# 设计：覆盖零起点、反向区间与越过末尾三种输入，分别检查参数验证和读取结果
+async def test_invalid_read_line_ranges_are_explicit(tmp_path: Path) -> None:
+    (tmp_path / "short.py").write_text("one", encoding="utf-8")
+    tool = ReadFileTool(workspace_root=tmp_path)
+    for params in ({"start_line": 0}, {"start_line": 3, "end_line": 2}):
+        with pytest.raises(ValidationError):
+            await tool.invoke({"path": "short.py", **params})
+    result = await tool.invoke({"path": "short.py", "start_line": 2})
+    assert result.is_error and "beyond" in result.content

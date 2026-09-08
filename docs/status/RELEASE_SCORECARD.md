@@ -1,6 +1,6 @@
 # CodeRook 发布评分卡
 
-**更新时间**：2026-09-02
+**更新时间**：2026-09-07
 
 **代码锚点**：本文件所在 Git commit；检出后用 `git rev-parse HEAD` 获取精确 SHA
 
@@ -100,7 +100,7 @@ Actions 当前按维护者要求关闭，因此不存在同一 SHA 的远端 req
 | 多文件 pass@1 | ≥75% | **未运行** |
 | 只读 pass@1 | ≥90% | **未运行** |
 | 两种 wire format × 两次 | 四份原始报告及聚合报告 | **未产生** |
-| Aider/SWE-bench | 固定切片、官方 harness、完整 artifact | **未产生** |
+| Aider/SWE-bench | 固定切片、官方 harness、完整 artifact | **未达完整门禁**；[首次五题 Pilot](../../benchmarks/results/2026-09-swebench-lite-pilot/README.md) 与[修复后开发回归](../../benchmarks/results/2026-09-swebench-lite-retest/README.md) 均官方通过 3/5、正常结束且通过 2/5；后者含未提交修复，收尾、传输及环境缺口仍在，独立二十题未运行；不能视为当前发布候选的完整成绩 |
 | 安全负例 | 当前候选三平台 100% | **没有当前候选外部矩阵** |
 | 强杀恢复 | 三平台各 100 次、≥95%、高风险孤儿进程 0 | **没有当前候选报告** |
 | 双 session 与重连 | 各 100 次；事件/审批/取消污染 0，游标不重不漏 | **没有发布级矩阵** |

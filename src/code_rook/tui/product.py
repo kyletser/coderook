@@ -309,6 +309,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "tool.action.generic.running": "正在执行 {tool}",
         "tool.action.generic.finished": "已完成 {tool}",
         "event.llm.retry": "正在重试模型响应 {kind} #{attempt}",
+        "event.llm.retry_delay": " · {seconds} 秒后重试，可随时取消",
+        "event.agent.repeat_notice": (
+            "已连续调用相同工具 {count} 次，提醒模型重新分析（不阻止执行）"
+        ),
         "event.agent.stuck": "已停止重复动作 · {count} 次相同结果",
         "event.goal.continue": "Goal 将自动继续下一轮",
         "event.goal.paused": "Goal 已暂停，等待用户确认",
@@ -1084,6 +1088,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "tool.action.generic.running": "Running {tool}",
         "tool.action.generic.finished": "Completed {tool}",
         "event.llm.retry": "Retrying model response {kind} #{attempt}",
+        "event.llm.retry_delay": " · retry in {seconds}s; cancellation remains available",
+        "event.agent.repeat_notice": (
+            "Same tool called {count} times; advisory sent, execution continues"
+        ),
         "event.agent.stuck": "Stopped repeated action · {count} identical results",
         "event.goal.continue": "Goal will continue automatically",
         "event.goal.paused": "Goal paused for user confirmation",
@@ -1989,8 +1997,11 @@ def _clip(value: str, limit: int = 56) -> str:
 class RunResultCard(Static):
     """展示一次运行的结果、证据缺口和后续审查入口。"""
 
+    can_focus = True
+    BINDINGS = [("enter", "toggle_details", "Details"), ("space", "toggle_details", "Details")]
+
     # 把统一结果模型渲染为不依赖宽屏的多行卡片
-    def __init__(self, result: RunResult, *, locale: str = "zh") -> None:
+    def __init__(self, result: RunResult, *, locale: str = "zh", expanded: bool = False) -> None:
         title_key = f"result.title.{result.status}"
         color = {
             "success": "green",
@@ -2077,4 +2088,30 @@ class RunResultCard(Static):
                 f"[red]{escape(tr('result.failure', locale, failure=_clip(result.failure)))}[/red]"
             )
         lines.append(f"[cyan]{escape(tr('result.actions', locale, turn=result.run_id))}[/cyan]")
-        super().__init__("\n".join(lines), classes="product-card result-card")
+        self._details = "\n".join(lines)
+        self._expanded = expanded
+        hint = "details" if locale.startswith("en") else "详情"
+        parts = [escape(tr(title_key, locale)), escape(result.duration)]
+        if result.files:
+            noun = "files" if locale.startswith("en") else "个文件"
+            parts.append(f"{len(result.files)} {noun}")
+        if result.verification_status == "fail":
+            parts.append(escape(tr(
+                "result.verification.fail", locale,
+                passed=result.verification_passed, total=result.verification_total,
+            )))
+        if result.failure:
+            parts.append(escape(_clip(result.failure)))
+        self._summary = f"[{color}]" + " · ".join(parts) + f"[/{color}]  [dim]› {hint}[/dim]"
+        super().__init__(self._details if expanded else self._summary,
+                         classes="product-card result-card" + ("" if expanded else " compact"))
+
+    # 使用 Enter 或空格在单行摘要与完整证据之间切换。
+    def action_toggle_details(self) -> None:
+        self._expanded = not self._expanded
+        self.set_class(not self._expanded, "compact")
+        self.update(self._details if self._expanded else self._summary)
+
+    # 点击结果摘要即可展开，完整回答仍由独立 Markdown 正文显示。
+    def on_click(self) -> None:
+        self.action_toggle_details()

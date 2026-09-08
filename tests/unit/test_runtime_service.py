@@ -16,6 +16,7 @@ from code_rook.core.authority import (
     WorkspaceTrust,
 )
 from code_rook.core.bus.events import (
+    AgentMessageEvent,
     LlmUsageEvent,
     PermissionGrantedEvent,
     PermissionRequestedEvent,
@@ -25,6 +26,7 @@ from code_rook.core.bus.events import (
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
+    UserQuestionAskedEvent,
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.routes import RouteReceipt
@@ -168,6 +170,71 @@ async def test_runtime_projection_accepts_enriched_run_finished(tmp_path: Path) 
     assert projected.payload["changes"] == [
         {"path": "src/app.py", "kind": "modified"}
     ]
+
+
+# 功能：空闲扩展发起的问题作为 thread 事件持久化，不要求伪造运行中的 Turn。
+# 设计：先同步真实 session，再投递 extension 前缀的提问事件并从 SQLite 重读游标记录。
+async def test_idle_extension_question_is_durable_thread_event(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-extension-question",
+        mode="chat",
+        status="active",
+        title="question",
+        created_at="2026-09-01T00:00:00Z",
+        updated_at="2026-09-01T00:00:00Z",
+    )
+    await service.sync_session(session)
+
+    await service.record_bus_event(
+        UserQuestionAskedEvent(
+            question_id="question-extension",
+            run_id=f"extension:{session.id}:abc",
+            session_id=session.id,
+            question="Choose a mode",
+            header="Select",
+            options=["A", "B"],
+            ts="2026-09-01T00:00:01Z",
+        )
+    )
+
+    event = store.list_events(session.id)[-1]
+    assert event.type == "user_question.asked"
+    assert event.turn_id is None
+    assert event.payload["question_id"] == "question-extension"
+
+
+# 功能：空闲扩展的可见自定义消息直接进入 thread 事件，不依赖不存在的 Turn。
+# 设计：发送带 session_id 的 extension 前缀消息并检查运行时游标、角色和正文投影。
+async def test_idle_extension_message_is_durable_thread_event(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    session = Session(
+        id="sess-extension-message",
+        mode="chat",
+        status="active",
+        title="message",
+        created_at="2026-09-01T00:00:00Z",
+        updated_at="2026-09-01T00:00:00Z",
+    )
+    await service.sync_session(session)
+
+    await service.record_bus_event(AgentMessageEvent(
+        run_id=f"extension:{session.id}:abc",
+        session_id=session.id,
+        message_id="extension-message",
+        phase="end",
+        role="custom",
+        custom_type="notification.info",
+        content=[{"type": "text", "text": "ready"}],
+        ledger_seq=1,
+        ts="2026-09-01T00:00:01Z",
+    ))
+
+    event = store.list_events(session.id)[-1]
+    assert event.type == "agent.message"
+    assert event.turn_id is None
+    assert event.payload["custom_type"] == "notification.info"
+    assert event.payload["content"] == [{"type": "text", "text": "ready"}]
 
 
 # 功能：验证模型增强提示与用户可见输入分离，时间线不会泄露内部控制文本

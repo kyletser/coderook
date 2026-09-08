@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import BaseModel
 
-from code_rook.core.authority import AuthoritySnapshot, RuntimeMode
+from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -23,6 +23,39 @@ from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 
 # --- mock provider -----------------------------------------------------------
+
+
+# 功能：验证文件系统提示进入真实模型请求，显式角色覆盖优先且项目上下文仍保留
+# 设计：隔离用户目录并用捕获 Provider 连跑两次，证明文件修改被重载而非仅测试拼接函数
+async def test_system_prompt_files_reach_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    workspace = tmp_path / "repo"
+    resources = workspace / ".coderook"
+    resources.mkdir(parents=True)
+    (resources / "SYSTEM.md").write_text("Custom coding persona", encoding="utf-8")
+    (resources / "APPEND_SYSTEM.md").write_text("Append first", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("Keep public APIs", encoding="utf-8")
+    permissions = PermissionManager()
+    permissions.set_authority_snapshot("", AuthoritySnapshot(workspace_trust=WorkspaceTrust.TRUSTED))
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    runner = AgentRunner(
+        _config(), provider=provider, runs_dir=tmp_path / "runs",
+        workspace_root=workspace, permission_manager=permissions,
+    )
+    outcome = await runner.run_and_capture("explain this project")
+    assert outcome.status == "success"
+    assert provider.system is not None
+    assert provider.system.startswith("Custom coding persona")
+    assert "Append first" in provider.system and "Keep public APIs" in provider.system
+    (resources / "APPEND_SYSTEM.md").write_text("Append second", encoding="utf-8")
+    outcome = await runner.run_and_capture("explain again", system_prompt_override="Explicit role")
+    assert outcome.status == "success"
+    assert provider.system.startswith("Explicit role")
+    assert "Append second" in provider.system
+    assert "Append first" not in provider.system
 
 
 class _EndTurnProvider:
@@ -113,16 +146,13 @@ class _ForcedPlanWriteProvider:
         self.calls += 1
         if self.calls == 1:
             self.first_tool_names = {str(schema["name"]) for schema in tool_schemas}
-            file_schema = next(
-                schema for schema in tool_schemas if schema["name"] == "File"
-            )
+            file_schema = next(schema for schema in tool_schemas if schema["name"] == "File")
             input_schema = file_schema["input_schema"]
             assert isinstance(input_schema, dict)
             variants = input_schema["oneOf"]
             assert isinstance(variants, list)
             self.first_file_actions = {
-                str(variant["properties"]["action"]["enum"][0])
-                for variant in variants
+                str(variant["properties"]["action"]["enum"][0]) for variant in variants
             }
             self.system = system or ""
             return LlmResponse(
@@ -175,10 +205,7 @@ class _ClarificationPlanProvider:
             assert isinstance(input_schema, dict)
             variants = input_schema.get("oneOf", [])
             assert isinstance(variants, list)
-            actions = {
-                str(variant["properties"]["action"]["enum"][0])
-                for variant in variants
-            }
+            actions = {str(variant["properties"]["action"]["enum"][0]) for variant in variants}
         self.file_actions_by_call.append(actions)
         if len(self.schemas_by_call) == 1:
             return LlmResponse(
@@ -219,6 +246,38 @@ def _config(max_steps: int = 5) -> CodeRookConfig:
     return cfg
 
 
+# 功能：普通对话直接进入模型回答，不生成虚假的意图识别卡或理解阶段。
+# 设计：使用无工具的确定性 Provider 收集真实事件，确保只保留最终阶段与原生回答。
+async def test_default_model_led_turn_has_no_synthetic_intent_card(tmp_path: Path) -> None:
+    events: list[BaseModel] = []
+
+    # 收集实际运行时事件，区分任务事实与前端展示噪声
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    runner = AgentRunner(
+        _config(), provider=_EndTurnProvider(), extra_handlers=[collect],
+        workspace_root=tmp_path, runs_dir=tmp_path / "runs",
+    )
+    outcome = await runner.run_and_capture("你是什么模型")
+    types = [str(getattr(event, "type", "")) for event in events]
+    phases = [
+        str(getattr(event, "phase", ""))
+        for event in events
+        if getattr(event, "type", "") == "run.phase_changed"
+    ]
+    assert outcome.status == "success" and outcome.result == "done"
+    assert "task.profiled" not in types
+    assert "strategy.proposed" not in types
+    assert "understanding" not in phases
+    assert phases == ["completed"]
+    assert any(
+        getattr(event, "type", "") == "agent.message"
+        and getattr(event, "phase", "") == "end"
+        for event in events
+    )
+
+
 async def _run(
     goal: str = "test goal",
     *,
@@ -246,6 +305,63 @@ async def _run(
 # --- tests -------------------------------------------------------------------
 
 
+class _ListThenAnswerProvider(_CapturingProvider):
+    # 第一步请求真实目录工具，第二步读取结果并结束
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+        thinking: str | None = None,
+    ) -> LlmResponse:
+        response = await super().chat(
+            messages,
+            tool_schemas,
+            bus,
+            run_id,
+            step=step,
+            system=system,
+            thinking=thinking,
+        )
+        self.response = LlmResponse(stop_reason="end_turn", text="listed")
+        return response
+
+
+# 功能：验证身份和目录混合请求可以经真实工具管线读取文件而非只检查 schema
+# 设计：在临时工作区放入标记文件，断言工具结果回到下一轮模型历史且没有权限误拒
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "你是什么模型，我的桌面上有什么。",
+        "你好，列出当前文件夹",
+        "What model are you? Show the files here.",
+        "继续看看那个目录",
+    ],
+)
+async def test_mixed_request_executes_directory_tool(tmp_path: Path, goal: str) -> None:
+    (tmp_path / "visible-marker.txt").write_text("fixture", encoding="utf-8")
+    provider = _ListThenAnswerProvider(
+        LlmResponse(
+            stop_reason="tool_use",
+            tool_calls=[
+                ToolCallBlock(
+                    id="list-fixture",
+                    name="File",
+                    input={"action": "list", "path": "."},
+                )
+            ],
+        )
+    )
+    events = await _run(goal, provider=provider, tmp_path=tmp_path)
+    assert any(event.type == "tool.call_finished" for event in events)
+    assert not any(event.type == "tool.call_failed" for event in events)
+    assert "visible-marker.txt" in json.dumps(provider.messages)
+
+
 # 功能：验证 run 开始时发布携带正确 goal 的 run.started 事件
 # 设计：用 extra_handlers 收集事件，而非从 events.jsonl 读取，避免文件 I/O 耦合；聚焦 runner 层的事件发布职责
 async def test_run_started_event_published(tmp_path: Path) -> None:
@@ -256,9 +372,13 @@ async def test_run_started_event_published(tmp_path: Path) -> None:
     assert started.goal == "my goal"  # type: ignore[attr-defined]
 
 
-# 功能：验证 run 在首次模型调用前注入可解释仓库地图并发布对应上下文事件
-# 设计：在隔离工作区创建命中任务词的符号，用捕获 provider 同时核对 system prompt 和事件收据字段
-async def test_runner_injects_repository_context_and_event(tmp_path: Path) -> None:
+# 功能：默认运行不扫描和自动注入仓库源码，文件内容由模型按需读取
+# 设计：构造命中任务关键词的源码并截获真实请求，排除旧自动地图仍悄悄注入的情况
+async def test_runner_does_not_inject_repository_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan = Mock(side_effect=AssertionError("default run must not scan repository"))
+    monkeypatch.setattr("code_rook.core.runner.RepositoryIndex.select_context", scan)
     (tmp_path / "service.py").write_text(
         "class PaymentService:\n    pass\n",
         encoding="utf-8",
@@ -270,31 +390,43 @@ async def test_runner_injects_repository_context_and_event(tmp_path: Path) -> No
         tmp_path=tmp_path,
     )
 
-    repository_event = next(
-        event for event in events if event.type == "context.repository"  # type: ignore[attr-defined]
-    )
-    assert "## Repository Map" in (provider.system or "")
-    assert "service.py" in (provider.system or "")
-    assert repository_event.paths[0] == "service.py"  # type: ignore[attr-defined]
-    assert repository_event.used_chars <= repository_event.budget_chars  # type: ignore[attr-defined]
+    assert not any(event.type == "context.repository" for event in events)
+    assert "## Repository Map" not in (provider.system or "")
+    assert "service.py" not in (provider.system or "")
+    scan.assert_not_called()
 
 
-# 功能：验证简单产品问答跳过仓库检索、历史上下文和工具目录，避免一次回答消耗完整 Coding Agent 提示
-# 设计：使用捕获 Provider 检查请求体和事件轨迹，确保仍走真实 AgentLoop 但只保留轻量身份提示
-async def test_runner_uses_lightweight_context_for_conversation_answer(
+# 功能：验证问答与混合请求均保留工具和真实环境，不再由关键词关闭能力
+# 设计：捕获真实 Runner 请求，覆盖问候、身份加文件查询和缺少关键词的省略表达
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "你能干什么？",
+        "你是什么模型，我的桌面上有什么。",
+        "你好，看看当前文件夹",
+        "What model are you? List my Downloads.",
+        "继续看看那个",
+    ],
+)
+async def test_runner_preserves_tools_for_model_led_requests(
     tmp_path: Path,
+    goal: str,
 ) -> None:
-    (tmp_path / "large_context.py").write_text("class ProductCapability:\n    pass\n", encoding="utf-8")
+    (tmp_path / "large_context.py").write_text(
+        "class ProductCapability:\n    pass\n", encoding="utf-8"
+    )
     provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="可以帮助编程。"))
 
-    events = await _run(goal="你能干什么？", provider=provider, tmp_path=tmp_path)
+    events = await _run(goal=goal, provider=provider, tmp_path=tmp_path)
 
-    assert not any(event.type == "context.repository" for event in events)  # type: ignore[attr-defined]
-    assert provider.tool_schemas == []
-    assert provider.messages == [{"role": "user", "content": "你能干什么？"}]
-    assert "Answer simple questions" in (provider.system or "")
-    assert "Repository Map" not in (provider.system or "")
-    assert len(provider.system or "") < 4_000
+    assert not any(event.type == "context.repository" for event in events)
+    names = {schema["name"] for schema in provider.tool_schemas}
+    assert names == {"read", "bash", "edit", "write"}
+    assert provider.messages == [{"role": "user", "content": goal}]
+    assert "## Task Strategy" not in (provider.system or "")
+    assert "agent.validate_plan" not in (provider.system or "")
+    assert "unless the user asks for code work" not in (provider.system or "")
+    assert "## Runtime Environment" in (provider.system or "")
 
 
 # 功能：验证成功完成时发布 status=success 的 run.finished 事件
@@ -302,7 +434,8 @@ async def test_runner_uses_lightweight_context_for_conversation_answer(
 async def test_run_finished_event_published_on_success(tmp_path: Path) -> None:
     events = await _run(tmp_path=tmp_path)
     finished = next(
-        (e for e in events if e.type == "run.finished"), None  # type: ignore[attr-defined]
+        (e for e in events if e.type == "run.finished"),
+        None,  # type: ignore[attr-defined]
     )
     assert finished is not None
     assert finished.status == "success"  # type: ignore[attr-defined]
@@ -333,9 +466,7 @@ async def test_events_jsonl_created_with_started_and_finished(tmp_path: Path) ->
     jsonl_files = list(tmp_path.rglob("events.jsonl"))
     assert len(jsonl_files) == 1
     lines = [
-        json.loads(line)
-        for line in jsonl_files[0].read_text(encoding="utf-8").splitlines()
-        if line
+        json.loads(line) for line in jsonl_files[0].read_text(encoding="utf-8").splitlines() if line
     ]
     event_types = [e["type"] for e in lines]
     assert event_types[0] == "run.started"
@@ -536,27 +667,20 @@ async def test_general_intent_correction_contract_is_injected(
         "user",
     ]
     assert provider.system is not None
-    assert "objective, target, scope, requested operation" in provider.system
-    assert "clarifications and corrections as higher-priority evidence" in provider.system
-    assert "discard incompatible assumptions and reselect tools" in provider.system
-    assert "not from surface word overlap" in provider.system
-    assert "failed, denied, or unavailable check is unknown" in provider.system
-    assert "avoid redundant probes" in provider.system
-    assert "Always use concise English for internal analysis" in provider.system
+    assert "Available tools:" in provider.system
+    assert "Be concise in your responses" in provider.system
+    assert "Always use concise English for internal analysis" not in provider.system
     assert "## Response Language" in provider.system
     assert "## Response Language\nFinal answer only: Simplified Chinese." in provider.system
-    assert "Do not emit progress narration before tool calls" in provider.system
-    assert "call tasks with the create and update actions" in provider.system
-    assert "Never use emoji" in provider.system
+    assert "Do not emit progress narration before tool calls" not in provider.system
+    assert "## Task Strategy" not in provider.system
+    assert "Never use emoji" not in provider.system
     assert "## Runtime Environment" in provider.system
     assert "## Available Extensions" in provider.system
     schemas = {str(schema["name"]): schema for schema in provider.tool_schemas}
-    assert "skill" in schemas
-    if "Bash" in schemas:
-        assert "shell command in the workspace" in str(schemas["Bash"]["description"])
-    else:
-        assert "update_plan" in schemas
-    assert "scope is only CodeRook task records" in str(schemas["tasks"]["description"])
+    assert set(schemas) == {"read", "bash", "edit", "write"}
+    assert "Git Bash on Windows" in str(schemas["bash"]["description"])
+    assert "edits" in str(schemas["edit"]["input_schema"])
 
 
 # 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md
@@ -625,9 +749,9 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
     ]
     raw_rows = [
         json.loads(line)
-        for line in (store.session_dir("sess-1") / "thread.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in (store.session_dir("sess-1") / "thread.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     block_ids = [
         row["payload"]["block_id"]
@@ -662,8 +786,8 @@ async def test_cancelled_runner_fills_skipped_tool_results(tmp_path: Path) -> No
                 tool_calls=[
                     ToolCallBlock(
                         id="bash-1",
-                            name="Bash",
-                            input={"action": "run", "command": command, "timeout": 120},
+                        name="Bash",
+                        input={"action": "run", "command": command, "timeout": 120},
                     )
                 ],
             )
@@ -823,8 +947,10 @@ async def test_low_confidence_task_unlocks_clarification_then_plan_gate(
 
     bus.subscribe(answer_question)
     bus.subscribe(collect)
+    config = _config()
+    config.agent.task_router = "hybrid"
     runner = AgentRunner(
-        _config(),
+        config,
         provider=provider,
         bus=bus,
         interaction_manager=interaction,
@@ -966,9 +1092,7 @@ async def test_turn_route_selection_freezes_rule_based_plan_binding(
         credential="",
     )
     registry = Mock()
-    registry.resolve.side_effect = lambda route_id=None: (
-        plan if route_id == "plan" else active
-    )
+    registry.resolve.side_effect = lambda route_id=None: plan if route_id == "plan" else active
     config = _config()
     config.llm.router = "rule_based"
     config.llm.router_plan_route = "plan"

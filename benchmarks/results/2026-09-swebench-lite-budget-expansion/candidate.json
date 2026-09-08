@@ -1,0 +1,29 @@
+{
+  "purpose": "Development subset budget expansion, not full SWE-bench Lite score",
+  "base_commit": "7cda2be6bc07b45845f9fd9bf196db2b1593e25f",
+  "working_tree_clean": false,
+  "source_archive_sha256": "97bd65a85e16089f9e1ff7fb5241e08c987d3514bd24ea057fe5f680ad01c2f3",
+  "selected_instances": [
+    "django__django-15320",
+    "psf__requests-3362",
+    "pallets__flask-5063"
+  ],
+  "route": {
+    "route_id": "resume-eval-qwen",
+    "model": "qwen3.8-flash",
+    "wire_format": "openai_chat",
+    "temperature": 0.0,
+    "route_digest": "f749e707219b23c01aec327951ad3120f16af236652438ac074f25b8aac327d9",
+    "doctor_status": "verified_passed",
+    "pricing_known": false,
+    "pricing_source": "unavailable",
+    "pricing_effective_date": ""
+  },
+  "max_steps": 80,
+  "wall_time": 1800,
+  "temperature": 0,
+  "attempts_per_task": 1,
+  "dependency_image": "sha256:6dfc7a9c913f1615ca4d93e943a4e6ceb8f74d28b88de08307eee1875cd602de",
+  "comparison_run": "swebench-lite-retry-20260907",
+  "source_archive_location": "../swebench-lite-retry-20260907/candidate-source.tar"
+}

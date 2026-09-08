@@ -68,6 +68,8 @@ Explicit product entries are:
 
 ```text
 coderook          # TUI (default)
+coderook "fix the failing tests"  # TUI and submit the first task
+coderook -p "explain this repository"  # run once and print the answer
 coderook tui      # TUI (explicit)
 coderook web      # local browser workspace
 coderook run ...  # script/headless mode
@@ -207,12 +209,16 @@ the durable thread stream with a per-session sequence cursor, while global daemo
 separate channel. Details are in the
 [functional architecture](docs/reference/FUNCTIONAL_ARCHITECTURE.md).
 
-Before each Turn, CodeRook freezes a deterministic TaskProfile that controls planning,
-model-visible tools, long-context policy, and whether delegation is permitted. Low-confidence work
-must ask one focused clarification; ambiguous mutation then remains read-only until a Plan Ticket is
-recorded and approved through the durable Plan Review flow. Adaptive compaction appends a shadow
-projection instead of rewriting the Ledger and refuses to commit if
-Ledger-backed goals, constraints, pending approvals, or failures lose their source-event references.
+The default Act runtime is a Python source port of Pi's agent loop: the main model chooses
+its next action from `read`, `bash`, `edit`, `write`, and configured MCP tools. It does not make a
+separate intent-classification request or force planning based on keyword confidence. Tool results
+and steering drive the inner loop; queued follow-ups run after the current answer. Explicit Plan
+mode and permission controls remain available. Default session compaction keeps recent complete
+tool interactions and appends a summary projection without rewriting the Ledger. Sessions preserve
+images for later turns; non-vision routes receive omission placeholders instead.
+See the [Python runtime reference](docs/reference/PYTHON_AGENT_RUNTIME.md) for implementation
+boundaries and remaining migration work. Older routing and compaction strategies remain available
+for explicit experiments, not as the default coding experience.
 Multi-agent plans are bounded to three Workers, require a Delegation Ticket, reject dependency
 cycles and overlapping Write Claims, and keep writes in independent worktrees until digest-bound review.
 These mechanisms have reproducible experiment runners, but the repository does not claim quality

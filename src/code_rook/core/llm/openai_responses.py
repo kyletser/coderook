@@ -14,6 +14,7 @@ from code_rook.core.bus.events import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.errors import ProviderRequestError, raise_for_stream_error
 from code_rook.core.llm.types import (
     LlmResponse,
     ToolCallBlock,
@@ -21,7 +22,7 @@ from code_rook.core.llm.types import (
     completion_status_from_reason,
     estimate_request_input_tokens,
 )
-from code_rook.core.llm.wire import merge_consecutive_user_messages
+from code_rook.core.llm.wire import merge_consecutive_user_messages, split_tool_result
 
 _DEFAULT_CONTEXT_WINDOW = 1_050_000
 
@@ -76,11 +77,22 @@ def _to_responses_input(messages: list[dict[str, object]]) -> list[dict[str, obj
                     }
                 )
             elif block_type == "tool_result":
+                result_text, result_images = split_tool_result(block.get("content", ""))
+                for image in result_images:
+                    source = image.get("source", {})
+                    if isinstance(source, dict) and source.get("type") == "base64":
+                        media_type = str(source.get("media_type") or "")
+                        data = str(source.get("data") or "")
+                        if media_type and data:
+                            image_parts.append({
+                                "type": "input_image",
+                                "image_url": f"data:{media_type};base64,{data}",
+                            })
                 items.append(
                     {
                         "type": "function_call_output",
                         "call_id": str(block.get("tool_use_id", "")),
-                        "output": str(block.get("content", "")),
+                        "output": result_text,
                     }
                 )
         if text_parts or image_parts:
@@ -188,6 +200,7 @@ class OpenAIResponsesProvider:
         context_window: int | None = None,
         thinking: str = "off",
         temperature: float | None = None,
+        headers: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._model = model
@@ -198,9 +211,16 @@ class OpenAIResponsesProvider:
         self._context_window = context_window or _DEFAULT_CONTEXT_WINDOW
         self._thinking = thinking
         self._temperature = temperature
+        self._headers = dict(headers or {})
         self._client = client
 
     # 调用 Responses API 并把正文、reasoning summary、工具调用和 usage 投影为统一事件
+    @property
+    # 暴露与实际用量统计一致的模型窗口。
+    def context_window(self) -> int:
+        return self._context_window
+
+    # 请求 Responses 接口并返回统一完成状态。
     async def chat(
         self,
         messages: list[dict[str, object]],
@@ -244,11 +264,13 @@ class OpenAIResponsesProvider:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        headers.update(self._headers)
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 data, streamed = await self._post(client, payload, headers, bus, run_id)
         else:
             data, streamed = await self._post(self._client, payload, headers, bus, run_id)
+        raise_for_stream_error("OpenAI Responses", data)
         output = data.get("output")
         status_value = data.get("status")
         if isinstance(status_value, str) and status_value.strip():
@@ -340,6 +362,7 @@ class OpenAIResponsesProvider:
         run_id: str,
     ) -> tuple[dict[str, Any], bool]:
         data: Any = None
+        failure: RuntimeError | None = None
         try:
             async with client.stream(
                 "POST", self._base_url, json=payload, headers=headers
@@ -350,12 +373,12 @@ class OpenAIResponsesProvider:
                     return await self._consume_sse(response, bus, run_id)
                 raw = await response.aread()
                 data = json.loads(raw)
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(
-                f"OpenAI Responses request failed (HTTP {exc.response.status_code})"
-            ) from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise RuntimeError("OpenAI Responses request failed") from exc
+        except httpx.HTTPError as exc:
+            failure = ProviderRequestError("OpenAI Responses", exc)
+        except ValueError:
+            failure = RuntimeError("OpenAI Responses returned invalid JSON")
+        if failure is not None:
+            raise failure
         if not isinstance(data, dict):
             raise RuntimeError("OpenAI Responses returned an invalid response object")
         return data, False
@@ -384,6 +407,8 @@ class OpenAIResponsesProvider:
                 continue
             if not isinstance(event, dict):
                 continue
+            raise_for_stream_error("OpenAI Responses", event)
+            bus.record_stream_fragment({"wire_format": "openai_responses", "event": event})
             event_type = event.get("type")
             if event_type == "response.output_text.delta":
                 delta = event.get("delta")

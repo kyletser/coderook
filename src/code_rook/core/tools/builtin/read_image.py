@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import base64
+import asyncio
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from code_rook.core.agent_runtime.images import process_image
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolRetryPolicy, ToolSideEffect
 from code_rook.core.workspace import WorkspaceBoundary
 
-_MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2 MB
 _MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
 }
 
 
@@ -30,9 +33,9 @@ class ReadImageTool(BaseTool):
     can_parallel = True
     name = "read_image"
     description = (
-        "Read an image file (png/jpg/jpeg/webp/gif) from the workspace and attach it "
+        "Read an image file (png/jpg/jpeg/webp/gif/bmp/tiff) from the workspace and attach it "
         "to the conversation for visual analysis. Use for screenshots, diagrams, and "
-        "UI references. Max 2 MB."
+        "UI references. Large images are automatically resized for the model."
     )
     input_schema: dict[str, object] = {
         "type": "object",
@@ -46,8 +49,11 @@ class ReadImageTool(BaseTool):
     }
 
     # 绑定工作区边界，图片必须位于工作区内
-    def __init__(self, boundary: WorkspaceBoundary | None = None) -> None:
+    def __init__(
+        self, boundary: WorkspaceBoundary | None = None, *, auto_resize: bool = True,
+    ) -> None:
         self._boundary = boundary or WorkspaceBoundary(Path.cwd())
+        self._auto_resize = auto_resize
 
     # 读取工作区内图片并编码为 base64 image block，随结果一起返回
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -58,7 +64,7 @@ class ReadImageTool(BaseTool):
             return ToolResult(
                 content=(
                     f"unsupported image type {path.suffix!r}; "
-                    "allowed: png, jpg, jpeg, webp, gif"
+                    "allowed: png, jpg, jpeg, webp, gif, bmp, tif, tiff"
                 ),
                 is_error=True,
                 error_type="schema_error",
@@ -83,16 +89,19 @@ class ReadImageTool(BaseTool):
                 is_error=True,
                 error_type="runtime_error",
             )
-        if len(raw) > _MAX_IMAGE_BYTES:
+        try:
+            processed = await asyncio.to_thread(
+                process_image, raw, media_type, auto_resize=self._auto_resize,
+            )
+        except (OSError, ValueError):
+            processed = None
+        if processed is None:
             return ToolResult(
-                content=(
-                    f"image too large: {len(raw)} bytes "
-                    f"(max {_MAX_IMAGE_BYTES}); resize or crop it first"
-                ),
+                content=f"image could not be decoded or resized: {path_str}",
                 is_error=True,
                 error_type="runtime_error",
             )
-        encoded = base64.b64encode(raw).decode("ascii")
+        encoded, media_type, dimension_note = processed
         image_block: dict[str, object] = {
             "type": "image",
             "source": {
@@ -105,8 +114,8 @@ class ReadImageTool(BaseTool):
         return ToolResult(
             content=(
                 f"[image attached: {rel} · {media_type} · {len(raw)} bytes]\n"
-                "The image is delivered to you with this result and will be visible "
-                "only for the next model call; describe what you observe."
+                "The image is included in this tool result; describe what you observe."
+                + ("\n" + dimension_note if dimension_note else "")
             ),
             images=[image_block],
         )

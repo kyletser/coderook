@@ -18,6 +18,7 @@ from code_rook.core.bus.events import (
 )
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.budget import clamp_output_token_limit
+from code_rook.core.llm.errors import ProviderRequestError, raise_for_stream_error
 from code_rook.core.llm.types import (
     LlmResponse,
     ToolCallBlock,
@@ -25,7 +26,7 @@ from code_rook.core.llm.types import (
     completion_status_from_reason,
     estimate_request_input_tokens,
 )
-from code_rook.core.llm.wire import merge_consecutive_user_messages
+from code_rook.core.llm.wire import merge_consecutive_user_messages, split_tool_result
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class OpenAICompatibleProvider:
         context_window: int | None = None,
         thinking: str = "off",
         temperature: float | None = None,
+        headers: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url:
@@ -96,8 +98,15 @@ class OpenAICompatibleProvider:
         self._context_window = context_window
         self._thinking = thinking
         self._temperature = temperature
+        self._headers = dict(headers or {})
         self._client = client
 
+    @property
+    # 返回当前兼容模型窗口，避免重开会话时等待一次溢出错误才压缩。
+    def context_window(self) -> int:
+        return self._context_window or _context_window(self._model)
+
+    # 流式请求兼容接口并归一化正文、工具调用和用量。
     async def chat(
         self,
         messages: list[dict[str, object]],
@@ -160,6 +169,7 @@ class OpenAICompatibleProvider:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        headers.update(self._headers)
 
         if self._client is None:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -253,6 +263,7 @@ class OpenAICompatibleProvider:
     ) -> _StreamResult:
         data: dict[str, Any] | None = None
         failure: str | None = None
+        request_error: ProviderRequestError | None = None
         try:
             async with client.stream(
                 "POST", self._base_url, json=payload, headers=headers
@@ -264,26 +275,25 @@ class OpenAICompatibleProvider:
                 raw = await response.aread()
                 parsed = json.loads(raw)
                 if isinstance(parsed, dict):
+                    raise_for_stream_error("OpenAI Chat", parsed)
+                if isinstance(parsed, dict):
                     data = dict(parsed)
                 else:
                     failure = "OpenAI-compatible provider returned an invalid response"
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
+            error = ProviderRequestError("OpenAI-compatible", exc)
             log.error(
-                "openai-compatible request failed run_id=%s step=%d status=%s",
+                "openai-compatible request failed run_id=%s step=%d kind=%s status=%s",
                 run_id,
                 step,
-                exc.response.status_code,
+                error.error_kind,
+                error.status_code,
             )
-            failure = f"OpenAI-compatible request failed (HTTP {exc.response.status_code})"
-        except httpx.HTTPError:
-            log.error(
-                "openai-compatible transport failed run_id=%s step=%d",
-                run_id,
-                step,
-            )
-            failure = "OpenAI-compatible request failed"
+            request_error = error
         except ValueError:
             failure = "OpenAI-compatible provider returned invalid JSON"
+        if request_error is not None:
+            raise request_error
         if failure is not None:
             raise RuntimeError(failure)
         assert data is not None
@@ -317,6 +327,7 @@ class OpenAICompatibleProvider:
                 continue
             if not isinstance(chunk, dict):
                 continue
+            raise_for_stream_error("OpenAI Chat", chunk)
             chunk_usage = chunk.get("usage")
             if isinstance(chunk_usage, dict) and chunk_usage:
                 usage = chunk_usage
@@ -333,6 +344,7 @@ class OpenAICompatibleProvider:
             delta = first.get("delta")
             if not isinstance(delta, dict):
                 continue
+            bus.record_stream_fragment({"wire_format": "openai_chat", "delta": delta})
             content = delta.get("content")
             if isinstance(content, str) and content:
                 text_parts.append(content)
@@ -430,6 +442,7 @@ def _compatible_tool_schema(raw_schema: object) -> object:
     merged_properties: dict[str, object] = {}
     required_sets: list[set[str]] = []
     requirements: list[str] = []
+    default_action: str | None = None
     for variant in variants:
         if not isinstance(variant, dict):
             return schema
@@ -453,6 +466,8 @@ def _compatible_tool_schema(raw_schema: object) -> object:
         ):
             return schema
         required = set(raw_required)
+        if "action" not in required and action_schema.get("default") == action_name:
+            default_action = action_name
         required_sets.append(required)
         action_required = sorted(required - {"action"})
         requirements.append(
@@ -464,11 +479,18 @@ def _compatible_tool_schema(raw_schema: object) -> object:
             merged_properties.setdefault(str(name), deepcopy(property_schema))
 
     common_required = set.intersection(*required_sets) if required_sets else {"action"}
-    merged_properties["action"] = {
+    action_property: dict[str, object] = {
         "type": "string",
         "enum": action_names,
         "description": "Required fields by action: " + "; ".join(requirements) + ".",
     }
+    if default_action is not None:
+        action_property["default"] = default_action
+        action_property["description"] = (
+            str(action_property["description"])
+            + f" Omit action only to select {default_action}."
+        )
+    merged_properties["action"] = action_property
     schema.pop("oneOf", None)
     schema["type"] = "object"
     schema["properties"] = {
@@ -549,11 +571,16 @@ def _to_openai_messages(
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_result":
+                    result_text, result_images = split_tool_result(block.get("content", ""))
+                    for image in result_images:
+                        uri = _image_block_to_data_uri(image)
+                        if uri is not None:
+                            image_parts.append({"type": "image_url", "image_url": {"url": uri}})
                     converted.append(
                         {
                             "role": "tool",
                             "tool_call_id": str(block.get("tool_use_id", "")),
-                            "content": str(block.get("content", "")),
+                            "content": result_text,
                         }
                     )
                 elif block.get("type") == "text":

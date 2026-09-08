@@ -8,6 +8,28 @@ from code_rook.core.skills.loader import SkillError, SkillLoader, SkillTrustErro
 from code_rook.core.skills.models import Skill, SkillManifest
 
 
+# 功能：同目录的重复名称与显式路径采用第一份，展示和执行解析保持一致
+# 设计：文件名与 manifest 名称不同以覆盖递归发现后的碰撞，而非仅覆盖目录优先级
+def test_skill_first_discovered_wins_consistently(tmp_path: Path) -> None:
+    additional = tmp_path / "extra"
+    additional.mkdir()
+    for filename, description in (("a.md", "first"), ("z.md", "last")):
+        (additional / filename).write_text(
+            f"---\nname: review\ndescription: {description}\n---\n{description}",
+            encoding="utf-8",
+        )
+    loader = SkillLoader(
+        tmp_path, user_skills_dir=tmp_path / "user", additional_paths=(additional,),
+    )
+    resolved = loader.resolve("review")
+    shown = loader.show("review")
+    assert resolved is not None and shown is not None
+    assert resolved.path == shown.path == str(additional / "a.md")
+    executed = next(skill for skill in loader.list_for_execution(workspace_trusted=True)
+                    if skill.name == "review")
+    assert executed.path == resolved.path
+
+
 # 功能：内建 review skill 应能被 SkillLoader 查找到
 # 设计：直接调用 resolve("review")，不依赖文件系统之外的任何状态
 def test_builtin_skill_found() -> None:
@@ -238,9 +260,9 @@ def test_execution_catalog_does_not_leak_untrusted_project_skills(
     assert "secret-profile" not in by_name
 
 
-# 功能：可信 workspace 仍只接受严格 Skill manifest，未知字段不能进入执行目录
-# 设计：写入带注入描述和未知字段的 frontmatter，分别检查直接解析报错与目录静默隔离
-def test_execution_catalog_rejects_unknown_skill_manifest_fields(
+# 功能：兼容额外 Skill 元数据，但不把未知字段转换为执行能力。
+# 设计：保留同一文件中的扩展字段，验证 Skill 可用而字段未进入受控 manifest。
+def test_execution_catalog_ignores_unknown_skill_metadata(
     tmp_path: Path,
 ) -> None:
     skills = tmp_path / ".coderook" / "skills"
@@ -251,14 +273,11 @@ def test_execution_catalog_rejects_unknown_skill_manifest_fields(
     )
     loader = SkillLoader(tmp_path)
 
-    with pytest.raises(SkillError, match="unknown skill manifest field"):
-        loader.resolve(
-            "invalid",
-            require_trusted=True,
-            workspace_trusted=True,
-        )
-
-    assert "invalid" not in {
+    skill = loader.resolve("invalid", require_trusted=True, workspace_trusted=True)
+    assert skill is not None
+    assert "prompt_injection" not in skill.manifest.model_dump()
+    assert skill.system_prompt_template == "body"
+    assert "invalid" in {
         skill.name for skill in loader.list_for_execution(workspace_trusted=True)
     }
 

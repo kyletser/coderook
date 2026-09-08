@@ -65,8 +65,9 @@ Labs 关闭时 Core 构造空 HookManager，不读取用户/项目 Hook 配置�
 - `events.py`：run/step、LLM、工具、审批、上下文、计划、subagent 和后台状态事件。
 - `task.profiled` 在模型调用前持久化 TaskProfile；画像包含意图、范围、风险、执行策略、上下文策略、
   deliverable、success criteria、置信度和用户可见摘要。默认 `rules_only` 不增加分类调用；显式实验启用
-  hybrid 时，风险和范围在合并时仍只能提高。低置信度 Turn 初始只暴露结构化提问；回答入账后用原请求
-  和答案重建画像，但保留 `plan_first` 并关闭委派，防止澄清直接越过写入门禁。
+  hybrid 时，风险和范围在合并时仍只能提高。默认普通 Act 使用 `source=model_led`，保留完整历史、
+  运行环境及非委派工具目录，规则只作辅助提示，不强制澄清、规划或禁用工具。显式实验 hybrid
+  保留旧的低置信度提问与计划链路，不作为默认产品行为。
 - `envelope.py`：请求、成功、错误、事件推送和认证错误码。
 
 `scripts/gen_protocol_doc.py` 从模型生成 `WIRE_PROTOCOL.md`。手写架构文档不复制字段表。
@@ -122,7 +123,7 @@ referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API bin
 接收 turn
   → 组装系统提示、会话、仓库上下文和 transient 输入
   → 解析活动 provider route
-  → Plan-Act-Observe 循环
+  → Python 原生双层循环（工具与 steer 内循环，follow-up 外循环）
   → 工具验证 / Hook / 权限 / 执行 / 输出策略
   → 事件、transcript、runtime projection 和 receipt
   → 完成、失败、取消或等待交互
@@ -131,9 +132,16 @@ referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API bin
 循环支持流式模型输出、工具调用、只读工具并行、步数续段、问题/steer、取消、限流
 退避和上下文溢出恢复。三个 wire format 统一使用
 `completed / tool_use / length / incomplete / content_filtered / failed / cancelled / transport_error`
-终止语义：截断、Responses incomplete 和 SSE 提前 EOF 不会标记成功；长度截断最多自动续写一次，
-被截断的工具参数不会以部分 JSON 执行。图片通过 ArtifactStore 以一次性 multimodal 输入交付；永久
-transcript 不保存原始 base64。
+终止语义：截断、Responses incomplete 和 SSE 提前 EOF 不会标记成功。纯文本长度截断保留已有正文并
+报告 incomplete，不伪造用户消息来续写；被截断的工具参数不执行，返回错误供下一步重新提交。
+用户及工具图片随配对消息持久化在 transcript 中，包含 base64，并保留 Artifact 引用；后续请求与
+恢复会话可继续使用图片。非视觉模型收到省略提示，原始历史不被改写，因此需考虑本地存储与输入成本。
+
+默认普通 Act 未指定工具 allowlist 时，模型目录仅包含 `read`、`bash`、`edit`、`write` 和配置的 MCP
+工具；旧工具族保留给显式模式、控制面和兼容调用。`AgentLoop.run()` 绑定
+`agent_runtime.driver` 与 `agent_runtime.loop`，旧 `_run_impl`、`_run_act_phase` 已移除。
+原生消息快照直接驱动 TUI/Web 正文与思考块，成功回答后 TUI 不再附加重复的完成卡。
+完整移植边界见 [Python Agent Runtime](PYTHON_AGENT_RUNTIME.md)。
 
 每次 Provider 调用前，Loop 会把实际消息、分层 System Prompt、完整 Tool Schema、route/model/wire
 format、冻结执行契约摘要、图片引用和能力预算写成不可变 `RequestSnapshot`。`llm.request_prepared`
@@ -170,9 +178,16 @@ overlay。旧 `LlmConfig` 迁移在对应环境变量已有值时保留 `env:` �
 3 次小输出探针。只有全部必需分项通过，才持久化与 route/model 摘要绑定且不含响应正文的收据。
 `configure`、route 新增/编辑与活动 route 切换都必须通过 Doctor；公开 CLI 不提供跳过探针的保存
 入口。Router 支持 static、rule-based 和 cost-budget 策略；价格未知时成本保持 `unknown`，不会按零
-成本记录。每个 Turn 在持久化开始前一次性选择并冻结完整 Route Binding；provider、模型、工具、
-图片、并行工具和 thinking 能力在运行中不随配置变化，新的 route 配置只影响下一 Turn。子 Agent
-默认使用创建它的冻结 provider，显式 profile route 仍需独立解析并受权限 ceiling 约束。
+成本记录。模型选择属于 Session：新会话快照当前默认 route/model，TUI 或 Web 的选择同时持久绑定
+当前会话，Fork 继承来源选择，其他会话不会随全局 Catalog 漂移。每个 Turn 在持久化开始前从该会话
+一次性解析并冻结完整 Route Binding；provider、模型、工具、图片、并行工具和 thinking 能力在运行中
+不再变化。子 Agent 默认使用创建它的冻结 provider，显式 profile route 仍需独立解析并受权限 ceiling
+约束。
+
+用户显式加载的 Python 扩展还可注册会话级 Provider：常用的 Anthropic Messages、OpenAI Chat 与
+OpenAI Responses 代理配置被转换为内存 Route，不写入共享 Catalog；字面量或环境变量凭据不进入
+Session Ledger。扩展和 Web 都可选择这些模型。`before_provider_request` 的变换发生在 Request
+Snapshot 之前，因此重试复用同一权威请求；`after_provider_response` 观察统一响应，不改变历史。
 
 仓库 `.env` 不参与自动配置。显式 `--env-file` 以禁用插值的方式解析成只读 overlay，用户进程同名值
 优先；overlay 不修改 `os.environ`，也不通过 IPC 发送凭据。RouteRegistry、legacy provider、CLI/TUI
@@ -199,6 +214,36 @@ readiness/Doctor/Provider 命令与 WebSearch 都使用同一 CredentialStore �
 - WebFetch、WebSearch 和本地图片读取；
 - Python/TypeScript 编辑后诊断；
 - checkpoint、rewind、task、goal 和交互控制工具。
+
+`Bash` 的缺省 action 为 `run`，模型可直接传 `{"command":"..."}`；后台 `wait/interact/cancel`
+仍需显式 action。缺省动作由 `ToolSpec.default_action` 声明，目录、Provider Schema 与权限解析
+使用同一声明；不会跳过 `Bash.run` 的权限检查或扩大 Plan/工具白名单。其他 family 未声明缺省动作时
+仍要求 action。
+
+`File.read`（兼容 backend `read_file`）支持一基闭区间 `start_line/end_line`；只提供起始行时最多
+返回 200 行，元数据包含 `next_line`、`total_lines` 和全文件 `content_hash`，便于继续读取和精确编辑。
+不传行范围时保留原整文件读取语义，单次内容仍受 512KB 限制和后续 Artifact 输出策略约束。
+
+Agent Loop 的重复工具提醒只比较同一个 Loop 的工具名及递归排序后的参数，不比较调用 ID 或结果。
+默认在连续第 3、5、8 次同参调用后追加来源为 `repeat-tool-reminder` 的模型可见提示；
+整批 Tool Result 完整配对后才追加，提醒同时写入 Ledger 并发布 `agent.repeat_notice`。
+它不终止任务、不强制编辑或替模型判定完成；新用户 steer 重置计数，不同 Loop 不共享计数。
+不再注入按 8 步、180 秒或最后 3 步触发的定时催促。原有硬步数、权限和预算边界保持不变。
+内部 guard 支持 include/exclude 通配符、阈值和参数预览长度；排除项不改变观察链。
+
+Anthropic、OpenAI Chat/Responses 的重试统一由 Agent Loop 的冻结 `RetryPolicy` 管理，
+Anthropic 适配器和 SDK 的内置重试均关闭。网络、超时、HTTP 408/429/5xx 和空响应在同一步
+共享最多 5 次重试（最多 6 次请求），默认退避从 500ms 指数增长至 10s，带 ±10% 抖动。
+有效 Retry-After 优先；超过正常策略等待上限则返回失败，不提前重试。401/403、非法请求、
+无有效终止标记的干净 SSE EOF 不自动重试；用户取消立即终止等待，不重新执行已成功的工具。
+
+每次尝试从原 RequestSnapshot 深拷贝请求，记录 `llm.attempt_started/finished`；
+失败部分正文、推理及工具参数只进入审计，较大内容转入 Artifact，不进入正式模型历史。
+已知 usage 事件继续累计，服务端未提供的失败请求计费无法精确重建。
+`llm.retry` 先提交 Ledger 再通知前端、等待；之后记录 `llm.retry_started`，
+等待中取消记录 `llm.retry_cancelled`。TUI 清理失败尝试的临时正文，TUI/Web 展示等待秒数和重复提醒。
+无 Transcript 的嵌入式调用仍可重试，但不承诺持久审计；正常会话通过 SessionTranscriptSink 落盘。
+这些是运行行为及本地回放保证，不代表 SWE-bench 准确率已经改善。
 
 `core/editing/` 与 `core/patching/` 负责事务编辑和 unified diff；`core/checkpoints/` 记录可恢复
 文件状态。工具名称同时包含兼容的单工具名称和 action-family 名称，调用方应从 capabilities/catalog
@@ -295,19 +340,22 @@ Catalog 的非法组合都会拒绝自动重迁移并进入 `audit_degraded`。�
 ## 9. 上下文、仓库理解与记忆
 
 - `core/compact/`：预算估算、结构化压缩、最近窗口保留和质量门禁；
-- `core/repository/`：Git-aware 增量仓库地图、符号/引用和 ranked context；
+- `core/repository/`：保留 Git-aware 增量仓库地图、符号/引用和 ranked context 服务；默认 Python 循环不再于每轮启动时自动扫描和注入仓库地图，源码按需通过工具读取；
 - `core/memory/`：项目级长期记忆、来源和确定性中英文词法召回；
 - `core/artifacts/`：内容寻址的大输出与图片存储；
 - `core/turn/`：读缓存、重复行为守卫和流看门狗。
 
-压缩保持工具调用/结果配对，不把自动摘要当作原始 transcript 的替代事实。策略支持 `truncate`、
-`structured` 和默认候选 `adaptive_evidence`。后者从事实日志固定当前目标、TaskProfile、未决审批与
+压缩保持工具调用/结果配对，不把自动摘要当作原始 transcript 的替代事实。默认 `session` 策略
+通过 `agent_runtime/compaction.py` 按固定最近 Token 窗口选择切点，分别总结历史和被切开的任务
+前缀，以 Markdown 更新旧摘要；溢出重试也保留最近窗口，提交仍使用追加式 Ledger 投影。
+`truncate`、`structured` 和 `adaptive_evidence` 保留为显式实验策略。后者从事实日志固定当前目标、TaskProfile、未决审批与
 失败工具，要求摘要逐项携带 `source_event_seqs`；正文或来源序号不一致时拒绝替换上下文。旧窗口内
 相同内容哈希的重复工具结果只在模型视图折叠，完整正文仍留在 Ledger。触发判断使用下一请求加输出
 预留后的预测占比，而非只等待当前请求超过固定阈值。
 
 默认工具输出预算只做确定性错误提取、头尾裁剪和 Artifact 回查，不再为每个大工具结果静默调用模型。
-Task Strategy 默认使用 `rules_only`：`plan_first` 初始目录只允许只读探索、提问和 `update_plan`，计划
+Task Strategy 默认使用 `rules_only` 并将普通 Act 画像降为 `model_led` 辅助提示，由主模型决定下一步。
+显式 `plan_first` 初始目录只允许只读探索、提问和 `update_plan`，计划
 事件携带 digest 票据并进入现有 durable Plan Review；当前 Turn 不解锁冻结目录。用户批准票据后，TUI
 发起新的 Act Turn 才能按重新分类后的工具目录修改；这不是 System Prompt 中的自律建议。
 

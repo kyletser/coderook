@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import yaml
+from pathspec import GitIgnoreSpec
 from pydantic import ValidationError
 
 from code_rook.core.skills.models import (
@@ -21,9 +25,6 @@ from code_rook.core.skills.models import (
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _METADATA_FILE = ".coderook-skill.json"
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_FRONTMATTER_KEYS = frozenset(
-    {"schema_version", "name", "description", "allowed_tools"}
-)
 _MAX_SKILL_ENTRY_BYTES = 512 * 1_024
 _MAX_SKILL_BUNDLE_BYTES = 16 * 1_024 * 1_024
 
@@ -122,86 +123,34 @@ def _read_metadata(path: Path) -> SkillInstallMetadata | None:
         raise SkillError(f"invalid skill metadata {metadata_path}: {exc}") from exc
 
 
-# 解析受限 YAML 标量，拒绝不配对引号而不尝试执行通用 YAML 语义
-def _parse_scalar(value: str) -> str:
-    value = value.strip()
-    if not value:
-        return ""
-    if value[0] in {'"', "'"}:
-        if len(value) < 2 or value[-1] != value[0]:
-            raise SkillError("skill frontmatter contains an unterminated quoted scalar")
-        return value[1:-1]
-    if value[-1] in {'"', "'"}:
-        raise SkillError("skill frontmatter contains an unmatched quote")
-    return value
-
-
-# 解析严格受限的 Markdown frontmatter manifest 和正文
+# 使用安全 YAML 读取 Skill 元数据，未知描述字段不进入执行配置。
 def _parse_manifest(path: Path) -> tuple[SkillManifest, str]:
     if path.stat().st_size > _MAX_SKILL_ENTRY_BYTES:
         raise SkillError(f"skill entry exceeds size limit: {path}")
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     name = path.parent.name if path.name == "SKILL.md" else path.stem
-    description = ""
-    allowed_tools: list[str] = []
     body = text
+    metadata: dict[str, Any] = {}
     match = _FRONTMATTER_RE.match(text)
     if match:
-        front = match.group(1)
         body = text[match.end():]
-        lines = front.splitlines()
-        index = 0
-        seen: set[str] = set()
-        while index < len(lines):
-            raw_line = lines[index]
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#"):
-                index += 1
-                continue
-            if raw_line.startswith((" ", "\t")) or ":" not in stripped:
-                raise SkillError(
-                    f"invalid skill frontmatter line {index + 1}: {stripped!r}"
-                )
-            key, raw_value = stripped.split(":", 1)
-            if key not in _FRONTMATTER_KEYS:
-                raise SkillError(f"unknown skill manifest field: {key}")
-            if key in seen:
-                raise SkillError(f"duplicate skill manifest field: {key}")
-            seen.add(key)
-            value = raw_value.strip()
-            if key == "name":
-                name = _parse_scalar(value)
-            elif key == "schema_version":
-                if value != "2":
-                    raise SkillError("skill schema_version must be the integer 2")
-            elif key == "description":
-                if value in (">", "|"):
-                    fold = value == ">"
-                    parts: list[str] = []
-                    index += 1
-                    while index < len(lines) and lines[index].startswith((" ", "\t")):
-                        parts.append(lines[index].strip())
-                        index += 1
-                    description = (" ".join(parts) if fold else "\n".join(parts)).strip()
-                    continue
-                description = _parse_scalar(value)
-            elif key == "allowed_tools":
-                if value:
-                    raise SkillError("skill allowed_tools must be an indented list")
-                index += 1
-                while index < len(lines) and lines[index].startswith((" ", "\t")):
-                    item = lines[index].strip()
-                    if not item.startswith("- ") or not item[2:].strip():
-                        raise SkillError("skill allowed_tools contains an invalid list item")
-                    allowed_tools.append(_parse_scalar(item[2:]))
-                    index += 1
-                continue
-            index += 1
+        try:
+            loaded = yaml.safe_load(match.group(1))
+        except yaml.YAMLError as exc:
+            raise SkillError(f"invalid skill frontmatter: {path}") from exc
+        if loaded is not None and not isinstance(loaded, dict):
+            raise SkillError("skill frontmatter must be a mapping")
+        metadata = loaded or {}
+    allowed = metadata.get("allowed_tools", [])
+    if not isinstance(allowed, list):
+        raise SkillError("skill allowed_tools must be a list")
     return (
         SkillManifest(
-            name=name,
-            description=description,
-            allowed_tools=tuple(allowed_tools),
+            schema_version=metadata.get("schema_version", 2),
+            name=metadata.get("name", name),
+            description=metadata.get("description", ""),
+            allowed_tools=tuple(allowed),
+            disable_model_invocation=metadata.get("disable-model-invocation", False),
         ),
         body.strip(),
     )
@@ -290,15 +239,20 @@ class SkillLoader:
         project_root: Path | None = None,
         *,
         user_skills_dir: Path | None = None,
+        additional_paths: tuple[Path, ...] = (),
     ) -> None:
         self._project_root = (project_root or Path.cwd()).resolve()
         self._user_dir = user_skills_dir or Path("~/.coderook/skills").expanduser()
+        self._additional_paths = tuple(
+            self._project_root / path.expanduser() for path in additional_paths
+        )
 
-    # 返回解析优先级顺序：project > user > builtin > legacy read-only
+    # 按 Pi 顺序先用户、再项目和显式路径，最后保留内建与旧目录兼容
     def _candidate_groups(self) -> list[tuple[Path, SkillScope]]:
         return [
-            (self._project_root / ".coderook" / "skills", "project"),
             (self._user_dir, "user"),
+            (self._project_root / ".coderook" / "skills", "project"),
+            *((path, "user") for path in self._additional_paths),
             (self._BUILTIN_DIR, "builtin"),
             (self._project_root / ".claude" / "skills", "legacy"),
             (self._project_root / ".codex" / "skills", "legacy"),
@@ -306,17 +260,59 @@ class SkillLoader:
         ]
 
     # 返回目录中扁平和目录式 skill 候选的稳定序列
-    def _discover(self, directory: Path, scope: SkillScope) -> list[_SkillCandidate]:
+    def _discover(
+        self, directory: Path, scope: SkillScope, *, include_root_files: bool = True,
+        root: Path | None = None, ignore_patterns: tuple[str, ...] = (),
+    ) -> list[_SkillCandidate]:
+        if directory.is_file():
+            return [_SkillCandidate(directory, scope)] if directory.suffix == ".md" else []
         if not directory.is_dir():
             return []
-        candidates = [
-            *(_SkillCandidate(path, scope) for path in sorted(directory.glob("*.md"))),
-            *(
-                _SkillCandidate(path, scope)
-                for path in sorted(directory.glob("*/SKILL.md"))
-            ),
-        ]
+        root = root or directory
+        prefix = directory.relative_to(root).as_posix()
+        prefix = "" if prefix == "." else prefix + "/"
+        patterns = list(ignore_patterns)
+        for filename in (".gitignore", ".ignore", ".fdignore"):
+            ignore_file = directory / filename
+            if not ignore_file.is_file():
+                continue
+            try:
+                lines = ignore_file.read_text(encoding="utf-8-sig").splitlines()
+            except (OSError, UnicodeError):
+                logging.getLogger(__name__).warning("Cannot read skill ignore file %s", ignore_file)
+                continue
+            for line in lines:
+                if not line.strip() or line.strip().startswith("#"):
+                    continue
+                negation = "!" if line.startswith("!") else ""
+                value = line[1:] if negation else line
+                patterns.append(negation + prefix + value.removeprefix("/"))
+        matcher = GitIgnoreSpec.from_lines(patterns)
+        entry = directory / "SKILL.md"
+        if entry.is_file() and not matcher.match_file(entry.relative_to(root).as_posix()):
+            return [_SkillCandidate(entry, scope)]
+        candidates: list[_SkillCandidate] = []
+        for path in sorted(directory.iterdir()):
+            if path.name.startswith(".") or path.name == "node_modules":
+                continue
+            relative = path.relative_to(root).as_posix() + ("/" if path.is_dir() else "")
+            if matcher.match_file(relative):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                candidates.extend(self._discover(
+                    path, scope, include_root_files=False,
+                    root=root, ignore_patterns=tuple(patterns),
+                ))
+            elif include_root_files and path.is_file() and path.suffix == ".md":
+                candidates.append(_SkillCandidate(path, scope))
         return candidates
+
+    # 用户显式配置的额外来源无需复制安装；现有受管完整性与信任记录仍优先。
+    def _parse_candidate(self, path: Path, directory: Path, scope: SkillScope) -> Skill:
+        skill = _parse_skill_file(path, scope)
+        if directory in self._additional_paths and skill.integrity == "unmanaged":
+            skill = skill.model_copy(update={"trust": "trusted"})
+        return skill
 
     # 按优先级解析指定 skill，并可要求只有可信来源的正文进入模型
     def resolve(
@@ -331,9 +327,18 @@ class SkillLoader:
             raise SkillError(f"invalid skill name: {name!r}")
         trust_error: SkillTrustError | None = None
         for directory, scope in self._candidate_groups():
-            paths = [directory / f"{name}.md", directory / name / "SKILL.md"]
+            paths = [candidate.path for candidate in self._discover(directory, scope)]
             for path in paths:
                 if not path.is_file():
+                    continue
+                try:
+                    manifest, _ = _parse_manifest(path)
+                except (OSError, SkillError, ValidationError):
+                    inferred = path.parent.name if path.name == "SKILL.md" else path.stem
+                    if inferred == name:
+                        raise
+                    continue
+                if manifest.name != name:
                     continue
                 if (
                     require_trusted
@@ -346,22 +351,18 @@ class SkillLoader:
                     continue
                 _validate_candidate_source(
                     path,
-                    directory,
+                    directory.parent if directory.is_file() else directory,
                     containment_root=(
                         self._project_root
                         if scope in {"project", "legacy"}
                         else None
                     ),
                 )
-                skill = _parse_skill_file(path, scope)
+                skill = self._parse_candidate(path, directory, scope)
                 if skill.integrity == "mismatch":
                     raise SkillIntegrityError(
                         f"skill digest mismatch: {skill.name} "
                         f"expected={skill.expected_digest} actual={skill.digest}"
-                    )
-                if skill.name != name:
-                    raise SkillError(
-                        f"skill manifest name mismatch: requested={name} actual={skill.name}"
                     )
                 if require_trusted and not _is_execution_trusted(
                     skill,
@@ -393,13 +394,11 @@ class SkillLoader:
             if scope in {"project", "legacy"} and not workspace_trusted:
                 continue
             for candidate in self._discover(directory, scope):
-                name = (
-                    candidate.path.parent.name
-                    if candidate.path.name == "SKILL.md"
-                    else candidate.path.stem
-                )
-                if _SKILL_NAME_RE.fullmatch(name) is not None:
-                    names.add(name)
+                try:
+                    manifest, _ = _parse_manifest(candidate.path)
+                except (OSError, SkillError, ValidationError):
+                    continue
+                names.add(manifest.name)
         ready: list[Skill] = []
         for name in sorted(names):
             try:
@@ -417,22 +416,22 @@ class SkillLoader:
     # 列出含 provenance 的所有最终生效 skill，保留 mismatch 供 audit/show
     def list_all_skills(self) -> list[Skill]:
         seen: dict[str, Skill] = {}
-        for directory, scope in reversed(self._candidate_groups()):
+        for directory, scope in self._candidate_groups():
             for candidate in self._discover(directory, scope):
                 try:
                     _validate_candidate_source(
                         candidate.path,
-                        directory,
+                        directory.parent if directory.is_file() else directory,
                         containment_root=(
                             self._project_root
                             if scope in {"project", "legacy"}
                             else None
                         ),
                     )
-                    skill = _parse_skill_file(candidate.path, candidate.scope)
+                    skill = self._parse_candidate(candidate.path, directory, candidate.scope)
                 except (OSError, SkillError, ValidationError, ValueError, json.JSONDecodeError):
                     continue
-                seen[skill.name] = skill
+                seen.setdefault(skill.name, skill)
         return [seen[name] for name in sorted(seen)]
 
     # 返回指定 skill 的 provenance，即使 digest mismatch 也不加载其正文执行

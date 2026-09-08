@@ -33,6 +33,32 @@ class _EchoTool(BaseTool):
         return ToolResult(content=str(params["msg"]))
 
 
+# 功能：预处理参数先于校验，事件和实际执行使用规范化值而原模型输入不变
+# 设计：提供旧参数名并通过真实 echo 工具执行，捕获开始事件验证参数链路
+async def test_prepare_tool_arguments_before_validation() -> None:
+    class NormalizedEcho(_EchoTool):
+        # 将旧输入字段映射到实际 schema 的必需字段
+        def prepare_arguments(self, params):
+            return {"msg": params["legacy_text"]}
+
+    registry = ToolRegistry()
+    registry.register(NormalizedEcho())
+    bus = EventBus()
+    events = []
+
+    # 收集工具事件中的真实调用参数
+    async def record(event):
+        events.append(event)
+
+    bus.subscribe(record)
+    call = ToolCallBlock(id="normalize", name="echo", input={"legacy_text": "Hello"})
+    result = await invoke_tool(registry, call, bus, "run")
+    assert not result.is_error and result.content == "Hello"
+    assert call.input == {"legacy_text": "Hello"}
+    started = next(event for event in events if event.type == "tool.call_started")
+    assert started.params == {"msg": "Hello"}
+
+
 class _SlowTool(BaseTool):
     name = "slow"
     description = "Sleeps forever"

@@ -1,0 +1,36 @@
+{
+  "dataset": "SWE-bench/SWE-bench_Lite",
+  "revision": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+  "seed": "coderook-lite-20260907-v1",
+  "parquet_sha256": "438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3",
+  "selection": "hash-ordered repository round robin; disjoint pilot/formal",
+  "pilot": [
+    "django__django-15320",
+    "psf__requests-3362",
+    "matplotlib__matplotlib-23964",
+    "pallets__flask-5063",
+    "scikit-learn__scikit-learn-10297"
+  ],
+  "formal": [
+    "django__django-10924",
+    "psf__requests-863",
+    "matplotlib__matplotlib-26020",
+    "pallets__flask-4992",
+    "scikit-learn__scikit-learn-14894",
+    "sphinx-doc__sphinx-8595",
+    "pytest-dev__pytest-5227",
+    "astropy__astropy-14182",
+    "sympy__sympy-17630",
+    "pylint-dev__pylint-7114",
+    "pydata__xarray-4094",
+    "mwaskom__seaborn-3010",
+    "django__django-13230",
+    "psf__requests-2148",
+    "matplotlib__matplotlib-25311",
+    "pallets__flask-4045",
+    "scikit-learn__scikit-learn-11040",
+    "sphinx-doc__sphinx-8506",
+    "pytest-dev__pytest-9359",
+    "astropy__astropy-7746"
+  ]
+}

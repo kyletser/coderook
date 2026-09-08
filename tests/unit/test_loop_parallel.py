@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
@@ -147,6 +145,15 @@ def _ctx(max_steps: int = 3) -> ExecutionContext:
     return ExecutionContext(run_id="rp", goal="test", max_steps=max_steps)
 
 
+# 从正式模型入口发出工具调用，所有断言覆盖生产驱动而非已移除的旧 Act 分支。
+async def _run_calls(loop: AgentLoop, calls: list[ToolCallBlock], context: ExecutionContext) -> None:
+    loop._provider._responses = iter([
+        LlmResponse(stop_reason="tool_use", tool_calls=calls),
+        LlmResponse(stop_reason="end_turn", text="done"),
+    ])
+    await loop.run(context)
+
+
 # --- tests -------------------------------------------------------------------
 
 
@@ -208,8 +215,10 @@ async def test_parallel_infrastructure_failure_cancels_sibling_tasks() -> None:
         _tc("async_read", uid="t2", label="fail", delay=10.0),
     ]
 
-    with pytest.raises(RuntimeError, match="event persistence failed"):
-        await loop._run_act_phase(calls, _ctx())
+    context = _ctx()
+    await _run_calls(loop, calls, context)
+    assert context.status == "failed"
+    assert context.reason == "runtime_error"
 
     assert not [
         task
@@ -231,7 +240,7 @@ async def test_side_effect_breaks_batch_and_runs_serially() -> None:
     registry.register(read)
     registry.register(edit)
 
-    # 直接驱动 _run_act_phase：这是为测批量切分语义
+    # 通过正式模型入口验证带副作用的工具序列。
     provider = _StubProvider([LlmResponse(stop_reason="end_turn", text="done")])
     loop, _ = _make_loop(provider, registry)
     ctx = _ctx()
@@ -241,7 +250,7 @@ async def test_side_effect_breaks_batch_and_runs_serially() -> None:
         _tc("sync_edit", uid="t2", label="edit_x"),
         _tc("async_read", uid="t3", label="read_b"),
     ]
-    await loop._run_act_phase(calls, ctx)
+    await _run_calls(loop, calls, ctx)
 
     # 三个工具都执行了一次
     assert len(read.starts) == 2  # 两个 async_read
@@ -319,13 +328,12 @@ async def test_one_tool_in_parallel_batch_fails_does_not_break_others() -> None:
 
 
 # 功能：未知工具仍按原顺序串行执行；不混入并行批
-# 设计：tool_calls=[unknown] — _is_parallelable 返回 False（registry.get 返回 None）；
-#       调用 _run_act_phase 后 context 标记 runtime_error tool_result
+# 设计：从模型发出未知工具，检查生产驱动返回配对的错误结果。
 async def test_unknown_tool_runs_serially_and_returns_runtime_error() -> None:
     provider = _StubProvider([LlmResponse(stop_reason="end_turn", text="done")])
     loop, _ = _make_loop(provider, ToolRegistry())
     ctx = _ctx()
-    await loop._run_act_phase(
+    await _run_calls(loop,
         [ToolCallBlock(id="u1", name="ghost", input={})],
         ctx,
     )
@@ -345,8 +353,8 @@ async def test_unknown_tool_runs_serially_and_returns_runtime_error() -> None:
     assert pairs[0][1] is True
 
 
-# 功能：单批只有一个工具时也走"单独 await"路径而非 gather；行为等价于直接 await
-# 设计：_run_act_phase 传入 [tc_read]，断言工具只被调用一次，context 收到正确结果
+# 功能：单批只有一个工具时仍只执行一次且返回配对结果。
+# 设计：从正式模型入口发出一次读取，检查工具执行次数与上下文结果。
 async def test_single_parallel_tool_in_batch_still_works() -> None:
     tool = _AsyncRead()
     registry = ToolRegistry()
@@ -354,7 +362,7 @@ async def test_single_parallel_tool_in_batch_still_works() -> None:
     provider = _StubProvider([LlmResponse(stop_reason="end_turn", text="done")])
     loop, _ = _make_loop(provider, registry)
     ctx = _ctx()
-    await loop._run_act_phase([_tc("async_read", uid="t1", label="solo", delay=0.0)], ctx)
+    await _run_calls(loop, [_tc("async_read", uid="t1", label="solo", delay=0.0)], ctx)
     assert len(tool.starts) == 1
     # context 含一个成功 tool_result
     found = False
@@ -381,7 +389,7 @@ async def test_same_file_write_claims_run_serially(tmp_path: Path) -> None:
     )
     ctx = _ctx()
 
-    await loop._run_act_phase(
+    await _run_calls(loop,
         [
             ToolCallBlock(
                 id="w1",
@@ -413,7 +421,7 @@ async def test_disjoint_file_write_claims_run_concurrently(tmp_path: Path) -> No
     )
     ctx = _ctx()
 
-    await loop._run_act_phase(
+    await _run_calls(loop,
         [
             ToolCallBlock(
                 id="w1",
@@ -430,3 +438,68 @@ async def test_disjoint_file_write_claims_run_concurrently(tmp_path: Path) -> No
     )
 
     assert backend.max_active == 2
+
+
+# 功能：参数归一化只执行一次，并发冲突判断使用归一化后的真实路径
+# 设计：两个原始路径被映射为同一文件，检查峰值并发、事件参数与原模型参数
+async def test_prepared_paths_control_scheduling(tmp_path: Path) -> None:
+    preparations = []
+
+    class AliasedFile(FileTool):
+        # 将不同别名归一化为同一个实际写入目标
+        def prepare_arguments(self, params):
+            preparations.append(params["path"])
+            params["path"] = "same.txt"
+            return params
+
+    backend = _TrackedWrite()
+    registry = ToolRegistry()
+    registry.register(AliasedFile(WorkspaceBoundary(tmp_path), {"write_file": backend}))
+    loop, bus = _make_loop(_StubProvider([]), registry)
+    events = []
+
+    # 收集实际执行事件以核对预处理后的路径
+    async def record(event):
+        events.append(event)
+
+    bus.subscribe(record)
+    calls = [
+        ToolCallBlock(id=path, name="File", input={
+            "action": "write", "path": path, "content": "test",
+        }) for path in ("a.txt", "b.txt")
+    ]
+    await _run_calls(loop, calls, _ctx())
+    assert preparations == ["a.txt", "b.txt"]
+    assert backend.max_active == 1
+    assert [call.input["path"] for call in calls] == ["a.txt", "b.txt"]
+    assert [event.params["path"] for event in events
+            if event.type == "tool.call_started"] == ["same.txt", "same.txt"]
+
+
+# 功能：重复只读调用每次都执行工具和扩展 Hook，不复用旧文本结果
+# 设计：分两次调用同一输入，用执行计数和递增展示元数据排除缓存短路
+async def test_repeated_read_invokes_extensions_each_time() -> None:
+    tool = _AsyncRead()
+    registry = ToolRegistry()
+    registry.register(tool)
+    hook_calls = []
+
+    # 为每次真实调用添加不同的展示元数据
+    async def patch_result(call, result):
+        hook_calls.append(call.id)
+        result.details = {"attempt": len(hook_calls)}
+        return result
+
+    registry.after_tool_call = patch_result
+    loop, _ = _make_loop(_StubProvider([]), registry)
+    context = _ctx()
+    first = await loop._invoke_one(ToolCallBlock(
+        id="first", name="async_read", input={"path": "same", "label": "x", "delay": 0},
+    ), context)
+    second = await loop._invoke_one(ToolCallBlock(
+        id="second", name="async_read", input={"path": "same", "label": "x", "delay": 0},
+    ), context)
+    assert len(tool.starts) == 2
+    assert hook_calls == ["first", "second"]
+    assert first.details == {"attempt": 1}
+    assert second.details == {"attempt": 2}

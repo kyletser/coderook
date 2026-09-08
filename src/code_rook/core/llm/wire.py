@@ -3,6 +3,19 @@ from __future__ import annotations
 from typing import Any
 
 
+# 为不接受嵌套图片的工具响应格式拆分文字和图片，保持原始历史不变。
+def split_tool_result(content: object) -> tuple[str, list[dict[str, Any]]]:
+    if not isinstance(content, list):
+        return str(content or ""), []
+    text = "\n".join(
+        str(block.get("text", "")) for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    images = [block for block in content
+              if isinstance(block, dict) and block.get("type") == "image"]
+    return text, images
+
+
 # 合并相邻 user 消息且不修改入参，避免内部注入破坏 Provider 的角色交替约束
 def merge_consecutive_user_messages(
     messages: list[dict[str, object]],

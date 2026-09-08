@@ -1,0 +1,18 @@
+{
+  "purpose": "development regression on the original frozen five pilot instances",
+  "base_commit": "7cda2be6bc07b45845f9fd9bf196db2b1593e25f",
+  "working_tree_clean": false,
+  "source_archive": "candidate-source.tar",
+  "source_archive_sha256": "fe1f4fe237cb04514e275c631b502a8408c0133ae09ee171a623d5c9bef9e79e",
+  "source_patch": "candidate-working-tree.patch",
+  "dependency_image": "sha256:773df612585819edf6766a4c6b1bbed8366c320f36f7da3835e1f5345df82bd8",
+  "runtime_image": "sha256:6dfc7a9c913f1615ca4d93e943a4e6ceb8f74d28b88de08307eee1875cd602de",
+  "build_method": "reuse unchanged installed dependencies; copy current code_rook source and frozen adapter; full build failed on PyPI TLS handshake before experiments",
+  "model": "qwen3.8-flash",
+  "temperature": 0,
+  "max_steps": 40,
+  "wall_time_seconds": 900,
+  "attempts_per_instance": 1,
+  "formal_20_instances": "not used",
+  "comparability": "same model and pilot tasks; combined runtime fixes, not a single-feature ablation; neither result is a full Lite score"
+}

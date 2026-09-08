@@ -7,11 +7,21 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel
+
+from code_rook.core.agent_runtime.images import normalize_tool_images
+from code_rook.core.agent_runtime.prompt_templates import (
+    expand_prompt_template,
+    list_prompt_templates,
+)
+from code_rook.core.agent_runtime.skill_input import expand_skill_input
+from code_rook.core.agent_runtime.user_shell import parse_user_shell
 from code_rook.core.artifacts import (
     ArtifactError,
     ArtifactStore,
@@ -21,6 +31,8 @@ from code_rook.core.artifacts import (
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
+    AgentMessageEvent,
+    ExtensionNotificationEvent,
     GoalContinueDecisionEvent,
     PlanReadyEvent,
     PlanResolvedEvent,
@@ -41,10 +53,13 @@ from code_rook.core.bus.events import (
 from code_rook.core.capabilities import CapabilityStability
 from code_rook.core.checkpoints import CheckpointError, CheckpointStore
 from code_rook.core.compact.protocol import estimate_messages_tokens
+from code_rook.core.config import CompactionConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.hooks import HookManager
-from code_rook.core.interaction import InteractionManager
+from code_rook.core.interaction import FollowUpMessage, InteractionManager, UserMessageContent
+from code_rook.core.llm.retry import RetryPolicy
 from code_rook.core.llm.route_registry import RouteResolutionError
+from code_rook.core.llm.routes import ThinkingLevel
 from code_rook.core.memory import MemoryStore
 from code_rook.core.presets import get_agent_preset
 from code_rook.core.runs import new_run_id
@@ -55,11 +70,12 @@ from code_rook.core.session.exporter import SessionExportFormat, export_session
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillError, SkillLoader
-from code_rook.core.skills.models import Skill
 from code_rook.core.task.model import Task
+from code_rook.core.tools.base import ToolResult
 from code_rook.core.workspace import WorkspaceBoundary
 
 if TYPE_CHECKING:
+    from code_rook.core.agent_runtime.extensions import ExtensionHost
     from code_rook.core.goal import GoalContinueDecision, GoalRecord, GoalService
     from code_rook.core.llm.base import LLMProvider
     from code_rook.core.llm.route_registry import ResolvedRoute, RouteRegistry
@@ -161,15 +177,27 @@ class SessionManager:
         workspace_mutation_guard: WorkspaceMutationGuard | None = None,
         workspace_mutation_lock: asyncio.Lock | None = None,
         workspace: Path | None = None,
+        compaction_config: CompactionConfig | None = None,
+        summary_retry_policy: RetryPolicy | None = None,
+        prompt_paths: tuple[Path, ...] = (),
+        skill_paths: tuple[Path, ...] = (),
+        follow_up_mode: Literal["one-at-a-time", "all"] = "one-at-a-time",
+        image_auto_resize: bool = True,
     ) -> None:
         if workspace_mutation_guard is not None and workspace_mutation_lock is not None:
             raise ValueError(
                 "workspace_mutation_guard and workspace_mutation_lock are mutually exclusive"
             )
         self._store = store
+        self._image_auto_resize = image_auto_resize
         self._runner_factory = runner_factory
         self._bus = bus
         self._provider = provider
+        self._compaction_config = compaction_config or CompactionConfig()
+        self._summary_retry_policy = summary_retry_policy
+        self._prompt_paths = prompt_paths
+        self._skill_paths = skill_paths
+        self._follow_up_mode = follow_up_mode
         self._subagent_registry = subagent_registry
         self._runtime = runtime_service
         self._interaction_manager = interaction_manager
@@ -184,6 +212,13 @@ class SessionManager:
         self._runtime_bootstrap_lock = asyncio.Lock()
         self._turn_reservation_lock = asyncio.Lock()
         self._sessions: dict[str, Session] = {}
+        self._extension_hosts: dict[str, ExtensionHost] = {}
+        self._extension_skill_loaders: dict[str, SkillLoader] = {}
+        self._extension_prompt_paths: dict[str, tuple[Path, ...]] = {}
+        self._extension_theme_paths: dict[str, tuple[Path, ...]] = {}
+        self._extension_resources_ready: set[str] = set()
+        self._pending_extension_messages: dict[str, list[dict[str, Any]]] = {}
+        self._next_turn_extension_messages: dict[str, list[dict[str, Any]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._turn_reservations: dict[str, str] = {}
         self._active_runs: dict[str, _ActiveRun] = {}
@@ -192,16 +227,61 @@ class SessionManager:
         self._queue_wakeups: dict[str, asyncio.Event] = {}
         self._queue_recovered = False
         self._queue_closing = False
+        self._queue_paused: set[str] = set()
         self._pending_plans: dict[str, _PendingPlan] = {}
         self._pending_plans_loaded: set[str] = set()
         self._pending_recoveries: set[str] = set()
         workspace_root = workspace or WorkspaceBoundary.current().root
         self._workspace = workspace_root.resolve()
-        self._skill_loader = SkillLoader(self._workspace)
+        self._skill_loader = SkillLoader(self._workspace, additional_paths=skill_paths)
         self._artifact_store = ArtifactStore(
             self._workspace / ".coderook" / "artifacts"
         )
         self._rehydrate()
+
+    # 读取新会话应继承的当前模型，不因未配置 Provider 阻止浏览会话。
+    def _default_model_selection(self) -> tuple[str, str, ThinkingLevel]:
+        if self._route_registry is None:
+            return "", "", "off"
+        try:
+            route = self._route_registry.route()
+        except (RouteResolutionError, ValueError):
+            return "", "", "off"
+        return route.id, route.model, route.thinking
+
+    # 按会话优先解析 Python 扩展 Provider，否则使用共享 Provider Catalog。
+    def _resolve_model_route(
+        self,
+        route_id: str | None,
+        model: str | None,
+        host: ExtensionHost | None,
+    ) -> ResolvedRoute:
+        provider = host.api.providers.get(route_id) if host is not None and route_id else None
+        if provider is not None and provider.models:
+            return provider.resolve(model or "")
+        if self._route_registry is None:
+            raise RouteResolutionError("provider routes are unavailable")
+        base = self._route_registry.resolve(route_id, model=model)
+        if host is None:
+            return base
+        override = provider
+        if override is None:
+            catalog_id = base.route.catalog_id or ""
+            override = host.api.providers.get(catalog_id)
+        if override is None:
+            return base
+        return override.resolve(model or "", base=base)
+
+    # 用会话级思考强度覆盖已解析路由，不修改共享 Provider Catalog。
+    @staticmethod
+    def _apply_session_thinking(session: Session, resolved: ResolvedRoute) -> ResolvedRoute:
+        level = session.thinking_level
+        if level is None or level == resolved.route.thinking:
+            return resolved
+        update: dict[str, object] = {"thinking": level}
+        if resolved.route.wire_format == "anthropic_messages" and level != "off":
+            update["temperature"] = 1.0
+        return replace(resolved, route=resolved.route.model_copy(update=update))
 
     # 将升级后发生摘要漂移的稳定 Preset 自动迁移到当前定义，避免历史会话无法继续使用
     def _refresh_stable_preset(self, session: Session) -> None:
@@ -380,7 +460,7 @@ class SessionManager:
 
         task.add_done_callback(cleanup)
 
-    # 校验图片 artifact 元数据并构造只用于下一次模型请求的内存图片块
+    # 校验图片 artifact 元数据并构造可重放的多模态用户消息块。
     async def _prepare_image_attachments(
         self,
         attachments: list[ImageArtifactInput],
@@ -418,7 +498,11 @@ class SessionManager:
                     },
                 }
             )
-        return "\n".join(descriptions), blocks
+        normalized = await normalize_tool_images(
+            ToolResult("\n".join(descriptions), images=blocks),
+            auto_resize=self._image_auto_resize,
+        )
+        return normalized.content, normalized.images or []
 
     # 首次异步操作前将文件 session 索引幂等导入 runtime
     async def _ensure_runtime_sessions(self) -> None:
@@ -432,6 +516,13 @@ class SessionManager:
             for session in sessions:
                 turn_times.update(self._store.run_time_ranges(session.id))
             await self._runtime.bootstrap_sessions(sessions, turn_times)
+            for session in sessions:
+                events = await asyncio.to_thread(self._store.read_session_events, session.id)
+                for event in events:
+                    if event.type == "session.auxiliary_usage":
+                        await self._runtime.record_auxiliary_usage(
+                            session.id, event.payload, event.seq,
+                        )
             await self._prune_stale_empty_sessions()
             if not self._queue_recovered:
                 recovered = await self._runtime.recover_queued_messages(datetime.now(UTC))
@@ -548,6 +639,7 @@ class SessionManager:
         preset = get_agent_preset(preset_id)
         sid = f"sess-{uuid.uuid4().hex[:12]}"
         ts = _now()
+        route_id, model, thinking_level = self._default_model_selection()
         if self._hooks is not None:
             decision = await self._hooks.emit(
                 "session_start",
@@ -566,6 +658,9 @@ class SessionManager:
             workspace=str(self._workspace),
             preset_id=preset.id,
             preset_digest=preset.digest,
+            route_id=route_id,
+            model=model,
+            thinking_level=thinking_level,
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
@@ -574,6 +669,68 @@ class SessionManager:
         if self._runtime is not None:
             await self._runtime.sync_session(session)
         await self._bus.publish(SessionCreatedEvent(session_id=sid, mode=mode, ts=ts))
+        host = await self.prepare_extensions(sid)
+        if host is not None:
+            await host.emit_session_event({"type": "session_start", "reason": "new"})
+            await self._discover_extension_resources(sid, host, reason="startup")
+        return session
+
+    # 为指定会话持久选择模型，后续 Turn 不再随其他会话的全局选择漂移。
+    async def set_model(self, sid: str, route_id: str, model: str = "") -> Session:
+        await self._ensure_runtime_sessions()
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "model cannot change during an active turn")
+        host = await self.prepare_extensions(sid)
+        try:
+            resolved = self._resolve_model_route(route_id, model or None, host)
+            route = resolved.route
+        except (RouteResolutionError, ValueError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        selected_model = route.model
+        previous = {"route_id": session.route_id, "model": session.model}
+        async with lock:
+            session.route_id = route.id
+            session.model = selected_model
+            session.updated_at = _now()
+            self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
+        if host is not None:
+            await host.emit_session_event({
+                "type": "model_select",
+                "model": {
+                    "provider": route.catalog_id or route.provider,
+                    "route_id": route.id,
+                    "id": selected_model,
+                    "wire_format": route.wire_format,
+                },
+                "previousModel": previous if previous["route_id"] else None,
+                "source": "set",
+            })
+        return session
+
+    # 持久设置当前会话的思考强度，下一轮创建 Provider 时再应用。
+    async def set_thinking(self, sid: str, thinking_level: ThinkingLevel) -> Session:
+        await self._ensure_runtime_sessions()
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "thinking level cannot change during an active turn")
+        async with lock:
+            session.thinking_level = thinking_level
+            session.updated_at = _now()
+            self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
+        host = await self.prepare_extensions(sid)
+        if host is not None:
+            await host.emit_session_event({
+                "type": "thinking_level_select",
+                "thinkingLevel": thinking_level,
+                "source": "set",
+            })
         return session
 
     # 从 durable runtime 事件恢复指定会话最终仍待处理的计划审批
@@ -588,7 +745,9 @@ class SessionManager:
                 if not events:
                     break
                 for event in events:
-                    if event.type == "plan.ready" and event.turn_id:
+                    if event.type == "session.navigated":
+                        pending = None
+                    elif event.type == "plan.ready" and event.turn_id:
                         pending = _PendingPlan(
                             session_id=sid,
                             run_id=event.turn_id,
@@ -717,13 +876,23 @@ class SessionManager:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
         display_content: str | None = None,
-    ) -> QueuedMessageRecord:
+        expand_prompt_templates: bool = True,
+        input_processed: bool = False,
+        input_source: Literal["interactive", "rpc", "extension"] = "interactive",
+    ) -> QueuedMessageRecord | None:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
         if session.status == "closed":
             raise HandlerError(SESSION_CLOSED, "session already closed")
         if self._runtime is None:
             raise HandlerError(INVALID_PARAMS, "durable message queue is unavailable")
+        if not input_processed:
+            processed = await self.process_input(
+                sid, content, attachments, source=input_source, streaming_behavior="follow_up",
+            )
+            if processed is None:
+                return None
+            content, attachments = processed
         visible = (display_content or content).strip()
         if not content.strip() or not visible:
             raise HandlerError(INVALID_PARAMS, "queued message must not be blank")
@@ -734,6 +903,7 @@ class SessionManager:
             content=content,
             display_content=visible,
             mode=runtime_mode,
+            expand_prompt_templates=expand_prompt_templates,
             attachments=attachments or [],
             created_at=now,
             updated_at=now,
@@ -826,6 +996,8 @@ class SessionManager:
             wakeup.clear()
             while self._locks[sid].locked():
                 await asyncio.sleep(0.05)
+            if sid in self._queue_paused:
+                return
             record = await runtime.claim_next_queued_message(sid, datetime.now(UTC))
             if record is None:
                 if wakeup.is_set():
@@ -842,6 +1014,8 @@ class SessionManager:
                     runtime_mode=record.mode,
                     attachments=record.attachments,
                     display_content=record.display_content,
+                    expand_prompt_templates=record.expand_prompt_templates,
+                    input_processed=True,
                 )
             except HandlerError as exc:
                 if exc.code == SESSION_BUSY:
@@ -889,7 +1063,16 @@ class SessionManager:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
         display_content: str | None = None,
+        expand_prompt_templates: bool = True,
+        input_processed: bool = False,
+        input_source: Literal["interactive", "rpc", "extension"] = "interactive",
+        extension_custom_message: dict[str, Any] | None = None,
     ) -> str:
+        if not input_processed:
+            processed = await self.process_input(sid, content, attachments, source=input_source)
+            if processed is None:
+                return ""
+            content, attachments = processed
         resolved_run_id = run_id or new_run_id()
         await self.preflight_turn_start(sid, resolved_run_id)
         try:
@@ -901,6 +1084,8 @@ class SessionManager:
                     runtime_mode=runtime_mode,
                     attachments=attachments,
                     display_content=display_content,
+                    expand_prompt_templates=expand_prompt_templates,
+                    extension_custom_message=extension_custom_message,
                 )
         finally:
             async with self._turn_reservation_lock:
@@ -917,6 +1102,8 @@ class SessionManager:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
         display_content: str | None = None,
+        expand_prompt_templates: bool = True,
+        extension_custom_message: dict[str, Any] | None = None,
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -935,9 +1122,10 @@ class SessionManager:
                     "pending plan must be approved, revised, or cancelled before a new turn",
                 )
 
+            shell_request = parse_user_shell(content) if expand_prompt_templates else None
             active_goal_candidate: GoalRecord | None = None
             active_goal_authority: AuthoritySnapshot | None = None
-            if self._goal_service is not None:
+            if self._goal_service is not None and shell_request is None:
                 candidate = self._goal_service.current(sid)
                 if candidate is not None and candidate.status == "active":
                     active_goal_candidate = candidate
@@ -958,12 +1146,30 @@ class SessionManager:
                                 f"{decision.reason}",
                             )
 
+            extension_host = await self.prepare_extensions(sid)
             resolved_route: ResolvedRoute | None = None
-            if self._route_registry is not None:
+            has_extension_route = bool(
+                extension_host is not None
+                and session.route_id in extension_host.api.providers
+            )
+            if shell_request is None and (
+                self._route_registry is not None or has_extension_route
+            ):
                 try:
-                    resolved_route = self._route_registry.resolve()
-                except RouteResolutionError as exc:
+                    resolved_route = self._resolve_model_route(
+                        session.route_id or None,
+                        session.model or None,
+                        extension_host,
+                    )
+                    resolved_route = self._apply_session_thinking(session, resolved_route)
+                except (RouteResolutionError, ValueError) as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+                if not session.route_id or not session.model:
+                    session.route_id = resolved_route.route.id
+                    session.model = resolved_route.route.model
+                    self._store.write_meta(session)
+                    if self._runtime is not None:
+                        await self._runtime.sync_session(session)
             image_attachments = attachments or []
             attachment_text, image_blocks = await self._prepare_image_attachments(
                 image_attachments
@@ -973,28 +1179,22 @@ class SessionManager:
                 if attachment_text
                 else content
             )
+            expanded_input = content
+            if content.startswith("/"):
+                try:
+                    expanded_input = (
+                        self._expand_native_skill(sid, content)
+                        if expand_prompt_templates else content
+                    )
+                    ledger_content = (
+                        f"{expanded_input}\n\n{attachment_text}"
+                        if attachment_text else expanded_input
+                    )
+                except (SkillError, OSError) as exc:
+                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+                display_content = display_content or content
 
             assert run_id is not None
-            requested_skill: Skill | None = None
-            skill_name = ""
-            skill_arguments = ""
-            if content.startswith("/") and content[1:].strip():
-                parts = content[1:].split(None, 1)
-                skill_name = parts[0]
-                skill_arguments = parts[1] if len(parts) > 1 else ""
-                try:
-                    workspace_trusted = (
-                        self._authority_provider is not None
-                        and self._authority_provider(sid).workspace_trust
-                        == WorkspaceTrust.TRUSTED
-                    )
-                    requested_skill = self._skill_loader.resolve(
-                        skill_name,
-                        require_trusted=True,
-                        workspace_trusted=workspace_trusted,
-                    )
-                except SkillError as exc:
-                    raise HandlerError(INVALID_PARAMS, str(exc)) from exc
             if self._hooks is not None:
                 message_decision = await self._hooks.emit(
                     "message_submit",
@@ -1018,38 +1218,31 @@ class SessionManager:
                         INVALID_PARAMS,
                         turn_decision.reason or "turn blocked by hook",
                     )
-            # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
+            # Skill 与模板已作为用户消息展开，保持当前 Agent 系统提示和工具目录。
             goal = ledger_content
-            system_prompt_override: str | None = None
-            tool_whitelist: list[str] | None = None
-            if requested_skill is not None:
-                workspace_trusted = (
-                    self._authority_provider is not None
-                    and self._authority_provider(sid).workspace_trust
-                    == WorkspaceTrust.TRUSTED
-                )
-                goal = self._skill_loader.render_prompt(
-                    requested_skill,
-                    skill_arguments,
-                    require_trusted=True,
-                    workspace_trusted=workspace_trusted,
-                )
-                system_prompt_override = requested_skill.system_prompt_template
-                tool_whitelist = requested_skill.allowed_tools or None
 
             runner = self._runner_factory()
             if resolved_route is not None:
+                from code_rook.core.runner import AgentRunner
+
                 accumulated_cost = (
                     await self._runtime.get_thread_estimated_cost(sid)
                     if self._runtime is not None
                     else 0.0
                 )
+                binding_options: dict[str, Any] = {
+                    "resolved_route": resolved_route,
+                    "runtime_mode": runtime_mode,
+                    "run_id": run_id,
+                    "accumulated_cost_usd": accumulated_cost,
+                }
+                if isinstance(runner, AgentRunner):
+                    binding_options["resolved_route_is_explicit"] = bool(session.route_id)
                 resolved_route = await runner.resolve_turn_binding(
-                    resolved_route=resolved_route,
-                    runtime_mode=runtime_mode,
-                    run_id=run_id,
-                    accumulated_cost_usd=accumulated_cost,
+                    **binding_options,
                 )
+                if resolved_route is not None:
+                    resolved_route = self._apply_session_thinking(session, resolved_route)
             if (
                 image_attachments
                 and resolved_route is not None
@@ -1078,23 +1271,129 @@ class SessionManager:
                 "run_id": run_id,
                 "session": session,
                 "store": self._store,
-                "system_prompt_override": system_prompt_override,
-                "tool_whitelist": tool_whitelist,
                 "runtime_mode": runtime_mode,
             }
+            from code_rook.core.runner import AgentRunner
+
+            if isinstance(runner, AgentRunner):
+                host = extension_host
+                if host is None:
+                    host = runner.create_extension_host(run_id)
+                    await host.initialize()
+                    self._extension_hosts[sid] = host
+                if sid not in self._extension_resources_ready:
+                    await host.emit_session_event({"type": "session_start", "reason": "resume"})
+                    await self._discover_extension_resources(sid, host, reason="startup")
+                self._bind_extension_messages(sid, host, runtime_mode)
+                run_options["extension_host"] = host
+                run_options["skill_loader"] = self._skill_loader_for(sid)
             if persistent_goal_context:
                 run_options["persistent_goal_context"] = persistent_goal_context
             if resolved_route is not None:
                 run_options["resolved_route"] = resolved_route
                 run_options["resolved_route_is_explicit"] = True
-            if image_blocks:
-                run_options["initial_images"] = image_blocks
 
             persistence_ready = asyncio.Event()
+
+            # 普通同模式消息交给原生外层循环；需重建配置的输入仍按新运行派发。
+            async def next_follow_up_message() -> list[FollowUpMessage]:
+                runtime = self._runtime
+                if runtime is None or sid in self._queue_paused:
+                    return []
+                record = await runtime.claim_next_queued_message(sid, datetime.now(UTC))
+                if record is None:
+                    return []
+                if record.mode != runtime_mode or (
+                    record.expand_prompt_templates and parse_user_shell(record.content) is not None
+                ):
+                    await runtime.defer_queued_message(record, datetime.now(UTC))
+                    return []
+                try:
+                    expanded_content = (self._expand_native_skill(sid, record.content)
+                                        if record.expand_prompt_templates else record.content)
+                except (SkillError, OSError) as exc:
+                    await runtime.block_queued_message(record, str(exc), datetime.now(UTC))
+                    return []
+                if (record.expand_prompt_templates and record.content.startswith("/")
+                        and not record.content.startswith("/skill:")
+                        and expanded_content == record.content):
+                    await runtime.defer_queued_message(record, datetime.now(UTC))
+                    return []
+                follow_up_content: str | list[dict[str, Any]] = expanded_content
+                if record.attachments:
+                    if resolved_route is not None and not resolved_route.route.supports_images:
+                        await runtime.block_queued_message(
+                            record, "selected Turn route does not support images", datetime.now(UTC)
+                        )
+                        return []
+                    try:
+                        description, images = await self._prepare_image_attachments(
+                            record.attachments
+                        )
+                    except HandlerError as exc:
+                        await runtime.block_queued_message(record, str(exc), datetime.now(UTC))
+                        return []
+                    follow_up_content = [
+                        {"type": "text", "text": f"{expanded_content}\n\n{description}"}, *images,
+                    ]
+                if self._hooks is not None:
+                    decision = await self._hooks.emit(
+                        "message_submit",
+                        {"session_id": sid, "run_id": run_id, "content": record.content},
+                    )
+                    if decision.blocked:
+                        await runtime.block_queued_message(
+                            record, decision.reason or "message blocked by hook", datetime.now(UTC)
+                        )
+                        return []
+
+                # 先由循环持久化用户输入，再移除队列并通知前端，取消不丢尚未入账的内容。
+                async def admitted() -> None:
+                    await self._bus.publish(RunSteeredEvent(
+                        run_id=run_id, session_id=sid,
+                        content=record.display_content or record.content, ts=_now(),
+                    ))
+                    await runtime.remove_queued_message(
+                        sid, record.id, reason="dispatched", ts=datetime.now(UTC)
+                    )
+
+                return [FollowUpMessage(follow_up_content, admitted)]
+
+            # 按 Pi 的交付模式领取一条或当前全部后续消息，遇独立命令时保留队列顺序
+            async def next_follow_up() -> list[FollowUpMessage]:
+                messages = await next_follow_up_message()
+                if self._follow_up_mode == "all":
+                    while messages:
+                        additional = await next_follow_up_message()
+                        if not additional:
+                            break
+                        messages.extend(additional)
+                return messages
+
+            # 将扩展输入送入本会话的现有队列，保留当前运行模式与停止恢复语义
+            async def send_extension_message(
+                content: UserMessageContent, deliver_as: Literal["steer", "follow_up"],
+                expand: bool,
+            ) -> None:
+                host = self._extension_hosts.get(sid)
+                if host is None:
+                    raise RuntimeError("Extension messaging requires a session-owned host")
+                await host.api.send_user_message(
+                    content, deliver_as=deliver_as, expand_prompt_templates=expand,
+                )
 
             # 让可取消 runner 在所有 session/runtime 写入完成前停在内存屏障
             async def execute_after_persistence() -> Any:
                 await persistence_ready.wait()
+                if shell_request is not None:
+                    return await runner.run_user_shell(
+                        shell_request, run_id=run_id, session=session, store=self._store,
+                        runtime_mode=runtime_mode,
+                        extension_host=run_options.get("extension_host"),
+                    )
+                if self._interaction_manager is not None:
+                    self._interaction_manager.bind_follow_up(run_id, next_follow_up)
+                    self._interaction_manager.bind_extension_sender(run_id, send_extension_message)
                 if goal_wall_timeout_s is None:
                     return await runner.run_and_capture(goal, **run_options)
                 from code_rook.core.runner import RunOutcome
@@ -1139,13 +1438,28 @@ class SessionManager:
                         )
                     )
                     self._pending_recoveries.discard(sid)
-                self._store.append_message(
-                    sid,
-                    "user",
-                    ledger_content,
-                    run_id=run_id,
-                    message_id=f"{run_id}:user",
-                )
+                for queued_extension in self._next_turn_extension_messages.pop(sid, []):
+                    await self._append_extension_custom_message(sid, queued_extension)
+                if shell_request is not None:
+                    self._store.append_session_event(
+                        sid, event_type="user.shell_requested",
+                        payload={"command": shell_request.command}, turn_id=run_id,
+                    )
+                elif extension_custom_message is not None:
+                    self._record_extension_custom_message(
+                        sid,
+                        extension_custom_message,
+                        run_id=run_id,
+                    )
+                else:
+                    self._store.append_message(
+                        sid,
+                        "user",
+                        [{"type": "text", "text": ledger_content}, *image_blocks]
+                        if image_blocks else ledger_content,
+                        run_id=run_id,
+                        message_id=f"{run_id}:user",
+                    )
                 await self._bus.publish(
                     SessionMessageReceivedEvent(
                         session_id=sid,
@@ -1176,11 +1490,12 @@ class SessionManager:
                         ),
                     )
                     runtime_started = True
-                if requested_skill is not None:
+                if expanded_input.startswith("<skill name="):
+                    skill_parts = content.removeprefix("/skill:").removeprefix("/").split(None, 1)
                     await self._bus.publish(
                         SkillInvokedEvent(
-                            skill_name=skill_name,
-                            arguments=skill_arguments,
+                            skill_name=skill_parts[0],
+                            arguments=skill_parts[1] if len(skill_parts) > 1 else "",
                             run_id=run_id,
                             ts=_now(),
                         )
@@ -1271,8 +1586,12 @@ class SessionManager:
                         )
                 raise
             finally:
+                if self._interaction_manager is not None:
+                    self._interaction_manager.unbind_follow_up(run_id)
                 self._active_runs.pop(run_id, None)
                 active.finished.set()
+                for pending_extension in self._pending_extension_messages.pop(sid, []):
+                    await self._append_extension_custom_message(sid, pending_extension)
 
             session.updated_at = _now()
             if active_goal is not None and self._goal_service is not None:
@@ -1424,30 +1743,76 @@ class SessionManager:
         )
         return len(sessions)
 
+    # 停止当前运行并保留未发送消息，避免停止后队列立即重新启动任务。
     async def cancel_run(self, run_id: str) -> str:
         active = self._active_runs.get(run_id)
         if active is None or active.task.done():
             raise HandlerError(RUN_NOT_ACTIVE, "run is not active")
+        sid = active.session_id
+        self._queue_paused.add(sid)
+        pending = (
+            self._interaction_manager.take_pending_steering(run_id)
+            if self._interaction_manager is not None else []
+        )
         if not active.task.cancel():
+            self._queue_paused.discard(sid)
             raise HandlerError(RUN_NOT_ACTIVE, "run is not active")
         try:
-            await active.task
-        except asyncio.CancelledError:
-            pass
+            try:
+                await active.task
+            except asyncio.CancelledError:
+                pass
+            if self._runtime is not None:
+                for content in pending:
+                    text, images = await self._extension_input(content)
+                    await self.queue_message(
+                        sid, text, attachments=images, expand_prompt_templates=False,
+                        input_processed=True,
+                    )
+                for record in await self._runtime.list_queued_messages(sid):
+                    if record.status in {"queued", "dispatching"}:
+                        await self._runtime.block_queued_message(
+                            record, "Run stopped; resend this pending message to continue.",
+                            datetime.now(UTC),
+                        )
+            await active.finished.wait()
+        finally:
+            self._queue_paused.discard(sid)
         if self._subagent_registry is not None:
             await self._subagent_registry.cancel_descendants(run_id)
         await active.finished.wait()
         return active.session_id
 
     # 将用户新指令排入活动 run，在下一次模型决策前注入
-    async def steer_run(self, run_id: str, content: str) -> str:
+    async def steer_run(
+        self, run_id: str, content: str, *, expand_prompt_templates: bool = True,
+        attachments: list[ImageArtifactInput] | None = None,
+        input_source: Literal["interactive", "rpc", "extension"] = "interactive",
+    ) -> str:
         active = self._active_runs.get(run_id)
-        if (
-            active is None
-            or active.task.done()
-            or self._interaction_manager is None
-            or not self._interaction_manager.steer(run_id, content)
-        ):
+        if active is None or active.task.done() or self._interaction_manager is None:
+            raise HandlerError(RUN_NOT_ACTIVE, "run is not active")
+        processed = await self.process_input(
+            active.session_id, content, attachments,
+            source=input_source, streaming_behavior="steer",
+        )
+        if processed is None:
+            return active.session_id
+        content, attachments = processed
+        try:
+            expanded = (self._expand_native_skill(active.session_id, content)
+                        if active and expand_prompt_templates else content)
+        except (SkillError, OSError) as exc:
+            raise HandlerError(INVALID_PARAMS, str(exc)) from exc
+        admitted: UserMessageContent = expanded
+        if attachments:
+            if self._runtime is not None:
+                turn = await self._runtime.get_turn(run_id)
+                if turn.route is not None and not turn.route.supports_images:
+                    raise ValueError("selected Turn route does not support images")
+            description, images = await self._prepare_image_attachments(attachments)
+            admitted = [{"type": "text", "text": f"{expanded}\n\n{description}"}, *images]
+        if active.task.done() or not self._interaction_manager.steer(run_id, admitted):
             raise HandlerError(RUN_NOT_ACTIVE, "run is not active")
         await self._bus.publish(
             RunSteeredEvent(
@@ -1459,6 +1824,28 @@ class SessionManager:
         )
         return active.session_id
 
+    # 统一首次输入、纠偏和后续消息的 Skill 展开行为。
+    def _expand_native_skill(self, sid: str, content: str) -> str:
+        trusted = (
+            self._authority_provider is not None
+            and self._authority_provider(sid).workspace_trust == WorkspaceTrust.TRUSTED
+        )
+        skill_loader = self._skill_loader_for(sid)
+        expanded = expand_skill_input(content, skill_loader, workspace_trusted=trusted)
+        directories = self._prompt_directories(sid, workspace_trusted=trusted)
+        expanded = expand_prompt_template(expanded, directories)
+        if expanded == content and content.startswith("/") and not content.startswith("/skill:"):
+            parts = content[1:].split(None, 1)
+            if parts:
+                # 旧名称命令仅作为 Skill 语法别名，不再覆写系统提示。
+                expanded = expand_skill_input(
+                    f"/skill:{content[1:]}", skill_loader, workspace_trusted=trusted
+                )
+                if expanded == f"/skill:{content[1:]}":
+                    return content
+        return expanded
+
+    # 停止所有会话工作并释放会话拥有的扩展资源
     async def cancel_all(self) -> None:
         self._queue_closing = True
         for wakeup in self._queue_wakeups.values():
@@ -1480,12 +1867,487 @@ class SessionManager:
         if continuation_tasks:
             await asyncio.gather(*continuation_tasks, return_exceptions=True)
         run_ids = list(self._active_runs)
-        if not run_ids:
-            return
-        await asyncio.gather(
-            *(self.cancel_run(run_id) for run_id in run_ids),
-            return_exceptions=True,
+        if run_ids:
+            await asyncio.gather(
+                *(self.cancel_run(run_id) for run_id in run_ids),
+                return_exceptions=True,
+            )
+        hosts, self._extension_hosts = self._extension_hosts, {}
+        self._extension_skill_loaders.clear()
+        self._extension_prompt_paths.clear()
+        self._extension_theme_paths.clear()
+        self._extension_resources_ready.clear()
+        for host in hosts.values():
+            await host.emit_session_event({"type": "session_shutdown", "reason": "quit"})
+            await host.close()
+
+    # 提取扩展自定义消息的模型可见文本，非文本消息保留明确的来源占位。
+    def _extension_custom_text(self, message: dict[str, Any]) -> str:
+        content = message.get("content", [])
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            text = "\n".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+            if text:
+                return text
+        return f"[Extension message: {message.get('customType', 'message')}]"
+
+    # 将扩展自定义消息追加到会话事实日志，并返回持久序号。
+    def _record_extension_custom_message(
+        self,
+        sid: str,
+        message: dict[str, Any],
+        *,
+        run_id: str | None = None,
+    ) -> int:
+        event = self._store.append_session_event(
+            sid,
+            event_type="input.admitted",
+            turn_id=run_id or "",
+            payload={
+                "role": "user",
+                "content": deepcopy(message.get("content", [])),
+                "message_id": (
+                    f"{run_id or sid}:extension:{uuid.uuid4().hex[:12]}"
+                ),
+                "source": {
+                    "kind": "extension",
+                    "custom_type": str(message.get("customType", "message")),
+                },
+                "display": bool(message.get("display", False)),
+                "details": deepcopy(message.get("details")),
+            },
         )
+        return event.seq
+
+    # 将可见扩展消息发布到持久运行时流，隐藏消息仅保留在模型事实日志。
+    async def _publish_extension_custom_message(
+        self,
+        sid: str,
+        message: dict[str, Any],
+        ledger_seq: int,
+    ) -> None:
+        if not message.get("display", False):
+            return
+        content = message.get("content", [])
+        blocks = content if isinstance(content, list) else [
+            {"type": "text", "text": str(content)},
+        ]
+        await self._bus.publish(AgentMessageEvent(
+            run_id=f"extension:{sid}:{uuid.uuid4().hex[:12]}",
+            session_id=sid,
+            message_id=f"{sid}:extension:{ledger_seq}",
+            phase="end",
+            role="custom",
+            custom_type=str(message.get("customType", "message")),
+            content=deepcopy(blocks),
+            ledger_seq=ledger_seq,
+            ts=_now(),
+        ))
+
+    # 追加并按展示标记发布一条空闲扩展消息。
+    async def _append_extension_custom_message(
+        self,
+        sid: str,
+        message: dict[str, Any],
+    ) -> int:
+        ledger_seq = self._record_extension_custom_message(sid, message)
+        await self._publish_extension_custom_message(sid, message, ledger_seq)
+        return ledger_seq
+
+    # 将扩展文本与内嵌图片转成普通会话输入及内容寻址附件
+    async def _extension_input(
+        self, content: UserMessageContent,
+    ) -> tuple[str, list[ImageArtifactInput]]:
+        if isinstance(content, str):
+            if not content.strip():
+                raise ValueError("Extension message must not be blank")
+            return content, []
+        if isinstance(content, dict):
+            raise ValueError("User extension messages must contain text or image blocks")
+        texts: list[str] = []
+        attachments: list[ImageArtifactInput] = []
+        for block in content:
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                texts.append(block["text"])
+            elif block.get("type") == "image":
+                source = block.get("source", block)
+                data = base64.b64decode(source["data"], validate=True)
+                if not data or len(data) > 2 * 1024 * 1024:
+                    raise ValueError("image must contain between 1 byte and 2 MiB")
+                metadata = inspect_image(data)
+                reference = await self._artifact_store.put(data, media_type=metadata.media_type)
+                attachments.append(ImageArtifactInput(
+                    sha256=reference.sha256, media_type=metadata.media_type,
+                    size=reference.size, width=metadata.width, height=metadata.height,
+                ))
+            else:
+                raise ValueError("Extension message supports only text and image blocks")
+        text = "\n".join(texts)
+        if not text.strip() and not attachments:
+            raise ValueError("Extension message must not be blank")
+        return text if text.strip() else "[Image attachment]", attachments
+
+    # 让扩展消息跟随会话当前活动任务，空闲时启动该会话的下一轮
+    def _bind_extension_messages(
+        self, sid: str, host: ExtensionHost, mode: RuntimeMode,
+    ) -> None:
+        # 每次交付查找当前运行，不能捕获上一轮已经结束的 run ID
+        async def send_message(
+            content: UserMessageContent, deliver_as: Literal["steer", "follow_up"], expand: bool,
+        ) -> None:
+            text, attachments = await self._extension_input(content)
+            active_id = next((run_id for run_id, run in self._active_runs.items()
+                              if run.session_id == sid and not run.task.done()), None)
+            if active_id is not None:
+                if deliver_as == "steer":
+                    await self.steer_run(
+                        active_id, text, expand_prompt_templates=expand,
+                        attachments=attachments, input_source="extension",
+                    )
+                else:
+                    await self.queue_message(
+                        sid, text, runtime_mode=mode, attachments=attachments,
+                        expand_prompt_templates=expand,
+                        input_source="extension",
+                    )
+            else:
+                await self.send_message(
+                    sid, text, runtime_mode=mode, attachments=attachments,
+                    expand_prompt_templates=expand,
+                    input_source="extension",
+                )
+
+        host.api.message_sender = send_message
+
+        # 按 Pi 的 triggerTurn 和 deliverAs 语义交付带来源的扩展消息。
+        async def send_custom_message(
+            message: dict[str, Any],
+            trigger_turn: bool | None,
+            deliver_as: Literal["steer", "follow_up", "next_turn"] | None,
+        ) -> None:
+            if deliver_as == "next_turn":
+                self._next_turn_extension_messages.setdefault(sid, []).append(
+                    deepcopy(message)
+                )
+                return
+            active_id = self.active_run_id(sid)
+            if active_id is not None:
+                if trigger_turn is not False and deliver_as != "follow_up":
+                    if (
+                        self._interaction_manager is None
+                        or not self._interaction_manager.steer(active_id, message)
+                    ):
+                        raise RuntimeError("Extension could not steer the active run")
+                    return
+                if trigger_turn is not False and deliver_as == "follow_up":
+                    if (
+                        self._interaction_manager is None
+                        or not self._interaction_manager.queue_extension_follow_up(
+                            active_id, message
+                        )
+                    ):
+                        raise RuntimeError("Extension could not queue the active run message")
+                    return
+                self._pending_extension_messages.setdefault(sid, []).append(
+                    deepcopy(message)
+                )
+                return
+            if trigger_turn:
+                await self.send_message(
+                    sid,
+                    self._extension_custom_text(message),
+                    runtime_mode=mode,
+                    input_processed=True,
+                    input_source="extension",
+                    extension_custom_message=message,
+                )
+                return
+            await self._append_extension_custom_message(sid, message)
+
+        host.api.custom_message_sender = send_custom_message
+
+        # 将扩展通知发布给当前会话前端，不把临时提示混入模型上下文。
+        async def send_notification(
+            message: str,
+            severity: Literal["info", "warning", "error"],
+        ) -> None:
+            await self._bus.publish(ExtensionNotificationEvent(
+                run_id=f"extension:{sid}:{uuid.uuid4().hex[:12]}",
+                session_id=sid,
+                message=message,
+                severity=severity,
+                ts=_now(),
+            ))
+
+        host.api.notification_sender = send_notification
+
+        # 让扩展命令切换当前会话模型，不修改其他会话或全局默认值
+        async def set_model(provider: str, model: str) -> None:
+            await self.set_model(sid, provider, model)
+
+        host.api.model_setter = set_model
+
+        # 返回当前会话的模型选择摘要，供扩展状态栏和命令自省使用。
+        def get_model() -> dict[str, Any] | None:
+            session = self._get_session(sid)
+            if not session.route_id and not session.model:
+                return None
+            return {
+                "provider": session.route_id,
+                "id": session.model,
+                "thinking": session.thinking_level or "off",
+            }
+
+        host.api.model_getter = get_model
+
+        # 返回会话显式思考档位；未设置时按关闭展示，实际请求仍继承路由。
+        def get_thinking_level() -> ThinkingLevel:
+            return self._get_session(sid).thinking_level or "off"
+
+        # 让扩展复用正式会话思考档位操作。
+        async def set_thinking_level(level: ThinkingLevel) -> None:
+            await self.set_thinking(sid, level)
+
+        host.api.thinking_getter = get_thinking_level
+        host.api.thinking_setter = set_thinking_level
+
+        # 让扩展追加不进入模型上下文的持久状态条目，并返回稳定账本序号。
+        def append_entry(custom_type: str, data: Any) -> int:
+            event = self._store.append_session_event(
+                sid,
+                event_type="extension.entry",
+                payload={"custom_type": custom_type, "data": data},
+                provenance="extension",
+            )
+            return event.seq
+
+        # 返回当前内存中的会话标题，避免扩展自行读取 meta.json。
+        def get_session_name() -> str | None:
+            return self._get_session(sid).title or None
+
+        # 复用正式重命名操作，使 TUI、Web 与 Runtime 投影同步刷新。
+        async def set_session_name(name: str) -> None:
+            await self.rename(sid, name)
+
+        # 将扩展书签限制在当前会话已经存在的稳定账本条目。
+        def set_entry_label(entry_id: str, label: str | None) -> None:
+            try:
+                sequence = int(entry_id)
+            except ValueError as exc:
+                raise ValueError("entry_id must be a ledger sequence") from exc
+            self._store.set_entry_label(sid, sequence, label)
+
+        host.api.entry_appender = append_entry
+        host.api.session_name_getter = get_session_name
+        host.api.session_name_setter = set_session_name
+        host.api.entry_label_setter = set_entry_label
+
+        # 扩展按会话查询实际活动任务，不依赖宿主加载时的旧 run ID。
+        def is_idle() -> bool:
+            return self.active_run_id(sid) is None
+
+        # 等待当前活动任务的 finished 屏障，避免只等 asyncio Task 返回。
+        async def wait_for_idle() -> None:
+            run_id = self.active_run_id(sid)
+            if run_id is None:
+                return
+            active = self._active_runs.get(run_id)
+            if active is not None:
+                await active.finished.wait()
+
+        # 取消当前会话活动任务并保留尚未消费的纠偏与后续消息。
+        async def abort_run() -> bool:
+            run_id = self.active_run_id(sid)
+            if run_id is None:
+                return False
+            await self.cancel_run(run_id)
+            return True
+
+        # 复用正式压缩入口，确保摘要与 Ledger 事件语义一致。
+        async def compact_session(focus: str) -> Any:
+            return await self.compact(sid, focus)
+
+        # 复用正式资源重载入口，使前端命令目录同步更新。
+        async def reload_session() -> dict[str, Any]:
+            return await self.reload_resources(sid)
+
+        host.api.idle_getter = is_idle
+        host.api.idle_waiter = wait_for_idle
+        host.api.run_aborter = abort_run
+        host.api.compaction_requester = compact_session
+        host.api.resource_reloader = reload_session
+
+        # 扩展 UI 问题复用正式 InteractionManager，活动与空闲会话使用同一响应通道。
+        async def ask_extension_question(
+            question: str, header: str, options: list[str], multi_select: bool,
+        ) -> str:
+            if self._interaction_manager is None:
+                raise RuntimeError("Interactive prompts are not available")
+            run_id = self.active_run_id(sid) or f"extension:{sid}:{uuid.uuid4().hex[:12]}"
+            return await self._interaction_manager.ask(
+                run_id=run_id,
+                session_id=sid,
+                question=question,
+                header=header,
+                options=options,
+                multi_select=multi_select,
+            )
+
+        host.api.question_asker = ask_extension_question
+
+    # 在模板展开和持久入队之前处理输入，返回空值表示扩展已经接管
+    async def process_input(
+        self, sid: str, content: str, attachments: list[ImageArtifactInput] | None = None, *,
+        source: Literal["interactive", "rpc", "extension"] = "interactive",
+        streaming_behavior: Literal["steer", "follow_up"] | None = None,
+    ) -> tuple[str, list[ImageArtifactInput]] | None:
+        session = self._get_session(sid)
+        if session.status == "closed":
+            raise HandlerError(SESSION_CLOSED, "session already closed")
+        host = await self.prepare_extensions(sid)
+        if host is None or not any(kind == "input" for kind, _ in host.api.handlers):
+            return content, attachments or []
+        _, images = await self._prepare_image_attachments(attachments or [])
+        native_images = []
+        for image in images:
+            image_source = image["source"]
+            assert isinstance(image_source, dict)
+            native_images.append({"type": "image", "data": image_source["data"],
+                                  "mimeType": image_source["media_type"]})
+        result = await host.emit_input(
+            content, native_images or None, source=source, streaming_behavior=streaming_behavior,
+        )
+        if result["action"] == "handled":
+            return None
+        if result["action"] == "transform":
+            return await self._extension_input([
+                {"type": "text", "text": result["text"]}, *(result.get("images") or []),
+            ])
+        return content, attachments or []
+
+    # 首次打开会话时装载扩展命令，后续查询复用同一个宿主
+    async def prepare_extensions(self, sid: str) -> ExtensionHost | None:
+        self._get_session(sid)
+        host = self._extension_hosts.get(sid)
+        if host is not None and not host.api.closed:
+            return host
+        from code_rook.core.runner import AgentRunner
+
+        runner = self._runner_factory()
+        if not isinstance(runner, AgentRunner):
+            return None
+        host = runner.create_extension_host("")
+        try:
+            await host.initialize()
+        except BaseException:
+            await host.close()
+            raise
+        mode = (self._authority_provider(sid).mode
+                if self._authority_provider is not None else RuntimeMode.ACT)
+        self._bind_extension_messages(sid, host, mode)
+        self._extension_hosts[sid] = host
+        return host
+
+    # 将扩展发现的临时资源冻结到当前会话，并让后续输入与模型工具共享同一 Skill 视图
+    async def _discover_extension_resources(
+        self,
+        sid: str,
+        host: ExtensionHost,
+        *,
+        reason: Literal["startup", "reload"],
+    ) -> None:
+        resources = await host.discover_resources(reason)
+        skill_paths = resources["skill_paths"]
+        if skill_paths:
+            self._extension_skill_loaders[sid] = SkillLoader(
+                self._workspace,
+                additional_paths=(*self._skill_paths, *skill_paths),
+            )
+        else:
+            self._extension_skill_loaders.pop(sid, None)
+        prompt_paths = resources["prompt_paths"]
+        if prompt_paths:
+            self._extension_prompt_paths[sid] = prompt_paths
+        else:
+            self._extension_prompt_paths.pop(sid, None)
+        theme_paths = resources["theme_paths"]
+        if theme_paths:
+            self._extension_theme_paths[sid] = theme_paths
+        else:
+            self._extension_theme_paths.pop(sid, None)
+        self._extension_resources_ready.add(sid)
+
+    # 返回会话冻结的扩展 Skill 目录，未发现扩展资源时复用基础加载器
+    def _skill_loader_for(self, sid: str) -> SkillLoader:
+        return self._extension_skill_loaders.get(sid, self._skill_loader)
+
+    # 按用户、项目、配置和扩展顺序返回当前会话的 Prompt 模板路径
+    def _prompt_directories(
+        self, sid: str, *, workspace_trusted: bool,
+    ) -> list[Path]:
+        directories = [Path("~/.coderook/prompts").expanduser()]
+        if workspace_trusted:
+            directories.append(self._workspace / ".coderook" / "prompts")
+        directories.extend(self._workspace / path.expanduser() for path in self._prompt_paths)
+        directories.extend(self._extension_prompt_paths.get(sid, ()))
+        return directories
+
+    # 删除指定会话的扩展资源投影，防止重载、关闭或删除后继续暴露旧资源
+    def _clear_extension_resources(self, sid: str) -> None:
+        self._extension_skill_loaders.pop(sid, None)
+        self._extension_prompt_paths.pop(sid, None)
+        self._extension_theme_paths.pop(sid, None)
+        self._extension_resources_ready.discard(sid)
+
+    # 执行用户提交的扩展斜杠命令，命令处理器可选择再发送模型任务
+    async def execute_extension_command(self, sid: str, content: str) -> str:
+        host = await self.prepare_extensions(sid)
+        parts = content.removeprefix("/").split(None, 1)
+        if host is None or not parts:
+            raise HandlerError(INVALID_PARAMS, "Unknown extension command")
+        return await host.execute_command(parts[0], parts[1] if len(parts) > 1 else "")
+
+    # 在会话空闲时重新读取扩展源码，释放旧状态且不启动模型任务
+    async def reload_resources(self, sid: str) -> dict[str, Any]:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "Stop the current run before reloading extensions")
+        previous = self._extension_hosts.get(sid)
+        if previous is not None:
+            await previous.emit_session_event({"type": "session_shutdown", "reason": "reload"})
+        async with lock:
+            previous = self._extension_hosts.pop(sid, None)
+            self._clear_extension_resources(sid)
+            sender = previous.api.message_sender if previous is not None else None
+            if previous is not None:
+                await previous.close()
+            from code_rook.core.runner import AgentRunner
+
+            runner = self._runner_factory()
+            if isinstance(runner, AgentRunner):
+                host = runner.create_extension_host("")
+                try:
+                    await host.initialize()
+                except BaseException:
+                    await host.close()
+                    raise
+                self._extension_hosts[sid] = host
+                if sender is not None:
+                    host.api.message_sender = sender
+                else:
+                    mode = (self._authority_provider(sid).mode
+                            if self._authority_provider is not None else RuntimeMode.ACT)
+                    self._bind_extension_messages(sid, host, mode)
+                await host.emit_session_event({"type": "session_start", "reason": "reload"})
+                await self._discover_extension_resources(sid, host, reason="reload")
+            return self.context_info(sid)
 
     # 关闭指定 session 并更新 meta.json
     async def close(self, sid: str) -> None:
@@ -1494,6 +2356,9 @@ class SessionManager:
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
+        host = self._extension_hosts.get(sid)
+        if host is not None:
+            await host.emit_session_event({"type": "session_shutdown", "reason": "quit"})
         async with lock:
             if self._hooks is not None:
                 await self._hooks.emit(
@@ -1501,6 +2366,12 @@ class SessionManager:
                     {"session_id": sid, "reason": "closed"},
                 )
             session.status = "closed"
+            host = self._extension_hosts.pop(sid, None)
+            self._clear_extension_resources(sid)
+            self._pending_extension_messages.pop(sid, None)
+            self._next_turn_extension_messages.pop(sid, None)
+            if host is not None:
+                await host.close()
             session.updated_at = _now()
             self._store.write_meta(session)
             if self._runtime is not None:
@@ -1514,41 +2385,49 @@ class SessionManager:
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
+        host = await self.prepare_extensions(sid)
         provider = self._provider
-        if self._route_registry is not None:
-            from code_rook.core.llm.factory import create_provider_for_route
+        if self._route_registry is not None or (host is not None and session.route_id):
+            from code_rook.core.llm.factory import create_provider_for_resolved_route
 
             try:
-                resolved_route = self._route_registry.resolve()
+                resolved_route = self._resolve_model_route(
+                    session.route_id or None,
+                    session.model or None,
+                    host,
+                )
+                resolved_route = self._apply_session_thinking(session, resolved_route)
             except RouteResolutionError as exc:
                 raise HandlerError(INVALID_PARAMS, str(exc)) from exc
-            provider = create_provider_for_route(
-                resolved_route.route,
-                resolved_route.credential,
-            )
+            provider = create_provider_for_resolved_route(resolved_route)
         if provider is None:
             raise HandlerError(-32020, "provider not available for compaction")
         async with lock:
             from code_rook.core.bus.commands import SessionCompactResult
             from code_rook.core.compact.compactor import Compactor
+            from code_rook.core.context import ExecutionContext
             messages = self._store.read_messages(sid)
             session_dir = self._store.session_dir(sid)
-            compactor = Compactor(self._bus, session_dir, sid, store=self._store)
+            config = self._compaction_config
+            compactor = Compactor(
+                self._bus, session_dir, sid, store=self._store,
+                strategy=config.strategy, retain_ratio=config.retain_ratio,
+                keep_recent_tokens=config.keep_recent_tokens, reserve_tokens=config.reserve_tokens,
+                retry_policy=self._summary_retry_policy,
+                lifecycle=host.emit_session_event if host is not None else None,
+            )
             latest_run_id = session.run_ids[-1] if session.run_ids else ""
-            result = await compactor.compact_messages(
-                messages,
-                provider,
-                focus=focus,
-                run_id=latest_run_id,
+            compact_context = ExecutionContext(
+                run_id=latest_run_id or "manual",
+                goal="",
+                max_steps=1,
+                prefill_messages=messages,
+            )
+            result = await compactor.compact(
+                compact_context, provider, focus=focus, trigger="manual",
             )
             if result is None:
                 raise HandlerError(-32021, "compaction failed or not beneficial")
-            await compactor.commit(
-                result,
-                run_id=latest_run_id or "manual",
-                trigger="manual",
-                publish=False,
-            )
             if self._hooks is not None:
                 await self._hooks.emit(
                     "compaction_completed",
@@ -1579,6 +2458,12 @@ class SessionManager:
         await self._ensure_runtime_sessions()
         self._get_session(sid)
         return self._store.read_messages(sid)
+
+    # 返回界面历史，包含不进入模型上下文的用户 Shell 记录
+    async def get_display_history(self, sid: str) -> list[dict[str, Any]]:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        return self._store.derive_messages(sid, display=True)
 
     # 返回最近一次 run 的任务列表，未创建任务时保持只读且返回空集合
     def list_tasks(self, sid: str) -> tuple[str | None, list[dict[str, Any]]]:
@@ -1702,6 +2587,16 @@ class SessionManager:
         messages = self._store.read_messages(sid)
         return {
             "message_count": len(messages),
+            "navigation": self._store.navigation_projection(sid),
+            "input_commands": self.input_commands(sid),
+            "theme_paths": [str(path) for path in self._extension_theme_paths.get(sid, ())],
+            "route_id": session.route_id,
+            "model": session.model,
+            "thinking_level": session.thinking_level,
+            "extension_providers": (
+                self._extension_hosts[sid].api.get_registered_providers()
+                if sid in self._extension_hosts else []
+            ),
             "estimated_tokens": estimate_messages_tokens(messages),
             "run_count": len(session.run_ids),
             "last_run_id": session.run_ids[-1] if session.run_ids else None,
@@ -1709,6 +2604,30 @@ class SessionManager:
                 MemoryStore(WorkspaceBoundary.current().root / ".coderook" / "memory").list_all()
             ),
         }
+
+    # 为双前端返回同一会话实际可执行的 Skill 与模板命令目录。
+    def input_commands(self, sid: str = "") -> list[dict[str, str]]:
+        if sid:
+            self._get_session(sid)
+        trusted = (
+            self._authority_provider is not None
+            and self._authority_provider(sid).workspace_trust == WorkspaceTrust.TRUSTED
+        )
+        directories = self._prompt_directories(sid, workspace_trusted=trusted)
+        commands = list_prompt_templates(directories)
+        commands.extend(
+            {"name": f"skill:{skill.name}", "description": skill.description, "kind": "skill"}
+            for skill in self._skill_loader_for(sid).list_for_execution(
+                workspace_trusted=trusted
+            )
+        )
+        host = self._extension_hosts.get(sid)
+        if host is not None:
+            names = set(host.commands)
+            commands = [command for command in commands if command["name"] not in names]
+            commands.extend({"name": command.name, "description": command.description,
+                             "kind": "extension"} for command in host.commands.values())
+        return commands
 
     # 返回已恢复的指定会话，供 Core 的会话级配置命令做存在性校验
     def get_session(self, sid: str) -> Session:
@@ -1791,6 +2710,10 @@ class SessionManager:
                         ts=session.updated_at,
                     )
                 )
+        host = await self.prepare_extensions(sid)
+        if host is not None:
+            await host.emit_session_event({"type": "session_start", "reason": "resume"})
+            await self._discover_extension_resources(sid, host, reason="startup")
         return session
 
     async def rename(self, sid: str, title: str) -> Session:
@@ -1815,7 +2738,148 @@ class SessionManager:
                     ts=session.updated_at,
                 )
             )
+        host = self._extension_hosts.get(sid)
+        if host is not None:
+            await host.emit_session_event({
+                "type": "session_info_changed", "name": normalized,
+            })
         return session
+
+    # 读取会话分支树供 TUI 和 Web 选择历史继续点。
+    async def tree(self, sid: str) -> list[dict[str, Any]]:
+        await self._ensure_runtime_sessions()
+        self._get_session(sid)
+        return self._store.session_tree(sid)
+
+    # 切换同一会话的上下文路径，不执行任务也不回滚工作区文件。
+    async def navigate_tree(
+        self, sid: str, target_seq: int, *, summarize: bool = False, focus: str = ""
+    ) -> dict[str, Any]:
+        await self._ensure_runtime_sessions()
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "wait for the active turn before navigating history")
+        tree = self._store.session_tree(sid)
+        parents = {int(entry["seq"]): entry["parent_seq"] for entry in tree}
+        old_leaf = next((int(entry["seq"]) for entry in reversed(tree) if entry["active"]), None)
+        old_active = {int(entry["seq"]) for entry in tree if entry["active"]}
+        cursor: int | None = target_seq
+        common_ancestor = None
+        while cursor is not None:
+            if cursor in old_active:
+                common_ancestor = cursor
+                break
+            cursor = parents.get(cursor)
+        branch_entries = self._store.branch_entries(sid, target_seq)
+        host = await self.prepare_extensions(sid)
+        decision = None
+        if host is not None:
+            decision = await host.emit_session_event({
+                "type": "session_before_tree",
+                "preparation": {
+                    "targetId": str(target_seq),
+                    "oldLeafId": str(old_leaf) if old_leaf is not None else None,
+                    "commonAncestorId": (
+                        str(common_ancestor) if common_ancestor is not None else None
+                    ),
+                    "entriesToSummarize": [row for _, row in branch_entries],
+                    "userWantsSummary": summarize,
+                    "customInstructions": focus or None,
+                    "replaceInstructions": False,
+                    "label": None,
+                },
+            })
+            if decision is not None and decision.get("cancel") is True:
+                raise HandlerError(INVALID_PARAMS, "session tree navigation cancelled by extension")
+        resolved_focus = (
+            str(decision["customInstructions"])
+            if decision is not None and isinstance(decision.get("customInstructions"), str)
+            else focus
+        )
+        replace_instructions = bool(decision and decision.get("replaceInstructions") is True)
+        label = (
+            str(decision["label"])
+            if decision is not None and isinstance(decision.get("label"), str)
+            else ""
+        )
+        extension_summary = decision.get("summary") if decision is not None else None
+        supplied_summary = (
+            str(extension_summary.get("summary", ""))
+            if isinstance(extension_summary, dict) else ""
+        )
+        async with lock:
+            summary = supplied_summary
+            if summarize and not supplied_summary:
+                from code_rook.core.agent_runtime.branch_summary import summarize_branch
+                from code_rook.core.llm.factory import create_provider_for_resolved_route
+
+                provider = self._provider
+                context_window = 128_000
+                if self._route_registry is not None or (host is not None and session.route_id):
+                    route = self._resolve_model_route(
+                        session.route_id or None,
+                        session.model or None,
+                        host,
+                    )
+                    route = self._apply_session_thinking(session, route)
+                    provider = create_provider_for_resolved_route(route)
+                    context_window = route.route.context_window or context_window
+                if provider is None:
+                    raise HandlerError(-32020, "provider not available for branch summary")
+                summary_bus = EventBus()
+                operation_id = f"branch-summary-{uuid.uuid4().hex}"
+
+                # 分支摘要不创建编码 Turn，用量独立入账并投影到会话事件。
+                async def record_summary_usage(event: BaseModel) -> None:
+                    if getattr(event, "type", "") != "llm.usage":
+                        return
+                    payload = event.model_dump(mode="json")
+                    payload["operation_id"] = operation_id
+                    payload["purpose"] = "branch_summary"
+                    recorded = self._store.append_session_event(
+                        sid, event_type="session.auxiliary_usage", payload=payload,
+                    )
+                    if self._runtime is not None:
+                        await self._runtime.record_auxiliary_usage(sid, payload, recorded.seq)
+
+                summary_bus.subscribe(record_summary_usage, critical=True)
+
+                # 摘要请求及尝试独立入账，不伪装成一次编码任务
+                def audit_summary(event_type: str, payload: dict[str, Any]) -> None:
+                    self._store.append_session_event(sid, event_type=event_type, payload=payload)
+
+                summary = await summarize_branch(
+                    branch_entries, provider, focus=resolved_focus,
+                    replace_instructions=replace_instructions,
+                    context_window=context_window,
+                    reserve_tokens=self._compaction_config.reserve_tokens,
+                    retry_policy=self._summary_retry_policy,
+                    bus=summary_bus, run_id=operation_id,
+                    audit=audit_summary,
+                )
+            result = self._store.navigate_tree(
+                sid, target_seq, summary=summary, label=label,
+            )
+            self._pending_plans.pop(sid, None)
+            self._pending_plans_loaded.add(sid)
+            session.updated_at = _now()
+            self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
+                await self._runtime.record_navigation(sid, target_seq, result["ledger_seq"])
+        if host is not None:
+            summary_entry = (
+                {"summary": summary, "label": label or None} if summary else None
+            )
+            await host.emit_session_event({
+                "type": "session_tree",
+                "newLeafId": str(result["leaf_seq"]) if result["leaf_seq"] else None,
+                "oldLeafId": str(old_leaf) if old_leaf is not None else None,
+                "summaryEntry": summary_entry,
+                "fromExtension": bool(supplied_summary),
+            })
+        return {"session_id": sid, **result, "messages": self._store.read_messages(sid)}
 
     # 从现有会话创建历史副本，并允许仅在新 fork 上冻结不同 Preset
     async def fork(
@@ -1824,14 +2888,31 @@ class SessionManager:
         title: str = "",
         *,
         preset_id: str | None = None,
+        leaf_seq: int | None = None,
     ) -> Session:
         await self._ensure_runtime_sessions()
         source = self._get_session(sid)
         source_lock = self._locks[sid]
         if source_lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
+        source_host = await self.prepare_extensions(sid)
+        if source_host is not None:
+            decision = await source_host.emit_session_event({
+                "type": "session_before_fork",
+                "entryId": str(leaf_seq) if leaf_seq is not None else "",
+                "position": "at",
+            })
+            if decision is not None and decision.get("cancel") is True:
+                raise HandlerError(INVALID_PARAMS, "session fork cancelled by extension")
 
         async with source_lock:
+            if leaf_seq is not None:
+                from code_rook.core.compact.protocol import validate_tool_protocol
+
+                messages = self._store.derive_messages(sid, leaf_seq=leaf_seq, trim_orphans=False)
+                valid, errors = validate_tool_protocol(messages)
+                if not valid:
+                    raise ValueError("select a complete tool result: " + "; ".join(errors))
             fork_id = f"sess-{uuid.uuid4().hex[:12]}"
             ts = _now()
             fork_title = title.strip() or f"{source.title or source.id} (fork)"
@@ -1848,8 +2929,13 @@ class SessionManager:
                 workspace=source.workspace,
                 preset_id=preset.id,
                 preset_digest=preset.digest,
+                route_id=source.route_id,
+                model=source.model,
+                thinking_level=source.thinking_level,
             )
             self._store.create_fork(source.id, forked)
+            if leaf_seq is not None:
+                self._store.select_branch(fork_id, leaf_seq)
             self._sessions[fork_id] = forked
             self._locks[fork_id] = asyncio.Lock()
             self._pending_plans_loaded.add(fork_id)
@@ -1864,6 +2950,15 @@ class SessionManager:
                     source_session_id=source.id,
                     ts=ts,
                 )
+            )
+        fork_host = await self.prepare_extensions(forked.id)
+        if fork_host is not None:
+            await fork_host.emit_session_event({
+                "type": "session_start", "reason": "fork",
+                "previousSessionFile": str(self._store.session_dir(source.id) / "thread.jsonl"),
+            })
+            await self._discover_extension_resources(
+                forked.id, fork_host, reason="startup"
             )
         return forked
 
@@ -1891,6 +2986,9 @@ class SessionManager:
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
+        host = self._extension_hosts.get(sid)
+        if host is not None:
+            await host.emit_session_event({"type": "session_shutdown", "reason": "quit"})
         async with lock:
             if self._hooks is not None:
                 await self._hooks.emit(
@@ -1898,6 +2996,10 @@ class SessionManager:
                     {"session_id": sid, "reason": "deleted"},
                 )
             self._store.delete_session(sid)
+            host = self._extension_hosts.pop(sid, None)
+            self._clear_extension_resources(sid)
+            if host is not None:
+                await host.close()
         queue_task = self._queue_dispatch_tasks.pop(sid, None)
         self._queue_wakeups.pop(sid, None)
         if queue_task is not None and not queue_task.done():
@@ -1907,6 +3009,8 @@ class SessionManager:
         self._locks.pop(sid, None)
         self._pending_plans.pop(sid, None)
         self._pending_plans_loaded.discard(sid)
+        self._pending_extension_messages.pop(sid, None)
+        self._next_turn_extension_messages.pop(sid, None)
         if self._runtime is not None:
             await self._runtime.delete_session(sid)
         await self._bus.publish(SessionDeletedEvent(session_id=sid, ts=_now()))

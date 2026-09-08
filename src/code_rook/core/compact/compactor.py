@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from code_rook.core.agent_runtime.summarization import complete_summary
 from code_rook.core.bus.events import (
     ContextCompactedEvent,
     ContextCompactionCommittedEvent,
@@ -28,6 +32,8 @@ from code_rook.core.compact.protocol import (
     validate_tool_protocol,
 )
 from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.budget import output_token_budget
+from code_rook.core.llm.retry import RetryPolicy
 
 if TYPE_CHECKING:
     from code_rook.core.context import ExecutionContext
@@ -100,16 +106,31 @@ class Compactor:
         *,
         store: SessionStore | None = None,
         retain_ratio: float = 0.25,
-        strategy: str = "adaptive_evidence",
+        strategy: str = "session",
+        keep_recent_tokens: int = 20_000,
+        reserve_tokens: int = 16_384,
+        retry_policy: RetryPolicy | None = None,
+        lifecycle: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
     ) -> None:
         self._bus = bus
         self._session_dir = session_dir
         self._session_id = session_id
         self._store = store
         self._retain_ratio = retain_ratio
-        if strategy not in {"truncate", "structured", "adaptive_evidence"}:
+        self._keep_recent_tokens = keep_recent_tokens
+        self.reserve_tokens = reserve_tokens
+        self._retry_policy = retry_policy
+        self._lifecycle = lifecycle
+        if strategy not in {"session", "truncate", "structured", "adaptive_evidence"}:
             raise ValueError(f"unknown compaction strategy: {strategy}")
         self._strategy = strategy
+
+    # 将摘要专用请求和失败尝试追加到会话事实日志，保留原始对话不变
+    def _audit_summary(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._store is not None:
+            self._store.append_session_event(
+                self._session_id, event_type=event_type, payload=payload,
+            )
 
     # 增量压缩旧窗口并在质量检查通过后原子替换执行上下文
     async def compact(
@@ -121,20 +142,92 @@ class Compactor:
         trigger: str = "auto",
     ) -> CompactionResult | None:
         force = trigger == "overflow"
-        result = await self.compact_messages(
-            context.messages,
-            provider,
-            focus=focus,
-            retain_ratio=0.0 if force else None,
-            force=force,
-            run_id=context.run_id,
-            step=context.step,
-        )
+        reason = "overflow" if force else "manual" if trigger == "manual" else "threshold"
+        will_retry = force
+        from_extension = False
+        decision = None
+        if self._lifecycle is not None:
+            decision = await self._lifecycle({
+                "type": "session_before_compact",
+                "preparation": {
+                    "firstKeptEntryId": "",
+                    "messagesToSummarize": deepcopy(context.messages),
+                    "turnPrefixMessages": [],
+                    "isSplitTurn": False,
+                    "tokensBefore": estimate_messages_tokens(context.messages),
+                    "previousSummary": None,
+                    "fileOps": {},
+                    "settings": {
+                        "keepRecentTokens": self._keep_recent_tokens,
+                        "reserveTokens": self.reserve_tokens,
+                    },
+                },
+                "branchEntries": (
+                    [event.model_dump(mode="json")
+                     for event in self._store.read_session_events(self._session_id)]
+                    if self._store is not None and self._session_id else []
+                ),
+                "customInstructions": focus or None,
+                "reason": reason,
+                "willRetry": will_retry,
+                "signal": None,
+            })
+            if decision is not None and decision.get("cancel") is True:
+                await self._lifecycle({
+                    "type": "session_compact_failed", "reason": reason,
+                    "aborted": True, "willRetry": will_retry,
+                    "fromExtension": False,
+                })
+                return None
+        supplied = decision.get("compaction") if isinstance(decision, dict) else None
+        if isinstance(supplied, dict):
+            result = self._extension_result(context.messages, supplied)
+            from_extension = True
+        else:
+            result = await self.compact_messages(
+                context.messages,
+                provider,
+                focus=focus,
+                retain_ratio=0.0 if force else None,
+                force=force,
+                run_id=context.run_id,
+                step=context.step,
+            )
         if result is None:
+            if self._lifecycle is not None:
+                await self._lifecycle({
+                    "type": "session_compact_failed", "reason": reason,
+                    "errorMessage": "compaction failed or was not beneficial",
+                    "aborted": False, "willRetry": will_retry,
+                    "fromExtension": from_extension,
+                })
             return None
 
-        await self.commit(result, run_id=context.run_id, trigger=trigger)
+        try:
+            await self.commit(result, run_id=context.run_id, trigger=trigger)
+        except BaseException as exc:
+            if self._lifecycle is not None:
+                await self._lifecycle({
+                    "type": "session_compact_failed", "reason": reason,
+                    "errorMessage": str(exc) or type(exc).__name__,
+                    "aborted": isinstance(exc, asyncio.CancelledError),
+                    "willRetry": will_retry, "fromExtension": from_extension,
+                })
+            raise
         context.messages = result.messages
+        if self._lifecycle is not None:
+            await self._lifecycle({
+                "type": "session_compact",
+                "compactionEntry": {
+                    "summary": result.summary_text,
+                    "tokensBefore": result.original_token_estimate,
+                    "estimatedTokensAfter": result.compacted_tokens,
+                    "details": supplied.get("details") if isinstance(supplied, dict) else None,
+                },
+                "fromExtension": from_extension,
+                "reason": reason,
+                "willRetry": will_retry,
+            })
         logger.info(
             "context compacted session=%s run=%s original≈%d compacted≈%d retained=%d quality=%.2f",
             self._session_id,
@@ -145,6 +238,37 @@ class Compactor:
             result.quality.score,
         )
         return result
+
+    # 将扩展提供的摘要转为相同的持久化压缩结果并保留最近完整上下文
+    def _extension_result(
+        self, messages: list[dict[str, Any]], supplied: dict[str, Any],
+    ) -> CompactionResult | None:
+        text = supplied.get("summary")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        from code_rook.core.agent_runtime.compaction import prepare_compaction
+
+        prepared = prepare_compaction(messages, self._keep_recent_tokens)
+        recent = prepared.recent if prepared is not None else []
+        summary = CompactionSummary(goal="Extension checkpoint", markdown=text.strip())
+        output = [{"role": "user", "content": summary_message(summary)}, *recent]
+        valid, _ = validate_tool_protocol(output)
+        if not valid:
+            return None
+        return CompactionResult(
+            summary=summary,
+            summary_text=text.strip(),
+            original_token_estimate=estimate_messages_tokens(messages),
+            summary_tokens=max(1, len(text) // 4),
+            retained_tokens=estimate_messages_tokens(recent),
+            retained_messages=len(recent),
+            compacted_tokens=estimate_messages_tokens(output),
+            quality=CompactionQuality(
+                passed=True, score=1.0, checks={"extension": True}, missing=[],
+            ),
+            messages=output,
+            strategy="extension",
+        )
 
     # 持久化压缩结果并按需发布可观测事件
     async def commit(
@@ -199,6 +323,8 @@ class Compactor:
             return None
 
         selected_strategy = strategy or self._strategy
+        if selected_strategy == "session":
+            return await self._compact_session(messages, provider, focus, run_id, step)
         ratio = self._retain_ratio if retain_ratio is None else retain_ratio
         older: list[dict[str, Any]]
         recent: list[dict[str, Any]]
@@ -241,13 +367,15 @@ class Compactor:
         ]
 
         try:
-            response = await provider.chat(
+            response = await complete_summary(
+                provider,
                 messages=compress_request,
-                tool_schemas=[],
                 bus=self._bus,
                 run_id=run_id or "compact",
                 step=step,
                 system="Return a faithful structured JSON handoff summary.",
+                retry_policy=self._retry_policy,
+                audit=self._audit_summary,
             )
         except Exception:
             logger.exception("compactor: LLM call failed, skipping compaction")
@@ -314,6 +442,89 @@ class Compactor:
             pinned_fact_count=len(pinned_facts),
             pinned_fact_retained=len(pinned_facts),
             deduplicated_reads=deduplicated_reads,
+        )
+
+    # 使用固定最近窗口和独立任务前缀摘要，沿用 append-only 提交路径。
+    async def _compact_session(
+        self,
+        messages: list[dict[str, Any]],
+        provider: LLMProvider,
+        focus: str,
+        run_id: str,
+        step: int,
+    ) -> CompactionResult | None:
+        from code_rook.core.agent_runtime.compaction import prepare_compaction, summary_prompt
+        from code_rook.core.agent_runtime.summary_context import FileOperations, strip_file_lists
+        from code_rook.core.llm.types import completion_status_from_reason
+
+        prepared = prepare_compaction(messages, self._keep_recent_tokens)
+        if prepared is None:
+            return None
+        sections: list[str] = []
+        output_tokens = 0
+
+        for content, previous, prefix in (
+            (prepared.history, prepared.previous_summary, False),
+            (prepared.turn_prefix, "", True),
+        ):
+            if not content:
+                if previous:
+                    sections.append(previous)
+                continue
+            try:
+                # Pi 分别为历史摘要和当前任务前缀分配预留量的 80% 和 50%。
+                with output_token_budget(int(self.reserve_tokens * (0.5 if prefix else 0.8))):
+                    response = await complete_summary(
+                        provider,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": summary_prompt(content, previous, focus, prefix=prefix),
+                            }
+                        ],
+                        bus=self._bus,
+                        run_id=run_id or "compact",
+                        step=step,
+                        system="Summarize the conversation. Do not continue it or call tools.",
+                        retry_policy=self._retry_policy,
+                        audit=self._audit_summary,
+                    )
+            except Exception:
+                logger.exception("session summary failed; keeping original context")
+                return None
+            status = response.completion_status or completion_status_from_reason(
+                response.stop_reason, has_tool_calls=bool(response.tool_calls)
+            )
+            if status != "completed" or response.tool_calls or not response.text.strip():
+                return None
+            sections.append(response.text.strip())
+            output_tokens += (
+                response.usage.output_tokens if response.usage else len(response.text) // 4
+            )
+        files = FileOperations()
+        files.merge_summary(prepared.previous_summary)
+        files.collect(messages)
+        rendered = strip_file_lists("\n\n".join(sections)) + files.render()
+        summary = CompactionSummary(goal="Session checkpoint", markdown=rendered)
+        output = [{"role": "user", "content": summary_message(summary)}, *prepared.recent]
+        valid, _ = validate_tool_protocol(output)
+        before = estimate_messages_tokens(messages)
+        after = estimate_messages_tokens(output)
+        if not valid or after >= before:
+            return None
+        return CompactionResult(
+            summary=summary,
+            summary_text=rendered,
+            original_token_estimate=before,
+            summary_tokens=output_tokens,
+            retained_tokens=estimate_messages_tokens(prepared.recent),
+            retained_messages=len(prepared.recent),
+            compacted_tokens=after,
+            quality=CompactionQuality(
+                passed=True, score=1.0, checks={"protocol": True, "complete": True}
+            ),
+            messages=output,
+            strategy="session",
         )
 
     # 从事实日志提取目标、策略、未决审批、失败工具和修改结果等不可丢失事实

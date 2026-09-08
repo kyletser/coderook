@@ -25,6 +25,6 @@ def test_windows_capability_sid_is_stable_and_domain_separated(tmp_path: Path) -
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Restricted Token only")
 # 功能：验证真实 Windows runner 允许工作区写入并拒绝外部写入和 read-only 写入
-# 设计：复用生产探针经过真实 ACL、CreateRestrictedToken、CreateProcessAsUser 与 Job Object 全链路
+# 设计：单独验证 Python 写边界，不把 Bash 运行时兼容性混作 ACL 隔离能力
 def test_windows_acl_runner_enforces_real_write_boundaries() -> None:
-    assert probe() is True
+    assert probe(check_shell=False) is True

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
@@ -26,7 +27,7 @@ class ToolResult:
     is_error: bool = False
     # "runtime_error" | "timeout" | "schema_error" | "permission_denied" | "conflict"
     error_type: str | None = None
-    # 可选多模态附件：Anthropic 风格 image block dict，随下一次模型请求发送
+    # 可选多模态附件：与本次工具结果一起持久化的 image block。
     images: list[dict[str, object]] | None = None
     # 受管子进程的 CPU、内存、进程数和 wall-time 证据；非进程工具为空
     process_usage: dict[str, object] | None = None
@@ -37,6 +38,14 @@ class ToolResult:
     parent_tool_call_id: str = ""
     node_id: str = ""
     commit_order: int = 0
+    details: dict[str, Any] | None = None
+    terminate: bool = False
+
+    # 将文本和图片组成模型可见结果，避免通过独立用户消息传递工具附件。
+    def model_content(self) -> str | list[dict[str, Any]]:
+        if not self.images:
+            return self.content
+        return [{"type": "text", "text": self.content}, *deepcopy(self.images)]
 
 
 class ToolRetryPolicy(StrEnum):
@@ -53,6 +62,12 @@ class ToolSideEffect(StrEnum):
 
 
 class BaseTool(ABC):
+    prompt_snippet: ClassVar[str | None] = None
+    prompt_guidelines: ClassVar[tuple[str, ...]] = ()
+
+    # 在参数校验前提供工具自定义的规范化入口，默认保持输入不变
+    def prepare_arguments(self, params: dict[str, Any]) -> dict[str, Any]:
+        return params
     name: str
     description: str
     input_schema: dict[str, object]

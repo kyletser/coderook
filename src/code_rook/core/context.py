@@ -7,12 +7,8 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.core.working_set import WorkingSet
 
 _LANGUAGE_POLICY = (
-    "Always use concise English for internal analysis, reasoning content, tool inputs, "
-    "subagent delegation, memory, task state, and other machine-facing content unless exact "
-    "source or user text must be preserved. For the final user-facing reply, follow the "
-    "response language specified below. Keep code, commands, paths, identifiers, and quoted "
-    "text unchanged. "
-    "Never use emoji or decorative symbols in user-visible prose."
+    "Respond in the user's language unless asked otherwise. "
+    "Keep code, commands, paths, identifiers and quoted text unchanged."
 )
 
 
@@ -60,6 +56,7 @@ class ExecutionContext:
     pending_images: list[dict[str, Any]] = field(default_factory=list)
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
+    system_prompt_append: str = ""
 
     # 初始化消息历史，优先使用 session 完整回放内容
     def __post_init__(self) -> None:
@@ -74,21 +71,31 @@ class ExecutionContext:
     def _latest_user_text(self) -> str:
         for message in reversed(self.messages):
             content = message.get("content")
-            if message.get("role") == "user" and isinstance(content, str) and content.strip():
+            if message.get("role") != "user":
+                continue
+            if isinstance(content, str) and content.strip():
                 return content
+            if isinstance(content, list):
+                text = "\n".join(
+                    str(block.get("text", "")) for block in content
+                    if block.get("type") == "text"
+                ).strip()
+                if text:
+                    return text
         return ""
 
     # 返回稳定系统指令层，不包含记忆、工作集与一次性诊断
     def stable_system_prompt(self, base: str) -> str:
-        parts = [self.system_prompt_override if self.system_prompt_override else base]
+        parts = [self.system_prompt_override if self.system_prompt_override is not None else base]
+        if self.system_prompt_append.strip():
+            parts.append("\n\n" + self.system_prompt_append.strip())
         parts.append("\n\n## Language Policy\n" + _LANGUAGE_POLICY)
         parts.append(
             "\n\n## Response Language\n"
             "Final answer only: "
             + _response_language_hint(self.user_request)
             + ". This is based on the original user request that started the run, never on "
-            "tool-result messages. Do not use the final-answer language for analysis or "
-            "reasoning content; those must remain concise English."
+            "tool-result messages."
         )
         if self.runtime_mode == RuntimeMode.PLAN:
             parts.append(
@@ -121,7 +128,6 @@ class ExecutionContext:
             parts.append(
                 "\n\n## Session Notes\n"
                 + self.session_notes.strip()
-                + "\n\nRemember important durable facts by calling note_save."
             )
         working_set = self.working_set.render_context()
         if working_set:
@@ -161,7 +167,7 @@ class ExecutionContext:
 
     # 将工具调用结果追加为 user 消息；同一步的多个结果共享同一条消息
     def add_tool_result(
-        self, tool_use_id: str, content: str, is_error: bool = False
+        self, tool_use_id: str, content: str | list[dict[str, Any]], is_error: bool = False
     ) -> None:
         block: dict[str, Any] = {
             "type": "tool_result",

@@ -227,6 +227,7 @@ def _queued_message_from_row(row: sqlite3.Row) -> QueuedMessageRecord:
         content=row["content"],
         display_content=row["display_content"],
         mode=row["mode"],
+        expand_prompt_templates=bool(row["expand_prompt_templates"]),
         attachments=attachments,
         status=row["status"],
         error=row["error"],
@@ -380,8 +381,8 @@ class RuntimeStore:
                     INSERT INTO runtime_message_queue (
                         id, thread_id, content, display_content, mode,
                         attachments_json, status, error, created_at, updated_at,
-                        schema_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        schema_version, expand_prompt_templates
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -400,6 +401,7 @@ class RuntimeStore:
                         _dump_datetime(record.created_at),
                         _dump_datetime(record.updated_at),
                         record.schema_version,
+                        int(record.expand_prompt_templates),
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -866,6 +868,25 @@ class RuntimeStore:
             raise
         finally:
             connection.close()
+
+    # 按 Ledger 序号幂等投影独立用量，避免重复恢复导致重复计费。
+    def append_auxiliary_usage(
+        self, *, thread_id: str, payload: dict[str, JsonValue], ts: datetime,
+    ) -> RuntimeEventRecord | None:
+        with connect_database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT 1 FROM runtime_events WHERE thread_id = ? "
+                "AND type = 'session.auxiliary_usage' "
+                "AND json_extract(payload_json, '$.ledger_seq') = ? LIMIT 1",
+                (thread_id, payload["ledger_seq"]),
+            ).fetchone()
+            if existing is not None:
+                return None
+            return self._insert_event(
+                connection, thread_id=thread_id, turn_id=None,
+                event_type="session.auxiliary_usage", payload=payload, ts=ts,
+            )
 
     # 在单一事务中改变 turn 状态并写入对应事件
     def transition_turn_and_event(

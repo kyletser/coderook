@@ -54,12 +54,19 @@ def daemon_home(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+# 提供默认空模型端点，允许本地假模型集成测试覆盖
+def daemon_llm_url() -> str:
+    return ""
+
+
+@pytest.fixture
 # 启动使用隔离用户目录和随机端口的真实 Core daemon
 async def running_daemon(
     free_port: int,
     api_port: int,
     ipc_token: str,
     daemon_home: Path,
+    daemon_llm_url: str,
 ) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
     env["CODEROOK_PORT"] = str(free_port)
@@ -71,7 +78,7 @@ async def running_daemon(
     # IPC 集成测试不调用真实模型，固定占位配置以避免依赖本机 .env 或 CI Secret
     env["CODEROOK_LLM_PROVIDER"] = "anthropic"
     env["CODEROOK_LLM_DEFAULT_MODEL"] = "claude-test"
-    env["CODEROOK_LLM_BASE_URL"] = ""
+    env["CODEROOK_LLM_BASE_URL"] = daemon_llm_url
     env["CODEROOK_LLM_API_KEY_ENV"] = "ANTHROPIC_API_KEY"
     env["ANTHROPIC_API_KEY"] = "test-only-not-a-real-key"
 

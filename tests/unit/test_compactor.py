@@ -23,26 +23,30 @@ def _summary_json(
     files: list[dict[str, str]] | None = None,
     todos: list[str] | None = None,
 ) -> str:
-    return json.dumps({
-        "goal": goal,
-        "completed": ["old work completed"],
-        "constraints": constraints or [],
-        "decisions": ["retain recent context"],
-        "files": files or [],
-        "todos": todos or [],
-        "errors": [],
-        "critical_data": [],
-    })
+    return json.dumps(
+        {
+            "goal": goal,
+            "completed": ["old work completed"],
+            "constraints": constraints or [],
+            "decisions": ["retain recent context"],
+            "files": files or [],
+            "todos": todos or [],
+            "errors": [],
+            "critical_data": [],
+        }
+    )
 
 
 # 构造返回固定结构化摘要的 provider stub
 def _stub_provider(summary: str | None = None) -> Any:
     provider = MagicMock()
-    provider.chat = AsyncMock(return_value=LlmResponse(
-        stop_reason="end_turn",
-        text=summary or _summary_json(),
-        usage=UsageStats(input_tokens=100, output_tokens=30),
-    ))
+    provider.chat = AsyncMock(
+        return_value=LlmResponse(
+            stop_reason="end_turn",
+            text=summary or _summary_json(),
+            usage=UsageStats(input_tokens=100, output_tokens=30),
+        )
+    )
     return provider
 
 
@@ -60,7 +64,7 @@ def _make_messages(n: int = 8) -> list[dict[str, Any]]:
 async def test_compact_messages_calls_provider(tmp_path: Path) -> None:
     provider = _stub_provider()
     bus = EventBus()
-    compactor = Compactor(bus, tmp_path, "sess-1")
+    compactor = Compactor(bus, tmp_path, "sess-1", strategy="structured")
 
     result = await compactor.compact_messages(
         _make_messages(),
@@ -72,7 +76,10 @@ async def test_compact_messages_calls_provider(tmp_path: Path) -> None:
     assert result is not None
     provider.chat.assert_called_once()
     assert provider.chat.call_args.kwargs["tool_schemas"] == []
-    assert provider.chat.call_args.kwargs["bus"] is bus
+    from code_rook.core.agent_runtime.summarization import SummaryBus
+
+    assert isinstance(provider.chat.call_args.kwargs["bus"], SummaryBus)
+    assert provider.chat.call_args.kwargs["bus"]._parent is bus
     assert provider.chat.call_args.kwargs["run_id"] == "run-compact"
     assert provider.chat.call_args.kwargs["step"] == 3
 
@@ -81,7 +88,7 @@ async def test_compact_messages_calls_provider(tmp_path: Path) -> None:
 # 设计：比较结果尾部与原消息尾部，确保摘要化没有吞掉近期细节
 async def test_compact_preserves_recent_window(tmp_path: Path) -> None:
     messages = _make_messages()
-    compactor = Compactor(EventBus(), tmp_path, "sess-1", retain_ratio=0.25)
+    compactor = Compactor(EventBus(), tmp_path, "sess-1", retain_ratio=0.25, strategy="structured")
 
     result = await compactor.compact_messages(messages, _stub_provider())
 
@@ -125,7 +132,7 @@ async def test_compact_writes_auditable_summary_file(tmp_path: Path) -> None:
     context = ExecutionContext(run_id="r1", goal="test", max_steps=5)
     context.messages = _make_messages()
 
-    result = await Compactor(EventBus(), tmp_path, "sess-1").compact(
+    result = await Compactor(EventBus(), tmp_path, "sess-1", strategy="structured").compact(
         context,
         _stub_provider(),
     )
@@ -151,7 +158,7 @@ async def test_compact_publishes_observability_event(tmp_path: Path) -> None:
     context = ExecutionContext(run_id="r1", goal="test", max_steps=5)
     context.messages = _make_messages()
 
-    result = await Compactor(bus, tmp_path, "sess-1").compact(
+    result = await Compactor(bus, tmp_path, "sess-1", strategy="structured").compact(
         context,
         _stub_provider(),
         trigger="auto_threshold",
@@ -169,10 +176,12 @@ async def test_compact_publishes_observability_event(tmp_path: Path) -> None:
 # 设计：构造孤立 tool_result，确保压缩器在 LLM 调用前执行协议门禁
 async def test_invalid_tool_protocol_preserves_context(tmp_path: Path) -> None:
     provider = _stub_provider()
-    messages = [{
-        "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": "missing", "content": "x"}],
-    }]
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "missing", "content": "x"}],
+        }
+    ]
     context = ExecutionContext(run_id="r1", goal="test", max_steps=5)
     context.messages = messages
 
@@ -187,19 +196,23 @@ async def test_invalid_tool_protocol_preserves_context(tmp_path: Path) -> None:
 # 设计：把工具闭环放在保留边界附近，压缩后再次运行协议校验
 async def test_recent_window_keeps_tool_pair_atomic(tmp_path: Path) -> None:
     messages = _make_messages(6)
-    messages.extend([
-        {
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}],
-        },
-        {"role": "assistant", "content": "continue " + "z" * 300},
-    ])
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "done"}],
+            },
+            {"role": "assistant", "content": "continue " + "z" * 300},
+        ]
+    )
 
-    result = await Compactor(EventBus(), tmp_path, "sess-1").compact_messages(
+    result = await Compactor(
+        EventBus(), tmp_path, "sess-1", strategy="structured"
+    ).compact_messages(
         messages,
         _stub_provider(),
     )
@@ -215,7 +228,9 @@ async def test_quality_gate_rejects_missing_constraint(tmp_path: Path) -> None:
     messages = _make_messages()
     messages[0]["content"] = "You must keep backward compatibility. " + "x" * 400
 
-    result = await Compactor(EventBus(), tmp_path, "sess-1").compact_messages(
+    result = await Compactor(
+        EventBus(), tmp_path, "sess-1", strategy="structured"
+    ).compact_messages(
         messages,
         _stub_provider(),
     )
@@ -226,7 +241,9 @@ async def test_quality_gate_rejects_missing_constraint(tmp_path: Path) -> None:
 # 功能：验证第二次压缩会把上一版结构化摘要作为输入增量合并
 # 设计：完成首轮压缩后追加多轮消息，再检查第二次 provider 请求包含摘要标记
 async def test_incremental_compaction_merges_previous_summary(tmp_path: Path) -> None:
-    first = await Compactor(EventBus(), tmp_path, "sess-1", retain_ratio=0.2).compact_messages(
+    first = await Compactor(
+        EventBus(), tmp_path, "sess-1", retain_ratio=0.2, strategy="structured"
+    ).compact_messages(
         _make_messages(),
         _stub_provider(),
     )
@@ -239,6 +256,7 @@ async def test_incremental_compaction_merges_previous_summary(tmp_path: Path) ->
         tmp_path,
         "sess-1",
         retain_ratio=0.2,
+        strategy="structured",
     ).compact_messages(messages, provider)
 
     assert second is not None

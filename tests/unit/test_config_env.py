@@ -5,7 +5,59 @@ from pathlib import Path
 
 import pytest
 
-from code_rook.core.config import get_config
+from code_rook.core.config import (
+    AgentConfig,
+    CodeRookConfig,
+    _apply_toml,
+    _reject_project_sensitive_settings,
+    get_config,
+)
+
+
+# 功能：用户可关闭图片自动缩放，默认开启且不接受字符串伪布尔值
+# 设计：直接解析 TOML 数据验证设置类型和默认行为，不调用模型
+def test_image_auto_resize_setting() -> None:
+    config = CodeRookConfig()
+    assert config.agent.image_auto_resize
+    _apply_toml(config, {"agent": {"image_auto_resize": False}})
+    assert not config.agent.image_auto_resize
+    with pytest.raises(SystemExit, match="boolean"):
+        _apply_toml(config, {"agent": {"image_auto_resize": "false"}})
+
+
+# 功能：纠偏与后续消息默认逐条消费，支持分别配置为全部消费
+# 设计：直接解析用户 TOML 配置，验证模式互不影响且拼写错误有明确反馈
+@pytest.mark.parametrize("key", ["steering_mode", "follow_up_mode"])
+def test_queue_delivery_modes(key: str) -> None:
+    config = CodeRookConfig()
+    assert getattr(config.agent, key) == "one-at-a-time"
+    _apply_toml(config, {"agent": {key: "all"}})
+    assert getattr(config.agent, key) == "all"
+    with pytest.raises(SystemExit, match="one-at-a-time or all"):
+        _apply_toml(config, {"agent": {key: "batch"}})
+
+
+# 功能：用户可指定额外模板文件或目录，项目配置不能静默增加外部路径。
+# 设计：直接调用配置解析和来源校验，避免依赖本机配置并验证列表类型。
+@pytest.mark.parametrize("key", ["prompt_paths", "skill_paths", "extension_paths"])
+def test_explicit_prompt_paths_config(key: str) -> None:
+    config = CodeRookConfig()
+    values = {"agent": {key: ["~/prompts/review.md", "shared-prompts"]}}
+    _apply_toml(config, values)
+    assert getattr(config.agent, key) == values["agent"][key]
+    with pytest.raises(SystemExit, match="user config only"):
+        _reject_project_sensitive_settings(values, Path("repo/.coderook/config.toml"))
+    with pytest.raises(SystemExit, match="list of non-empty paths"):
+        _apply_toml(config, {"agent": {key: "wrong"}})
+
+
+# 功能：验证交互默认不限步数，自动化默认有界且显式配置优先
+# 设计：直接比较两类入口的配置解析结果，避免依赖用户本机配置
+@pytest.mark.parametrize("configured", [None, 7, 20])
+def test_agent_step_limit_by_entry(configured: int | None) -> None:
+    config = AgentConfig(max_steps=configured)
+    assert config.step_limit(interactive=True) == (configured or 0)
+    assert config.step_limit() == (configured or 20)
 
 
 def _write_env(path: Path, content: str) -> None:

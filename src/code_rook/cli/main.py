@@ -15,6 +15,7 @@ from code_rook.cli.commands.core import (
     cmd_core_start,
     cmd_core_status,
     cmd_core_stop,
+    ensure_core_running,
 )
 from code_rook.cli.commands.doctor import (
     cmd_diagnostic_bundle,
@@ -55,10 +56,16 @@ from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStoreError
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
+from code_rook.core.processes import mark_agent_process_environment
 from code_rook.core.projects import ProjectRegistry
 from code_rook.core.state_migration import migrate_legacy_state
 
 _PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
+_TOP_LEVEL_COMMANDS = frozenset({
+    "ping", "web", "configure", "config", "config-status", "migrate-project-state",
+    "doctor", "provider", "model", "skills", "memory", "cancel", "chat", "sessions",
+    "session", "run", "review", "trace", "artifacts", "core", "tui",
+})
 
 
 # 将 CLI 标准输出统一为 UTF-8，避免 Windows 管道和脚本模式把中文编码为 GBK
@@ -71,6 +78,7 @@ def _configure_utf8_stdio() -> None:
 
 # 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
 def main() -> int:
+    mark_agent_process_environment()
     _configure_utf8_stdio()
     try:
         return _run_cli()
@@ -85,12 +93,47 @@ def main() -> int:
 
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
-    tui_flags = {"--continue", "--new", "--resume", "--replay", "--no-auto-core"}
+    tui_flags = {
+        "--continue", "--new", "--resume", "--replay", "--no-auto-core", "--thinking",
+    }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
         tui_probe = tui_probe[2:]
     explicit_tui = bool(tui_probe) and tui_probe[0] == "tui"
-    if not tui_probe or tui_probe[0] in tui_flags or explicit_tui:
+    print_mode = "--print" in tui_probe or "-p" in tui_probe
+    if print_mode:
+        quick = argparse.ArgumentParser(
+            prog="coderook --print",
+            description="Run one coding task and print the final answer",
+        )
+        quick.add_argument("--env-file", type=Path)
+        quick.add_argument("-p", "--print", action="store_true")
+        quick.add_argument(
+            "--thinking", choices=("off", "low", "medium", "high"),
+        )
+        quick.add_argument("message", nargs="+", help="Task to execute")
+        quick_args = quick.parse_args(sys.argv[1:])
+        migrate_legacy_state()
+        config = (
+            get_config()
+            if quick_args.env_file is None
+            else get_config(env_file=quick_args.env_file)
+        )
+        setup_logging(config)
+        ensure_core_running(config, env_file=quick_args.env_file)
+        cmd_run(
+            " ".join(quick_args.message).strip(),
+            config,
+            permission_mode="allow-list",
+            allow_tools=["read", "bash", "edit", "write"],
+            output_format="text",
+            thinking_level=quick_args.thinking,
+        )
+        return 0
+    prompt_tui = bool(tui_probe) and (
+        not tui_probe[0].startswith("-") and tui_probe[0] not in _TOP_LEVEL_COMMANDS
+    )
+    if not tui_probe or tui_probe[0] in tui_flags or explicit_tui or prompt_tui:
         if explicit_tui:
             raw_index = 1 if sys.argv[1] == "tui" else 3
             del sys.argv[raw_index]
@@ -329,6 +372,11 @@ def _run_cli() -> int:
         "--resume",
         metavar="SESSION_ID",
         help="Append this goal to an existing resumable chat session",
+    )
+    run_parser.add_argument(
+        "--thinking",
+        choices=("off", "low", "medium", "high"),
+        help="Set the thinking level for this session",
     )
     run_parser.add_argument(
         "--question-mode",
@@ -630,6 +678,7 @@ def _run_cli() -> int:
             event_filters=args.event_filter,
             include_partial=args.include_partial,
             resume_session_id=args.resume,
+            thinking_level=args.thinking,
             question_mode=args.question_mode.replace("-", "_"),
             question_timeout_s=args.question_timeout,
             preset_answers=args.answer,

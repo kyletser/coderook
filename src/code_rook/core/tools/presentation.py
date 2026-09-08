@@ -34,6 +34,8 @@ class ToolPresentation(BaseModel):
     failure_category: str = ""
     recovery_actions: tuple[str, ...] = ()
     supports_live_output: bool = False
+    details: dict[str, Any] | None = None
+    terminate: bool = False
 
 
 # 从可信工具名和 action-family 声明推导稳定的用户活动语义
@@ -56,13 +58,13 @@ def _presentation_action(resolved: ResolvedToolCall) -> ToolPresentationAction:
         }.get(action, ToolPresentationAction.GENERIC)
     if tool == "git" or tool.startswith("git_"):
         return ToolPresentationAction.GIT
-    if tool in {"read_file", "read_image"}:
+    if tool in {"read", "read_file", "read_image"}:
         return ToolPresentationAction.READ_FILE
     if tool == "list_dir":
         return ToolPresentationAction.BROWSE_FILES
     if tool in {"grep", "glob", "repository_context", "repository_search"}:
         return ToolPresentationAction.SEARCH_CODE
-    if tool in {"edit_file", "write_file", "apply_patch"}:
+    if tool in {"edit", "write", "edit_file", "write_file", "apply_patch"}:
         return ToolPresentationAction.EDIT_CODE
     if tool in {"run_tests", "run_verifiers"}:
         return ToolPresentationAction.RUN_TESTS
@@ -166,6 +168,8 @@ def build_tool_presentation(
             raw_artifact = structured.get("artifact")
             artifact = dict(raw_artifact) if isinstance(raw_artifact, dict) else None
     return ToolPresentation(
+        details=result.details if result is not None else None,
+        terminate=result.terminate if result is not None else False,
         schema_version=max(3, spec.result_schema_version),
         kind=kind,
         action=action,

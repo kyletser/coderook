@@ -31,6 +31,7 @@ class ResolvedRoute:
     route: ProviderRoute
     receipt: RouteReceipt
     credential: str = field(repr=False)
+    request_headers: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 # 将旧 LlmConfig 显式映射成 route，不依赖模型名称前缀
@@ -220,8 +221,18 @@ class RouteRegistry:
         return [legacy_config_route(self._config).id]
 
     # 解析 route 凭据并生成不含敏感正文的冻结收据
-    def resolve(self, route_id: str | None = None) -> ResolvedRoute:
+    def resolve(
+        self,
+        route_id: str | None = None,
+        *,
+        model: str | None = None,
+    ) -> ResolvedRoute:
         route = self.route(route_id)
+        if model is not None:
+            selected = model.strip()
+            if not selected:
+                raise RouteResolutionError("model cannot be empty")
+            route = route.model_copy(update={"model": selected})
         credential: CredentialResolution = self._credentials.resolve(route.credential_ref)
         if credential.value is None and route.credential_required:
             raise RouteResolutionError(f"credential is missing for route: {route.id}")

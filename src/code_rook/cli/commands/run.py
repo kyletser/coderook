@@ -195,6 +195,7 @@ async def _run_async(
     event_filters: list[str] | None = None,
     include_partial: bool = False,
     resume_session_id: str | None = None,
+    thinking_level: str | None = None,
     question_mode: str = "fail_fast",
     question_timeout_s: float | None = None,
     preset_answers: list[str] | None = None,
@@ -282,12 +283,27 @@ async def _run_async(
                 "permission_mode": permission_mode,
                 "allow_tools": allow_tools or [],
                 "resume_session_id": resume_session_id,
+                "thinking_level": thinking_level,
                 "question_mode": question_mode,
                 "question_timeout_s": question_timeout_s,
                 "preset_answers": preset_answers or [],
             },
         )
         run_id = str(started["run_id"])
+        if started.get("handled"):
+            payload = {"handled": True, "session_id": str(started.get("session_id", ""))}
+            if output_format == "json":
+                print(json.dumps({"schema_version": 1, "type": "input.handled", **payload}))
+            elif output_format == "stream-json":
+                print(HeadlessEnvelope(
+                    kind="result", sequence=1, run_id="", type="input.handled", payload=payload,
+                ).model_dump_json())
+            else:
+                print("Input handled by extension; no model run started.")
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
+            await client.close()
+            return 0
         for buffered in early_events:
             if _event_belongs_to_run(buffered, run_id):
                 await _process_owned_event(buffered)
@@ -369,6 +385,7 @@ def cmd_run(
     event_filters: list[str] | None = None,
     include_partial: bool = False,
     resume_session_id: str | None = None,
+    thinking_level: str | None = None,
     question_mode: str = "fail_fast",
     question_timeout_s: float | None = None,
     preset_answers: list[str] | None = None,
@@ -384,6 +401,7 @@ def cmd_run(
                 event_filters=event_filters,
                 include_partial=include_partial,
                 resume_session_id=resume_session_id,
+                thinking_level=thinking_level,
                 question_mode=question_mode,
                 question_timeout_s=question_timeout_s,
                 preset_answers=preset_answers,

@@ -184,6 +184,7 @@ class ToolSpec(BaseModel):
     description: str
     input_schema: dict[str, object]
     actions: tuple[ToolActionSpec, ...] = Field(min_length=1)
+    default_action: str | None = None
     capabilities: frozenset[ToolCapability] = Field(min_length=1)
     approval_requirement: ApprovalRequirement = ApprovalRequirement.POLICY
     parallel_policy: ParallelPolicy = ParallelPolicy.SERIAL
@@ -205,9 +206,13 @@ class ToolSpec(BaseModel):
         names = [action.name for action in self.actions]
         if len(names) != len(set(names)):
             raise ValueError("tool action names must be unique")
+        if self.default_action is not None and self.default_action not in names:
+            raise ValueError("default action must name a declared tool action")
         schema_count = sum(action.input_schema is not None for action in self.actions)
         if schema_count not in {0, len(self.actions)}:
             raise ValueError("tool actions must either all declare input_schema or all inherit")
+        if self.default_action is not None and schema_count != len(self.actions):
+            raise ValueError("default action requires per-action input schemas")
         action_capabilities = frozenset(
             capability
             for action in self.actions

@@ -93,7 +93,7 @@ async def test_ask_user_question_answer_handler_runs_once() -> None:
     assert handled == ["先保持兼容"]
 
 
-# 功能：验证运行中纠偏只接受活动 run，并按到达顺序一次性取走
+# 功能：验证运行中纠偏只接受活动 run，并按到达顺序每次取一条
 # 设计：覆盖未注册、已注册、空内容和注销四种边界，确保消息不会串到其他或后续 run
 def test_steering_queue_is_scoped_to_active_run() -> None:
     manager = InteractionManager(EventBus())
@@ -103,13 +103,50 @@ def test_steering_queue_is_scoped_to_active_run() -> None:
     assert manager.steer("run-1", "first")
     assert manager.steer("run-1", "second")
     assert not manager.steer("run-1", "   ")
-    assert manager.drain_steering("run-1") == ["first", "second"]
+    assert manager.drain_steering("run-1") == ["first"]
+    assert manager.drain_steering("run-1") == ["second"]
     assert manager.drain_steering("run-1") == []
 
     manager.steer("run-1", "discard me")
     manager.unregister_run("run-1")
     assert manager.drain_steering("run-1") == []
     assert not manager.steer("run-1", "too late")
+
+
+# 功能：验证显式批量模式一次消费全部纠偏且不同 run 互不影响。
+# 设计：交错写入两个 run，既验证可选模式又检查消费范围。
+def test_steering_all_mode_keeps_run_isolation() -> None:
+    manager = InteractionManager(EventBus(), steering_mode="all")
+    manager.register_run("one")
+    manager.register_run("two")
+    manager.steer("one", "first")
+    manager.steer("two", "other")
+    manager.steer("one", "second")
+    assert manager.drain_steering("one") == ["first", "second"]
+    assert manager.drain_steering("one") == []
+    assert manager.drain_steering("two") == ["other"]
+
+
+# 功能：验证自定义扩展消息可进入活动 run 的后续轮且保持原始来源结构。
+# 设计：注册 run、排队一条 custom 消息并消费两次，核对单次交付和注销清理。
+async def test_extension_custom_follow_up_is_delivered_once() -> None:
+    manager = InteractionManager(EventBus())
+    message = {
+        "role": "custom",
+        "customType": "status",
+        "content": [{"type": "text", "text": "continue"}],
+        "display": True,
+    }
+    manager.register_run("run-1")
+
+    assert manager.queue_extension_follow_up("run-1", message)
+    queued = await manager.drain_follow_up("run-1")
+    assert [item.content for item in queued] == [message]
+    await queued[0].admitted()
+    assert await manager.drain_follow_up("run-1") == []
+
+    manager.unregister_run("run-1")
+    assert not manager.queue_extension_follow_up("run-1", message)
 
 
 # 功能：验证 headless fail-fast 提问不会留下无限等待 Future

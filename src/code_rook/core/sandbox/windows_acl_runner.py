@@ -693,8 +693,8 @@ def run_confined(
         shutil.rmtree(private_temp, ignore_errors=True)
 
 
-# 在真实 Restricted Token 中验证工作区写入成功、外部写入和只读写入均被内核拒绝
-def probe() -> bool:
+# 验证实际 Bash 能启动，再检查工作区写入和外部写入边界
+def probe(*, check_shell: bool = True) -> bool:
     if os.name != "nt":
         return False
     root = _create_private_temp(
@@ -706,6 +706,21 @@ def probe() -> bool:
         temp_root = root / "private-temp-root"
         workspace.mkdir()
         outside.mkdir()
+        if check_shell:
+            from code_rook.core.agent_runtime.shell import bash_executable
+
+            try:
+                shell = bash_executable()
+            except RuntimeError:
+                return False
+            shell_result = run_confined(
+                workspace=workspace,
+                temp_root=temp_root,
+                mode="workspace-write",
+                argv=[shell, "-c", "printf coderook-sandbox-probe"],
+            )
+            if shell_result != 0:
+                return False
         child = (
             "from pathlib import Path; import sys, tempfile; "
             "Path(sys.argv[1]).write_text('ok'); "

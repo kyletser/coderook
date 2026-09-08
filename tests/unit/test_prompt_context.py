@@ -44,3 +44,11 @@ def test_capability_context_uses_progressive_disclosure() -> None:
     assert "planner: Plan multi-step work" in context
     assert "SECRET_FULL_SKILL_BODY" not in context
     assert "SECRET_AGENT_SYSTEM_PROMPT" not in context
+
+    native = build_capability_context([skill], [agent], tool_names={"read", "edit", "write", "bash"})
+    assert "<location>review.md</location>" in native
+    assert "Use read" in native
+    assert "Call the skill tool" not in native
+    assert "agent action=start" not in native
+    assert "SECRET_FULL_SKILL_BODY" not in native
+    assert build_capability_context([skill], [agent], tool_names=set()) == ""

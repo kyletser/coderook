@@ -18,7 +18,7 @@ ProviderKind = Literal[
     "opencode-zen",
 ]
 WireFormat = Literal["openai_chat", "openai_responses", "anthropic_messages"]
-CredentialSource = Literal["keyring", "file", "env", "missing"]
+CredentialSource = Literal["keyring", "file", "env", "extension", "missing"]
 # 推理预算档位：off 关闭；low/medium/high 由各 wire format 映射为原生参数
 ThinkingLevel = Literal["off", "low", "medium", "high"]
 DoctorCheckStatus = Literal["passed", "failed", "not_run", "unsupported"]

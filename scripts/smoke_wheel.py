@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -161,10 +162,22 @@ def smoke(wheel: Path) -> None:
             site / "code_rook" / "core" / "skills" / "builtin" / "review.md",
             site / "code_rook" / "web" / "static" / "index.html",
             site / "code_rook" / "web" / "static" / "manifest.webmanifest",
+            site / "code_rook" / "licenses" / "pi-MIT.txt",
+            site / "code_rook" / "core" / "agent_runtime" / "driver.py",
+            site / "code_rook" / "core" / "agent_runtime" / "extensions.py",
+            site / "code_rook" / "core" / "agent_runtime" / "images.py",
         ]
         missing = [str(path.relative_to(site)) for path in required_resources if not path.is_file()]
         if missing:
             raise RuntimeError(f"wheel is missing package resources: {missing}")
+        web_root = site / "code_rook" / "web" / "static"
+        html = (web_root / "index.html").read_text(encoding="utf-8")
+        assets = re.findall(r'(?:src|href)="(/assets/[^"?]+)', html)
+        if not assets or any(not (web_root / asset.lstrip("/")).is_file() for asset in assets):
+            raise RuntimeError("wheel Web shell references missing assets")
+        license_text = (site / "code_rook" / "licenses" / "pi-MIT.txt").read_text(encoding="utf-8")
+        if "Copyright (c) 2025 Mario Zechner" not in license_text:
+            raise RuntimeError("wheel is missing Pi's original copyright notice")
 
         home = root / "home"
         home.mkdir()
@@ -185,6 +198,79 @@ print(package)
         )
         if "code_rook" not in imported.stdout:
             raise RuntimeError("wheel package import did not report its path")
+
+        native = _run_python(
+            """
+import asyncio
+import base64
+import io
+from pathlib import Path
+from PIL import Image
+from code_rook.core.agent_runtime.extensions import ExtensionHost
+from code_rook.core.agent_runtime.tools import EditTool, ReadTool
+from code_rook.core.agent_runtime.prompt_templates import expand_prompt_template
+from code_rook.core.context import ExecutionContext
+from code_rook.core.events.bus import EventBus
+from code_rook.core.llm.types import LlmResponse, ToolCallBlock
+from code_rook.core.loop import AgentLoop
+from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.workspace import WorkspaceBoundary
+
+class Provider:
+    calls = 0
+    # 用确定性工具请求驱动实际 Python 运行时，不连接外部模型。
+    async def chat(self, messages, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return LlmResponse(stop_reason="tool_use", tool_calls=[
+                ToolCallBlock(id="edit-one", name="edit", input={
+                    "path": "sample.txt", "oldText": "before", "newText": "after"
+                })
+            ])
+        if self.calls == 2:
+            return LlmResponse(stop_reason="tool_use", tool_calls=[
+                ToolCallBlock(id="read-one", name="read", input={"path": "sample.txt"})
+            ])
+        assert "after" in str(messages[-1]), messages[-1]
+        return LlmResponse(stop_reason="end_turn", text="Edited and read back after.")
+
+# 在解包目录之外验证真实文件工具、最终回答及新增 YAML 运行时依赖。
+async def verify():
+    Path("sample.txt").write_text("before", encoding="utf-8")
+    Path("brief.md").write_text("---\\ndescription: Brief\\n---\\nInspect $1", encoding="utf-8")
+    assert expand_prompt_template("/brief sample.txt", [Path.cwd()]) == "Inspect sample.txt"
+    registry = ToolRegistry()
+    boundary = WorkspaceBoundary(Path.cwd())
+    registry.register(EditTool(boundary, None))
+    registry.register(ReadTool(boundary))
+    Image.new("RGB", (2400, 120), "blue").save("sample.png")
+    image = await registry.get("read").invoke({"path": "sample.png"})
+    assert not image.is_error and image.images, image
+    decoded = base64.b64decode(image.images[0]["source"]["data"])
+    with Image.open(io.BytesIO(decoded)) as loaded:
+        assert loaded.size == (2000, 100), loaded.size
+    extension = ExtensionHost([], Path.cwd(), "wheel-native")
+    await extension.load(registry)
+    extension.api.set_active_tools(["read", "edit"])
+    context = ExecutionContext(run_id="wheel-native", goal="Edit then verify", max_steps=4)
+    try:
+        await AgentLoop(
+            Provider(), registry, EventBus(), transform_context=extension.transform_context,
+        ).run(context)
+    finally:
+        await extension.close()
+    assert context.status == "success", (context.status, context.reason)
+    assert context.result == "Edited and read back after.", context.result
+    assert Path("sample.txt").read_text(encoding="utf-8") == "after"
+    print("wheel native runtime passed")
+
+asyncio.run(verify())
+""",
+            env=env,
+            cwd=root,
+        )
+        if "wheel native runtime passed" not in native.stdout:
+            raise RuntimeError("wheel native runtime did not complete")
 
         _run_python(
             "import sys; sys.argv=['coderook', '--version']; "

@@ -44,6 +44,10 @@ class EventBus:
     def mark_stream_activity(self, byte_count: int) -> None:
         del byte_count
 
+    # 接收未完成响应的审计片段，普通总线不将其作为正式历史发布
+    def record_stream_fragment(self, fragment: dict[str, object]) -> None:
+        del fragment
+
     # 按注册顺序依次调用所有订阅者；单个订阅者异常被隔离，不中断后续订阅者
     async def publish(self, event: BaseModel) -> None:
         for handler in tuple(self._subscribers):

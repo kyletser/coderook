@@ -6,21 +6,24 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
+from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
+from code_rook.core.agent_runtime.messages import prepare_model_messages
+from code_rook.core.agent_runtime.prompt import build_system_prompt
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.events import (
-    AgentDecisionEvent,
-    AgentStuckEvent,
+    AgentRepeatNoticeEvent,
     ContextBudgetEvent,
     ContextPrefixFingerprintEvent,
     ContextWorkingSetEvent,
+    LlmAttemptFinishedEvent,
     LlmRequestPreparedEvent,
     LlmRetryEvent,
     LspDiagnosticsEvent,
     StepFinishedEvent,
-    StepStartedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
     VerificationCompletedEvent,
@@ -35,13 +38,15 @@ from code_rook.core.execution.invariants import (
     validate_request_snapshot,
 )
 from code_rook.core.execution.models import RequestSnapshot
-from code_rook.core.goal import GoalBudgetError
+from code_rook.core.llm.attempt import AttemptBus
 from code_rook.core.llm.base import LLMProvider
+from code_rook.core.llm.errors import ProviderRequestError
+from code_rook.core.llm.retry import RetryPolicy
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.lsp import WorkspaceDiagnosticsClient
 from code_rook.core.prefix_fingerprint import PrefixFingerprintTracker
 from code_rook.core.tools.base import ToolResult
-from code_rook.core.tools.invocation import invoke_tool
+from code_rook.core.tools.invocation import PreparedToolArguments, invoke_tool
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.tools.spec import ParallelPolicy, ResourceClaim, ToolCatalogError
 from code_rook.core.turn import (
@@ -50,7 +55,6 @@ from code_rook.core.turn import (
     StreamIdleTimeoutError,
     StreamWallTimeoutError,
     StreamWatchdog,
-    StreamWatchdogError,
     StuckGuard,
 )
 from code_rook.core.working_set import WorkingSetSource
@@ -82,34 +86,6 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 _TRANSIENT_ERROR_MARKERS = ("429", "529", "rate limit", "overloaded", "temporarily unavailable")
-_INSPECTION_TOOLS = {
-    "agent_result",
-    "background_list",
-    "background_result",
-    "checkpoint_list",
-    "git_diff",
-    "glob",
-    "grep",
-    "list_dir",
-    "memory_search",
-    "read_file",
-    "task_get",
-    "task_list",
-    "worktree_list",
-}
-_PLANNING_TOOLS = {"task_claim", "task_create", "task_update", "update_plan"}
-_CHANGE_TOOLS = {
-    "apply_patch",
-    "checkpoint_rewind",
-    "edit_file",
-    "memory_forget",
-    "memory_save",
-    "note_save",
-    "write_file",
-    "worktree_create",
-    "worktree_remove",
-}
-_DELEGATION_TOOLS = {"spawn_agent"}
 
 
 # 把不可信工具结果字段安全转换为非负整数，非法值使用调用方默认值
@@ -121,67 +97,9 @@ def _nonnegative_int(value: object, *, default: int = 0) -> int:
     except (TypeError, ValueError, OverflowError):
         return max(0, default)
 
-# 基础系统提示；提供对话纠错、能力校验和工具路由规则，todos 摘要会追加在其后
-_BASE_SYSTEM_PROMPT = (
-    "You are CodeRook, a local agentic coding assistant. "
-    "Interpret each request using the full conversation and the runtime environment below. "
-    "Before acting, infer the user's objective, target, scope, requested operation, and the "
-    "evidence needed to verify the result. Do not expose this internal frame unless useful. "
-    "Treat later clarifications and corrections as higher-priority evidence. If they change the "
-    "objective, target, or scope, discard incompatible assumptions and reselect tools. "
-    "Choose tools from their documented capabilities and the runtime environment, not from "
-    "surface word overlap between the request and a tool name. "
-    "When multiple interpretations remain plausible, use conversation context and safe, "
-    "low-cost read-only inspection to resolve them; otherwise ask one focused clarification. "
-    "Use the available tools to complete the user's actual goal. "
-    "Keep reasoning out of ordinary response text; reasoning-capable providers expose it "
-    "through a separate reasoning channel. Do not emit progress narration before tool calls. "
-    "Call the required tools directly. "
-    "For complex work with at least three meaningful actions, call tasks with the create and "
-    "update actions to maintain concise, verifiable work items. Skip task tracking for simple "
-    "requests. "
-    "Never use emoji, decorative symbols, filler greetings, or redundant recaps in "
-    "user-visible text. Prefer short factual prose. "
-    "Before claiming that you cannot inspect or perform something, check the available tool "
-    "schemas and runtime environment. If a capable tool requires approval, request or explain "
-    "that approval instead of claiming the capability does not exist. Never invent tool results. "
-    "For factual or current-state questions, base conclusions only on successful tool "
-    "output. A failed, denied, or unavailable check is unknown, not evidence that an item is "
-    "absent. Report material evidence gaps and do not infer relationships that observations did "
-    "not establish. Start with broad, low-cost checks, then narrow only to resolve remaining "
-    "gaps; avoid redundant probes. "
-    "Use bash when the task requires local command-line or operating-system capabilities. "
-    "Prefer glob and grep over shell commands for code discovery. "
-    "Prefer edit_file over write_file when changing an existing file. "
-    "Use apply_patch for related changes across multiple files. "
-    "Call memory with the save action for durable project facts, user preferences, and reusable "
-    "debugging discoveries; do not store secrets. "
-    "Use background_start for slow tests or builds, then poll with "
-    "background_result while continuing independent work. "
-    "File changes are checkpointed automatically; use "
-    "checkpoint_rewind "
-    "when the user asks to undo the latest agent change. "
-    "When the goal is fully achieved, respond with a final answer "
-    "and do not call any more tools."
-)
 
-# 当 todos 未完成却 end_turn 时注入给模型的提醒，强制其继续推进或显式更新 todos
-_TODO_END_TURN_REMINDER = (
-    "You ended the turn, but the Todo State above still has incomplete items. "
-    "Either continue working on the next pending/in_progress todo, or call tasks with "
-    "action='update' and status='completed' for any items that are truly done, then end."
-)
-# 连续最多推迟次数；超过即视为模型不再推进 todos，放弃阻拦让其结束
-_MAX_TODO_DEFERS = 3
 # 交互模式经结构化提问最多允许的步数续段次数，防止无限续跑
 _MAX_ASK_STEP_CONTINUES = 3
-_MAX_TRANSIENT_RETRIES = 1
-_MAX_NO_CONTENT_RETRIES = 2
-_LENGTH_CONTINUE_PROMPT = (
-    "The previous model response reached its output limit and is incomplete. "
-    "Continue exactly once from where it stopped. Do not execute or reconstruct any "
-    "partial tool call; emit a fresh complete tool call if one is still required."
-)
 _CONTENT_HASH_RE = re.compile(
     r"(?:content_hash[=:]\s*|\"(?:new_hash|content_hash)\"\s*:\s*\")([^\s,\")]+)"
 )
@@ -192,75 +110,26 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-# 根据模型实际选择的工具归纳当前动作意图，不另发起分类模型请求
-def _decision_intent(tool_calls: list[ToolCallBlock]) -> str:
-    names = {call.name for call in tool_calls}
-    if not names:
-        return "respond"
-    agent_actions = {
-        str(call.input.get("action", ""))
-        for call in tool_calls
-        if call.name == "agent"
-    }
-    memory_actions = {
-        str(call.input.get("action", ""))
-        for call in tool_calls
-        if call.name == "memory"
-    }
-    task_actions = {
-        str(call.input.get("action", ""))
-        for call in tool_calls
-        if call.name == "tasks"
-    }
-    if agent_actions & {"start", "cancel", "followup"}:
-        return "delegate"
-    if names & _DELEGATION_TOOLS:
-        return "delegate"
-    if names & _CHANGE_TOOLS or memory_actions & {"save", "forget"}:
-        return "change"
-    if names & _PLANNING_TOOLS or task_actions & {"create", "claim", "update"}:
-        return "plan"
-    if (
-        names <= (_INSPECTION_TOOLS | {"agent", "memory", "tasks"})
-        and agent_actions <= {"status", "peek", "wait"}
-        and memory_actions <= {"search"}
-        and task_actions <= {"list", "get"}
-    ):
-        return "inspect"
-    return "execute"
-
-
-# 判断最新用户消息是否以中文为主，供无模型文本时选择本地化回退
-def _uses_chinese(text: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in text)
-
-
-# 从用户可见文本生成单行进度摘要；无文本时按实际工具和用户语言给出回退
-def _decision_summary(
-    text: str,
-    tool_calls: list[ToolCallBlock],
-    user_text: str,
-) -> str:
-    visible = " ".join(text.split())
-    if visible:
-        return visible if len(visible) <= 240 else visible[:237] + "..."
-    names = list(dict.fromkeys(call.name for call in tool_calls))
-    if names:
-        prefix = "调用工具：" if _uses_chinese(user_text) else "Using "
-        return prefix + ", ".join(names)
-    return "准备回答" if _uses_chinese(user_text) else "Preparing the response"
-
-
 class TranscriptSink(Protocol):
     def append_assistant(self, step: int, blocks: list[dict[str, object]]) -> None: ...
 
-    def append_user(self, step: int, content: str) -> None: ...
+    def append_user(self, step: int, content: str | list[dict[str, Any]]) -> None: ...
+
+    def append_custom(
+        self,
+        step: int,
+        *,
+        custom_type: str,
+        content: str | list[dict[str, Any]],
+        display: bool,
+        details: object = None,
+    ) -> int: ...
 
     def append_tool_result(
         self,
         step: int,
         tool_use_id: str,
-        content: str,
+        content: str | list[dict[str, Any]],
         *,
         is_error: bool,
         block_index: int,
@@ -270,6 +139,12 @@ class TranscriptSink(Protocol):
     def append_request_snapshot(self, step: int, snapshot: RequestSnapshot) -> int | None: ...
 
     def latest_request_snapshot(self) -> RequestSnapshot | None: ...
+
+    # 记录不参与模型消息投影的尝试和重试事实
+    def append_audit(self, step: int, event_type: str, payload: dict[str, object]) -> int: ...
+
+    # 将插件提醒附在完整工具结果后并保留来源
+    def append_notice(self, step: int, content: str) -> None: ...
 
 
 class AgentLoop:
@@ -296,6 +171,7 @@ class AgentLoop:
         stuck_guard: StuckGuard | None = None,
         read_guard: ReadRepeatGuard | None = None,
         retry_backoff_s: float = 0.5,
+        retry_policy: RetryPolicy | None = None,
         diagnostics_client: WorkspaceDiagnosticsClient | None = None,
         prefix_tracker: PrefixFingerprintTracker | None = None,
         escalate_plan_thinking: bool = False,
@@ -305,6 +181,16 @@ class AgentLoop:
         auto_step_continues: int = 0,
         authority_snapshot: AuthoritySnapshot | None = None,
         request_metadata: dict[str, object] | None = None,
+        transform_context: Callable[
+            [list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]
+        ] | None = None,
+        transform_provider_request: Callable[
+            [dict[str, Any]], Awaitable[dict[str, Any]]
+        ] | None = None,
+        provider_response_sink: Callable[[LlmResponse], Awaitable[None]] | None = None,
+        agent_event_sink: Callable[
+            [dict[str, Any]], Awaitable[dict[str, Any] | None]
+        ] | None = None,
         # 可选的每步路由刷新回调：返回新 provider 表示需切换（loop 接管重建后的实例），
         # 返回 None 表示沿用当前 provider；用于 per-turn 模型切换（W2.4）
         route_refresher: Callable[[int], Awaitable[LLMProvider | None]] | None = None,
@@ -329,7 +215,8 @@ class AgentLoop:
         self._watchdog = watchdog or StreamWatchdog()
         self._stuck_guard = stuck_guard or StuckGuard()
         self._read_guard = read_guard or ReadRepeatGuard()
-        self._retry_backoff_s = retry_backoff_s
+        self._retry_policy = retry_policy or RetryPolicy(initial_delay_s=retry_backoff_s)
+        self._pending_repeat_notices: list[tuple[AgentRepeatNoticeEvent, str]] = []
         self._diagnostics_client = diagnostics_client
         self._prefix_tracker = prefix_tracker or PrefixFingerprintTracker()
         self._escalate_plan_thinking = escalate_plan_thinking
@@ -339,6 +226,10 @@ class AgentLoop:
         self._auto_step_continues = max(0, auto_step_continues)
         self._authority_snapshot = authority_snapshot
         self._request_metadata = dict(request_metadata or {})
+        self._transform_context = transform_context
+        self._transform_provider_request = transform_provider_request
+        self._provider_response_sink = provider_response_sink
+        self._agent_event_sink = agent_event_sink
         self._route_refresher = route_refresher
         self._step_continues_used = 0
         self._initial_max_steps: int | None = None
@@ -346,8 +237,6 @@ class AgentLoop:
         self._length_continues_used = 0
         self._active_step = 0
         # 防 end_turn 早退 reminder 防抖：跟踪 todos 摘要快照与已提醒次数
-        self._last_todo_snapshot: str = ""
-        self._end_turn_defer_count: int = 0
 
     # 判断异常是否表示上下文窗口已超限
     @staticmethod
@@ -358,6 +247,8 @@ class AgentLoop:
     # 判断异常是否适合短暂退避后重试
     @staticmethod
     def _is_transient_error(exc: Exception) -> bool:
+        if isinstance(exc, ProviderRequestError):
+            return exc.retryable
         if isinstance(exc, (StreamIdleTimeoutError, StreamWallTimeoutError)):
             return True
         message = f"{type(exc).__name__} {exc}".lower()
@@ -393,9 +284,10 @@ class AgentLoop:
         response: LlmResponse,
         *,
         output_reserve_tokens: int = 4_096,
+        usage_message_count: int | None = None,
     ) -> float:
         usage = response.usage
-        if usage is None or usage.context_pct <= 0 or usage.input_tokens <= 0:
+        if usage is None:
             return 0.0
         # Anthropic 的 input_tokens 不含缓存 token 而 context_pct 含；容量推算的分子
         # 必须与 context_pct 同口径，否则会把窗口低估、投影占比虚高
@@ -404,25 +296,34 @@ class AgentLoop:
             + usage.cache_read_input_tokens
             + usage.cache_creation_input_tokens
         )
-        estimated_capacity = context_tokens / usage.context_pct
-        projected_input = estimate_messages_tokens(context.messages) + output_reserve_tokens
+        window = getattr(self._provider, "context_window", None)
+        if isinstance(window, int) and window > 0:
+            estimated_capacity = float(window)
+        elif context_tokens > 0 and usage.context_pct > 0:
+            estimated_capacity = context_tokens / usage.context_pct
+        else:
+            return 0.0
+        if usage_message_count is None:
+            projected_input = estimate_messages_tokens(context.messages) + output_reserve_tokens
+        else:
+            trailing = context.messages[usage_message_count:]
+            projected_input = (
+                context_tokens + usage.output_tokens
+                + (estimate_messages_tokens(trailing) if trailing else 0)
+                + output_reserve_tokens
+            )
         return projected_input / max(1.0, estimated_capacity)
 
-    # 在 watchdog 下调用 Provider，并分别统计 transient 与 no-content 重试
+    # 在 watchdog 下执行同一步请求，所有临时错误共享显式重试策略
     async def _call_provider(self, context: ExecutionContext) -> LlmResponse:
-        transient_retries = 0
-        no_content_retries = 0
+        retries = 0
         system_prompt = self._render_system(context)
         tool_schemas = self._registry.tool_schemas() if self._supports_tools else []
         await self._bus.publish(
             ContextBudgetEvent(
                 run_id=context.run_id,
                 step=context.step,
-                message_tokens=max(
-                    1,
-                    sum(len(str(message.get("content", ""))) for message in context.messages)
-                    // 4,
-                ),
+                message_tokens=estimate_messages_tokens(context.messages),
                 system_tokens=max(1, len(system_prompt) // 4),
                 tool_schema_tokens=max(1, len(json.dumps(tool_schemas, sort_keys=True)) // 4),
                 tool_count=len(tool_schemas),
@@ -430,7 +331,9 @@ class AgentLoop:
             )
         )
         prefix = self._prefix_tracker.observe(
-            system_prompt=context.stable_system_prompt(_BASE_SYSTEM_PROMPT),
+            system_prompt=context.stable_system_prompt(
+                build_system_prompt(self._registry.prompt_tools(tool_schemas)),
+            ),
             tool_catalog=json.dumps(
                 tool_schemas,
                 ensure_ascii=True,
@@ -452,10 +355,44 @@ class AgentLoop:
 
         flushed_images = self._flush_pending_images(context)
         thinking_override = self._thinking_override_for(context)
+        request_messages = context.messages
+        if self._transform_context is not None:
+            request_messages = await self._transform_context(deepcopy(request_messages))
+        prepared_messages = prepare_model_messages(
+            request_messages, supports_images=self._supports_images,
+            wire_format=str(self._request_metadata.get("wire_format", "")),
+            model=str(self._request_metadata.get("model", "")),
+            route_id=str(self._request_metadata.get("route_id", "")),
+        )
+        request_payload: dict[str, Any] = {
+            "messages": prepared_messages,
+            "system": system_prompt,
+            "tool_schemas": tool_schemas,
+        }
+        if self._transform_provider_request is not None:
+            request_payload = await self._transform_provider_request(
+                deepcopy(request_payload)
+            )
+        raw_messages = request_payload.get("messages")
+        raw_system = request_payload.get("system")
+        raw_tools = request_payload.get("tool_schemas")
+        if not isinstance(raw_messages, list) or any(
+            not isinstance(message, dict) for message in raw_messages
+        ):
+            raise InvariantViolation("provider request hook returned invalid messages")
+        if raw_system is not None and not isinstance(raw_system, str):
+            raise InvariantViolation("provider request hook returned invalid system prompt")
+        if not isinstance(raw_tools, list) or any(
+            not isinstance(schema, dict) for schema in raw_tools
+        ):
+            raise InvariantViolation("provider request hook returned invalid tool schemas")
+        prepared_messages = cast(list[dict[str, Any]], raw_messages)
+        prepared_system = raw_system or ""
+        prepared_tools = cast(list[dict[str, Any]], raw_tools)
         request_snapshot = RequestSnapshot.create(
-            messages=context.messages,
-            system=system_prompt,
-            tool_schemas=tool_schemas,
+            messages=prepared_messages,
+            system=prepared_system,
+            tool_schemas=prepared_tools,
             metadata={
                 **self._request_metadata,
                 "thinking": thinking_override or "",
@@ -489,68 +426,139 @@ class AgentLoop:
             )
         try:
             while True:
-                # 使用 watchdog 提供的监控 bus 调用同一个 Provider 请求
+                attempt_bus = AttemptBus(self._bus)
+                attempt_number = retries + 1
+                self._append_audit(context, "llm.attempt_started", {
+                    "attempt": attempt_number, "request_snapshot_digest": request_snapshot.digest,
+                    "policy": asdict(self._retry_policy),
+                })
+
+                # 每次从冻结快照重建，适配器无法改变下一次重试的入参
                 async def _attempt(monitored_bus: EventBus) -> LlmResponse:
                     return await self._provider.chat(
-                        messages=context.messages,
-                        tool_schemas=tool_schemas,
-                        bus=monitored_bus,
-                        run_id=context.run_id,
-                        step=context.step,
-                        system=system_prompt,
-                        thinking=thinking_override,
+                        messages=deepcopy([
+                            dict[str, object](m) for m in request_snapshot.messages
+                        ]),
+                        tool_schemas=deepcopy([
+                            dict[str, object](s) for s in request_snapshot.tool_schemas
+                        ]),
+                        bus=monitored_bus, run_id=context.run_id, step=context.step,
+                        system=request_snapshot.system, thinking=thinking_override,
                     )
 
                 try:
-                    response = await self._watchdog.run(_attempt, self._bus)
+                    response = await self._watchdog.run(_attempt, attempt_bus)
+                    if self._provider_response_sink is not None:
+                        await self._provider_response_sink(response)
+                    if self._is_no_content(response):
+                        raise NoContentResponseError(
+                            "provider returned no text, reasoning, or tool calls"
+                        )
                 except asyncio.CancelledError:
+                    await self._finish_attempt(
+                        context, attempt_number, request_snapshot.digest,
+                        attempt_bus, "cancelled", "cancelled",
+                    )
                     raise
                 except Exception as exc:
-                    if (
-                        transient_retries >= _MAX_TRANSIENT_RETRIES
-                        or not self._is_transient_error(exc)
+                    code = (
+                        exc.failure_code if isinstance(exc, ProviderRequestError) else
+                        "empty_response" if isinstance(exc, NoContentResponseError) else
+                        "timeout" if isinstance(
+                            exc, (StreamIdleTimeoutError, StreamWallTimeoutError),
+                        )
+                        else "transient_error" if self._is_transient_error(exc) else "request_error"
+                    )
+                    await self._finish_attempt(
+                        context, attempt_number, request_snapshot.digest,
+                        attempt_bus, "failed", code,
+                    )
+                    delay = self._retry_policy.delay(
+                        retries + 1,
+                        exc.retry_after_s if isinstance(exc, ProviderRequestError) else None,
+                    )
+                    if retries >= self._retry_policy.max_retries or delay is None or not (
+                        self._is_transient_error(exc) or isinstance(exc, NoContentResponseError)
                     ):
                         raise
-                    transient_retries += 1
-                    await self._bus.publish(
-                        LlmRetryEvent(
-                            run_id=context.run_id,
-                            step=context.step,
-                            kind="transient",
-                            attempt=transient_retries,
-                            reason=str(exc),
-                            ts=_now(),
-                        )
+                    retries += 1
+                    event = LlmRetryEvent(
+                        run_id=context.run_id, step=context.step,
+                        kind=(
+                            "no_content" if isinstance(exc, NoContentResponseError) else "transient"
+                        ),
+                        attempt=retries, reason=code, failure_code=code,
+                        delay_ms=round(delay * 1000), max_retries=self._retry_policy.max_retries,
+                        request_snapshot_digest=request_snapshot.digest, ts=_now(),
                     )
-                    if self._retry_backoff_s > 0:
-                        await asyncio.sleep(
-                            self._retry_backoff_s * (2 ** (transient_retries - 1))
-                        )
-                    else:
-                        await self._cancellation_checkpoint()
+                    event.ledger_seq = self._append_audit(
+                        context, "llm.retry", event.model_dump(mode="json"),
+                    )
+                    await self._bus.publish(event)
+                    try:
+                        await asyncio.sleep(delay)
+                    except asyncio.CancelledError:
+                        self._append_audit(context, "llm.retry_cancelled", {
+                            "attempt": retries, "request_snapshot_digest": request_snapshot.digest,
+                        })
+                        raise
+                    self._append_audit(context, "llm.retry_started", {
+                        "attempt": retries, "request_snapshot_digest": request_snapshot.digest,
+                    })
                     continue
 
-                if not self._is_no_content(response):
-                    context.clear_transient_context()
-                    return self._normalize_stop_reason(response)
-                if no_content_retries >= _MAX_NO_CONTENT_RETRIES:
-                    raise NoContentResponseError(
-                        "provider returned no text, reasoning, or tool calls"
-                    )
-                no_content_retries += 1
-                await self._bus.publish(
-                    LlmRetryEvent(
-                        run_id=context.run_id,
-                        step=context.step,
-                        kind="no_content",
-                        attempt=no_content_retries,
-                        reason="provider returned no text, reasoning, or tool calls",
-                        ts=_now(),
-                    )
+                failed = response.completion_status in {
+                    "transport_error", "failed", "cancelled", "incomplete", "content_filtered",
+                }
+                if failed:
+                    attempt_bus.record_stream_fragment({"response": asdict(response)})
+                await self._finish_attempt(
+                    context, attempt_number, request_snapshot.digest, attempt_bus,
+                    "failed" if failed else "succeeded",
+                    str(response.completion_status) if failed else "",
                 )
+                if failed:
+                    # 不把断流的半条消息带入下一轮正式历史，也不执行部分工具调用
+                    response.tool_calls = []
+                    response.thinking_blocks = []
+                context.clear_transient_context()
+                return self._normalize_stop_reason(response)
         finally:
             if flushed_images:
                 self._placeholder_flushed_images(context)
+
+    # 审计提交失败必须显式终止请求，不能继续广播正常运行
+    def _append_audit(
+        self, context: ExecutionContext, event_type: str, payload: dict[str, object],
+    ) -> int | None:
+        if self._transcript is None:
+            return None
+        try:
+            return self._transcript.append_audit(context.step, event_type, payload)
+        except OSError as exc:
+            raise InvariantViolation("attempt audit could not be persisted") from exc
+
+    # 完成尝试记录先落账再广播，失败片段只放审计或 Artifact，不参与消息投影
+    async def _finish_attempt(
+        self, context: ExecutionContext, attempt: int, digest: str, bus: AttemptBus,
+        status: Literal["succeeded", "failed", "cancelled"], failure_code: str,
+    ) -> None:
+        event = LlmAttemptFinishedEvent(
+            run_id=context.run_id, step=context.step, attempt=attempt, status=status,
+            failure_code=failure_code, request_snapshot_digest=digest, ts=_now(),
+        )
+        payload: dict[str, object] = event.model_dump(mode="json")
+        if status != "succeeded":
+            payload["partial_output_truncated"] = bus.truncated
+            if self._artifact_store is not None and bus.bytes > 64 * 1024:
+                artifact = await self._artifact_store.put(
+                    json.dumps(bus.fragments, ensure_ascii=False), media_type="application/json",
+                )
+                payload["partial_output_artifact"] = artifact.model_dump(mode="json")
+            else:
+                payload["partial_output"] = bus.fragments
+        event.ledger_seq = self._append_audit(context, "llm.attempt_finished", payload)
+        await self._bus.publish(event)
 
     # 把工具登记的图片块注入下一条 user 消息，仅随下一次模型请求发送
     def _flush_pending_images(self, context: ExecutionContext) -> int:
@@ -636,46 +644,26 @@ class AgentLoop:
 
     # 计算 system prompt：context 已加载 base 后追加 todos 软状态摘要（若有）
     def _render_system(self, context: ExecutionContext) -> str:
-        base = context.system_prompt(_BASE_SYSTEM_PROMPT)
-        if self._todo_state is None:
+        tools = self._registry.tool_schemas() if self._supports_tools else []
+        base = context.system_prompt(build_system_prompt(self._registry.prompt_tools(tools)))
+        route_id = str(self._request_metadata.get("route_id", "")).strip()
+        model = str(self._request_metadata.get("model", "")).strip()
+        thinking = str(self._request_metadata.get("thinking", "off")).strip() or "off"
+        if route_id or model:
+            base += (
+                "\n\nRuntime identity (authoritative for this turn):\n"
+                f"- Provider route: {route_id or '(not configured)'}\n"
+                f"- Model: {model or '(not configured)'}\n"
+                f"- Thinking level: {thinking}\n"
+                "Answer questions about your current provider or model directly from these "
+                "facts; do not inspect files or run a command to rediscover them."
+            )
+        if self._todo_state is None or not any(tool.get("name") == "tasks" for tool in tools):
             return base
         summary = self._todo_state.active_summary()
         if not summary:
             return base
         return base + "\n\n" + summary
-
-    # 取当前 todos 摘要作为快照，用于判断"模型是否在两次 end_turn 间更新了 todos"
-    def _todo_snapshot(self) -> str:
-        return self._todo_state.active_summary() if self._todo_state else ""
-
-    # 将运行中到达的用户纠偏按顺序注入下一次模型决策上下文
-    def _inject_steering(self, context: ExecutionContext) -> bool:
-        if self._interaction_manager is None:
-            return False
-        messages = self._interaction_manager.drain_steering(context.run_id)
-        if not messages:
-            return False
-        content = (
-            "User steering update received while this run was active. "
-            "Treat the updates below as the newest instructions and revise the remaining work "
-            "accordingly:\n\n"
-            + "\n\n".join(messages)
-        )
-        context.messages.append({"role": "user", "content": content})
-        if self._transcript is not None:
-            self._transcript.append_user(context.step, content)
-        return bool(messages)
-
-    # 判断是否应推迟 end_turn：todo_state 存在、有未完成 todos、且快照自上次提醒已有
-    # 变化或尚未提醒过；超过 _MAX_TODO_DEFERS 次仍无变化则放弃阻拦
-    def _should_defer_end_turn(self) -> bool:
-        if self._todo_state is None or not self._todo_state.has_incomplete():
-            return False
-        if self._end_turn_defer_count >= _MAX_TODO_DEFERS:
-            return False
-        # 上一轮注入 reminder 后，若 todos 摘要仍未变化，则视为模型未推进，不再阻拦
-        snapshot = self._todo_snapshot()
-        return snapshot != self._last_todo_snapshot
 
     # 对上下文内工具结果应用确定性头尾裁剪并保留 Artifact 回查入口
     async def _apply_tool_result_budget(self, context: ExecutionContext) -> None:
@@ -712,10 +700,6 @@ class AgentLoop:
             or right.resource.endswith("/**")
             and left_path.startswith(right_path)
         )
-
-    # 判断某个 tool_call 是否具备加入空并行批次的完整声明
-    def _is_parallelable(self, tc: ToolCallBlock) -> bool:
-        return self._parallel_claims(tc) is not None
 
     # 判断候选调用的 claims 是否可加入当前并行批次
     def _can_join_parallel_batch(
@@ -963,19 +947,12 @@ class AgentLoop:
             return
         await self._bus.publish(VerificationCompletedEvent(**common))
 
-    # 单一 tool_call 调用通道：屏蔽 _run_act_phase 与上层 run 对 invocation 签名的重复
-    async def _invoke_one(self, tc: ToolCallBlock, context: ExecutionContext) -> ToolResult:
+    # 将原生循环的工具调用送入统一权限与执行管线。
+    async def _invoke_one(
+        self, tc: ToolCallBlock, context: ExecutionContext,
+        *, prepared_arguments: PreparedToolArguments | None = None,
+    ) -> ToolResult:
         await self._cancellation_checkpoint()
-        read_key = self._read_guard.call_key(self._registry, tc)
-        if read_key is not None:
-            cached = self._read_guard.get(read_key)
-            if cached is not None:
-                await self._publish_cached_call(tc, context, cached)
-                await self._cancellation_checkpoint()
-                return cached
-        elif self._is_mutating_call(tc):
-            self._read_guard.clear()
-
         result = await invoke_tool(
             self._registry, tc, self._bus, context.run_id,
             permission_manager=self._permission_manager,
@@ -984,58 +961,10 @@ class AgentLoop:
             artifact_store=self._artifact_store,
             authority_snapshot=self._authority_snapshot,
             step=context.step,
+            prepared_arguments=prepared_arguments,
         )
         await self._cancellation_checkpoint()
-        if read_key is not None:
-            self._read_guard.put(read_key, result)
         return result
-
-    # 同一并行批中只执行一次完全相同的只读调用，并为重复项回放配对事件
-    async def _invoke_parallel_batch(
-        self,
-        batch: list[ToolCallBlock],
-        context: ExecutionContext,
-    ) -> list[ToolResult]:
-        representatives: list[ToolCallBlock] = []
-        representative_indexes: list[int] = []
-        duplicate_of: dict[int, int] = {}
-        seen: dict[str, int] = {}
-        for index, tool_call in enumerate(batch):
-            key = self._read_guard.call_key(self._registry, tool_call)
-            if key is not None and key in seen:
-                duplicate_of[index] = seen[key]
-                continue
-            if key is not None:
-                seen[key] = index
-            representatives.append(tool_call)
-            representative_indexes.append(index)
-
-        await self._cancellation_checkpoint()
-        tasks = [
-            asyncio.create_task(
-                self._invoke_one(tool_call, context),
-                name=f"tool-call:{tool_call.id}",
-            )
-            for tool_call in representatives
-        ]
-        try:
-            gathered = await asyncio.gather(*tasks)
-        except BaseException:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        results_by_index = {
-            index: result
-            for index, result in zip(representative_indexes, gathered, strict=True)
-        }
-        for index, source_index in duplicate_of.items():
-            await self._cancellation_checkpoint()
-            result = results_by_index[source_index]
-            results_by_index[index] = result
-            await self._publish_cached_call(batch[index], context, result)
-        return [results_by_index[index] for index in range(len(batch))]
 
     # 把单个 ToolResult 按原顺序写回 context/transcript；返回是否命中 permission_required
     async def _record_result(
@@ -1046,15 +975,13 @@ class AgentLoop:
         result: ToolResult,
         context: ExecutionContext,
     ) -> bool:
-        context.add_tool_result(tc.id, result.content, is_error=result.is_error)
-        if result.images:
-            for image_block in result.images:
-                context.add_pending_image(dict(image_block))
+        model_content = result.model_content()
+        context.add_tool_result(tc.id, model_content, is_error=result.is_error)
         if self._transcript is not None:
             self._transcript.append_tool_result(
                 context.step,
                 tc.id,
-                result.content,
+                model_content,
                 is_error=result.is_error,
                 block_index=idx,
                 block_count=block_count,
@@ -1067,124 +994,32 @@ class AgentLoop:
         if not context.is_done():
             stuck = self._stuck_guard.observe(tc, result)
             if stuck is not None:
-                await self._bus.publish(
-                    AgentStuckEvent(
-                        run_id=context.run_id,
-                        step=context.step,
-                        tool_name=stuck.tool_name,
-                        signature=stuck.signature,
-                        repeat_count=stuck.repeat_count,
-                        ts=_now(),
-                    )
-                )
-                context.mark_failed("stuck_repetition")
-                return True
+                self._pending_repeat_notices.append((
+                    AgentRepeatNoticeEvent(
+                        run_id=context.run_id, step=context.step,
+                        tool_name=stuck.tool_name, signature=stuck.signature,
+                        repeat_count=stuck.repeat_count, ts=_now(),
+                    ),
+                    stuck.notice,
+                ))
         return False
 
-    # 执行一轮 tool_use 序列：连续的 can_parallel 工具组成一批用 asyncio.gather 并发，
-    # 副作用工具按模型给定顺序串行；任一批中若出现 permission_required 立即停并为后续补合成结果
-    async def _run_act_phase(
-        self,
-        tool_calls: list[ToolCallBlock],
-        context: ExecutionContext,
-    ) -> None:
-        block_count = len(tool_calls)
-        i = 0
-        n = len(tool_calls)
-        try:
-            while i < n:
-                await self._cancellation_checkpoint()
-                if not self._supports_parallel_tools:
-                    tc = tool_calls[i]
-                    result = await self._invoke_one(tc, context)
-                    if await self._record_result(i, block_count, tc, result, context):
-                        self._fill_skipped_tool_results(
-                            tool_calls, i + 1, block_count, context
-                        )
-                        return
-                    i += 1
-                    continue
-                j = i
-                batch_claims: list[ResourceClaim] = []
-                # 收集从 i 开始连续的并行工具，构造一个批
-                while j < n:
-                    claims = self._parallel_claims(tool_calls[j])
-                    if claims is None or not self._can_join_parallel_batch(
-                        claims,
-                        batch_claims,
-                    ):
-                        break
-                    batch_claims.extend(claims)
-                    j += 1
-                batch = tool_calls[i:j]
-
-                if not batch:
-                    # 当前 tool_calls[i] 不可并行（副作用或未知工具），单独串行执行
-                    tc = tool_calls[i]
-                    result = await self._invoke_one(tc, context)
-                    if await self._record_result(i, block_count, tc, result, context):
-                        self._fill_skipped_tool_results(
-                            tool_calls, i + 1, block_count, context
-                        )
-                        return
-                    i += 1
-                    continue
-
-                if len(batch) == 1:
-                    results: list[ToolResult] = [await self._invoke_one(batch[0], context)]
-                else:
-                    results = await self._invoke_parallel_batch(batch, context)
-
-                should_stop = False
-                for k, tc in enumerate(batch):
-                    should_stop = (
-                        await self._record_result(
-                            i + k,
-                            block_count,
-                            tc,
-                            results[k],
-                            context,
-                        )
-                        or should_stop
-                    )
-                if should_stop:
-                    self._fill_skipped_tool_results(tool_calls, j, block_count, context)
-                    return
-                i = j
-        except asyncio.CancelledError:
-            self._fill_skipped_tool_results(tool_calls, i, block_count, context)
-            raise
-
-    # 为提前终止而未执行的 tool_use 追加合成错误结果，保证 transcript 中 tool 协议闭环
-    def _fill_skipped_tool_results(
-        self,
-        tool_calls: list[ToolCallBlock],
-        start_index: int,
-        block_count: int,
-        context: ExecutionContext,
-    ) -> None:
-        for idx in range(start_index, len(tool_calls)):
-            tc = tool_calls[idx]
-            error = (
-                "Skipped: this tool call was not executed because the run "
-                "terminated early."
-            )
-            context.add_tool_result(tc.id, error, is_error=True)
+    # 在整批工具结果配对后追加提醒，禁止提醒把一次工具响应拆成两段
+    async def _flush_repeat_notices(self, context: ExecutionContext) -> None:
+        notices, self._pending_repeat_notices = self._pending_repeat_notices, []
+        for event, content in notices:
             if self._transcript is not None:
-                self._transcript.append_tool_result(
-                    context.step,
-                    tc.id,
-                    error,
-                    is_error=True,
-                    block_index=idx,
-                    block_count=block_count,
-                )
+                self._transcript.append_notice(context.step, content)
+            context.messages.append({"role": "user", "content": content})
+            await self._bus.publish(event)
 
     # 驱动循环并保证任何退出路径都为已开始的步骤补齐终止事件
     async def run(self, context: ExecutionContext) -> None:
         self._active_step = 0
         try:
-            await self._run_impl(context)
+            from code_rook.core.agent_runtime.driver import execute_context
+
+            await execute_context(self, context)
         finally:
             if self._active_step:
                 finish_task = asyncio.create_task(
@@ -1206,254 +1041,3 @@ class AgentLoop:
         await self._bus.publish(
             StepFinishedEvent(run_id=context.run_id, step=step, ts=_now())
         )
-
-    # 执行原始 plan→act→observe 状态机并在正常步骤边界清除活动标记
-    async def _run_impl(self, context: ExecutionContext) -> None:
-        while not context.is_done():
-            self._inject_steering(context)
-            context.step += 1
-            await self._bus.publish(
-                StepStartedEvent(run_id=context.run_id, step=context.step, ts=_now())
-            )
-            self._active_step = context.step
-
-            # [per-turn] 每步前让路由刷新回调决定是否切换模型，返回非空即替换 provider
-            if self._route_refresher is not None:
-                refreshed = await self._route_refresher(context.step)
-                if refreshed is not None:
-                    self._provider = refreshed
-
-            await self._apply_tool_result_budget(context)
-
-            # [plan] watchdog 内调用 LLM；重试计数与 context overflow 恢复彼此独立
-            try:
-                response = await self._call_provider(context)
-            except asyncio.CancelledError:
-                context.mark_failed("cancelled")
-                raise
-            except StreamWatchdogError as exc:
-                log.warning(
-                    "LLM watchdog failed run_id=%s step=%d reason=%s",
-                    context.run_id,
-                    context.step,
-                    exc.reason,
-                )
-                context.mark_failed(exc.reason)
-                break
-            except NoContentResponseError as exc:
-                log.warning(
-                    "LLM returned no content run_id=%s step=%d: %s",
-                    context.run_id,
-                    context.step,
-                    exc,
-                )
-                context.mark_failed(exc.reason)
-                break
-            except GoalBudgetError as exc:
-                log.warning(
-                    "Goal token budget stopped LLM call run_id=%s step=%d reason=%s",
-                    context.run_id,
-                    context.step,
-                    exc.reason,
-                )
-                context.mark_failed(exc.reason)
-                break
-            except RouteCapabilityError as exc:
-                log.warning(
-                    "Frozen route rejected unsupported capability run_id=%s step=%d "
-                    "capability=%s",
-                    context.run_id,
-                    context.step,
-                    exc.capability,
-                )
-                context.mark_failed("route_capability_error")
-                break
-            except InvariantViolation as exc:
-                log.error(
-                    "Execution invariant blocked provider request run_id=%s step=%d: %s",
-                    context.run_id,
-                    context.step,
-                    exc,
-                )
-                context.mark_failed("invariant_violation")
-                break
-            except Exception as exc:
-                if (
-                    self._is_context_error(exc)
-                    and self._compactor is not None
-                    and not self._reactive_compaction_attempted
-                ):
-                    self._reactive_compaction_attempted = True
-                    compacted = await self._compactor.compact(
-                        context,
-                        self._provider,
-                        focus="Preserve the current goal and recent tool-use pairs after overflow.",
-                        trigger="overflow",
-                    )
-                    if compacted is not None:
-                        await self._finish_active_step(context)
-                        continue
-                logging.getLogger(__name__).exception(
-                    "LLM call failed run_id=%s step=%d", context.run_id, context.step
-                )
-                context.mark_failed("llm_error")
-                break
-
-            await self._bus.publish(
-                AgentDecisionEvent(
-                    run_id=context.run_id,
-                    step=context.step,
-                    intent=_decision_intent(response.tool_calls),  # type: ignore[arg-type]
-                    summary=_decision_summary(response.text, response.tool_calls, context.goal),
-                    tool_names=[call.name for call in response.tool_calls],
-                    has_visible_text=bool(response.text.strip()),
-                    ts=_now(),
-                )
-            )
-
-            if response.tool_calls and not self._supports_tools:
-                log.warning(
-                    "Frozen route returned tool calls despite tools being disabled "
-                    "run_id=%s step=%d",
-                    context.run_id,
-                    context.step,
-                )
-                context.mark_failed("route_capability_error")
-                break
-
-            # [observe] append assistant content blocks to context
-            # thinking blocks must come first and be preserved verbatim for extended thinking mode
-            blocks: list[dict[str, object]] = list(response.thinking_blocks)
-            if response.text:
-                blocks.append({"type": "text", "text": response.text})
-            for tc in response.tool_calls:
-                blocks.append(
-                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.input}
-                )
-            context.add_assistant_message(blocks)
-            if self._transcript is not None:
-                self._transcript.append_assistant(context.step, blocks)
-
-            # [act] 按工具能力分组执行；连续的 can_parallel 工具组成一批并发，副作用工具串行
-            if response.stop_reason == "tool_use":
-                try:
-                    await self._run_act_phase(response.tool_calls, context)
-                except asyncio.CancelledError:
-                    context.mark_failed("cancelled")
-                    raise
-            elif response.stop_reason == "max_tokens" and response.tool_calls:
-                # Output token limit hit mid-tool-call; input is incomplete.
-                # Add synthetic error results so the conversation stays balanced.
-                for result_index, tc in enumerate(response.tool_calls):
-                    error = (
-                        "Error: output token limit reached before this tool call could be "
-                        "completed. Please break the task into smaller steps and try again."
-                    )
-                    context.add_tool_result(tc.id, error, is_error=True)
-                    if self._transcript is not None:
-                        self._transcript.append_tool_result(
-                            context.step,
-                            tc.id,
-                            error,
-                            is_error=True,
-                            block_index=result_index,
-                            block_count=len(response.tool_calls),
-                        )
-
-            if response.stop_reason == "max_tokens":
-                if self._length_continues_used == 0:
-                    self._length_continues_used += 1
-                    context.messages.append(
-                        {"role": "user", "content": _LENGTH_CONTINUE_PROMPT}
-                    )
-                    if self._transcript is not None:
-                        self._transcript.append_user(
-                            context.step,
-                            _LENGTH_CONTINUE_PROMPT,
-                        )
-                else:
-                    context.result = response.text or ""
-                    context.mark_failed("incomplete")
-            elif response.stop_reason in {
-                "incomplete",
-                "content_filtered",
-                "failed",
-                "cancelled",
-                "transport_error",
-            }:
-                context.result = response.text or ""
-                context.mark_failed(response.stop_reason)
-
-            steering_received = self._inject_steering(context)
-
-            # 软状态机：end_turn 时若有未完成 todos 且 todos 自上次提醒发生过变化，注入 reminder
-            # 让模型继续；连续 _MAX_TODO_DEFERS 次提醒 todos 仍不变就放弃阻拦，避免死循环
-            if response.stop_reason == "end_turn":
-                if steering_received:
-                    pass
-                elif self._should_defer_end_turn():
-                    snapshot = self._todo_snapshot() if self._todo_state else ""
-                    self._end_turn_defer_count += 1
-                    context.messages.append(
-                        {"role": "user", "content": _TODO_END_TURN_REMINDER}
-                    )
-                    if self._transcript is not None:
-                        self._transcript.append_user(
-                            context.step,
-                            _TODO_END_TURN_REMINDER,
-                        )
-                    self._last_todo_snapshot = snapshot
-                else:
-                    context.result = response.text or ""
-                    context.mark_success()
-            elif not context.is_done() and context.step >= context.max_steps:
-                if not await self._try_continue_past_max_steps(context):
-                    context.mark_failed("exceeded_max_steps")
-
-            # 工具结果追加完毕（messages 末尾为 user）后检查压缩，仅在 run 继续时触发
-            # 此时压缩结果 [user_summary, assistant_ack] 对下一次 LLM 调用是合法输入
-            if (
-                not context.is_done()
-                and response.stop_reason == "tool_use"
-                and self._compactor is not None
-                and self._compact_threshold > 0
-                and response.usage is not None
-                and max(
-                    response.usage.context_pct,
-                    self._projected_context_pct(context, response),
-                ) >= self._compact_threshold
-            ):
-                await self._apply_tool_result_budget(context)
-                compacted = await self._compactor.compact(
-                    context,
-                    self._provider,
-                    trigger="auto_threshold",
-                )
-                if compacted is not None and self._hooks is not None:
-                    await self._hooks.emit(
-                        "compaction_completed",
-                        {
-                            "run_id": context.run_id,
-                            "session_id": self._session_id,
-                            "trigger": "auto_threshold",
-                            "summary_path": compacted.summary_path,
-                            "saved_tokens": max(
-                                0,
-                                compacted.original_token_estimate - compacted.compacted_tokens,
-                            ),
-                        },
-                    )
-
-            await self._finish_active_step(context)
-
-        if self._hooks is not None:
-            await self._hooks.emit(
-                "turn_stop",
-                {
-                    "run_id": context.run_id,
-                    "session_id": self._session_id,
-                    "status": context.status,
-                    "reason": context.reason,
-                    "result": context.result,
-                },
-            )

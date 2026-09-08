@@ -118,9 +118,9 @@ def test_legacy_skill_is_read_only_import(tmp_path: Path) -> None:
     assert (legacy / "SKILL.md").is_file()
 
 
-# 功能：验证 project、user、builtin 优先级不会被 legacy 同名 skill 颠倒
-# 设计：创建 user 与 project 同名条目，断言 project 胜出；删除 project 后 user 接管
-def test_skill_priority_project_over_user_and_legacy(tmp_path: Path) -> None:
+# 功能：验证用户 Skill 优先于项目同名项，移除后才使用项目版本
+# 设计：同时校验 resolve 和 show，防止管理界面显示的来源与实际加载不同
+def test_skill_priority_user_over_project_and_legacy(tmp_path: Path) -> None:
     user_dir = tmp_path / "user-skills"
     user_dir.mkdir()
     (user_dir / "review.md").write_text(
@@ -135,11 +135,12 @@ def test_skill_priority_project_over_user_and_legacy(tmp_path: Path) -> None:
     )
     loader = SkillLoader(tmp_path, user_skills_dir=user_dir)
 
-    assert loader.resolve("review").description == "project"  # type: ignore[union-attr]
+    assert loader.resolve("review").description == "user"  # type: ignore[union-attr]
+    assert loader.show("review").description == "user"  # type: ignore[union-attr]
 
     SkillManager(tmp_path, user_skills_dir=user_dir).remove(
         "review",
-        scope="project",
+        scope="user",
         confirmed=True,
     )
-    assert loader.resolve("review").description == "user"  # type: ignore[union-attr]
+    assert loader.resolve("review").description == "project"  # type: ignore[union-attr]

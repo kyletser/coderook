@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
+from code_rook.core.interaction import FollowUpMessage, InteractionManager
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.loop import AgentLoop
+from code_rook.core.session.store import SessionStore, SessionTranscriptSink
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
 from code_rook.core.tools.registry import ToolRegistry
 from code_rook.core.turn import StuckGuard
@@ -108,9 +112,9 @@ class _CancelTool(BaseTool):
         return ToolResult(self.name)
 
 
-# 功能：验证连续三次相同参数和结果产生 agent.stuck 事件并终止循环
-# 设计：三个 step 只改变 tool_use_id，工具语义与结果保持一致，断言 hash 事件不泄露正文
-async def test_three_identical_tool_results_emit_stuck_event() -> None:
+# 功能：验证连续三次同参调用只产生提醒，之后仍能正常完成任务
+# 设计：三个 step 只改变调用 ID，最后明确完成，断言提醒不把任务改成失败
+async def test_three_identical_tool_calls_are_advisory() -> None:
     provider = _SequenceProvider(
         [
             LlmResponse(
@@ -118,7 +122,7 @@ async def test_three_identical_tool_results_emit_stuck_event() -> None:
                 tool_calls=[_call("count_read", f"read-{index}", path="a.py")],
             )
             for index in range(3)
-        ]
+        ] + [LlmResponse(stop_reason="end_turn", text="done")]
     )
     tool = _CountingReadTool()
     registry = ToolRegistry()
@@ -134,9 +138,9 @@ async def test_three_identical_tool_results_emit_stuck_event() -> None:
     context = _context()
     await AgentLoop(provider, registry, bus).run(context)  # type: ignore[arg-type]
 
-    stuck = [event for event in events if event.type == "agent.stuck"]  # type: ignore[attr-defined]
-    assert context.status == "failed"
-    assert context.reason == "stuck_repetition"
+    stuck = [event for event in events if event.type == "agent.repeat_notice"]  # type: ignore[attr-defined]
+    assert context.status == "success"
+    assert context.reason is None
     assert tool.calls == 1
     assert len(stuck) == 1
     assert stuck[0].repeat_count == 3  # type: ignore[attr-defined]
@@ -182,9 +186,9 @@ async def test_repeated_read_uses_cache_with_paired_events() -> None:
     assert [event.tool_use_id for event in finished] == ["read-1", "read-2"]  # type: ignore[attr-defined]
 
 
-# 功能：验证同一批完全相同的只读调用 coalesce 为一次真实执行
-# 设计：单个 tool_use 响应中放入两个相同调用并提高 stuck 阈值，隔离批内去重语义
-async def test_identical_reads_in_one_batch_are_coalesced() -> None:
+# 功能：原生循环独立执行并行工具调用，并保留每个调用的配对结果。
+# 设计：同批相同参数仍有两个调用 ID，不借用旧批调度器的合并行为。
+async def test_identical_reads_in_one_batch_keep_individual_results() -> None:
     provider = _SequenceProvider(
         [
             LlmResponse(
@@ -206,7 +210,7 @@ async def test_identical_reads_in_one_batch_are_coalesced() -> None:
         provider,  # type: ignore[arg-type]
         registry,
         EventBus(),
-        stuck_guard=StuckGuard(threshold=4),
+        stuck_guard=StuckGuard(thresholds=(4,)),
     ).run(context)
 
     tool_results = [
@@ -217,8 +221,9 @@ async def test_identical_reads_in_one_batch_are_coalesced() -> None:
         if isinstance(block, dict) and block.get("type") == "tool_result"
     ]
     assert context.status == "success"
-    assert tool.calls == 1
+    assert tool.calls == 2
     assert len(tool_results) == 2
+    assert [result["tool_use_id"] for result in tool_results] == ["read-1", "read-2"]
 
 
 # 功能：验证 mutation 会清空读取缓存，后续相同读取必须重新访问真实工具
@@ -321,3 +326,109 @@ async def test_cancellation_after_tool_prevents_next_tool_start() -> None:
     assert first.calls == 1
     assert second.calls == 0
     assert started_names == ["cancel_first"]
+
+
+# 功能：验证九次同参但结果变化的工具调用只在三、五、八次提醒，仍完成全部调用
+# 设计：动态只读工具不走读取缓存，持久 Ledger 与请求快照验证提醒不切断工具配对
+async def test_repeat_thresholds_preserve_execution_and_replay(tmp_path: Path) -> None:
+    provider = _SequenceProvider([
+        LlmResponse(stop_reason="tool_use", tool_calls=[
+            _call("dynamic_read", f"poll-{i}", job_id="one"),
+        ]) for i in range(9)
+    ] + [LlmResponse(stop_reason="end_turn", text="done")])
+    tool = _DynamicReadTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    store = SessionStore(tmp_path)
+    store.append_message("sess-retry", "user", "test guards")
+    bus = EventBus()
+    notices: list[int] = []
+
+    # 记录公开提醒次数，同时证明它不是失败事件
+    async def collect(event: BaseModel) -> None:
+        if getattr(event, "type", "") == "agent.repeat_notice":
+            notices.append(event.repeat_count)  # type: ignore[attr-defined]
+
+    bus.subscribe(collect)
+    context = _context()
+    context.max_steps = 12
+    await AgentLoop(
+        provider, registry, bus,  # type: ignore[arg-type]
+        transcript=SessionTranscriptSink(store, "sess-retry", context.run_id),
+    ).run(context)
+    assert context.status == "success"
+    assert tool.calls == 9 and notices == [3, 5, 8]
+    reopened = SessionStore(tmp_path)
+    assert reopened.derive_messages("sess-retry") == context.messages
+    events = reopened.read_session_events("sess-retry")
+    reminders = [e for e in events if e.type == "input.admitted" and "source" in e.payload]
+    assert len(reminders) == 3
+    assert all(e.payload["source"]["plugin"] == "repeat-tool-reminder" for e in reminders)
+    for event in reminders:
+        preceding = events[events.index(event) - 1]
+        assert preceding.payload["block"]["type"] == "tool_result"
+    assert "Runtime progress checkpoint" not in json.dumps(context.messages)
+
+
+# 功能：验证参数键顺序、结果变化不影响重复计数，不同参数及用户消息会重置
+# 设计：预先累积重复链，经生产循环消费纠偏或后续消息，再检查新计数及原文上下文。
+@pytest.mark.parametrize("follow_up", [False, True])
+async def test_canonical_arguments_and_user_steering_reset(follow_up: bool) -> None:
+    guard = StuckGuard()
+    first = _call("read", "a", options={"x": 1, "y": 2})
+    second = _call("read", "b", options={"y": 2, "x": 1})
+    assert guard.observe(first, ToolResult("old")) is None
+    assert guard.observe(second, ToolResult("new")) is None
+    assert guard.observe(first, ToolResult("error", is_error=True)).repeat_count == 3
+    bus = EventBus()
+    interaction = InteractionManager(bus)
+    context = _context()
+    interaction.register_run(context.run_id)
+    loop = AgentLoop(_SequenceProvider([
+        LlmResponse(stop_reason="end_turn", text="Answer"),
+        LlmResponse(stop_reason="end_turn", text="Follow-up answer"),
+    ]), ToolRegistry(), bus,  # type: ignore[arg-type]
+                     stuck_guard=guard, interaction_manager=interaction)
+    instruction = "Continue checking the same file"
+    pending = True
+
+    # 仅作为已消费确认，不额外向主循环注入消息。
+    async def admitted() -> None:
+        pass
+
+    # 模拟同一运行结束主回答后领取一条后续输入。
+    async def next_message() -> list[FollowUpMessage]:
+        nonlocal pending
+        if not pending:
+            return []
+        pending = False
+        return [FollowUpMessage(instruction, admitted)]
+
+    if follow_up:
+        interaction.bind_follow_up(context.run_id, next_message)
+    else:
+        assert interaction.steer(context.run_id, instruction)
+    await loop.run(context)
+    assert context.status == "success", context.reason
+    assert {"role": "user", "content": instruction} in context.messages
+    assert guard.observe(first, ToolResult("again")) is None
+    assert guard.observe(second, ToolResult("again")) is None
+    assert guard.observe(first, ToolResult("again")).repeat_count == 3
+    assert guard.observe(_call("read", "c", options={"x": 3}), ToolResult("new")) is None
+    assert guard.observe(first, ToolResult("again")) is None
+    assert StuckGuard().observe(first, ToolResult("other session")) is None
+
+
+# 功能：验证排除工具不改变观察链，提醒参数预览有界且不改变原调用
+# 设计：两次阈值配置与透明排除交错，检查后续详细提醒而不依赖模型采纳建议
+def test_repeat_include_exclude_and_preview() -> None:
+    guard = StuckGuard(thresholds=(2, 3), include=("read*",), exclude=("read_status",),
+                       argument_preview_chars=8)
+    call = _call("read_file", "a", path="very-long-path")
+    assert guard.observe(call, ToolResult("one")) is None
+    assert guard.observe(_call("read_status", "b"), ToolResult("excluded")) is None
+    assert guard.observe(call, ToolResult("two")).repeat_count == 2
+    match = guard.observe(call, ToolResult("three"))
+    assert match.repeat_count == 3
+    assert match.notice.split("Arguments: ")[1] == '{"path":…'
+    assert call.input == {"path": "very-long-path"}

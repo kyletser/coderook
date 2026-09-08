@@ -73,6 +73,10 @@ class _ActivityBus(EventBus):
     def mark_stream_activity(self, byte_count: int) -> None:
         self._on_activity(max(0, byte_count))
 
+    # 保留底层部分输出供尝试审计，仍不转成模型消息
+    def record_stream_fragment(self, fragment: dict[str, object]) -> None:
+        self._inner.record_stream_fragment(fragment)
+
 
 class StreamWatchdog:
     # 初始化流式空闲、总时长与响应大小三重边界

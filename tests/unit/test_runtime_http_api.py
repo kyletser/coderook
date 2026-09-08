@@ -74,6 +74,8 @@ class _FakeRuntimeApi:
         self.permission_response: tuple[str, str, str] | None = None
         self.queue: list[dict[str, object]] = []
         self.turn_query: tuple[int | None, str | None] | None = None
+        self.model_selection: tuple[str, str, str] | None = None
+        self.thinking_selection: tuple[str, str] | None = None
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
@@ -89,6 +91,20 @@ class _FakeRuntimeApi:
         assert mode in {"chat", "one_shot"}
         self.thread = self.thread.model_copy(update={"title": title})
         return self.thread
+
+    # 记录 Web 为当前会话选择的 Python 扩展 Provider 与模型。
+    async def set_thread_model(
+        self, thread_id: str, route_id: str, model: str,
+    ) -> dict[str, object]:
+        self.model_selection = (thread_id, route_id, model)
+        return {"thread_id": thread_id, "route_id": route_id, "model": model}
+
+    # 记录 Web 为当前会话选择的模型思考强度。
+    async def set_thread_thinking(
+        self, thread_id: str, thinking_level: str,
+    ) -> dict[str, object]:
+        self.thinking_selection = (thread_id, thinking_level)
+        return {"thread_id": thread_id, "thinking_level": thinking_level}
 
     # 模拟 Core 持久队列接收浏览器后续消息
     async def queue_message(
@@ -319,6 +335,22 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             )
             assert response.status_code == 201
             assert response.json()["title"] == "Created"
+
+            response = await client.post(
+                "/v1/threads/thread-1/model",
+                json={"route_id": "local-proxy", "model": "model-b"},
+            )
+            assert response.status_code == 200
+            assert response.json()["model"] == "model-b"
+            assert service.model_selection == ("thread-1", "local-proxy", "model-b")
+
+            response = await client.post(
+                "/v1/threads/thread-1/thinking",
+                json={"thinking_level": "high"},
+            )
+            assert response.status_code == 200
+            assert response.json()["thinking_level"] == "high"
+            assert service.thinking_selection == ("thread-1", "high")
 
             response = await client.post(
                 "/v1/threads/thread-1/queue",

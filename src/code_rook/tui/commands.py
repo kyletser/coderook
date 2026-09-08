@@ -56,6 +56,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "new": "session",
     "rename": "session",
     "fork": "session",
+    "tree": "session",
     "preset": "session",
     "export": "session",
     "delete": "session",
@@ -80,6 +81,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "trust": "security",
     "sandbox": "security",
     "skills": "extension",
+    "reload": "extension",
     "mcp": "extension",
     "memory": "extension",
     "workers": "extension",
@@ -196,6 +198,36 @@ async def _cmd_rename(app: Any, ta: ChatTextArea, content: str) -> None:
         )
 
 
+# 打开可用键盘选择的历史节点列表。
+async def _cmd_tree(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None or app._session_id is None or app._busy:
+        _warn(app, "cmd.core_busy")
+        return
+    app.run_worker(app._do_session_tree(), name="session_tree", exclusive=False)
+
+
+# 重新加载会话扩展、模板和 Skills，不发送模型请求或重启 Core。
+async def _cmd_reload(app: Any, ta: ChatTextArea, content: str) -> None:
+    if app._client is None or app._session_id is None:
+        return
+    from code_rook.tui.ipc_actions import reload_resources
+
+    sid = app._session_id
+    try:
+        context = await reload_resources(app._client, sid)
+        if app._session_id != sid:
+            return
+        app._input_commands = context.get("input_commands", [])
+        app._slash_items = app._build_slash_items()
+        ta.text = ""
+        app.notify("Extensions, templates and Skills reloaded" if app._locale == "en-US"
+                   else "扩展、提示模板和 Skills 已重新加载")
+    except (RuntimeError, OSError) as exc:
+        app._show_safe_error("reload", exc)
+
+
+# 从当前会话末尾创建独立分支。
 async def _cmd_fork(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
     if app._client is None or app._session_id is None or app._busy:
@@ -306,6 +338,22 @@ async def _cmd_model(app: Any, ta: ChatTextArea, content: str) -> None:
         app._select_route_model(selected)
     else:
         _warn(app, "cmd.usage", usage="/model <model-id> | /model add <model-id>")
+
+
+# 查看或切换当前会话的模型思考强度。
+async def _cmd_thinking(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._busy:
+        _warn(app, "cmd.model.busy")
+        return
+    selected = content.removeprefix("/thinking").strip().lower()
+    if not selected:
+        app._append(Static(f"Thinking: [bold]{escape(app._thinking_level)}[/bold]"))
+        return
+    if selected not in {"off", "low", "medium", "high"}:
+        _warn(app, "cmd.usage", usage="/thinking off|low|medium|high")
+        return
+    app._select_thinking_level(selected)
 
 
 async def _cmd_doctor(app: Any, ta: ChatTextArea, content: str) -> None:
@@ -1207,6 +1255,8 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     ),
     SlashCommand("rename", "重命名当前会话：/rename <标题>", True, _cmd_rename),
     SlashCommand("fork", "复制当前会话为分支：/fork [标题]", True, _cmd_fork),
+    SlashCommand("tree", "选择历史节点并从这里继续", True, _cmd_tree),
+    SlashCommand("reload", "重新加载扩展、提示模板与 Skills", True, _cmd_reload),
     SlashCommand(
         "preset",
         "通过 fork 切换冻结 Agent Preset",
@@ -1233,6 +1283,14 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         False,
         _cmd_model,
         usage="<模型 ID>|add <模型 ID>",
+    ),
+    SlashCommand(
+        "thinking",
+        "查看或切换当前会话的思考强度",
+        True,
+        _cmd_thinking,
+        usage="off|low|medium|high",
+        arg_candidates=("off", "low", "medium", "high"),
     ),
     SlashCommand("doctor", "诊断活动 Provider route", False, _cmd_doctor),
     SlashCommand("config", "更换 LLM API、模型或密钥", False, _cmd_config),

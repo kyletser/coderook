@@ -208,6 +208,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `permission_mode` | `string` | no |
 | `allow_tools` | `array` | no |
 | `resume_session_id` | `string | null` | no |
+| `thinking_level` | `string | null` | no |
 | `question_mode` | `string` | no |
 | `question_timeout_s` | `number | null` | no |
 | `preset_answers` | `array` | no |
@@ -253,6 +254,24 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Resume Session Id"
+    },
+    "thinking_level": {
+      "anyOf": [
+        {
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thinking Level"
     },
     "question_mode": {
       "default": "fail_fast",
@@ -314,6 +333,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `run_id` | `string` | yes |
 | `session_id` | `string` | yes |
+| `handled` | `boolean` | no |
 
 ```json
 {
@@ -325,6 +345,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "session_id": {
       "title": "Session Id",
       "type": "string"
+    },
+    "handled": {
+      "default": false,
+      "title": "Handled",
+      "type": "boolean"
     }
   },
   "required": [
@@ -4246,6 +4271,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `turn_id` | `string` | yes |
+| `handled` | `boolean` | no |
 
 ```json
 {
@@ -4253,6 +4279,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "turn_id": {
       "title": "Turn Id",
       "type": "string"
+    },
+    "handled": {
+      "default": false,
+      "title": "Handled",
+      "type": "boolean"
     }
   },
   "required": [
@@ -4341,6 +4372,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
             "keyring",
             "file",
             "env",
+            "extension",
             "missing"
           ],
           "title": "Credential Source",
@@ -4652,6 +4684,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
             "keyring",
             "file",
             "env",
+            "extension",
             "missing"
           ],
           "title": "Credential Source",
@@ -4967,6 +5000,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
             "keyring",
             "file",
             "env",
+            "extension",
             "missing"
           ],
           "title": "Credential Source",
@@ -5286,6 +5320,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
             "keyring",
             "file",
             "env",
+            "extension",
             "missing"
           ],
           "title": "Credential Source",
@@ -5913,6 +5948,9 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `session_id` | `string` | yes |
 | `status` | `string` | yes |
+| `route_id` | `string` | no |
+| `model` | `string` | no |
+| `thinking_level` | `string | null` | no |
 
 ```json
 {
@@ -5930,6 +5968,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "title": "Status",
       "type": "string"
+    },
+    "route_id": {
+      "default": "",
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+    },
+    "thinking_level": {
+      "anyOf": [
+        {
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thinking Level"
     }
   },
   "required": [
@@ -6089,6 +6155,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `run_id` | `string` | yes |
+| `handled` | `boolean` | no |
 
 ```json
 {
@@ -6096,6 +6163,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "run_id": {
       "title": "Run Id",
       "type": "string"
+    },
+    "handled": {
+      "default": false,
+      "title": "Handled",
+      "type": "boolean"
     }
   },
   "required": [
@@ -6394,6 +6466,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | Field | Type | Required |
 |---|---|---|
 | `messages` | `array` | yes |
+| `display_messages` | `array | null` | no |
 
 ```json
 {
@@ -6405,6 +6478,22 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       },
       "title": "Messages",
       "type": "array"
+    },
+    "display_messages": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Messages"
     }
   },
   "required": [
@@ -6537,6 +6626,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Preset Digest",
           "type": "string"
+        },
+        "route_id": {
+          "default": "",
+          "title": "Route Id",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
         }
       },
       "required": [
@@ -6685,6 +6802,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Preset Digest",
           "type": "string"
+        },
+        "route_id": {
+          "default": "",
+          "title": "Route Id",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
         }
       },
       "required": [
@@ -6837,6 +6982,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Preset Digest",
           "type": "string"
+        },
+        "route_id": {
+          "default": "",
+          "title": "Route Id",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
         }
       },
       "required": [
@@ -6871,6 +7044,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
+| `leaf_seq` | `integer | null` | no |
 | `title` | `string` | no |
 | `preset_id` | `string | null` | no |
 
@@ -6886,6 +7060,19 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "session_id": {
       "title": "Session Id",
       "type": "string"
+    },
+    "leaf_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Leaf Seq"
     },
     "title": {
       "default": "",
@@ -7002,6 +7189,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
           "default": "",
           "title": "Preset Digest",
           "type": "string"
+        },
+        "route_id": {
+          "default": "",
+          "title": "Route Id",
+          "type": "string"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
         }
       },
       "required": [
@@ -8866,6 +9081,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 
 | Field | Type | Required |
 |---|---|---|
+| `input_commands` | `array` | no |
 | `message_count` | `integer` | yes |
 | `estimated_tokens` | `integer` | yes |
 | `run_count` | `integer` | yes |
@@ -8881,6 +9097,16 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 ```json
 {
   "properties": {
+    "input_commands": {
+      "items": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Input Commands",
+      "type": "array"
+    },
     "message_count": {
       "title": "Message Count",
       "type": "integer"
@@ -11865,6 +12091,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
         "keyring",
         "file",
         "env",
+        "extension",
         "missing"
       ],
       "title": "Credential Source",
@@ -12062,6 +12289,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `cache_read_input_tokens` | `integer` | yes |
 | `cache_creation_input_tokens` | `integer` | yes |
 | `context_pct` | `number` | no |
+| `purpose` | `string` | no |
 | `model` | `string` | no |
 | `ts` | `string` | yes |
 
@@ -12098,6 +12326,15 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": 0.0,
       "title": "Context Pct",
       "type": "number"
+    },
+    "purpose": {
+      "default": "response",
+      "enum": [
+        "response",
+        "summary"
+      ],
+      "title": "Purpose",
+      "type": "string"
     },
     "model": {
       "default": "",
@@ -12245,6 +12482,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `kind` | `string` | yes |
 | `attempt` | `integer` | yes |
 | `reason` | `string` | yes |
+| `delay_ms` | `integer` | no |
+| `max_retries` | `integer` | no |
+| `failure_code` | `string` | no |
+| `request_snapshot_digest` | `string` | no |
+| `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -12279,6 +12521,38 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "reason": {
       "title": "Reason",
       "type": "string"
+    },
+    "delay_ms": {
+      "default": 0,
+      "title": "Delay Ms",
+      "type": "integer"
+    },
+    "max_retries": {
+      "default": 5,
+      "title": "Max Retries",
+      "type": "integer"
+    },
+    "failure_code": {
+      "default": "",
+      "title": "Failure Code",
+      "type": "string"
+    },
+    "request_snapshot_digest": {
+      "default": "",
+      "title": "Request Snapshot Digest",
+      "type": "string"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
     },
     "ts": {
       "title": "Ts",
@@ -13315,6 +13589,202 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 
 The following command and event models are discovered directly from the typed discriminated unions and therefore cannot drift from the wire contract.
 
+### AgentMessageEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `session_id` | `string | null` | no |
+| `message_id` | `string` | yes |
+| `phase` | `string` | yes |
+| `role` | `string` | yes |
+| `custom_type` | `string | null` | no |
+| `content` | `array` | yes |
+| `stop_reason` | `string | null` | no |
+| `backend` | `string` | no |
+| `step` | `integer` | no |
+| `ledger_seq` | `integer | null` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.message",
+      "default": "agent.message",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "start",
+        "update",
+        "end"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "role": {
+      "title": "Role",
+      "type": "string"
+    },
+    "custom_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Custom Type"
+    },
+    "content": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Content",
+      "type": "array"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Reason"
+    },
+    "backend": {
+      "default": "python",
+      "enum": [
+        "pi",
+        "python"
+      ],
+      "title": "Backend",
+      "type": "string"
+    },
+    "step": {
+      "default": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "message_id",
+    "phase",
+    "role",
+    "content",
+    "ts"
+  ],
+  "title": "AgentMessageEvent",
+  "type": "object"
+}
+```
+
+### AgentRepeatNoticeEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `tool_name` | `string` | yes |
+| `signature` | `string` | yes |
+| `repeat_count` | `integer` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.repeat_notice",
+      "default": "agent.repeat_notice",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "tool_name": {
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "signature": {
+      "title": "Signature",
+      "type": "string"
+    },
+    "repeat_count": {
+      "title": "Repeat Count",
+      "type": "integer"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "tool_name",
+    "signature",
+    "repeat_count",
+    "ts"
+  ],
+  "title": "AgentRepeatNoticeEvent",
+  "type": "object"
+}
+```
+
 ### ArtifactGcCommand
 
 | Field | Type | Required |
@@ -13978,6 +14448,147 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### ExtensionNotificationEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `message` | `string` | yes |
+| `severity` | `string` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "extension.notification",
+      "default": "extension.notification",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "severity": {
+      "default": "info",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "session_id",
+    "message",
+    "ts"
+  ],
+  "title": "ExtensionNotificationEvent",
+  "type": "object"
+}
+```
+
+### LlmAttemptFinishedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `step` | `integer` | yes |
+| `attempt` | `integer` | yes |
+| `status` | `string` | yes |
+| `failure_code` | `string` | no |
+| `request_snapshot_digest` | `string` | yes |
+| `ledger_seq` | `integer | null` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "llm.attempt_finished",
+      "default": "llm.attempt_finished",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "step": {
+      "title": "Step",
+      "type": "integer"
+    },
+    "attempt": {
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "failure_code": {
+      "default": "",
+      "title": "Failure Code",
+      "type": "string"
+    },
+    "request_snapshot_digest": {
+      "title": "Request Snapshot Digest",
+      "type": "string"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "step",
+    "attempt",
+    "status",
+    "request_snapshot_digest",
+    "ts"
+  ],
+  "title": "LlmAttemptFinishedEvent",
+  "type": "object"
+}
+```
+
 ### MemoryAddCommand
 
 | Field | Type | Required |
@@ -14616,6 +15227,42 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### SessionExecuteCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `content` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.execute_command",
+      "default": "session.execute_command",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "content": {
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "content"
+  ],
+  "title": "SessionExecuteCommand",
+  "type": "object"
+}
+```
+
 ### SessionInterruptedEvent
 
 | Field | Type | Required |
@@ -14689,6 +15336,54 @@ The following command and event models are discovered directly from the typed di
     "session_id"
   ],
   "title": "SessionListQueueCommand",
+  "type": "object"
+}
+```
+
+### SessionNavigateCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `target_seq` | `integer` | yes |
+| `summarize` | `boolean` | no |
+| `focus` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.navigate",
+      "default": "session.navigate",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "target_seq": {
+      "minimum": 1,
+      "title": "Target Seq",
+      "type": "integer"
+    },
+    "summarize": {
+      "default": false,
+      "title": "Summarize",
+      "type": "boolean"
+    },
+    "focus": {
+      "default": "",
+      "title": "Focus",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "target_seq"
+  ],
+  "title": "SessionNavigateCommand",
   "type": "object"
 }
 ```
@@ -14806,6 +15501,35 @@ The following command and event models are discovered directly from the typed di
     "content"
   ],
   "title": "SessionQueueMessageCommand",
+  "type": "object"
+}
+```
+
+### SessionReloadCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.reload",
+      "default": "session.reload",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionReloadCommand",
   "type": "object"
 }
 ```
@@ -14928,6 +15652,122 @@ The following command and event models are discovered directly from the typed di
     "checkpoint_id"
   ],
   "title": "SessionRewindPreviewCommand",
+  "type": "object"
+}
+```
+
+### SessionSetModelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `route_id` | `string` | yes |
+| `model` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.set_model",
+      "default": "session.set_model",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "route_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Route Id",
+      "type": "string"
+    },
+    "model": {
+      "default": "",
+      "maxLength": 256,
+      "title": "Model",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "route_id"
+  ],
+  "title": "SessionSetModelCommand",
+  "type": "object"
+}
+```
+
+### SessionSetThinkingCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `thinking_level` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.set_thinking",
+      "default": "session.set_thinking",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "thinking_level": {
+      "enum": [
+        "off",
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Thinking Level",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "thinking_level"
+  ],
+  "title": "SessionSetThinkingCommand",
+  "type": "object"
+}
+```
+
+### SessionTreeCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.tree",
+      "default": "session.tree",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionTreeCommand",
   "type": "object"
 }
 ```

@@ -107,9 +107,8 @@ async def test_loop_without_todo_state_does_not_inject_summary(tmp_path: Path) -
         assert "## Todo State" not in s
 
 
-# 功能：todos 存在时 loop 把 ## Todo State 摘要拼到每次 LLM 调用的 system 末尾
-# 设计：TaskManager 建两个 task（一 pending 一 in_progress），把 tm 当 todo_state 传入，
-#       run 单步 end_turn 后断言第二首轮 system 含 "## Todo State" 与两个 task subject
+# 功能：仅显式启用 tasks 工具时提供任务板状态，默认工具集不注入不可操作的任务板。
+# 设计：同一任务板分别绑定空工具集和 tasks 工具，比较实际系统提示中的条目。
 async def test_loop_injects_todo_summary_into_system_prompt(tmp_path: Path) -> None:
     tm = _tm(tmp_path)
     tm.create(subject="write readme", description="")
@@ -120,7 +119,12 @@ async def test_loop_injects_todo_summary_into_system_prompt(tmp_path: Path) -> N
         [LlmResponse(stop_reason="end_turn", text="done", usage=_usage())]
     )
     loop, _ = _make_loop(provider, ToolRegistry(), task_manager=tm)
-    # 直接调 _render_system 验证（避免 run 的 end_turn-软状态检查依赖）
+    assert "## Todo State" not in loop._render_system(_ctx())
+    registry = ToolRegistry()
+    task_tool = _TodoUpdateTool(tm)
+    task_tool.name = "tasks"
+    registry.register(task_tool)
+    loop, _ = _make_loop(provider, registry, task_manager=tm)
     s = loop._render_system(_ctx())
     assert "## Todo State" in s
     assert "write readme" in s
@@ -146,11 +150,9 @@ async def test_empty_task_manager_does_not_inject_summary(tmp_path: Path) -> Non
     assert rendered == loop_no_tm._render_system(ctx)
 
 
-# 功能：end_turn 时仍有 pending todos 且 todos 自上次提醒已变化 → loop 推迟结束并注入 reminder
-# 设计：tm 建 task_a（pending），第一轮模型 end_turn，loop 把 reminder 追加为 user 消息；
-#       第二轮模型再次 end_turn，但 tm 不变 → snapshot 未变 → 第二轮已提醒 1 次但要求
-#       snapshot 和上次不同才再阻拦；故第二轮不再阻拦，run 应结束
-async def test_end_turn_deferred_once_when_todos_incomplete(tmp_path: Path) -> None:
+# 功能：存在未完成任务板条目时仍允许模型正常回答，不伪造用户消息迫使续跑。
+# 设计：提供两份回答，断言只消费第一份，且原始任务条目不被偷偷标为完成。
+async def test_end_turn_with_pending_todos_does_not_force_continuation(tmp_path: Path) -> None:
     tm = _tm(tmp_path)
     tm.create(subject="task_a", description="")
     provider = _ScriptedProvider(
@@ -162,19 +164,13 @@ async def test_end_turn_deferred_once_when_todos_incomplete(tmp_path: Path) -> N
     loop, _ = _make_loop(provider, ToolRegistry(), task_manager=tm)
     ctx = _ctx(max_steps=5)
     await loop.run(ctx)
-    # 因第二轮 snapshot 未变化，loop 已放过结束
     assert ctx.status == "success"
-    assert ctx.result == "done-2"
-    # 期间注入过至少一条 reminder user 消息
-    reminder_msgs = [
-        m for m in ctx.messages
-        if m.get("role") == "user" and m.get("content") == (
-            "You ended the turn, but the Todo State above still has incomplete items. "
-            "Either continue working on the next pending/in_progress todo, or call tasks with "
-            "action='update' and status='completed' for any items that are truly done, then end."
-        )
+    assert ctx.result == "done-1"
+    assert len(provider.seen_systems) == 1
+    assert tm.has_incomplete()
+    assert [m for m in ctx.messages if m.get("role") == "user"] == [
+        {"role": "user", "content": ctx.goal}
     ]
-    assert len(reminder_msgs) == 1
 
 
 # 功能：todos 全部完成时 end_turn 立即结束，不注入 reminder
@@ -200,15 +196,11 @@ async def test_end_turn_not_deferred_when_all_todos_completed(tmp_path: Path) ->
     assert reminder_msgs == []
 
 
-# 功能：连续 _MAX_TODO_DEFERS 次 end_turn 仍未推进 todos 时 loop 放弃阻拦让其结束
-# 设计：tm 建 task_a 不动，模型连续 4 次 end_turn（>3），断言 run 终止且 reminder 注入 3 次
-async def test_max_defers_then_loop_stops_blocking(tmp_path: Path) -> None:
+# 功能：更高步数上限不等于强制模型消耗额外步骤。
+# 设计：准备五次响应和未完成任务，确认原生循环首次正常结束就停止调用模型。
+async def test_step_budget_does_not_force_extra_answers(tmp_path: Path) -> None:
     tm = _tm(tmp_path)
     tm.create(subject="task_a", description="")
-    # 第 1 次 end_turn：snapshot 与初始 "" 不同 → 阻挡，snapshot 记为 task_a 摘要
-    # 第 2 次 end_turn：snapshot 与上次相等，但 defer_count=1 < MAX=3 → _should_defer 仍视
-    #   "snapshot 与上次相等"为 False 故不再阻拦。这一设计是有意为之：让 loop 在第二次
-    #   之后即放过，避免死循环。验证行为：reminder 仅注入 1 次
     provider = _ScriptedProvider(
         [
             LlmResponse(stop_reason="end_turn", text=f"d{i}", usage=_usage())
@@ -222,8 +214,9 @@ async def test_max_defers_then_loop_stops_blocking(tmp_path: Path) -> None:
         m for m in ctx.messages
         if str(m.get("content", "")).startswith("You ended the turn")
     ]
-    # 提醒一次后模型放弃阻拦（snapshot 不再变化），故 reminder 仅 1 条
-    assert len(reminder_msgs) == 1
+    assert reminder_msgs == []
+    assert len(provider.seen_systems) == 1
+    assert ctx.result == "d0"
     assert ctx.status == "success"
 
 
@@ -276,9 +269,9 @@ def test_task_manager_implements_todo_state_view(tmp_path: Path) -> None:
     assert tm.active_summary()  # 仍非空，但完整列表展示在 loop 里无阻拦
 
 
-# 功能：Todo end_turn 提醒持久化为普通 user 消息且不会产生孤立 tool_result
-# 设计：使用真实 SessionStore 和 transcript sink 跑两轮 end_turn，再用协议校验器检查恢复消息
-async def test_todo_reminder_persists_as_plain_user_message(tmp_path: Path) -> None:
+# 功能：任务板不会在会话历史中伪造用户指令，最终回答能够直接持久恢复。
+# 设计：真实 SessionStore 配合预备的第二份回答，确认只保存首次结果及原始用户输入。
+async def test_todo_state_does_not_fabricate_persisted_user_messages(tmp_path: Path) -> None:
     tm = _tm(tmp_path)
     tm.create(subject="task_a", description="")
     provider = _ScriptedProvider(
@@ -304,8 +297,8 @@ async def test_todo_reminder_persists_as_plain_user_message(tmp_path: Path) -> N
     messages = store.read_messages(session_id)
     valid, errors = validate_tool_protocol(messages)
     assert valid, errors
-    assert any(message.get("content") == (
-        "You ended the turn, but the Todo State above still has incomplete items. "
-        "Either continue working on the next pending/in_progress todo, or call tasks with "
-        "action='update' and status='completed' for any items that are truly done, then end."
-    ) for message in messages)
+    assert [message for message in messages if message["role"] == "user"] == [
+        {"role": "user", "content": "start"}
+    ]
+    assert messages[-1]["content"] == [{"type": "text", "text": "first"}]
+    assert len(provider.seen_systems) == 1

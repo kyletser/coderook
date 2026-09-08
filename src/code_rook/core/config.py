@@ -5,9 +5,11 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import dotenv_values
+
+from code_rook.core.llm.retry import RetryPolicy
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 7437
@@ -33,15 +35,28 @@ class LoggingConfig:
 
 @dataclass
 class AgentConfig:
-    max_steps: int = _DEFAULT_MAX_STEPS
+    max_steps: int | None = None
     # 步数耗尽时的自动续段数（每段追加 max_steps 步）；交互模式另有 ask 续跑
     max_step_continues: int = 0
     task_router: str = "rules_only"
     delegation_policy: str = "routed"
+    prompt_paths: list[str] = field(default_factory=list)
+    skill_paths: list[str] = field(default_factory=list)
+    extension_paths: list[str] = field(default_factory=list)
+    steering_mode: Literal["one-at-a-time", "all"] = "one-at-a-time"
+    follow_up_mode: Literal["one-at-a-time", "all"] = "one-at-a-time"
+    image_auto_resize: bool = True
+
+    # 显式上限优先；交互会话默认不限步数，脚本和 Worker 保持有界执行。
+    def step_limit(self, *, interactive: bool = False) -> int:
+        if self.max_steps is not None:
+            return self.max_steps
+        return 0 if interactive else _DEFAULT_MAX_STEPS
 
 
 @dataclass
 class LlmConfig:
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
     provider: str = _DEFAULT_LLM_PROVIDER  # "anthropic" | "openai_compatible"
     default_model: str = _DEFAULT_MODEL
     router: str = "static"  # "static" | "rule_based" | "cost_budget"
@@ -83,7 +98,9 @@ class ApiConfig:
 
 @dataclass
 class CompactionConfig:
-    strategy: str = "adaptive_evidence"
+    strategy: str = "session"
+    keep_recent_tokens: int = 20_000
+    reserve_tokens: int = 16_384
     # context_pct 触发自动压缩的阈值（0 表示禁用）
     auto_threshold: float = 0.80
     retain_ratio: float = 0.25  # 压缩后保留的最近原文 token 比例
@@ -223,6 +240,11 @@ def _reject_project_sensitive_settings(data: dict[str, Any], path: Path) -> None
             f"sections: {names}"
         )
     logging = data.get("logging")
+    agent = data.get("agent")
+    if isinstance(agent, dict) and (
+        {"prompt_paths", "skill_paths", "extension_paths"} & agent.keys()
+    ):
+        raise SystemExit(f"Config error ({path}): set resource paths in user config only")
     if isinstance(logging, dict) and "file" in logging:
         raise SystemExit(
             f"Config error ({path}): project [logging] cannot set output file paths"
@@ -292,9 +314,38 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             "max_step_continues",
             "task_router",
             "delegation_policy",
+            "prompt_paths",
+            "skill_paths",
+            "extension_paths",
+            "steering_mode",
+            "follow_up_mode",
+            "image_auto_resize",
         }
         if unknown_agent:
             raise SystemExit(f"Unknown [agent] keys: {', '.join(sorted(unknown_agent))}")
+        if "image_auto_resize" in agent:
+            if not isinstance(agent["image_auto_resize"], bool):
+                raise SystemExit("Config error: agent.image_auto_resize must be a boolean")
+            config.agent.image_auto_resize = agent["image_auto_resize"]
+        for queue_key in ("steering_mode", "follow_up_mode"):
+            if queue_key in agent:
+                mode = agent[queue_key]
+                if mode not in ("one-at-a-time", "all"):
+                    raise SystemExit(
+                        f"Config error: agent.{queue_key} must be one-at-a-time or all"
+                    )
+                setattr(config.agent, queue_key, mode)
+        for resource_key in ("prompt_paths", "skill_paths", "extension_paths"):
+            if resource_key not in agent:
+                continue
+            paths = agent[resource_key]
+            if not isinstance(paths, list) or any(
+                not isinstance(p, str) or not p.strip() for p in paths
+            ):
+                raise SystemExit(
+                    f"Config error: agent.{resource_key} must be a list of non-empty paths"
+                )
+            setattr(config.agent, resource_key, list(paths))
         if "max_steps" in agent:
             val = agent["max_steps"]
             if not isinstance(val, int) or val <= 0:
@@ -328,6 +379,7 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
         if not isinstance(llm, dict):
             raise SystemExit("Config error: [llm] must be a table")
         unknown_llm: set[str] = set(llm.keys()) - {
+            "retry",
             "provider",
             "default_model",
             "router",
@@ -340,6 +392,16 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
         }
         if unknown_llm:
             raise SystemExit(f"Unknown [llm] keys: {', '.join(sorted(unknown_llm))}")
+        if "retry" in llm:
+            retry = llm["retry"]
+            if not isinstance(retry, dict):
+                raise SystemExit("Config error: [llm.retry] must be a table")
+            try:
+                from dataclasses import asdict
+
+                config.llm.retry = RetryPolicy(**{**asdict(config.llm.retry), **retry})
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(f"Config error: llm.retry: {exc}") from None
         if "provider" in llm:
             val = llm["provider"]
             if not isinstance(val, str):
@@ -469,6 +531,8 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             raise SystemExit("Config error: [compaction] must be a table")
         known_compaction = {
             "strategy",
+            "keep_recent_tokens",
+            "reserve_tokens",
             "auto_threshold",
             "retain_ratio",
             "tool_result_limit",
@@ -485,12 +549,22 @@ def _apply_toml(config: CodeRookConfig, data: dict[str, Any]) -> None:
             config.compaction.auto_threshold = float(val)
         if "strategy" in comp:
             strategy = comp["strategy"]
-            if strategy not in {"truncate", "structured", "adaptive_evidence"}:
+            if strategy not in {"session", "truncate", "structured", "adaptive_evidence"}:
                 raise SystemExit(
-                    "Config error: compaction.strategy must be truncate, structured, "
+                    "Config error: compaction.strategy must be session, truncate, structured, "
                     "or adaptive_evidence"
                 )
             config.compaction.strategy = str(strategy)
+        if "keep_recent_tokens" in comp:
+            val = comp["keep_recent_tokens"]
+            if type(val) is not int or val <= 0:
+                raise SystemExit("Config error: compaction.keep_recent_tokens must be positive")
+            config.compaction.keep_recent_tokens = val
+        if "reserve_tokens" in comp:
+            val = comp["reserve_tokens"]
+            if type(val) is not int or val <= 0:
+                raise SystemExit("Config error: compaction.reserve_tokens must be positive")
+            config.compaction.reserve_tokens = val
         if "retain_ratio" in comp:
             val = comp["retain_ratio"]
             if not isinstance(val, (int, float)) or not (0.0 < val < 1.0):
@@ -768,9 +842,9 @@ def _apply_env(config: CodeRookConfig, environ: Mapping[str, str]) -> None:
 
     compact_strategy = environ.get("CODEROOK_COMPACT_STRATEGY")
     if compact_strategy is not None:
-        if compact_strategy not in {"truncate", "structured", "adaptive_evidence"}:
+        if compact_strategy not in {"session", "truncate", "structured", "adaptive_evidence"}:
             raise SystemExit(
-                "Config error: CODEROOK_COMPACT_STRATEGY must be truncate, structured, "
+                "Config error: CODEROOK_COMPACT_STRATEGY must be session, truncate, structured, "
                 "or adaptive_evidence"
             )
         config.compaction.strategy = compact_strategy

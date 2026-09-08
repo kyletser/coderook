@@ -27,16 +27,15 @@ def test_all_layers_present() -> None:
     assert prompt.index("Global") < prompt.index("Project") < prompt.index("Session")
 
 
-# 功能：验证没有记忆层时仍始终注入内部英文、用户回复跟随语言的策略
+# 功能：验证没有记忆层时保留回复语言指引，但不硬编码思考语言。
 # 设计：不设置任何可选上下文，断言 base 保留且语言策略存在
 def test_no_layers() -> None:
     ctx = _make_ctx()
     prompt = ctx.system_prompt("BASE_ONLY")
     assert prompt.startswith("BASE_ONLY")
     assert "## Language Policy" in prompt
-    assert "Always use concise English for internal analysis" in prompt
-    assert "reasoning content" in prompt
-    assert "For the final user-facing reply" in prompt
+    assert "Respond in the user's language" in prompt
+    assert "concise English for internal analysis" not in prompt
     assert "## Response Language" in prompt
     assert "language used in the original user request" in prompt
 
@@ -51,12 +50,13 @@ def test_only_global() -> None:
     assert "## Session Notes" not in prompt
 
 
-# 功能：验证 session_notes 非空时包含 note_save 提示语
-# 设计：只设置 session_notes，断言 prompt 含 note_save 相关提示
+# 功能：会话记忆可读，但不要求调用可能未注册的记忆工具。
+# 设计：只设置 session_notes，断言记忆保留且没有强制工具提示。
 def test_session_notes_hint() -> None:
     ctx = _make_ctx(session_notes="some note")
     prompt = ctx.system_prompt("BASE")
-    assert "note_save" in prompt
+    assert "some note" in prompt
+    assert "note_save" not in prompt
 
 
 # 功能：验证运行环境和扩展能力目录会在记忆层之前注入系统提示
@@ -105,7 +105,7 @@ def test_response_language_uses_original_user_text_not_tool_result() -> None:
 
     assert ctx.user_request == "请检查当前项目"
     assert "## Response Language\nFinal answer only: Simplified Chinese." in prompt
-    assert "reasoning content; those must remain concise English" in prompt
+    assert "reasoning content; those must remain concise English" not in prompt
     assert "never on tool-result messages" in prompt
 
 

@@ -39,6 +39,13 @@ _SHELL_ENV_ALLOWLIST = frozenset(
         "PYTHONPYCACHEPREFIX",
         "NO_COLOR",
         "FORCE_COLOR",
+        "AI_AGENT",
+        "CODEROOK_CODING_AGENT",
+        "CODEROOK_SESSION_ID",
+        "CODEROOK_SESSION_FILE",
+        "CODEROOK_PROVIDER",
+        "CODEROOK_MODEL",
+        "CODEROOK_REASONING_LEVEL",
     }
 )
 _SENSITIVE_ENV_FRAGMENTS = (
@@ -58,6 +65,12 @@ _SENSITIVE_ENV_FRAGMENTS = (
     "GOOGLE_APPLICATION_CREDENTIALS",
     "SSH_",
 )
+
+
+# 标记当前进程及其子进程由 CodeRook Coding Agent 启动。
+def mark_agent_process_environment() -> None:
+    os.environ["AI_AGENT"] = "coderook"
+    os.environ["CODEROOK_CODING_AGENT"] = "true"
 
 
 # 从 daemon 环境构造最小 shell 白名单并无条件移除凭据类变量

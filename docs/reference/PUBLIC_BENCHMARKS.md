@@ -9,7 +9,7 @@
 |---|---|---|
 | 50 任务内建集 | CodeRook runner、verifier、预算、报告和失败分类契约 | 离线契约已实现；真实模型候选待跑 |
 | Aider Polyglot | 六语言 Exercism 任务上的端到端 pass@1 | loader/runner/容器入口已实现；固定真实切片待跑 |
-| SWE-bench Lite/Verified | 真实仓库 issue 的标准 patch 与官方 Docker 判分 | prediction 导出已实现；官方 harness smoke 待跑 |
+| SWE-bench Lite/Verified | 真实仓库 issue 的标准 patch 与官方 Docker 判分 | [首次五题 Pilot](../../benchmarks/results/2026-09-swebench-lite-pilot/README.md) 与[修复后开发回归](../../benchmarks/results/2026-09-swebench-lite-retest/README.md) 均官方通过 3/5、正常结束且通过 2/5；缺 action 错误消除，但收尾、传输与环境问题仍在；独立 20 题未运行，不是完整榜单成绩 |
 | 基线/候选比较 | 任务、类别、失败聚类、成本与耗时回归 | 已实现；只在手动 benchmark/release 证据流程运行 |
 
 “当前状态”必须与发布评分卡一致。公开数字至少绑定 CodeRook commit、数据集 commit、
@@ -129,6 +129,41 @@ Aider `benchmark/` 目录只读挂载，并传 `--aider-benchmark-dir`。
 不得引用计划阈值作为已取得成绩。
 
 ## 4. SWE-bench Lite/Verified
+
+### Lite 固定切片与真实解题入口
+
+以下入口使用真实 `AgentRunner`、独立官方实例容器及官方 `swebench==5.0.2` Harness。
+选题按固定哈希跨仓库轮转：5 题 Pilot 与另外 20 题正式切片不重叠，不依据答案或通过率选题。
+尚未执行的步骤或缺少官方 `report.json` 的实例不构成已通过的成绩。
+
+```powershell
+uv run --with pyarrow==21.0.0 python scripts/prepare_swebench_slice.py --output .benchmark-results/swebench-lite/frozen
+docker build -f benchmarks/swebench/Dockerfile -t coderook-swebench:20260907 .
+uv run python scripts/run_swebench_benchmark.py --root .benchmark-results/swebench-lite --stage controls
+uv run python scripts/run_swebench_benchmark.py --root .benchmark-results/swebench-lite --stage preflight
+uv run python scripts/run_swebench_benchmark.py --root .benchmark-results/swebench-lite --stage run --cohort pilot
+uv run python scripts/run_swebench_benchmark.py --root .benchmark-results/swebench-lite --stage evaluate --cohort pilot
+```
+
+`controls` 用不改变实现的补丁和官方参考补丁检查判分；`preflight` 使用假模型检查真实工具链。
+真实解题默认单 Agent、40 步、每题 900 秒，每题只尝试一次。当前入口需要已通过 Doctor 的
+`qwen3.8-flash` 路由；可用 `--model` 显式指定另一已配置模型，但同一计分切片不得中途换模型。
+解题费用由用户承担：记录实际 usage，价格未知时美元费用为未知，不声称存在美元硬限额。
+
+控制器持有 Docker socket 和评测数据，只运行可信官方 Harness；Agent 容器不挂载二者，凭据仅
+通过 stdin 进入运行时内存。Agent 只收到实例 ID、仓库、基线提交和 Issue，不收到标准补丁、
+隐藏测试或 hints。结果目录保留完整评测原文和运行日志，不能未经隐私检查直接发布。
+
+容器 `coderook-swebench-controller-20260907` 绑定一个实验根目录。完成并导出所需证据后可用
+`docker rm -f coderook-swebench-controller-20260907` 关闭控制器；主机结果目录不会被删除。
+实例容器在任务退出后自动删除，官方镜像保留为下载缓存。该入口不更改默认 CI。
+
+运行时代码或 adapter 修改后必须重新构建实验镜像，并使用新的实验根目录重新执行 preflight；
+不要覆盖旧 Pilot 的日志、预测补丁或执行契约。原 5 题复测属于开发回归，独立 20 题才属于后续
+未参与调试的切片验证。`preflight` 的假模型故意省略 `Bash.run` 的 action，以检查真实调用兼容路径；
+固定工具白名单使用大小写准确的 `Repository`。这些修正不改变已发布 Pilot 的分数。
+
+### 从已有工作区导出补丁
 
 官方判分输入是 JSON/JSONL，每条只有 `instance_id`、`model_name_or_path` 和 `model_patch`。CodeRook 导出器
 要求每个工作区的 `HEAD` 精确等于实例 `base_commit`，并使用临时 Git index 把 tracked 与 untracked 变更

@@ -49,6 +49,33 @@ async def compact(client: SocketClient, session_id: str) -> dict[str, Any]:
     )
 
 
+# 为当前会话绑定后续轮次使用的 Provider route 与模型。
+async def set_session_model(
+    client: SocketClient,
+    session_id: str,
+    route_id: str,
+    model: str,
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "session.set_model",
+        {"session_id": session_id, "route_id": route_id, "model": model},
+    )
+
+
+# 为当前会话持久切换思考强度，不改写共享 Provider route。
+async def set_session_thinking(
+    client: SocketClient,
+    session_id: str,
+    thinking_level: Literal["off", "low", "medium", "high"],
+) -> dict[str, Any]:
+    return await send(
+        client,
+        "session.set_thinking",
+        {"session_id": session_id, "thinking_level": thinking_level},
+    )
+
+
 # 向 Core 持久提交当前计划的批准、修改或取消决定
 async def respond_plan(
     client: SocketClient,
@@ -343,6 +370,11 @@ async def rewind(
             "confirmed": True,
         },
     )
+
+
+# 重新加载当前会话扩展、模板与 Skills 并返回上下文目录
+async def reload_resources(client: SocketClient, session_id: str) -> dict[str, Any]:
+    return await send(client, "session.reload", {"session_id": session_id})
 
 
 # 读取当前会话上下文估算与占用

@@ -13,13 +13,14 @@ from code_rook.core.llm.provider_presets import (
 )
 
 
-# 功能：验证统一 catalog 覆盖云端与本地九种正式 Provider
+# 功能：验证统一 catalog 覆盖云端与本地正式 Provider
 # 设计：直接检查稳定标识、关键 endpoint 和免密标记，防止 CLI 与配置层各自漂移
 def test_builtin_provider_presets_have_expected_endpoints() -> None:
     presets = {preset.id: preset for preset in PROVIDER_PRESETS}
 
     assert tuple(presets) == (
         "deepseek",
+        "aliyun",
         "openai",
         "anthropic",
         "siliconflow",
@@ -30,6 +31,13 @@ def test_builtin_provider_presets_have_expected_endpoints() -> None:
         "lm-studio",
     )
     assert presets["deepseek"].chat_url == "https://api.deepseek.com/chat/completions"
+    assert presets["aliyun"].chat_url == (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    )
+    assert presets["aliyun"].api_key_env == "DASHSCOPE_API_KEY"
+    assert presets["aliyun"].wire_format == "openai_chat"
+    assert presets["aliyun"].credential_required is True
+    assert get_provider_preset("dashscope") is presets["aliyun"]
     assert presets["openai"].chat_url == "https://api.openai.com/v1/chat/completions"
     assert presets["anthropic"].models_url == "https://api.anthropic.com/v1/models"
     assert presets["siliconflow"].chat_url == ("https://api.siliconflow.cn/v1/chat/completions")

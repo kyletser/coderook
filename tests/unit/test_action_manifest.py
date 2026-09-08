@@ -243,3 +243,21 @@ def test_presentation_exposes_shared_semantic_activity(tmp_path: Path) -> None:
     assert bash_view.supports_live_output is True
     assert run_view.action == ToolPresentationAction.RUN_TESTS
     assert run_view.kind == ToolPresentationKind.TERMINAL
+
+
+# 功能：四个 Python 原生工具提供与旧工具族一致的跨前端动作语义。
+# 设计：直接解析生产 Catalog 并生成展示数据，覆盖重命名后退化为 generic 的问题。
+def test_native_coding_tools_presentation(tmp_path: Path) -> None:
+    registry = AgentRunner(
+        CodeRookConfig(), workspace_root=tmp_path,
+    )._build_registry(TaskManager(tmp_path / ".tasks"))
+    for name, action, kind in (
+        ("read", ToolPresentationAction.READ_FILE, ToolPresentationKind.READ),
+        ("edit", ToolPresentationAction.EDIT_CODE, ToolPresentationKind.DIFF),
+        ("write", ToolPresentationAction.EDIT_CODE, ToolPresentationKind.DIFF),
+    ):
+        params = {"path": "example.py"}
+        view = build_tool_presentation(registry.resolve_call(name, params), params, None)
+        assert view.action == action
+        assert view.kind == kind
+        assert view.locations == ("example.py",)

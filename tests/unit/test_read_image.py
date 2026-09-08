@@ -60,8 +60,8 @@ async def test_read_image_returns_base64_block(tmp_path: Path) -> None:
     assert "[image attached: shot.png" in result.content
 
 
-# 功能：验证非图片扩展名与超大文件被拒绝且不产生附件
-# 设计：写入 .txt 与超 2MB 的 .png，断言错误类型且 images 为空
+# 功能：验证非图片扩展名与损坏图片被拒绝且不产生附件
+# 设计：写入 .txt 与带错误 PNG 头的超 2MB 内容，断言解码失败而非简单按大小拒绝
 async def test_read_image_rejects_bad_type_and_size(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("text", encoding="utf-8")
     (tmp_path / "big.png").write_bytes(b"\x89PNG" + b"0" * (2 * 1024 * 1024 + 1))
@@ -72,7 +72,7 @@ async def test_read_image_rejects_bad_type_and_size(tmp_path: Path) -> None:
 
     assert bad_type.is_error and bad_type.error_type == "schema_error"
     assert "unsupported image type" in bad_type.content
-    assert too_big.is_error and "too large" in too_big.content
+    assert too_big.is_error and "decoded or resized" in too_big.content
     assert bad_type.images is None and too_big.images is None
 
 
@@ -151,8 +151,8 @@ def test_loop_flushes_and_placeholders_images() -> None:
     assert "pixels omitted" in last["content"]
 
 
-# 功能：验证 read_image 在 ACT 与 PLAN 模式均注册且无待发送图片时不追加消息
-# 设计：真实 Runner 构建两种模式目录断言可见；空 pending 调 flush 返回 0
+# 功能：验证 ACT 使用原生 read，PLAN 保留 read_image，空图片队列不追加消息。
+# 设计：真实 Runner 构建两种模式目录断言正确入口；空 pending 调 flush 返回 0。
 def test_read_image_registered_in_act_and_plan(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, bus=EventBus())
     for mode in (RuntimeMode.ACT, RuntimeMode.PLAN):
@@ -163,7 +163,7 @@ def test_read_image_registered_in_act_and_plan(tmp_path: Path) -> None:
             runtime_mode=mode,
         )
         names = {str(schema["name"]) for schema in registry.tool_schemas()}
-        assert "read_image" in names
+        assert ("read" if mode == RuntimeMode.ACT else "read_image") in names
 
     loop = AgentLoop.__new__(AgentLoop)
     context = ExecutionContext(run_id="r", goal="g", max_steps=5)
@@ -204,8 +204,8 @@ def test_read_image_hidden_for_route_without_image_capability(tmp_path: Path) ->
     }
 
 
-# 功能：验证 _record_result 把 ToolResult.images 登记进 context 待发送列表
-# 设计：构造真实注册表与守卫，手工调用结果记录方法，断言 pending_images 收到块而 tool_result 仍是文本
+# 功能：验证 _record_result 将图片绑定到工具结果，不再走一次性用户消息旁路。
+# 设计：构造真实注册表与守卫，核对工具结果内图片及空的 pending_images 列表。
 async def test_record_result_collects_images(tmp_path: Path) -> None:
     from code_rook.core.llm.types import ToolCallBlock
     from code_rook.core.loop import AgentLoop, ReadRepeatGuard, StuckGuard
@@ -234,5 +234,6 @@ async def test_record_result_collects_images(tmp_path: Path) -> None:
 
     await loop._record_result(0, 1, tc, result, context)
 
-    assert len(context.pending_images) == 1
+    assert context.pending_images == []
     assert context.messages[-1]["content"][0]["type"] == "tool_result"
+    assert context.messages[-1]["content"][0]["content"][1] == result.images[0]

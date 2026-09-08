@@ -36,6 +36,7 @@ classifiers = [
 ]
 requires-python = ">=3.12,<3.13" # 仅支持 3.12 小版本范围，与 CI/类型检查一致
 dependencies = [
+    "Pillow>=11.0",       # 原生图片缩放和 EXIF 方向处理
     "pydantic>=2.0",       # 数据校验与序列化（含 JSON 模型等）
     "python-dotenv>=1.0",  # .env 文件解析
     "anthropic>=0.25",     # Anthropic LLM SDK（流式 + prompt caching）
@@ -44,6 +45,7 @@ dependencies = [
     "keyring>=25.0",
     "pathspec>=0.12",
     "unidiff>=0.7,<0.8",
+    "PyYAML>=6.0,<7",      # 提示词模板 YAML 元数据，与正文参数替换分离
 ]
 
 [project.urls]
@@ -77,16 +79,21 @@ exclude = [
     "/web/node_modules",
     "/web/*.tsbuildinfo",
     "/reports",
+    "/vendor/pi/node_modules",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/code_rook"] # 源码在 src/code_rook
+
+[tool.hatch.build.targets.wheel.force-include]
+"vendor/pi/LICENSE" = "code_rook/licenses/pi-MIT.txt"
 
 # ---- 开发期依赖（PEP 735）----
 [dependency-groups]
 dev = [
     "ruff>=0.4",            # 快速 linter + import 排序等
     "mypy>=1.10",           # 静态类型检查
+    "types-PyYAML>=6.0",
     "pytest>=8.0",          # 单元测试
     "pytest-asyncio>=0.23", # 异步测试支持
 ]

@@ -1,0 +1,210 @@
+{
+  "scope": "development regression; same frozen pilot five, not full Lite or an independent holdout",
+  "candidate": {
+    "purpose": "development regression on the original frozen five pilot instances",
+    "base_commit": "7cda2be6bc07b45845f9fd9bf196db2b1593e25f",
+    "working_tree_clean": false,
+    "source_archive": "candidate-source.tar",
+    "source_archive_sha256": "fe1f4fe237cb04514e275c631b502a8408c0133ae09ee171a623d5c9bef9e79e",
+    "source_patch": "candidate-working-tree.patch",
+    "dependency_image": "sha256:773df612585819edf6766a4c6b1bbed8366c320f36f7da3835e1f5345df82bd8",
+    "runtime_image": "sha256:6dfc7a9c913f1615ca4d93e943a4e6ceb8f74d28b88de08307eee1875cd602de",
+    "build_method": "reuse unchanged installed dependencies; copy current code_rook source and frozen adapter; full build failed on PyPI TLS handshake before experiments",
+    "model": "qwen3.8-flash",
+    "temperature": 0,
+    "max_steps": 40,
+    "wall_time_seconds": 900,
+    "attempts_per_instance": 1,
+    "formal_20_instances": "not used",
+    "comparability": "same model and pilot tasks; combined runtime fixes, not a single-feature ablation; neither result is a full Lite score"
+  },
+  "before_run_id": "coderook-lite-pilot-1788756068",
+  "after_run_id": "coderook-lite-pilot-1788760400",
+  "pairs": [
+    {
+      "instance_id": "django__django-15320",
+      "before": {
+        "resolved": true,
+        "runtime_status": "failed",
+        "runtime_reason": "exceeded_max_steps",
+        "steps": 40,
+        "tool_calls": 43,
+        "tool_errors": 6,
+        "schema_errors": 4,
+        "missing_action_errors": 4,
+        "artifact_reads": 8,
+        "input_tokens": 719636,
+        "output_tokens": 28015,
+        "elapsed_s": 367.7942195790001
+      },
+      "after": {
+        "resolved": null,
+        "runtime_status": "failed",
+        "runtime_reason": "wall_time_exceeded",
+        "steps": 36,
+        "tool_calls": 56,
+        "tool_errors": 3,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "input_tokens": 630576,
+        "output_tokens": 91013,
+        "elapsed_s": 900.1001501680003
+      }
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "before": {
+        "resolved": false,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 37,
+        "tool_calls": 44,
+        "tool_errors": 13,
+        "schema_errors": 12,
+        "missing_action_errors": 12,
+        "artifact_reads": 1,
+        "input_tokens": 600890,
+        "output_tokens": 27425,
+        "elapsed_s": 349.09638454399965
+      },
+      "after": {
+        "resolved": false,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 32,
+        "tool_calls": 38,
+        "tool_errors": 7,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "input_tokens": 420815,
+        "output_tokens": 22616,
+        "elapsed_s": 292.0590619099994
+      }
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23964",
+      "before": {
+        "resolved": true,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 40,
+        "tool_calls": 46,
+        "tool_errors": 15,
+        "schema_errors": 13,
+        "missing_action_errors": 13,
+        "artifact_reads": 1,
+        "input_tokens": 860308,
+        "output_tokens": 19290,
+        "elapsed_s": 357.673197008
+      },
+      "after": {
+        "resolved": true,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 12,
+        "tool_calls": 11,
+        "tool_errors": 1,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "input_tokens": 121365,
+        "output_tokens": 2954,
+        "elapsed_s": 79.02981813800034
+      }
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "before": {
+        "resolved": false,
+        "runtime_status": "failed",
+        "runtime_reason": "exceeded_max_steps",
+        "steps": 40,
+        "tool_calls": 46,
+        "tool_errors": 13,
+        "schema_errors": 8,
+        "missing_action_errors": 8,
+        "artifact_reads": 0,
+        "input_tokens": 674705,
+        "output_tokens": 56972,
+        "elapsed_s": 605.2410976250003
+      },
+      "after": {
+        "resolved": true,
+        "runtime_status": "failed",
+        "runtime_reason": "llm_error",
+        "steps": 27,
+        "tool_calls": 31,
+        "tool_errors": 4,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "input_tokens": 333287,
+        "output_tokens": 56592,
+        "elapsed_s": 566.0917521369993
+      }
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10297",
+      "before": {
+        "resolved": true,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 23,
+        "tool_calls": 26,
+        "tool_errors": 5,
+        "schema_errors": 4,
+        "missing_action_errors": 4,
+        "artifact_reads": 0,
+        "input_tokens": 303262,
+        "output_tokens": 5949,
+        "elapsed_s": 106.41586922500028
+      },
+      "after": {
+        "resolved": true,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "steps": 24,
+        "tool_calls": 27,
+        "tool_errors": 2,
+        "schema_errors": 2,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "input_tokens": 322511,
+        "output_tokens": 6213,
+        "elapsed_s": 100.95252259599874
+      }
+    }
+  ],
+  "before": {
+    "total": 5,
+    "resolved": 3,
+    "unresolved": 2,
+    "ungraded": 0,
+    "runtime_successes": 3,
+    "input_tokens": 3158801,
+    "output_tokens": 137651,
+    "tool_errors": 52,
+    "schema_errors": 41,
+    "median_agent_elapsed_s": 357.673197008,
+    "runtime_and_official_successes": 2,
+    "tool_calls": 205,
+    "missing_action_errors": 41
+  },
+  "after": {
+    "total": 5,
+    "resolved": 3,
+    "unresolved": 1,
+    "ungraded": 1,
+    "runtime_successes": 3,
+    "input_tokens": 1828554,
+    "output_tokens": 179388,
+    "tool_errors": 17,
+    "schema_errors": 2,
+    "median_agent_elapsed_s": 292.0590619099994,
+    "runtime_and_official_successes": 2,
+    "tool_calls": 163,
+    "missing_action_errors": 0
+  }
+}

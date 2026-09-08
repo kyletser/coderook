@@ -3195,16 +3195,15 @@ def test_file_reference_is_bounded_path_not_full_content(
     assert "do not inject entire files" in augmented
 
 
-# 功能：验证普通提交和排队提交共享同一套显式 Shell 语义转换
-# 设计：直接调用统一转换入口，检查命令原文保留且生成正常工具管线约束，避免队列绕过快捷语法
-def test_prepare_model_content_expands_explicit_shell_command() -> None:
+# 功能：验证普通提交和排队提交保留直接 Shell 原文
+# 设计：直接检查统一入口，防止 ! 命令重新被包装为模型提示词
+def test_prepare_model_content_preserves_explicit_shell_command() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
 
     prepared = app._prepare_model_content("!pytest -q")
 
-    assert "exact shell command" in prepared
-    assert "pytest -q" in prepared
-    assert "permission and sandbox tool pipeline" in prepared
+    assert prepared == "!pytest -q"
+    assert app._prepare_model_content("!!printf hello") == "!!printf hello"
 
 
 # 功能：验证恢复历史会将工具结果错误映射为失败而不是成功

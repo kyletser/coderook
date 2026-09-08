@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from rich.markup import render
+from textual.app import App
 
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.route_store import RouteStore
@@ -28,6 +29,32 @@ from code_rook.tui.widgets.input import (
     _load_input_history,
     _save_input_history_entry,
 )
+
+
+# 功能：失败结果默认只占一行且可键盘展开完整证据，不遮住模型正文。
+# 设计：使用正式应用 CSS 和真实 Textual 布局，核对高度、失败提示及 Enter 切换。
+async def test_result_card_compact_keyboard_details() -> None:
+    class ResultApp(App[None]):
+        CSS = CodeRookTuiApp.CSS
+
+    result = RunEvidenceReducer().finalize({
+        "run_id": "run-failure", "status": "failed", "reason": "runtime_error", "steps": 1,
+    })
+    app = ResultApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        card = RunResultCard(result, locale="en-US")
+        await app.mount(card)
+        await pilot.pause()
+        assert card.size.height == 1
+        assert "Task failed" in render(str(card.content)).plain
+        assert card.has_class("compact")
+        card.focus()
+        await pilot.press("enter")
+        assert not card.has_class("compact")
+        assert "/turn run-failure" in str(card.content)
+        await pilot.press("space")
+        assert card.has_class("compact")
+
 
 
 # 功能：验证新增产品文案支持中英文且未知语言安全回退中文
@@ -234,7 +261,7 @@ def test_run_result_reducer_prefers_authoritative_receipt() -> None:
     }
 
     result = reducer.finalize(finish, inspection)
-    plain = render(str(RunResultCard(result).content)).plain
+    plain = render(str(RunResultCard(result, expanded=True).content)).plain
 
     assert result.status == "success"
     assert result.duration == "2.5s"
@@ -278,7 +305,7 @@ def test_run_result_preserves_structured_model_outcomes(
     }
 
     result = reducer.finalize(finish)
-    plain = render(str(RunResultCard(result, locale="en-US").content)).plain
+    plain = render(str(RunResultCard(result, locale="en-US", expanded=True).content)).plain
 
     assert result.status == expected_status
     assert expected_title in plain
@@ -327,7 +354,7 @@ def test_run_result_line_stats_are_receipt_scoped_and_honest() -> None:
     }
 
     result = reducer.finalize(finish, inspection)
-    plain = render(str(RunResultCard(result, locale="en-US").content)).plain
+    plain = render(str(RunResultCard(result, locale="en-US", expanded=True).content)).plain
 
     assert result.files == ["src/a.py", "src/b.py"]
     assert result.additions == 7
@@ -406,7 +433,7 @@ def test_run_result_redacts_non_classification_failure_text() -> None:
     reducer.consume(finish)
 
     result = reducer.finalize(finish)
-    plain = render(str(RunResultCard(result).content)).plain
+    plain = render(str(RunResultCard(result, expanded=True).content)).plain
 
     assert result.failure == "runtime_failure"
     assert secret not in plain

@@ -8,16 +8,17 @@ import shutil
 import tempfile
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from code_rook.core.execution.invariants import (
     InvariantViolation,
     validate_session_events,
 )
 from code_rook.core.execution.models import RequestSnapshot, SessionEventEnvelope
+from code_rook.core.llm.types import UsageStats
 from code_rook.core.quarantine import quarantine_invalid_file
 from code_rook.core.session.model import (
     SESSION_ID_PATTERN,
@@ -28,6 +29,13 @@ from code_rook.core.session.model import (
 logger = logging.getLogger(__name__)
 
 MessageContent = str | list[dict[str, Any]]
+
+
+# 计算模型上下文前缀摘要，使恢复后的 Token 锚点只用于同一段历史。
+def _context_history_digest(messages: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(
+        messages, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -158,6 +166,44 @@ class SessionStore:
         if session.id != sid:
             raise ValueError("session id does not match its directory")
         return session
+
+    # 为指定账本序号设置或清除会话书签标签，并以原子侧车文件保存元数据。
+    def set_entry_label(self, sid: str, sequence: int, label: str | None) -> None:
+        exists = any(event.seq == sequence for event in self.read_session_events(sid))
+        if sequence <= 0 or not exists:
+            raise ValueError("session entry does not exist")
+        path = self.session_dir(sid) / "labels.json"
+        labels: dict[str, str] = {}
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in loaded.items()
+            ):
+                raise ValueError("invalid session labels")
+            labels = loaded
+        key = str(sequence)
+        if label:
+            labels[key] = label
+        else:
+            labels.pop(key, None)
+        self._replace_file(
+            path,
+            (json.dumps(labels, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        )
+
+    # 读取会话条目标签，损坏元数据明确报错而不静默伪造书签。
+    def read_entry_labels(self, sid: str) -> dict[int, str]:
+        path = self.session_dir(sid) / "labels.json"
+        if not path.exists():
+            return {}
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict) or any(
+            not isinstance(key, str) or not key.isdigit() or not isinstance(value, str)
+            for key, value in loaded.items()
+        ):
+            raise ValueError("invalid session labels")
+        return {int(key): value for key, value in loaded.items()}
 
     # 扫描持久化目录，隔离损坏元数据并按最近更新时间倒序返回
     def list_sessions(self, *, quarantine_invalid: bool = True) -> list[Session]:
@@ -331,8 +377,13 @@ class SessionStore:
         return events
 
     # 从原生 v2 事件和只读 legacy 前缀投影唯一的模型消息历史
-    def derive_messages(self, sid: str) -> list[dict[str, Any]]:
-        rows = self._read_rows(sid)
+    def derive_messages(
+        self, sid: str, *, leaf_seq: int | None = None, trim_orphans: bool = True,
+        display: bool = False,
+    ) -> list[dict[str, Any]]:
+        from code_rook.core.agent_runtime.session_tree import build_session_path
+
+        rows = build_session_path(self._read_rows(sid), leaf_seq)
         shadowed, replacements = self._compaction_projection(rows)
         referenced = {
             int(value)
@@ -384,6 +435,29 @@ class SessionStore:
                 event_type = row.get("type")
                 if not isinstance(ledger_seq, int) or ledger_seq in shadowed:
                     continue
+                if event_type == "session.branch_selected":
+                    summary = row.get("payload", {}).get("summary")
+                    if summary:
+                        append_content(role="user", content=(
+                            "The user explored another conversation branch. Summary of that work:\n"
+                            + str(summary)
+                        ))
+                    continue
+                if event_type == "user.shell_completed":
+                    payload = row.get("payload", {})
+                    if display:
+                        messages.append({
+                            "role": "bashExecution", **payload,
+                            "run_id": row.get("turn_id", ""),
+                        })
+                        last_message_id = None
+                    elif not payload.get("exclude_from_context", False):
+                        append_content(role="user", content=(
+                            f"Ran `{payload.get('command', '')}`\n"
+                            f"```\n{payload.get('output', '')}\n```\n"
+                            f"Status: {payload.get('status', '')}"
+                        ))
+                    continue
                 if event_type == "context.compaction.message":
                     if ledger_seq not in replacements:
                         continue
@@ -392,6 +466,17 @@ class SessionStore:
                 payload = row.get("payload")
                 if not isinstance(payload, dict):
                     continue
+                if display and payload.get("source", {}).get("kind") == "extension":
+                    if not payload.get("display", False):
+                        continue
+                    messages.append({
+                        "role": "custom", "content": payload.get("content", []),
+                        "custom_type": payload["source"].get("custom_type", ""),
+                        "native_message_id": payload.get("message_id", ""),
+                        "run_id": row.get("turn_id", ""),
+                    })
+                    last_message_id = None
+                    continue
                 append_content(
                     role=payload.get("role"),
                     content=payload.get("content"),
@@ -399,6 +484,9 @@ class SessionStore:
                     message_id=payload.get("message_id", ""),
                     block_id=payload.get("block_id", f"event:{ledger_seq}"),
                 )
+                if display and payload.get("role") == "assistant" and row.get("step_id"):
+                    messages[-1]["native_message_id"] = row["step_id"]
+                    messages[-1]["run_id"] = row.get("turn_id", "")
                 continue
             if isinstance(ledger_seq, int) and (
                 ledger_seq in referenced or ledger_seq in shadowed
@@ -417,7 +505,8 @@ class SessionStore:
                     content=row.get("content"),
                     message_id=row.get("message_id", ""),
                 )
-        messages = self._trim_orphan_tool_use(messages)
+        if trim_orphans:
+            messages = self._trim_orphan_tool_use(messages)
         from code_rook.core.compact.budget import truncate_tool_results
 
         return truncate_tool_results(messages)
@@ -450,7 +539,9 @@ class SessionStore:
 
     # 返回当前模型投影实际消费的账本序号，供下一次压缩建立 shadow 范围
     def _active_model_ledger_seqs(self, sid: str) -> list[int]:
-        rows = self._read_rows(sid)
+        from code_rook.core.agent_runtime.session_tree import build_session_path
+
+        rows = build_session_path(self._read_rows(sid))
         shadowed, replacements = self._compaction_projection(rows)
         referenced = {
             int(value)
@@ -466,13 +557,122 @@ class SessionStore:
                 continue
             if row.get("kind") == "event":
                 event_type = row.get("type")
-                if event_type in {"input.admitted", "llm.message"} or (
+                if event_type == "user.shell_completed":
+                    if not row.get("payload", {}).get("exclude_from_context", False):
+                        active.append(sequence)
+                elif event_type in {"input.admitted", "llm.message"} or (
                     event_type == "context.compaction.message" and sequence in replacements
                 ):
                     active.append(sequence)
             elif sequence not in referenced:
                 active.append(sequence)
         return active
+
+    # 追加分支选择而非删除后续历史，拒绝从未闭合的工具调用中间继续。
+    def select_branch(
+        self, sid: str, leaf_seq: int, *, summary: str = "", label: str = "",
+    ) -> int:
+        from code_rook.core.compact.protocol import validate_tool_protocol
+
+        with self._ledger_lock(sid):
+            messages = self.derive_messages(sid, leaf_seq=leaf_seq, trim_orphans=False)
+            valid, errors = validate_tool_protocol(messages)
+            if not valid:
+                raise ValueError("select a complete tool result: " + "; ".join(errors))
+            payload: dict[str, Any] = {"leaf_seq": leaf_seq, "summary": summary}
+            if label:
+                payload["label"] = label
+            return self.append_session_event(
+                sid, event_type="session.branch_selected",
+                payload=payload,
+            ).seq
+
+    # 提供离开分支的条目，供会话层在修改路径之前生成可选摘要。
+    def branch_entries(self, sid: str, target_seq: int) -> list[tuple[int, dict[str, Any]]]:
+        from code_rook.core.agent_runtime.branch_summary import collect_branch_entries
+
+        return collect_branch_entries(self._read_rows(sid), target_seq)
+
+    # 按 Pi 语义导航：用户消息回到父节点并送回输入框，其他节点直接作为叶节点。
+    def navigate_tree(
+        self, sid: str, target_seq: int, *, summary: str = "", label: str = "",
+    ) -> dict[str, Any]:
+        from code_rook.core.agent_runtime.session_tree import entry_parents
+
+        with self._ledger_lock(sid):
+            rows = self._read_rows(sid)
+            parents = entry_parents(rows)
+            if target_seq not in parents:
+                raise ValueError("session entry does not exist")
+            row = next(row for line, row in rows if int(row.get("ledger_seq", line)) == target_seq)
+            payload = row.get("payload", row)
+            content = payload.get("content", "")
+            is_user = payload.get("role") == "user" and (
+                isinstance(content, str)
+                or isinstance(content, list) and not any(
+                    isinstance(block, dict) and block.get("type") == "tool_result"
+                    for block in content
+                )
+            )
+            editor_text = ""
+            leaf_seq = target_seq
+            if is_user:
+                leaf_seq = parents[target_seq] or 0
+                editor_text = content if isinstance(content, str) else "\n".join(
+                    block.get("text", "") for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            sequence = self.select_branch(sid, leaf_seq, summary=summary, label=label)
+            return {"target_seq": target_seq, "leaf_seq": leaf_seq,
+                    "ledger_seq": sequence, "editor_text": editor_text, "label": label}
+
+    # 返回最后导航时的固定历史起点，后续 Turn 仍由实时事件独立呈现。
+    def navigation_projection(self, sid: str) -> dict[str, Any] | None:
+        rows = self._read_rows(sid)
+        for index in range(len(rows) - 1, -1, -1):
+            line, row = rows[index]
+            if row.get("type") != "session.branch_selected":
+                continue
+            sequence = int(row.get("ledger_seq", line))
+            previous_runs = {
+                str(entry.get("turn_id") or entry.get("run_id"))
+                for _, entry in rows[:index + 1]
+                if entry.get("turn_id") or entry.get("run_id")
+            }
+            return {
+                "thread_id": sid, "ledger_seq": sequence,
+                "messages": self.derive_messages(sid, leaf_seq=sequence),
+                "excluded_turn_ids": sorted(previous_runs),
+            }
+        return None
+
+    # 返回可导航的历史节点及父指针，分支外的记录仍可再次选中。
+    def session_tree(self, sid: str) -> list[dict[str, Any]]:
+        from code_rook.core.agent_runtime.session_tree import build_session_path, entry_parents
+
+        rows = self._read_rows(sid)
+        parents = entry_parents(rows)
+        active = {int(row.get("ledger_seq", line)) for line, row in build_session_path(rows)}
+        labels = self.read_entry_labels(sid)
+        return [
+            {
+                "seq": int(row.get("ledger_seq", line)),
+                "parent_seq": parents[int(row.get("ledger_seq", line))],
+                "type": row.get("type", row.get("kind", "message")),
+                "active": int(row.get("ledger_seq", line)) in active,
+                "turn_id": row.get("turn_id", row.get("run_id", "")),
+                "label": labels.get(int(row.get("ledger_seq", line))),
+                "preview": str(row.get("payload", {}).get("content", row.get("content", "")))[:240]
+                if row.get("type", "") in {
+                    "input.admitted", "llm.message", "context.compaction.message"
+                }
+                or row.get("kind") == "message"
+                else str(row.get("payload", {}).get("command", ""))[:240]
+                if row.get("type") in {"user.shell_requested", "user.shell_completed"}
+                else "",
+            }
+            for line, row in rows
+        ]
 
     # 读取完整 thread 并返回可直接传给 Anthropic 的 messages
     def read_messages(self, sid: str) -> list[dict[str, Any]]:
@@ -1050,7 +1250,7 @@ class SessionTranscriptSink:
             )
 
     # 持久化循环主动注入的普通用户消息，避免伪装成无对应 tool_use 的 tool_result
-    def append_user(self, step: int, content: str) -> None:
+    def append_user(self, step: int, content: MessageContent) -> None:
         self._store.append_message(
             self._session_id,
             role="user",
@@ -1059,11 +1259,30 @@ class SessionTranscriptSink:
             message_id=f"{self._run_id}:user:{step}",
         )
 
+    # 持久化扩展自定义消息，同时保留模型可见正文与展示来源元数据。
+    def append_custom(
+        self,
+        step: int,
+        *,
+        custom_type: str,
+        content: MessageContent,
+        display: bool,
+        details: object = None,
+    ) -> int:
+        return self.append_audit(step, "input.admitted", {
+            "role": "user",
+            "content": content,
+            "message_id": f"{self._run_id}:extension:{step}:{uuid.uuid4().hex[:12]}",
+            "source": {"kind": "extension", "custom_type": custom_type},
+            "display": display,
+            "details": details,
+        })
+
     def append_tool_result(
         self,
         step: int,
         tool_use_id: str,
-        content: str,
+        content: MessageContent,
         *,
         is_error: bool,
         block_index: int,
@@ -1100,9 +1319,50 @@ class SessionTranscriptSink:
         )
         return event.seq
 
+    # 记录带来源的模型可见提醒，与真实用户纠偏明确区分
+    def append_notice(self, step: int, content: str) -> None:
+        self.append_audit(step, "input.admitted", {
+            "role": "user", "content": content,
+            "source": {"kind": "plugin", "plugin": "repeat-tool-reminder", "form": "notice"},
+        })
+
+    # 同步提交尝试和退避事实，失败直接阻止后续请求而不广播未提交事件
+    def append_audit(self, step: int, event_type: str, payload: dict[str, object]) -> int:
+        return self._store.append_session_event(
+            self._session_id, event_type=event_type, turn_id=self._run_id,
+            step_id=f"{self._run_id}:{step}", payload=payload,
+        ).seq
+
     # 读取并验证本 run 最近一次已持久化的请求快照
     def latest_request_snapshot(self) -> RequestSnapshot | None:
         for event in reversed(self._store.read_session_events(self._session_id)):
             if event.type == "llm.request_prepared" and event.turn_id == self._run_id:
                 return RequestSnapshot.model_validate(event.payload)
+        return None
+
+    # 保存完整回答后的用量锚点，不把统计元数据塞入模型消息。
+    def append_context_usage(
+        self, step: int, messages: list[dict[str, Any]], usage: UsageStats,
+        route: dict[str, str],
+    ) -> None:
+        self.append_audit(step, "context.usage_anchor", {
+            "message_count": len(messages), "history_digest": _context_history_digest(messages),
+            "usage": asdict(usage), "route": route,
+        })
+
+    # 从匹配的历史前缀恢复真实用量；切换模型、分支或压缩后不沿用失效锚点。
+    def restore_context_usage(
+        self, messages: list[dict[str, Any]], route: dict[str, str],
+    ) -> tuple[UsageStats, int] | None:
+        for event in reversed(self._store.read_session_events(self._session_id)):
+            if event.type != "context.usage_anchor" or event.payload.get("route") != route:
+                continue
+            payload = event.payload
+            count = payload.get("message_count")
+            if not isinstance(count, int) or not 0 < count <= len(messages):
+                continue
+            if payload.get("history_digest") != _context_history_digest(messages[:count]):
+                continue
+            usage = UsageStats(**cast(dict[str, Any], payload["usage"]))
+            return usage, count
         return None

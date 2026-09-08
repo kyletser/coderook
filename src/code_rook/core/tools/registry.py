@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from code_rook.core.authority import RuntimeMode, ToolAction
-from code_rook.core.tools.base import BaseTool
+from code_rook.core.llm.types import ToolCallBlock
+from code_rook.core.tools.base import BaseTool, ToolResult
 from code_rook.core.tools.catalog import ToolCatalog
 from code_rook.core.tools.spec import (
     ResolvedToolCall,
@@ -32,6 +34,8 @@ class ToolRegistry:
         if model_tool_limit < 1:
             raise ValueError("model_tool_limit must be positive")
         self._tools: dict[str, BaseTool] = {}
+        self._model_surface: frozenset[str] | None = None
+        self._extension_active_tools: frozenset[str] | None = None
         self._catalog = ToolCatalog()
         self._runtime_mode = runtime_mode
         self._activated_deferred: list[str] = []
@@ -40,6 +44,11 @@ class ToolRegistry:
         self._model_tool_allowlist: frozenset[str] | None = None
         self._model_action_allowlist: dict[str, frozenset[str]] = {}
         self._canonical_model_cache: dict[tuple[str, ...], bytes] = {}
+        self.image_auto_resize = True
+        self.before_tool_call: Callable[[ToolCallBlock], Awaitable[ToolResult | None]] | None = None
+        self.after_tool_call: (
+            Callable[[ToolCallBlock, ToolResult], Awaitable[ToolResult]] | None
+        ) = None
 
     # 冻结本次 Turn 对模型可见的工具集合，执行解析沿用同一集合失败关闭
     def set_model_tool_allowlist(self, allowlist: frozenset[str] | None) -> None:
@@ -61,6 +70,8 @@ class ToolRegistry:
 
     # 判断工具是否通过当前任务画像的模型可见性约束
     def _model_tool_allowed(self, name: str) -> bool:
+        if self._extension_active_tools is not None and name not in self._extension_active_tools:
+            return False
         allowlist = self._model_tool_allowlist
         if allowlist is None:
             return True
@@ -80,12 +91,18 @@ class ToolRegistry:
         if not actions:
             return None
         capabilities = frozenset(
-            capability
-            for action in actions
-            for capability in action.capabilities
+            capability for action in actions for capability in action.capabilities
         )
         return spec.model_copy(
-            update={"actions": actions, "capabilities": capabilities}
+            update={
+                "actions": actions,
+                "capabilities": capabilities,
+                "default_action": (
+                    spec.default_action
+                    if any(action.name == spec.default_action for action in actions)
+                    else None
+                ),
+            }
         )
 
     # 注册工具；同名覆盖
@@ -100,24 +117,96 @@ class ToolRegistry:
         self._catalog.register(filtered_spec)
         self._canonical_model_cache.clear()
 
+    # 注册本轮覆盖并返回恢复原实现和原 schema 的撤销函数
+    def register_scoped(self, tool: BaseTool) -> Callable[[], None]:
+        previous = self._tools.get(tool.name)
+        previous_spec = self._catalog.get(tool.name)
+        self.register(tool)
+        disposed = False
+
+        # 仅撤销当前覆盖，不覆盖后续独立替换的实现
+        def dispose() -> None:
+            nonlocal disposed
+            if disposed:
+                return
+            disposed = True
+            if self._tools.get(tool.name) is not tool:
+                return
+            if previous is not None and previous_spec is not None:
+                self._tools[tool.name] = previous
+                self._catalog.register(previous_spec)
+            else:
+                self._tools.pop(tool.name, None)
+                self._catalog.unregister(tool.name)
+            self._canonical_model_cache.clear()
+
+        return dispose
+
+    # 选择默认展示的工具表面，历史别名仍经原有权限与调用管线执行。
+    def set_model_surface(self, names: frozenset[str]) -> None:
+        self._model_surface = names
+        self._canonical_model_cache.clear()
+
+    # 切换扩展选择的活动工具，不改变模式、权限或任务范围过滤
+    def set_active_tools(self, names: frozenset[str] | None) -> None:
+        if names is not None:
+            unknown = names - self._tools.keys()
+            if unknown:
+                raise ValueError(f"Unknown tools: {', '.join(sorted(unknown))}")
+        self._extension_active_tools = names
+        self._canonical_model_cache.clear()
+
+    # 返回可供扩展选择的工具名称和说明，不公开底层实现对象
+    def all_tools(self) -> list[dict[str, str]]:
+        return [{"name": spec.name, "description": spec.description}
+                for spec in self._catalog.specs() if spec.model_visible]
+
+    # 将已注册扩展加入模型工具表面，不改变原有权限过滤
+    def extend_model_surface(self, names: frozenset[str]) -> None:
+        if self._model_surface is not None:
+            self.set_model_surface(self._model_surface | names)
+
     # 按名称查找工具，不存在返回 None
     def get(self, name: str) -> BaseTool | None:
         return self._tools.get(name)
 
+    # 仅为已经可见的工具附加提示元数据，不向 Provider 的工具 schema 增加私有字段
+    def prompt_tools(self, schemas: list[dict[str, object]]) -> list[dict[str, object]]:
+        enriched: list[dict[str, object]] = []
+        for schema in schemas:
+            tool = self.get(str(schema.get("name", "")))
+            enriched.append({
+                **schema,
+                "prompt_snippet": tool.prompt_snippet if tool else None,
+                "prompt_guidelines": tool.prompt_guidelines if tool else (),
+            })
+        return enriched
+
     # 返回按名称稳定排序且按当前 Mode 裁剪的模型 schema
     def tool_schemas(self, *, activated: tuple[str, ...] = ()) -> list[dict[str, object]]:
-        combined = tuple(dict.fromkeys((*self._activated_deferred, *activated)))
+        combined = tuple(dict.fromkeys((
+            *self._activated_deferred, *activated, *sorted(self._extension_active_tools or ()),
+        )))
         schemas = self._catalog.tool_schemas(self._runtime_mode, activated=combined)
+        surface = self._extension_active_tools
+        if surface is None:
+            surface = self._model_surface
+        if surface is not None and (
+            self._model_tool_allowlist is None
+            or "__all_except_delegation__" in self._model_tool_allowlist
+        ):
+            schemas = [
+                schema
+                for schema in schemas
+                if schema.get("name") in surface or schema.get("name") in combined
+            ]
         schemas = [
-            schema
-            for schema in schemas
-            if self._model_tool_allowed(str(schema.get("name", "")))
+            schema for schema in schemas if self._model_tool_allowed(str(schema.get("name", "")))
         ]
         schemas = [self._filter_schema_actions(schema) for schema in schemas]
         if len(schemas) > self._model_tool_limit:
             raise ToolCatalogError(
-                "model-visible tool limit exceeded: "
-                f"{len(schemas)} > {self._model_tool_limit}"
+                f"model-visible tool limit exceeded: {len(schemas)} > {self._model_tool_limit}"
             )
         return schemas
 
@@ -135,8 +224,7 @@ class ToolRegistry:
             input_schema["oneOf"] = [
                 variant
                 for variant in variants
-                if isinstance(variant, dict)
-                and _schema_action_name(variant) in allowed
+                if isinstance(variant, dict) and _schema_action_name(variant) in allowed
             ]
         return schema
 
@@ -168,11 +256,7 @@ class ToolRegistry:
         return tuple(
             spec
             for spec in self._catalog.specs()
-            if (
-                spec.deferred
-                and spec.model_visible
-                and spec.visible_actions(self._runtime_mode)
-            )
+            if (spec.deferred and spec.model_visible and spec.visible_actions(self._runtime_mode))
         )
 
     # 确定性搜索 deferred 工具并把命中项追加到激活尾部
@@ -222,6 +306,7 @@ class ToolRegistry:
             resolved.caller == ToolCaller.MODEL
             and resolved.spec.deferred
             and name not in self._activated_deferred
+            and name not in (self._extension_active_tools or ())
         ):
             raise ToolCatalogError(f"deferred tool is not activated: {name}")
         if resolved.action not in resolved.spec.visible_actions(self._runtime_mode):

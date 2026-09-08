@@ -13,6 +13,7 @@ from code_rook.core.authority import (
 )
 from code_rook.core.compatibility import RuntimeCapabilitiesSnapshot
 from code_rook.core.goal.models import GoalContinueDecision, GoalRecord, GoalStatus
+from code_rook.core.llm.routes import ThinkingLevel
 from code_rook.core.runtime.models import (
     QueuedMessageRecord,
     RuntimeEventRecord,
@@ -70,6 +71,7 @@ class AgentRunCommand(BaseModel):
     permission_mode: Literal["deny", "fail_fast", "allow_list"] = "fail_fast"
     allow_tools: list[str] = Field(default_factory=list)
     resume_session_id: str | None = None
+    thinking_level: ThinkingLevel | None = None
     question_mode: Literal["fail_fast", "timeout", "preset"] = "fail_fast"
     question_timeout_s: float | None = Field(default=None, gt=0, le=3600)
     preset_answers: list[str] = Field(default_factory=list, max_length=100)
@@ -87,6 +89,7 @@ class AgentRunCommand(BaseModel):
 class AgentRunResult(BaseModel):
     run_id: str
     session_id: str
+    handled: bool = False
 
 
 class GoalCreateCommand(BaseModel):
@@ -342,6 +345,7 @@ class TurnStartCommand(BaseModel):
 
 class TurnStartResult(BaseModel):
     turn_id: str
+    handled: bool = False
 
 
 class TurnGetCommand(BaseModel):
@@ -408,6 +412,9 @@ class SessionCreateCommand(BaseModel):
 class SessionCreateResult(BaseModel):
     session_id: str
     status: SessionStatus
+    route_id: str = ""
+    model: str = ""
+    thinking_level: ThinkingLevel | None = None
 
 
 class SessionSendMessageCommand(BaseModel):
@@ -421,6 +428,7 @@ class SessionSendMessageCommand(BaseModel):
 
 class SessionSendMessageResult(BaseModel):
     run_id: str
+    handled: bool = False
 
 
 class SessionQueueMessageCommand(BaseModel):
@@ -433,7 +441,8 @@ class SessionQueueMessageCommand(BaseModel):
 
 
 class SessionQueueMessageResult(BaseModel):
-    message: QueuedMessageRecord
+    message: QueuedMessageRecord | None = None
+    handled: bool = False
 
 
 class SessionListQueueCommand(BaseModel):
@@ -493,6 +502,7 @@ class SessionGetHistoryCommand(BaseModel):
 
 class SessionGetHistoryResult(BaseModel):
     messages: list[dict[str, Any]]
+    display_messages: list[dict[str, Any]] | None = None
 
 
 class SessionInfo(BaseModel):
@@ -508,6 +518,9 @@ class SessionInfo(BaseModel):
     workspace: str = ""
     preset_id: str = "standard"
     preset_digest: str = ""
+    route_id: str = ""
+    model: str = ""
+    thinking_level: ThinkingLevel | None = None
 
 
 class SessionListCommand(BaseModel):
@@ -539,9 +552,44 @@ class SessionRenameResult(BaseModel):
     session: SessionInfo
 
 
+class SessionSetModelCommand(BaseModel):
+    type: Literal["session.set_model"] = "session.set_model"
+    session_id: str = Field(min_length=1)
+    route_id: str = Field(min_length=1, max_length=256)
+    model: str = Field(default="", max_length=256)
+
+
+class SessionSetModelResult(BaseModel):
+    session: SessionInfo
+
+
+class SessionSetThinkingCommand(BaseModel):
+    type: Literal["session.set_thinking"] = "session.set_thinking"
+    session_id: str = Field(min_length=1)
+    thinking_level: ThinkingLevel
+
+
+class SessionSetThinkingResult(BaseModel):
+    session: SessionInfo
+
+
+class SessionTreeCommand(BaseModel):
+    type: Literal["session.tree"] = "session.tree"
+    session_id: str
+
+
+class SessionNavigateCommand(BaseModel):
+    type: Literal["session.navigate"] = "session.navigate"
+    session_id: str
+    target_seq: int = Field(ge=1)
+    summarize: bool = False
+    focus: str = ""
+
+
 class SessionForkCommand(BaseModel):
     type: Literal["session.fork"] = "session.fork"
     session_id: str
+    leaf_seq: int | None = Field(default=None, ge=1)
     title: str = Field(default="", max_length=200)
     preset_id: str | None = Field(
         default=None,
@@ -870,12 +918,28 @@ class SessionRewindResult(BaseModel):
     already_restored: list[str] = Field(default_factory=list)
 
 
+class SessionExecuteCommand(BaseModel):
+    type: Literal["session.execute_command"] = "session.execute_command"
+    session_id: str
+    content: str = Field(min_length=1)
+
+
+class SessionExecuteCommandResult(BaseModel):
+    message: str = ""
+
+
+class SessionReloadCommand(BaseModel):
+    type: Literal["session.reload"] = "session.reload"
+    session_id: str
+
+
 class SessionContextCommand(BaseModel):
     type: Literal["session.context"] = "session.context"
     session_id: str
 
 
 class SessionContextResult(BaseModel):
+    input_commands: list[dict[str, str]] = Field(default_factory=list)
     message_count: int
     estimated_tokens: int
     run_count: int
@@ -1183,7 +1247,11 @@ Command = Annotated[
     | SessionListCommand
     | SessionResumeCommand
     | SessionRenameCommand
+    | SessionSetModelCommand
+    | SessionSetThinkingCommand
     | SessionForkCommand
+    | SessionTreeCommand
+    | SessionNavigateCommand
     | SessionExportCommand
     | SessionDeleteCommand
     | SessionCloseCommand
@@ -1209,6 +1277,8 @@ Command = Annotated[
     | SessionRewindPreviewCommand
     | SessionRewindCommand
     | SessionContextCommand
+    | SessionReloadCommand
+    | SessionExecuteCommand
     | TurnInspectCommand
     | McpListCommand
     | HooksListCommand

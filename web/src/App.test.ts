@@ -10,6 +10,7 @@ import {
   preferredThreadId,
   resolveWebLocale,
   resolveWebTheme,
+  resultSummaryFor,
   resultStatusIsFailure,
   workspaceHasUserProject,
   workspacePathIsDirectoryError,
@@ -17,11 +18,11 @@ import {
 import type { RuntimeEvent, ThreadRecord } from "./types";
 
 describe("Web task submission", () => {
-  it("keeps the visible shell command separate from the model instruction", () => {
+  it("preserves direct shell commands instead of generating a model instruction", () => {
     const content = modelContentFor("!pytest -q", []);
 
-    expect(content).toContain("exact shell command");
-    expect(content).toContain("pytest -q");
+    expect(content).toBe("!pytest -q");
+    expect(modelContentFor('!!printf "%s" "$VALUE"', ["VALUE"])).toBe('!!printf "%s" "$VALUE"');
   });
 
   it("adds only selected file references still present in the composer", () => {
@@ -108,6 +109,23 @@ describe("Web task submission", () => {
     expect(resultStatusIsFailure("incomplete")).toBe(true);
     expect(resultStatusIsFailure("length")).toBe(true);
     expect(resultStatusIsFailure("transport_error")).toBe(true);
+  });
+
+  it("uses the persisted run result while the receipt projection is still loading", () => {
+    const event: RuntimeEvent = {
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      seq: 9,
+      type: "run.finished",
+      payload: { status: "success", result_summary: "Final answer" },
+      ts: "2026-08-30T00:00:00Z",
+    };
+
+    expect(resultSummaryFor(event.payload, null, "")).toBe("Final answer");
+    expect(resultSummaryFor(event.payload, {
+      result_summary: "Receipt answer",
+      failure_category: undefined,
+    }, "")).toBe("Receipt answer");
   });
 
   it("normalizes persisted interface preferences to supported values", () => {

@@ -65,7 +65,7 @@ def _permission_scope(
         if resolved_call.spec.name != tool_name:
             return None
         if resolved_call.spec.is_action_family:
-            action = params.get("action")
+            action = params.get("action", resolved_call.spec.default_action)
             if action != resolved_call.action.name:
                 return None
         return resolved_call.permission_scope

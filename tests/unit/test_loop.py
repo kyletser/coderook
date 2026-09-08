@@ -103,6 +103,29 @@ def _make_loop(
     return AgentLoop(provider, registry or ToolRegistry(), b), b  # type: ignore[arg-type]
 
 
+# 功能：冻结的 Provider 与模型身份直接进入 System Prompt，简单身份问题无需调用工具。
+# 设计：只传入非敏感请求元数据并检查权威声明，不依赖 Provider 网络响应。
+def test_render_system_includes_authoritative_runtime_identity() -> None:
+    provider = _MockProvider([])
+    loop = AgentLoop(  # type: ignore[arg-type]
+        provider,
+        ToolRegistry(),
+        EventBus(),
+        request_metadata={
+            "route_id": "aliyun",
+            "model": "qwen3.8-flash",
+            "thinking": "high",
+        },
+    )
+
+    prompt = loop._render_system(_ctx())
+
+    assert "Provider route: aliyun" in prompt
+    assert "Model: qwen3.8-flash" in prompt
+    assert "Thinking level: high" in prompt
+    assert "do not inspect files or run a command" in prompt
+
+
 async def _events(bus: EventBus) -> list[BaseModel]:
     collected: list[BaseModel] = []
 
@@ -187,6 +210,59 @@ async def test_max_steps_marks_failed() -> None:
     assert ctx.status == "failed"
     assert ctx.reason == "exceeded_max_steps"
     assert ctx.step == 2
+
+
+# 功能：验证不限步数的交互循环可超过旧默认上限并正常返回答案
+# 设计：使用二十五次不同参数的本地工具调用，排除重复提醒并覆盖真实执行循环
+async def test_unbounded_loop_finishes_after_twenty_steps() -> None:
+    responses = [
+        LlmResponse(stop_reason="tool_use", tool_calls=[
+            _tc(inp={"msg": str(step)}, uid=f"call-{step}"),
+        ])
+        for step in range(25)
+    ]
+    responses.append(LlmResponse(stop_reason="end_turn", text="done"))
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    loop, _ = _make_loop(_MockProvider(responses), registry)
+    context = _ctx(max_steps=0)
+    await loop.run(context)
+    assert context.status == "success"
+    assert context.step == 26
+    assert context.result == "done"
+
+
+# 功能：验证不同参数的探索不产生定时或预算催促，硬步数限制仍然有效
+# 设计：五步假模型分别完成或耗尽，比较真实请求快照与回放，避免用提示代替完成证据
+@pytest.mark.parametrize("finish", [True, False])
+async def test_no_periodic_reminder_and_hard_limit_unchanged(
+    tmp_path: Path, finish: bool,
+) -> None:
+    responses = [LlmResponse(stop_reason="tool_use", tool_calls=[
+        _tc(inp={"msg": str(step)}, uid=f"call-{step}"),
+    ]) for step in range(5)]
+    if finish:
+        responses[-1] = LlmResponse(stop_reason="end_turn", text="verified result")
+    provider = _MockProvider(responses)
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    store = SessionStore(tmp_path)
+    store.append_message("sess-budget", "user", "test goal")
+    transcript = SessionTranscriptSink(store, "sess-budget", "r1")
+    loop = AgentLoop(provider, registry, EventBus(), transcript=transcript)  # type: ignore[arg-type]
+    ctx = _ctx(max_steps=5)
+    await loop.run(ctx)
+    reminders = [message for message in store.derive_messages("sess-budget")
+                 if str(message.get("content", "")).startswith("Runtime step budget:")]
+    assert reminders == []
+    assert ctx.step == 5
+    assert ctx.status == ("success" if finish else "failed")
+    assert ctx.reason == (None if finish else "exceeded_max_steps")
+    rows = [json.loads(line) for line in
+            (store.session_dir("sess-budget") / "thread.jsonl").read_text(encoding="utf-8").splitlines()]
+    snapshots = [row for row in rows if row.get("type") == "llm.request_prepared"]
+    assert not any("Runtime step budget:" in json.dumps(row) for row in snapshots)
+    assert not any("Runtime progress checkpoint:" in json.dumps(row) for row in snapshots)
 
 
 # 功能：验证"调工具 → end_turn"的两步路径最终标记为 success
@@ -354,8 +430,8 @@ async def test_failed_step_still_publishes_matching_finished_event() -> None:
     assert finished == started
 
 
-# 功能：验证每次模型决策都发布可观察的意图摘要且先于工具执行事件
-# 设计：让模型先输出用户可见进度并调用只读工具，检查 inspect 分类、摘要和事件顺序
+# 功能：验证完整 assistant 消息先于工具执行持久化，并保留最终回答正文
+# 设计：不再断言旧意图标签，直接检查模型实际文本、工具调用和终态消息顺序
 async def test_agent_decision_event_precedes_tool_execution() -> None:
     bus = EventBus()
     events = await _events(bus)
@@ -372,15 +448,15 @@ async def test_agent_decision_event_precedes_tool_execution() -> None:
     await loop.run(_ctx())
 
     types = [event.type for event in events]  # type: ignore[attr-defined]
-    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
-    assert decision.intent == "inspect"  # type: ignore[attr-defined]
-    assert decision.summary == "我先检查相关文件。"  # type: ignore[attr-defined]
-    assert decision.tool_names == ["read_file"]  # type: ignore[attr-defined]
-    assert decision.has_visible_text is True  # type: ignore[attr-defined]
-    assert types.index("agent.decision") < types.index("tool.call_started")
+    messages = [event.model_dump() for event in events if event.type == "agent.message"]  # type: ignore[attr-defined]
+    completed = [message for message in messages if message["phase"] == "end"]
+    assert completed[0]["content"][0]["text"] == "我先检查相关文件。"
+    assert completed[0]["content"][1]["name"] == "read_file"
+    assert completed[-1]["content"][0]["text"] == "检查完成。"
+    assert types.index("agent.message") < types.index("tool.call_started")
 
 
-# 功能：验证模型省略进度文本时决策事件仍根据实际工具提供稳定回退摘要
+# 功能：验证模型省略文本时仍保留结构化工具调用而不生成虚构进度摘要
 # 设计：使用未知执行工具避免依赖具体实现，断言 execute 分类和工具名回退而非空白
 async def test_agent_decision_event_has_tool_fallback_without_text() -> None:
     bus = EventBus()
@@ -395,14 +471,14 @@ async def test_agent_decision_event_has_tool_fallback_without_text() -> None:
     context.goal = "请执行这个任务"
     await loop.run(context)
 
-    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
-    assert decision.intent == "execute"  # type: ignore[attr-defined]
-    assert decision.summary == "调用工具：custom_tool"  # type: ignore[attr-defined]
-    assert decision.has_visible_text is False  # type: ignore[attr-defined]
+    messages = [event.model_dump() for event in events if event.type == "agent.message"]  # type: ignore[attr-defined]
+    first = next(message for message in messages if message["phase"] == "end")
+    assert first["content"][0]["name"] == "custom_tool"
+    assert not any(block["type"] == "text" for block in first["content"])
 
 
-# 功能：验证 action-family 的读写动作参与通用意图分类
-# 设计：分别输入 memory 查询/保存、tasks 更新和 update_plan，覆盖 family action 而非旧平铺别名
+# 功能：验证模型请求的工具名称和 action 参数完整保留在消息中
+# 设计：覆盖读写和控制类 action，确保移植没有重新按意图标签改写模型工具请求
 @pytest.mark.parametrize(
     ("tool_name", "params", "expected"),
     [
@@ -427,8 +503,10 @@ async def test_agent_decision_classifies_action_family_calls(
 
     await loop.run(_ctx())
 
-    decision = next(event for event in events if event.type == "agent.decision")  # type: ignore[attr-defined]
-    assert decision.intent == expected  # type: ignore[attr-defined]
+    messages = [event.model_dump() for event in events if event.type == "agent.message"]  # type: ignore[attr-defined]
+    message = next(item for item in messages if item["phase"] == "end")
+    assert message["content"][0]["name"] == tool_name
+    assert message["content"][0]["arguments"] == params
 
 
 # 功能：验证多步执行后 step 计数器正确累积到步数总量
@@ -502,9 +580,14 @@ async def test_context_overflow_compacts_and_recovers(tmp_path: Path) -> None:
         provider,
         ToolRegistry(),
         bus,
-        compactor=Compactor(bus, tmp_path, "sess-1"),
+        compactor=Compactor(bus, tmp_path, "sess-1", keep_recent_tokens=80),
     )
     context = _ctx()
+    context.messages = [
+        {"role": "user", "content": "Previous task " + "x" * 4000},
+        {"role": "assistant", "content": "Previous work " + "y" * 400},
+        {"role": "user", "content": "Continue current task " + "z" * 500},
+    ]
 
     await loop.run(context)
 
@@ -543,9 +626,9 @@ async def test_unknown_stop_reason_with_tools_runs_act_phase() -> None:
     assert any(type(e).__name__ == "ToolCallFinishedEvent" for e in events)
 
 
-# 功能：验证 length 截断只自动续写一次并由下一次完整响应成功收尾
-# 设计：首响应带统一 length 状态，次响应检查续写提示已注入后返回 completed
-async def test_length_completion_auto_continues_once() -> None:
+# 功能：验证 Pi 式无工具截断保留正文并明确结束为不完整
+# 设计：提供额外完整响应作为诱饵，断言不会擅自续写并消耗下一次调用
+async def test_length_completion_stops_with_partial_result() -> None:
     class _LengthProvider:
         # 初始化调用次数并记录第二轮输入
         def __init__(self) -> None:
@@ -581,13 +664,14 @@ async def test_length_completion_auto_continues_once() -> None:
 
     await loop.run(ctx)
 
-    assert ctx.status == "success" and ctx.result == "complete"
-    assert provider.calls == 2
-    assert "reached its output limit" in str(provider.second_messages[-1]["content"])
+    assert ctx.status == "failed" and ctx.reason == "incomplete"
+    assert ctx.result == "partial"
+    assert provider.calls == 1
+    assert not provider.second_messages
 
 
-# 功能：验证连续第二次 length 截断会明确失败而不是无限循环或误报成功
-# 设计：连续返回两次统一 length 状态，断言最多调用两次且 reason=incomplete
+# 功能：验证无工具调用的 length 保留部分结果并结束为不完整
+# 设计：准备两次响应，确认不自动生成用户未提交的续写消息来消耗第二次响应
 async def test_second_length_completion_fails_incomplete() -> None:
     provider = _MockProvider(
         [
@@ -610,7 +694,7 @@ async def test_second_length_completion_fails_incomplete() -> None:
 
     assert ctx.status == "failed"
     assert ctx.reason == "incomplete"
-    assert ctx.result == "part-two"
+    assert ctx.result == "part-one"
 
 
 # 功能：验证内容过滤终态直接失败并保留安全可见摘要

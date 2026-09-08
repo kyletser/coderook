@@ -13,7 +13,9 @@ _OUTPUT_TOKEN_LIMIT: ContextVar[int | None] = ContextVar(
 # 在当前异步任务内设置单次模型输出上限，并在调用结束后恢复旧值
 @contextmanager
 def output_token_budget(limit: int) -> Iterator[None]:
-    token = _OUTPUT_TOKEN_LIMIT.set(max(1, limit))
+    inherited = _OUTPUT_TOKEN_LIMIT.get()
+    effective = max(1, limit) if inherited is None else min(inherited, max(1, limit))
+    token = _OUTPUT_TOKEN_LIMIT.set(effective)
     try:
         yield
     finally:

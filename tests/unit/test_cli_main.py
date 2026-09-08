@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -99,6 +100,53 @@ def test_explicit_tui_alias_launches_tui(monkeypatch) -> None:
     cli_main.main()
 
     assert launched == [["coderook", "--continue"]]
+
+
+# 功能：顶层位置参数按 Pi 风格作为初始任务交给 TUI，而不是被 argparse 当成未知子命令。
+# 设计：捕获委托后的原始参数，确认中文多段任务不经过脚本 run 子命令重写。
+def test_positional_prompt_launches_tui(monkeypatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr(sys, "argv", ["coderook", "修复登录", "并运行测试"])
+    monkeypatch.setattr(tui_main, "main", lambda: launched.append(list(sys.argv)))
+
+    cli_main.main()
+
+    assert launched == [["coderook", "修复登录", "并运行测试"]]
+
+
+# 功能：-p 以一次性 Python Agent 模式自动启动 Core 并打印任务结果。
+# 设计：替换 daemon 与 headless 边界，核对任务拼接和四个 Pi 原生工具的显式允许列表。
+def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys, "argv", ["coderook", "-p", "--thinking", "high", "读取项目", "总结结构"]
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    ensure = MagicMock()
+    monkeypatch.setattr(cli_main, "ensure_core_running", ensure)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, passed, **kwargs: captured.update(
+            {"goal": goal, "config": passed, **kwargs}
+        ),
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    ensure.assert_called_once_with(config, env_file=None)
+    assert captured == {
+        "goal": "读取项目 总结结构",
+        "config": config,
+        "permission_mode": "allow-list",
+        "allow_tools": ["read", "bash", "edit", "write"],
+        "output_format": "text",
+        "thinking_level": "high",
+    }
 
 
 # 功能：验证 coderook web 可切换到显式工作区并把 no-open 选项交给 Web 启动器

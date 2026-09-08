@@ -1,0 +1,50 @@
+{
+    "total_instances": 5,
+    "submitted_instances": 5,
+    "completed_instances": 5,
+    "resolved_instances": 3,
+    "unresolved_instances": 2,
+    "infra_failure_instances": 0,
+    "ambiguous_failure_instances": 0,
+    "empty_patch_instances": 0,
+    "error_instances": 0,
+    "completed_ids": [
+        "django__django-15320",
+        "matplotlib__matplotlib-23964",
+        "pallets__flask-5063",
+        "psf__requests-3362",
+        "scikit-learn__scikit-learn-10297"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": [
+        "django__django-15320",
+        "matplotlib__matplotlib-23964",
+        "pallets__flask-5063",
+        "psf__requests-3362",
+        "scikit-learn__scikit-learn-10297"
+    ],
+    "resolved_ids": [
+        "django__django-15320",
+        "matplotlib__matplotlib-23964",
+        "scikit-learn__scikit-learn-10297"
+    ],
+    "unresolved_ids": [
+        "pallets__flask-5063",
+        "psf__requests-3362"
+    ],
+    "infra_failure_ids": [],
+    "ambiguous_failure_ids": [],
+    "failure_reasons": {},
+    "error_ids": [],
+    "schema_version": 2,
+    "unstopped_instances": 0,
+    "unstopped_containers": [],
+    "unremoved_images": [
+        "swebench/sweb.eval.x86_64.django_1776_django-15320:latest",
+        "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-23964:latest",
+        "swebench/sweb.eval.x86_64.pallets_1776_flask-5063:latest",
+        "swebench/sweb.eval.x86_64.psf_1776_requests-3362:latest",
+        "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-10297:latest"
+    ]
+}

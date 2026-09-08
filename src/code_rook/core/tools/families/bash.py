@@ -40,13 +40,13 @@ class BashTool(BaseTool):
     name = "Bash"
     description = (
         "Execute a shell command in the workspace or manage its background lifecycle. "
-        "Use run, wait, interact, or cancel; prefer background for commands over five seconds."
+        "Pass command to run a command; action defaults to run. "
+        "Use explicit wait, interact, or cancel for background jobs when available."
     )
     side_effect = ToolSideEffect.EXTERNAL_WRITE
     input_schema: dict[str, object] = {
         "type": "object",
-        "properties": {"action": {"type": "string"}},
-        "required": ["action"],
+        "properties": {"action": {"type": "string", "default": "run"}},
     }
 
     # 绑定前台 shell 和可选 daemon 后台生命周期 backend
@@ -170,6 +170,7 @@ class BashTool(BaseTool):
             description=self.description,
             input_schema=self.input_schema,
             actions=action_tuple,
+            default_action="run",
             capabilities=capabilities,
             approval_requirement=ApprovalRequirement.POLICY,
             parallel_policy=ParallelPolicy.RESOURCE_CLAIMS,
@@ -177,7 +178,7 @@ class BashTool(BaseTool):
 
     # 分派前台执行和后台 wait/interact/cancel 生命周期
     async def invoke(self, params: dict[str, object]) -> ToolResult:
-        action = params.get("action")
+        action = params.get("action", "run")
         payload = dict(params)
         payload.pop("action", None)
         try:
@@ -212,7 +213,7 @@ class BashTool(BaseTool):
         self,
         params: dict[str, object],
     ) -> tuple[BaseTool, dict[str, object]]:
-        action = params.get("action")
+        action = params.get("action", "run")
         payload = dict(params)
         payload.pop("action", None)
         if action == "run":
@@ -329,6 +330,7 @@ def register_bash_family(
         spec=spec.model_copy(
             update={
                 "actions": selected_actions,
+                "default_action": "run" if "run" in enabled_actions else None,
                 "capabilities": frozenset(
                     capability
                     for action in selected_actions

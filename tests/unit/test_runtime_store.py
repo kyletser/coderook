@@ -77,8 +77,9 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 
 # 功能：验证消息队列跨数据库重开、领取、中断恢复、重试与删除保持同一记录
 # 设计：用真实 SQLite 顺序走完整状态机，证明 Web/TUI 不依赖各自进程内存保存后续消息
+@pytest.mark.parametrize("expand", [True, False])
 def test_durable_message_queue_survives_restart_and_requires_retry(
-    tmp_path: Path,
+    tmp_path: Path, expand: bool,
 ) -> None:
     path = tmp_path / "runtime.db"
     store = RuntimeStore(path)
@@ -97,6 +98,7 @@ def test_durable_message_queue_survives_restart_and_requires_retry(
         thread_id="thread-queue",
         content="internal prompt",
         display_content="继续修复",
+        expand_prompt_templates=expand,
         created_at=now,
         updated_at=now,
     )

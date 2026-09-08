@@ -110,8 +110,10 @@ class RuntimeToolAssembly:
         process_supervisor: ProcessSupervisor | None = None,
         persistent_shell_pool: PersistentShellPool | None = None,
         env_overlay: Mapping[str, str] | None = None,
+        image_auto_resize: bool = True,
     ) -> None:
         self._boundary = workspace_boundary
+        self._image_auto_resize = image_auto_resize
         self._artifact_store = artifact_store
         self._memory_store = memory_store
         self._worktree_manager = worktree_manager
@@ -162,8 +164,10 @@ class RuntimeToolAssembly:
         supports_images: bool = True,
         authority_snapshot: AuthoritySnapshot | None = None,
         route_binding: ResolvedRoute | None = None,
+        skill_loader: SkillLoader | None = None,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
+        active_skill_loader = skill_loader or self._skill_loader
 
         # 判断工具名称是否处于显式白名单内
         def _name_allowed(name: str) -> bool:
@@ -181,6 +185,7 @@ class RuntimeToolAssembly:
             runtime_mode=runtime_mode,
             allowed_authority_actions=frozen_authority.allowed_actions,
         )
+        registry.image_auto_resize = self._image_auto_resize
         file_tools = [
             ReadFileTool(self._boundary),
             GlobTool(self._boundary, process_supervisor=self._process_supervisor),
@@ -239,7 +244,7 @@ class RuntimeToolAssembly:
             artifact_store=self._artifact_store,
         )
         skill_tool = SkillTool(
-            self._skill_loader,
+            active_skill_loader,
             workspace_trusted=workspace_trusted,
         )
         if _ok(skill_tool):
@@ -355,10 +360,61 @@ class RuntimeToolAssembly:
             if _ok(web_tool):
                 registry.register(web_tool)
         if supports_images:
-            image_tool = ReadImageTool(self._boundary)
+            image_tool = ReadImageTool(self._boundary, auto_resize=self._image_auto_resize)
             if _ok(image_tool):
                 registry.register(image_tool)
         search_tool = ToolSearchTool(registry)
         if _ok(search_tool):
             registry.register(search_tool)
+        if allowed is None and runtime_mode == RuntimeMode.ACT:
+            from code_rook.core.agent_runtime.shell import CodingShellTool
+            from code_rook.core.agent_runtime.tools import EditTool, ReadTool, WriteTool
+
+            resource_roots = tuple(dict.fromkeys(
+                Path(skill.path).parent
+                for skill in active_skill_loader.list_for_execution(
+                    workspace_trusted=workspace_trusted,
+                )
+            ))
+            registry.register(ReadTool(
+                self._boundary, supports_images, resource_roots=resource_roots,
+                auto_resize=self._image_auto_resize,
+            ))
+            registry.register(EditTool(self._boundary, checkpoint_store))
+            registry.register(WriteTool(self._boundary, checkpoint_store=checkpoint_store))
+            active_session_id = session.id if session is not None else session_id
+            active_route = route_binding.route if route_binding is not None else None
+            session_environment = {
+                "AI_AGENT": "coderook",
+                "CODEROOK_CODING_AGENT": "true",
+                "CODEROOK_SESSION_ID": active_session_id,
+                "CODEROOK_SESSION_FILE": (
+                    str(store.session_dir(active_session_id) / "thread.jsonl")
+                    if store is not None and active_session_id
+                    else ""
+                ),
+                "CODEROOK_PROVIDER": (
+                    (active_route.catalog_id or active_route.provider)
+                    if active_route is not None
+                    else ""
+                ),
+                "CODEROOK_MODEL": active_route.model if active_route is not None else "",
+                "CODEROOK_REASONING_LEVEL": (
+                    active_route.thinking if active_route is not None else "off"
+                ),
+            }
+            registry.register(
+                CodingShellTool(
+                    self._boundary.root,
+                    sandbox_plan,
+                    self._process_supervisor,
+                    session_environment=session_environment,
+                )
+            )
+            custom = (
+                {tool.name for tool in self._mcp_manager.get_tools()}
+                if self._mcp_manager
+                else set()
+            )
+            registry.set_model_surface(frozenset({"read", "bash", "edit", "write", *custom}))
         return registry

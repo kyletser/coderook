@@ -4,11 +4,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from code_rook.core.llm.routes import ThinkingLevel
 from code_rook.core.presets import STANDARD_PRESET, get_agent_preset
 
 SessionStatus = Literal["active", "waiting_for_input", "interrupted", "closed"]
 SessionMode = Literal["one_shot", "chat"]
-SESSION_SCHEMA_VERSION = 3
+SESSION_SCHEMA_VERSION = 5
 SESSION_ID_PATTERN = re.compile(r"^sess-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
@@ -29,6 +30,9 @@ class Session:
     workspace: str = ""
     preset_id: str = STANDARD_PRESET.id
     preset_digest: str = STANDARD_PRESET.digest
+    route_id: str = ""
+    model: str = ""
+    thinking_level: ThinkingLevel | None = None
 
     # 将 Session 转为可写入 meta.json 的普通 dict
     def to_dict(self) -> dict[str, Any]:
@@ -45,6 +49,9 @@ class Session:
             "workspace": self.workspace,
             "preset_id": self.preset_id,
             "preset_digest": self.preset_digest,
+            "route_id": self.route_id,
+            "model": self.model,
+            "thinking_level": self.thinking_level,
         }
 
     # 从 meta.json 的 dict 还原 Session 对象
@@ -72,6 +79,9 @@ class Session:
         workspace = data.get("workspace", "")
         preset_id = data.get("preset_id", STANDARD_PRESET.id)
         preset_digest = data.get("preset_digest", "")
+        route_id = data.get("route_id", "")
+        model = data.get("model", "")
+        thinking_level = data.get("thinking_level")
         if not isinstance(session_id, str) or SESSION_ID_PATTERN.fullmatch(session_id) is None:
             raise ValueError("invalid session id")
         if mode not in {"one_shot", "chat"}:
@@ -110,6 +120,14 @@ class Session:
             r"[0-9a-f]{64}", preset_digest
         ) is None:
             raise ValueError("invalid session preset digest")
+        if not isinstance(route_id, str) or (
+            route_id and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", route_id) is None
+        ):
+            raise ValueError("invalid session route id")
+        if not isinstance(model, str) or len(model) > 256:
+            raise ValueError("invalid session model")
+        if thinking_level not in {None, "off", "low", "medium", "high"}:
+            raise ValueError("invalid session thinking level")
         return cls(
             id=session_id,
             mode=mode,
@@ -122,4 +140,7 @@ class Session:
             workspace=workspace,
             preset_id=preset_id,
             preset_digest=preset_digest,
+            route_id=route_id,
+            model=model,
+            thinking_level=thinking_level,
         )

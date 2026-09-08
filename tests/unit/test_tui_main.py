@@ -143,6 +143,33 @@ def test_tui_main_passes_continue_recent(
     app.run.assert_called_once_with()
 
 
+# 功能：TUI 入口把位置参数合并为连接成功后自动提交的一条初始任务。
+# 设计：隔离 Core 与 Textual，仅检查构造参数，避免测试中发起真实模型请求。
+def test_tui_main_passes_initial_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook-tui", "--thinking", "medium", "修复登录", "并运行测试"],
+    )
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda _config: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    assert factory.call_args.kwargs["initial_prompt"] == "修复登录 并运行测试"
+    assert factory.call_args.kwargs["initial_thinking_level"] == "medium"
+    app.run.assert_called_once_with()
+
+
 # 功能：验证 --new 是裸启动自动恢复的显式退出开关
 # 设计：隔离 daemon、token 和 Textual 边界，断言参数只改变会话选择策略
 def test_tui_main_new_forces_fresh_session(

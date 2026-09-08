@@ -28,6 +28,9 @@ class ReadRepeatGuard:
             resolved = registry.resolve_call(tool_call.name, dict(tool_call.input))
         except (ToolCatalogError, PermissionError, ValueError, OSError):
             return None
+        # Pi 的 read 每次访问文件；图片也不能复用会丢失多模态块的旧文本缓存。
+        if resolved.spec.name in {"read", "read_image"}:
+            return None
         if resolved.action.is_mutating:
             return None
         if ToolCapability.READ not in resolved.action.capabilities:

@@ -1,0 +1,66 @@
+{
+  "runtime_commit": "7cda2be6bc07b45845f9fd9bf196db2b1593e25f",
+  "runtime_image": "sha256:80760f56151d6498226675927ee0d324d4379d1894fd9b9ebc536aa80d8c61ee",
+  "runner_sha256": "a66bd454f9a4f6ed35b03edd7172179ed763d9a7f00c35580f119d968f3974c2",
+  "agent_adapter_sha256": "d7eebc44e4e552536a0bacece39ba8b183da4f8ca6392db08b044f2934331792",
+  "attempts_per_task": 1,
+  "max_steps": 40,
+  "wall_time": 900,
+  "model": "qwen3.8-flash",
+  "temperature": 0.0,
+  "strategy": "single/direct",
+  "candidate": {
+    "route_id": "resume-eval-qwen",
+    "model": "qwen3.8-flash",
+    "wire_format": "openai_chat",
+    "temperature": 0.0,
+    "route_digest": "f749e707219b23c01aec327951ad3120f16af236652438ac074f25b8aac327d9",
+    "doctor_status": "verified_passed",
+    "pricing_known": false,
+    "pricing_source": "unavailable",
+    "pricing_effective_date": ""
+  },
+  "instances": [
+    {
+      "instance_id": "django__django-15320",
+      "image": "swebench/sweb.eval.x86_64.django_1776_django-15320:latest",
+      "image_digest": "sha256:5bdc02e78f1275c2aad506930e830c2d8cd0f80cfb093a5caf8f825607110982",
+      "image_head": "9291e5167ad3bfeeb105a1f785a1f117e1f541b4",
+      "base_commit": "b55ebe32417e0884b6b8b3e1bc0379033aa221af",
+      "prediction_sha256": "15757f6d4c7cb0ba245986e1ffa943968dbc5e71e4e00d1dda0f2177dec2d3ec"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23964",
+      "image": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-23964:latest",
+      "image_digest": "sha256:a2f5b9e7a2aa9893dce83ed06b28f0f331df40a20db98ac1c6010a0a25914c99",
+      "image_head": "d147abf6f3086afef3d713039f235b2d3f61e8bc",
+      "base_commit": "269c0b94b4fcf8b1135011c1556eac29dc09de15",
+      "prediction_sha256": "e6506e3dd032b2b9a4fcf774d0f71f0528c9a37204d3c8ce64d7df8f7d7dd846"
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "image": "swebench/sweb.eval.x86_64.pallets_1776_flask-5063:latest",
+      "image_digest": "sha256:e661f7a19d411a7b0c26e493fafbe145e3726672faec51ce7accfa269e99a164",
+      "image_head": "c538a6f890bff1f908e799f797e6fe53700d6b0a",
+      "base_commit": "182ce3dd15dfa3537391c3efaf9c3ff407d134d4",
+      "prediction_sha256": "9648d7b696fd90ece7a537de413e0b719b6444f6eab6d48dfdb3a2a4996a442e"
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "image": "swebench/sweb.eval.x86_64.psf_1776_requests-3362:latest",
+      "image_digest": "sha256:d1c8c15eeb5e12b7eb3815307d1131d68c72d53419fa2f8b89bc46bc0009a61b",
+      "image_head": "e8053fb45c2c9494510cf20a2a6a878821c03ae7",
+      "base_commit": "36453b95b13079296776d11b09cab2567ea3e703",
+      "prediction_sha256": "c5c5270ce29cb94cee9d236b0000c244975efbbb419e6a4170515f04fb348edd"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10297",
+      "image": "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-10297:latest",
+      "image_digest": "sha256:c48ade7195b167b2562f90f3a3a60ebb410276e7583bd1212e324c16157d7eb0",
+      "image_head": "f7e77544ac345595bba2722c81c2a768f6f5afa4",
+      "base_commit": "b90661d6a46aa3619d3eec94d5281f5888add501",
+      "prediction_sha256": "e0a914eb602190996aa2fe2565590c1a58b5e86ce7b2d046303edd3a50573ad7"
+    }
+  ],
+  "harness_version": "5.0.2"
+}

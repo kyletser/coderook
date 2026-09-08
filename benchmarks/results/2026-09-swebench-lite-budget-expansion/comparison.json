@@ -1,0 +1,151 @@
+{
+  "scope": "Three selected development cases, not held-out or full Lite",
+  "before_limits": {
+    "max_steps": 40,
+    "wall_time_s": 900
+  },
+  "after_limits": {
+    "max_steps": 80,
+    "wall_time_s": 1800
+  },
+  "attempts_per_case_per_condition": 1,
+  "model": "qwen3.8-flash",
+  "temperature": 0,
+  "dollar_cost": null,
+  "limitations": [
+    "Known returned usage only; interrupted calls may omit usage",
+    "One attempt per condition cannot isolate variance from budget effects",
+    "Requests target assertion fails; fixture errors also present"
+  ],
+  "rows": [
+    {
+      "instance_id": "django__django-15320",
+      "before": {
+        "instance_id": "django__django-15320",
+        "resolved": true,
+        "runtime_status": "failed",
+        "runtime_reason": "exceeded_max_steps",
+        "infrastructure_error": null,
+        "input_tokens": 722912,
+        "output_tokens": 50898,
+        "elapsed_s": 649.8858891640011,
+        "tool_calls": 54,
+        "steps": 40,
+        "tool_errors": 4,
+        "schema_errors": 1,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 0
+      },
+      "after": {
+        "instance_id": "django__django-15320",
+        "resolved": true,
+        "runtime_status": "failed",
+        "runtime_reason": "wall_time_exceeded",
+        "infrastructure_error": null,
+        "input_tokens": 1233388,
+        "output_tokens": 51565,
+        "elapsed_s": 1800.1794296120024,
+        "tool_calls": 69,
+        "steps": 57,
+        "tool_errors": 4,
+        "schema_errors": 1,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 2
+      }
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "before": {
+        "instance_id": "psf__requests-3362",
+        "resolved": false,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "infrastructure_error": null,
+        "input_tokens": 187000,
+        "output_tokens": 7984,
+        "elapsed_s": 115.6318790639998,
+        "tool_calls": 20,
+        "steps": 19,
+        "tool_errors": 0,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 0
+      },
+      "after": {
+        "instance_id": "psf__requests-3362",
+        "resolved": false,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "infrastructure_error": null,
+        "input_tokens": 453605,
+        "output_tokens": 48289,
+        "elapsed_s": 648.8369483919996,
+        "tool_calls": 40,
+        "steps": 32,
+        "tool_errors": 3,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 0
+      }
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "before": {
+        "instance_id": "pallets__flask-5063",
+        "resolved": true,
+        "runtime_status": "failed",
+        "runtime_reason": "exceeded_max_steps",
+        "infrastructure_error": null,
+        "input_tokens": 701907,
+        "output_tokens": 73199,
+        "elapsed_s": 806.4384548949984,
+        "tool_calls": 52,
+        "steps": 40,
+        "tool_errors": 3,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 0
+      },
+      "after": {
+        "instance_id": "pallets__flask-5063",
+        "resolved": false,
+        "runtime_status": "success",
+        "runtime_reason": null,
+        "infrastructure_error": null,
+        "input_tokens": 613914,
+        "output_tokens": 58189,
+        "elapsed_s": 680.9558544169995,
+        "tool_calls": 43,
+        "steps": 35,
+        "tool_errors": 7,
+        "schema_errors": 0,
+        "missing_action_errors": 0,
+        "artifact_reads": 0,
+        "retry_count": 0,
+        "retry_reasons": [],
+        "repeat_notice_counts": [],
+        "consecutive_identical_calls": 0
+      }
+    }
+  ]
+}

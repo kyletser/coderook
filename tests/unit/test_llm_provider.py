@@ -7,12 +7,16 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm import openai_compatible as openai_module
 from code_rook.core.llm import provider as provider_module
+from code_rook.core.llm.errors import ProviderRequestError
 from code_rook.core.llm.openai_compatible import OpenAICompatibleProvider
 from code_rook.core.llm.provider import AnthropicProvider
 from code_rook.core.llm.types import LlmResponse
+from code_rook.core.loop import AgentLoop
+from code_rook.core.tools.registry import ToolRegistry
 
 # --- helpers -----------------------------------------------------------------
 
@@ -219,11 +223,9 @@ async def test_tool_use_parsed_from_final_message() -> None:
     assert tc.input == {"path": "README.md"}
 
 
-# 功能：Provider 在半个工具 JSON 后断流时必须丢弃失败尝试且不生成工具调用
-# 设计：首个流携带工具终态但在参数片段后抛传输错误，第二次返回普通正文，断言只采用完整重试结果
-async def test_partial_tool_call_stream_is_discarded_on_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+# 功能：Anthropic 半个工具 JSON 后断流时只有主循环重试，不产生部分工具调用
+# 设计：注入两次流和真实循环，核对同一步恢复；适配器单独调用则只尝试一次
+async def test_partial_tool_call_stream_is_discarded_on_retry() -> None:
     tool_block = MagicMock()
     tool_block.type = "tool_use"
     tool_block.id = "toolu-partial"
@@ -236,15 +238,18 @@ async def test_partial_tool_call_stream_is_discarded_on_retry(
         DroppingToolStream(failed_final),
         FakeStream(["recovered"], completed_final),
     ]
-    monkeypatch.setattr(provider_module, "_RETRY_BACKOFF_S", (0.0, 0.0, 0.0))
     provider = AnthropicProvider(model="test-model", client=client)
-
-    result, _ = await _chat(provider)
-
+    context = ExecutionContext(run_id="anthropic-retry", goal="recover", max_steps=2)
+    await AgentLoop(provider, ToolRegistry(), EventBus(), retry_backoff_s=0).run(context)
     assert client.messages.stream.call_count == 2
-    assert result.text == "recovered"
-    assert result.stop_reason == "end_turn"
-    assert result.tool_calls == []
+    assert context.status == "success"
+    assert context.result == "recovered"
+    assert context.step == 1
+    assert "toolu-partial" not in str(context.messages)
+    client.messages.stream.side_effect = [DroppingToolStream(failed_final)]
+    with pytest.raises(ProviderRequestError):
+        await _chat(provider)
+    assert client.messages.stream.call_count == 3
 
 
 # 功能：验证 stop_reason=end_turn 时不产生任何工具调用

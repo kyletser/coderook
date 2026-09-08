@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from code_rook.core.bus.events import (
+    AgentMessageEvent,
     ContextCompactedEvent,
     LlmTokenEvent,
     PermissionDeniedEvent,
@@ -195,6 +196,8 @@ def _project_event(
             ("run.outcome", event.run_id, "", payload),
             ("turn.finished", event.run_id, "", payload),
         ]
+    if isinstance(event, AgentMessageEvent):
+        return [("agent.message", event.run_id, step_id, payload)]
     if isinstance(event, StepStartedEvent):
         return [("step.started", event.run_id, step_id, payload)]
     if isinstance(event, StepFinishedEvent):

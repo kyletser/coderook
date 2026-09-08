@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from code_rook.core.agent_runtime.token_estimate import estimate_conversation_tokens
 from code_rook.core.compact.models import CompactionQuality, CompactionSummary
 
 SUMMARY_MARKER = "[CODEROOK_COMPACTION_V2]"
@@ -21,7 +22,7 @@ _ERROR_RE = re.compile(r"(?i)(error|failed|failure|exception|报错|失败|异�
 
 # 使用字符数近似估算消息 token，保证无 tokenizer 时仍可确定性运行
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
-    return max(1, sum(len(str(message.get("content", ""))) for message in messages) // 4)
+    return max(1, estimate_conversation_tokens(messages))
 
 
 # 返回消息内声明的 tool_use ID 集合
