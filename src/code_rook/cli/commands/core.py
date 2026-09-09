@@ -89,12 +89,27 @@ def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
     command = [sys.executable, "-m", "code_rook.core"]
     if env_file is not None:
         command.extend(["--env-file", str(env_file.expanduser().resolve())])
-    proc = subprocess.Popen(
-        command,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if os.name == "nt":
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=(
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            ),
+        )
+    else:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     return proc
@@ -171,9 +186,7 @@ def ensure_core_running(
                 served_workspace,
                 requested_workspace,
             ):
-                raise CoreLaunchError(
-                    f"Core started in unexpected workspace: {served_workspace}"
-                )
+                raise CoreLaunchError(f"Core started in unexpected workspace: {served_workspace}")
             return proc is not None
         time.sleep(0.05)
 
