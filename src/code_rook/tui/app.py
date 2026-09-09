@@ -159,6 +159,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding("ctrl+p", "command_palette", "command palette", show=False, priority=True),
+        Binding("ctrl+l", "model_picker", "model picker", show=False, priority=True),
+        Binding("ctrl+t", "cycle_thinking", "cycle thinking", show=False, priority=True),
         Binding("ctrl+o", "toggle_details", "toggle details", show=False, priority=True),
         Binding("ctrl+g", "external_editor", "external editor", show=False, priority=True),
         Binding(
@@ -1193,6 +1195,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if not self._copy_selected_text():
             self._copy_last_response()
 
+    # 打开当前 route 的模型选择器，忙碌时保持本轮冻结配置不变
+    def action_model_picker(self) -> None:
+        self._open_model_picker()
+
+    # 循环当前会话的思考强度并复用持久化模型设置入口
+    def action_cycle_thinking(self) -> None:
+        if self._busy:
+            self.notify(tr("cmd.model.busy", self._locale), severity="warning")
+            return
+        levels = ("off", "low", "medium", "high")
+        current = self._thinking_level if self._thinking_level in levels else "off"
+        self._select_thinking_level(levels[(levels.index(current) + 1) % len(levels)])
+
     # 在日志中渲染键位说明和全部内建斜杠命令，作为 TUI 内的帮助面板
     def _show_help(self) -> None:
         keys = [
@@ -1204,6 +1219,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("Ctrl+Shift+C", tr("help.copy", self._locale)),
             ("Ctrl+End", tr("help.scroll", self._locale)),
             ("Ctrl+P", tr("help.palette", self._locale)),
+            ("Ctrl+L", tr("help.model", self._locale)),
+            ("Ctrl+T", tr("help.thinking", self._locale)),
             ("Ctrl+O", tr("help.details", self._locale)),
             ("Ctrl+G", tr("help.editor", self._locale)),
             ("Ctrl+Q", tr("help.quit", self._locale)),
@@ -3517,6 +3534,26 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             lines.append(f"{marker} [bold]{escape(route.id)}[/bold]  [dim]{escape(meta)}[/dim]")
         lines.append(f"[dim]{tr('app.provider.switch_hint', self._locale)}[/dim]")
         self._append(Static("\n".join(lines), classes="log-line"))
+
+    # 挂载当前 route 的模型选择器并暂停 composer 输入
+    def _open_model_picker(self) -> None:
+        if self._busy:
+            self.notify(tr("cmd.model.busy", self._locale), severity="warning")
+            return
+        prompt = self._prompt()
+        if prompt is None:
+            return
+        prompt.disabled = True
+        prompt.border_title = tr("cmd.model.select", self._locale)
+        self.mount(
+            ModelPicker(
+                self._models,
+                self._model,
+                self._model_capability_labels(),
+                locale=self._locale,
+            ),
+            before="#prompt",
+        )
 
     # 返回活动或候选 route 的模型能力标签供选择器展示
     def _model_capability_labels(

@@ -23,6 +23,7 @@ from code_rook.tui.app import (
 )
 from code_rook.tui.connection import TuiConnection
 from code_rook.tui.widgets import input as widgets_input
+from code_rook.tui.widgets.selectors import ModelPicker
 
 
 class _FakeClient:
@@ -242,6 +243,8 @@ async def test_help_command_renders_keys_and_commands(
         body = "\n".join(appended)
         assert "键位" in body
         assert "Ctrl+End" in body
+        assert "Ctrl+L" in body
+        assert "Ctrl+T" in body
         assert "Ctrl+O" in body
         assert "Ctrl+G" in body
         assert "命令" in body
@@ -279,6 +282,35 @@ async def test_external_editor_action_updates_composer(
         await pilot.pause()
 
         assert prompt.text == "原始任务\n补充说明"
+
+
+# 功能：验证模型与思考强度快捷入口可以直接操作当前会话配置
+# 设计：挂载真实模型选择器并替换思考持久化入口，确认快捷动作不依赖斜杠命令
+async def test_model_picker_and_thinking_shortcut_actions() -> None:
+    class ShortcutHarness(CodeRookTuiApp):
+        # 初始化固定模型列表和思考强度并跳过 socket 连接
+        def on_mount(self) -> None:
+            self._models = ["model-a", "model-b"]
+            self._model = "model-a"
+            self._thinking_level = "low"
+            self.selected_thinking = ""
+            self.query_one("#prompt", ChatTextArea).focus()
+
+        # 捕获快捷动作选择的下一档思考强度
+        def _select_thinking_level(self, level: str) -> None:
+            self.selected_thinking = level
+
+    app = ShortcutHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.action_model_picker()
+        await pilot.pause()
+        assert app.query_one(ModelPicker)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        app.action_cycle_thinking()
+
+        assert app.selected_thinking == "medium"
 
 
 # 功能：Web 切换项目后 TUI 保持 IPC 连接并改用新工作区的会话、文件引用与输入历史

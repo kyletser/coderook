@@ -29,7 +29,7 @@ from code_rook.core.llm.provider_presets import PROVIDER_PRESETS
 from code_rook.tui.product import tr
 from code_rook.tui.widgets.input import ChatTextArea
 from code_rook.tui.widgets.permission import PermissionModePicker
-from code_rook.tui.widgets.selectors import ModelPicker, ProviderPicker
+from code_rook.tui.widgets.selectors import ProviderPicker
 
 
 @dataclass(frozen=True)
@@ -350,17 +350,7 @@ async def _cmd_model(app: Any, ta: ChatTextArea, content: str) -> None:
         _warn(app, "cmd.model.busy")
         return
     if content == "/model":
-        ta.disabled = True
-        _progress(app, ta, "cmd.model.select")
-        app.mount(
-            ModelPicker(
-                app._models,
-                app._model,
-                app._model_capability_labels(),
-                locale=_locale(app),
-            ),
-            before="#prompt",
-        )
+        app._open_model_picker()
         return
     selected = content.removeprefix("/model ").strip()
     if selected.startswith("add "):
