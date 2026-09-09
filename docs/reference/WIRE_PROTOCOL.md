@@ -205,6 +205,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 |---|---|---|
 | `type` | `string` | no |
 | `goal` | `string` | yes |
+| `display_content` | `string | null` | no |
 | `permission_mode` | `string` | no |
 | `allow_tools` | `array` | no |
 | `resume_session_id` | `string | null` | no |
@@ -227,6 +228,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "goal": {
       "title": "Goal",
       "type": "string"
+    },
+    "display_content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Content"
     },
     "permission_mode": {
       "default": "fail_fast",

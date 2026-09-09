@@ -1104,10 +1104,15 @@ class CoreApp:
         assert self._sessions is not None
         assert self._permission_manager is not None
         cmd = AgentRunCommand.model_validate(params)
+        display_content = cmd.display_content or cmd.goal
+        title = display_content.strip().splitlines()[0][:40]
         session = (
             await self._sessions.resume(cmd.resume_session_id)
             if cmd.resume_session_id is not None
-            else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
+            else await self._sessions.create(
+                mode="one_shot",
+                title=title,
+            )
         )
         if cmd.route_id is not None:
             session = await self._sessions.set_model(
@@ -1141,6 +1146,7 @@ class CoreApp:
         run_task = asyncio.create_task(
             self._sessions.send_message(
                 session.id, content, run_id=run_id, attachments=attachments, input_processed=True,
+                display_content=cmd.display_content,
             )
         )
         self._running_runs.add(run_task)

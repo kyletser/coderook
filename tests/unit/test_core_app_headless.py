@@ -336,10 +336,13 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     checked = asyncio.Event()
     decisions: list[tuple[bool, str]] = []
     selected_models: list[tuple[str, str]] = []
+    created_titles: list[str] = []
+    displayed_messages: list[str | None] = []
     session = Session("sess-headless", "one_shot", "active", "", "t", "t")
 
     class _Sessions:
         async def create(self, mode: str, title: str = "") -> Session:
+            created_titles.append(title)
             return session
 
         # 按请求为本次一次性会话绑定显式 route 与模型
@@ -375,9 +378,11 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             run_id: str | None = None,
             attachments: list[Any] | None = None,
             input_processed: bool = False,
+            display_content: str | None = None,
         ) -> str:
             assert attachments == []
             assert input_processed is True
+            displayed_messages.append(display_content)
             async def emit(_event: dict[str, Any]) -> None:
                 raise AssertionError("headless permission mode must not request input")
 
@@ -399,6 +404,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
 
     result = await app._agent_run_handler({  # type: ignore[attr-defined]
         "goal": "edit",
+        "display_content": "修改认证逻辑\n\n来自标准输入的补充内容",
         "permission_mode": "allow_list",
         "allow_tools": ["edit_file"],
         "route_id": "route-explicit",
@@ -410,6 +416,8 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert result.run_id
     assert decisions == [(True, "headless_allow_list")]
     assert selected_models == [("route-explicit", "model-explicit")]
+    assert created_titles == ["修改认证逻辑"]
+    assert displayed_messages == ["修改认证逻辑\n\n来自标准输入的补充内容"]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]
 

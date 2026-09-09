@@ -193,6 +193,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
     assert captured == {
         "goal": "读取项目 总结结构",
         "config": config,
+        "display_content": "读取项目 总结结构",
         "permission_mode": "allow_list",
         "allow_tools": ["read", "bash", "edit", "write"],
         "output_format": "text",
@@ -219,12 +220,13 @@ def test_print_shorthand_accepts_piped_input(monkeypatch) -> None:
     monkeypatch.setattr(
         cli_main,
         "cmd_run",
-        lambda goal, _config, **_kwargs: captured.update({"goal": goal}),
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
     )
 
     assert cli_main.main() == 0
 
     assert captured["goal"] == "总结以下内容\n\nInput provided through stdin:\nalpha\nbeta"
+    assert captured["display_content"] == "总结以下内容\n\nalpha\nbeta"
 
 
 # 功能：快捷打印模式把带空格的 @文件 参数转换为按需读取的工作区引用
@@ -246,13 +248,14 @@ def test_print_shorthand_resolves_explicit_file_argument(
     monkeypatch.setattr(
         cli_main,
         "cmd_run",
-        lambda goal, _config, **_kwargs: captured.update({"goal": goal}),
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
     )
 
     assert cli_main.main() == 0
 
     assert '\"design notes.md\"' in str(captured["goal"])
     assert "do not inline" not in str(captured["goal"])
+    assert captured["display_content"] == "@design notes.md 总结"
 
 
 # 功能：验证常规 run 命令会先把 Core 绑定到当前工作区再提交任务

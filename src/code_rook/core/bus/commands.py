@@ -68,6 +68,7 @@ class WebLaunchResult(BaseModel):
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
     goal: str
+    display_content: str | None = None
     permission_mode: Literal["deny", "fail_fast", "allow_list"] = "fail_fast"
     allow_tools: list[str] = Field(default_factory=list)
     resume_session_id: str | None = None

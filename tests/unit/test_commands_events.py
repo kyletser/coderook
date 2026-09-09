@@ -471,6 +471,7 @@ def test_agent_run_headless_permission_protocol() -> None:
     default_command = AgentRunCommand(goal="inspect")
     allow_list = AgentRunCommand(
         goal="edit",
+        display_content="edit @app.py",
         permission_mode="allow_list",
         allow_tools=["edit_file", "bash"],
     )
@@ -480,6 +481,9 @@ def test_agent_run_headless_permission_protocol() -> None:
     assert AgentRunCommand.model_validate_json(
         allow_list.model_dump_json()
     ).allow_tools == ["edit_file", "bash"]
+    assert AgentRunCommand.model_validate_json(
+        allow_list.model_dump_json()
+    ).display_content == "edit @app.py"
 
 
 # 功能：验证 session 消息可显式携带 Plan Mode 且默认仍为 Act

@@ -167,7 +167,11 @@ def _run_cli() -> int:
         except ValueError as exc:
             quick.error(str(exc))
         visible_goal = " ".join(quick_args.message).strip()
-        goal = _merge_piped_input(visible_goal, _read_piped_stdin())
+        piped_input = _read_piped_stdin()
+        display_content = "\n\n".join(
+            part for part in (visible_goal, piped_input) if part
+        )
+        goal = _merge_piped_input(visible_goal, piped_input)
         if not goal:
             quick.error("a task or piped input is required")
         goal = augment_file_references(
@@ -191,6 +195,7 @@ def _run_cli() -> int:
         cmd_run(
             goal,
             config,
+            display_content=display_content,
             permission_mode="allow_list",
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
@@ -801,6 +806,7 @@ def _run_cli() -> int:
         cmd_run(
             augment_file_references(args.goal, args.goal, Path.cwd()),
             config,
+            display_content=args.goal,
             permission_mode=args.permission_mode.replace("-", "_"),
             allow_tools=args.allow_tool,
             output_format=args.output_format,

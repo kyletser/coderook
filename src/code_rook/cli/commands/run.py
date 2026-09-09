@@ -201,6 +201,7 @@ async def _run_async(
     goal: str,
     config: CodeRookConfig,
     *,
+    display_content: str | None = None,
     permission_mode: str = "fail_fast",
     allow_tools: list[str] | None = None,
     output_format: OutputFormat = "text",
@@ -297,6 +298,7 @@ async def _run_async(
             "agent.run",
             {
                 "goal": goal,
+                "display_content": display_content,
                 "permission_mode": permission_mode,
                 "allow_tools": allow_tools or [],
                 "resume_session_id": resume_session_id,
@@ -400,6 +402,7 @@ def cmd_run(
     goal: str,
     config: CodeRookConfig,
     *,
+    display_content: str | None = None,
     permission_mode: str = "fail_fast",
     allow_tools: list[str] | None = None,
     output_format: OutputFormat = "text",
@@ -419,6 +422,7 @@ def cmd_run(
             _run_async(
                 goal,
                 config,
+                display_content=display_content,
                 permission_mode=permission_mode,
                 allow_tools=allow_tools,
                 output_format=output_format,
