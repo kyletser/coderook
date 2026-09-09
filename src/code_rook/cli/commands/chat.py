@@ -20,6 +20,7 @@ class ChatPrinter:
     # 初始化 chat 模式的流式输出状态和待审批权限请求
     def __init__(self) -> None:
         self._inline = False
+        self._streamed_runs: set[str] = set()
         self.pending_permission_id: str | None = None
         self.active_run_id: str | None = None
 
@@ -35,13 +36,38 @@ class ChatPrinter:
         if t == "llm.token":
             print(event.get("token", ""), end="", flush=True)
             self._inline = True
+            run_id = str(event.get("run_id", ""))
+            if run_id:
+                self._streamed_runs.add(run_id)
+        elif (
+            t == "agent.message"
+            and event.get("phase") == "end"
+            and event.get("role") == "assistant"
+        ):
+            run_id = str(event.get("run_id", ""))
+            if run_id not in self._streamed_runs:
+                blocks = event.get("content")
+                if isinstance(blocks, list):
+                    text = "".join(
+                        str(block.get("text", ""))
+                        for block in blocks
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
+                    if text:
+                        self._ensure_newline()
+                        print(text)
+            else:
+                self._ensure_newline()
         elif t == "agent.decision" and not event.get("has_visible_text"):
             self._ensure_newline()
             print(f"[{event.get('intent', 'execute')}] {event.get('summary', '')}")
         elif t == "run.started":
             self.active_run_id = str(event.get("run_id", "")) or None
+            if self.active_run_id is not None:
+                self._streamed_runs.discard(self.active_run_id)
         elif t == "run.finished":
             if event.get("run_id") == self.active_run_id:
+                self._streamed_runs.discard(self.active_run_id)
                 self.active_run_id = None
         elif t == "tool.call_started":
             self._ensure_newline()
