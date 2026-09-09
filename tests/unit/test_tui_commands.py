@@ -63,7 +63,7 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("new", "新建会话"),
         ("rename", "重命名当前会话：/rename <标题>"),
         ("fork", "复制当前会话为分支：/fork [标题]"),
-        ("export", "导出当前会话：/export [md|json]"),
+        ("export", "导出当前会话：/export [md|json|html]"),
         ("delete", "删除当前会话（需 --yes 确认）"),
         ("provider", "查看或切换 Provider route"),
         ("model", "查看或切换模型"),

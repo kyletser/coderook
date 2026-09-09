@@ -3988,7 +3988,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _do_export_session(self, fmt: str, *, overwrite: bool = False) -> None:
         if self._client is None or self._session_id is None:
             return
-        format_name = "json" if fmt == "json" else "markdown"
+        format_name = fmt if fmt in {"json", "html"} else "markdown"
         try:
             result = await self._client.send_command(
                 "session.export",
@@ -3996,14 +3996,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             filename = str(result.get("filename", ""))
             content = str(result.get("content", ""))
-            suffix = "json" if format_name == "json" else "md"
+            suffix = {"json": "json", "html": "html"}.get(format_name, "md")
             target = Path.cwd() / (filename or f"coderook-session-{self._session_id}.{suffix}")
             if target.exists() and not overwrite:
                 notice = tr(
                     "app.session.export_exists",
                     self._locale,
                     path=escape(str(target)),
-                    format="json" if format_name == "json" else "md",
+                    format=suffix,
                 )
                 self._append(Static(f"[yellow]{notice}[/yellow]", classes="log-line"))
                 return

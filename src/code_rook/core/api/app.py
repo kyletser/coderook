@@ -511,8 +511,8 @@ class HttpApiServer:
         if match and match.group(2) == "export" and request.method == "GET":
             query = parse_qs(urlsplit(request.target).query)
             export_format = query.get("format", ["markdown"])[0]
-            if export_format not in {"markdown", "json"}:
-                raise ValueError("format must be markdown or json")
+            if export_format not in {"markdown", "json", "html"}:
+                raise ValueError("format must be markdown, json, or html")
             return HTTPStatus.OK, await self._service.export_thread(
                 match.group(1),
                 cast(Any, export_format),

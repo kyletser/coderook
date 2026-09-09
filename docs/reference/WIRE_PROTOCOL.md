@@ -7270,7 +7270,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "default": "markdown",
       "enum": [
         "markdown",
-        "json"
+        "json",
+        "html"
       ],
       "title": "Format",
       "type": "string"

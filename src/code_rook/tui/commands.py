@@ -268,7 +268,7 @@ async def _cmd_export(app: Any, ta: ChatTextArea, content: str) -> None:
     formats = [item for item in args if not item.startswith("--")]
     if (
         len(formats) > 1
-        or (formats and formats[0] not in {"md", "json", "markdown"})
+        or (formats and formats[0] not in {"md", "json", "markdown", "html"})
         or not flags.issubset({"--force", "--yes"})
         or ("--yes" in flags and "--force" not in flags)
     ):
@@ -1267,10 +1267,10 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     ),
     SlashCommand(
         "export",
-        "导出当前会话：/export [md|json]",
+        "导出当前会话：/export [md|json|html]",
         True,
         _cmd_export,
-        usage="md|json",
+        usage="md|json|html",
         arg_candidates=("md", "json"),
     ),
     SlashCommand("delete", "删除当前会话（需 --yes 确认）", True, _cmd_delete),

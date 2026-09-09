@@ -367,15 +367,19 @@ def test_session_recovery_commands_validate() -> None:
         SessionListCommand(limit=0)
 
 
+# 功能：验证会话生命周期命令接受合法参数并拒绝未知导出格式
+# 设计：直接构造各协议模型，同时覆盖 JSON、HTML 与非法 XML 的判别联合校验
 def test_session_lifecycle_commands_validate() -> None:
     renamed = SessionRenameCommand(session_id="sess-1", title="new title")
     forked = SessionForkCommand(session_id="sess-1")
     exported = SessionExportCommand(session_id="sess-1", format="json")
+    exported_html = SessionExportCommand(session_id="sess-1", format="html")
     deleted = SessionDeleteCommand(session_id="sess-1")
 
     assert renamed.type == "session.rename"
     assert forked.type == "session.fork"
     assert exported.format == "json"
+    assert exported_html.format == "html"
     assert deleted.type == "session.delete"
     with pytest.raises(ValidationError):
         SessionRenameCommand(session_id="sess-1", title="")

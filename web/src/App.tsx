@@ -1375,10 +1375,10 @@ function AppShell({
         return;
       }
       if (action === "export") {
-        const exported = await request<{ filename: string; content: string }>(
-          `/v1/threads/${encodeURIComponent(selectedId)}/export?format=markdown`,
+        const exported = await request<{ filename: string; media_type: string; content: string }>(
+          `/v1/threads/${encodeURIComponent(selectedId)}/export?format=html`,
         );
-        const blob = new Blob([exported.content], { type: "text/markdown" });
+        const blob = new Blob([exported.content], { type: exported.media_type });
         const link = document.createElement("a");
         link.href = URL.createObjectURL(blob);
         link.download = exported.filename;

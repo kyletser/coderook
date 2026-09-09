@@ -1142,7 +1142,7 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["doctor"] == "诊断活动 Provider route"
     assert items["rename"] == "重命名当前会话：/rename <标题>"
     assert items["fork"] == "复制当前会话为分支：/fork [标题]"
-    assert items["export"] == "导出当前会话：/export [md|json]"
+    assert items["export"] == "导出当前会话：/export [md|json|html]"
     assert items["delete"] == "删除当前会话（需 --yes 确认）"
     assert items["plan"] == "只读规划并审阅后再实施：/plan [任务]"
     assert items["permissions"] == "查看或切换权限模式"

@@ -763,6 +763,13 @@ reconnect to them without inventing a fake Agent turn. Visible idle custom messa
 use the same thread-level projection, while their model-visible content remains in
 the Session Ledger.
 
+Session export is also shared by CLI, TUI and Web. Markdown and JSON remain
+available for editing and machine processing; HTML produces a self-contained,
+responsive conversation page with session lineage, notes, collapsible thinking
+and tool details, and embedded conversation images. It contains no external
+scripts, styles or network dependencies, and the Web frontend downloads this
+portable HTML form by default.
+
 This is not a claim that the entire product has been ported. Provider and tool
 services intentionally remain native Python implementations rather than launching
 Pi or Node as a subprocess. In-place session-tree navigation, branch summaries,

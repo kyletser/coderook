@@ -6,6 +6,7 @@ from code_rook.core.session.exporter import export_session
 from code_rook.core.session.model import Session
 
 
+# 构造包含分支来源的固定会话供导出测试复用
 def _session() -> Session:
     return Session(
         "sess-export",
@@ -19,6 +20,8 @@ def _session() -> Session:
     )
 
 
+# 功能：验证 Markdown 导出保留文本、工具、笔记和分支来源
+# 设计：组合纯文本和工具块后检查用户可见的关键片段，覆盖主要 Markdown 投影路径
 def test_markdown_export_preserves_text_tools_notes_and_lineage() -> None:
     messages = [
         {"role": "user", "content": "Inspect the repo"},
@@ -47,6 +50,8 @@ def test_markdown_export_preserves_text_tools_notes_and_lineage() -> None:
     assert "Keep this." in content
 
 
+# 功能：验证 JSON 导出保持结构并正确往返 Unicode 内容
+# 设计：解析实际导出字符串并逐层断言字段，避免仅靠字符串匹配漏掉结构变化
 def test_json_export_is_structured_and_roundtrips_unicode() -> None:
     filename, media_type, content = export_session(
         _session(),
@@ -62,3 +67,42 @@ def test_json_export_is_structured_and_roundtrips_unicode() -> None:
     assert payload["session"]["parent_session_id"] == "sess-parent"
     assert payload["messages"][0]["content"] == "你好"
     assert payload["notes"] == "笔记"
+
+
+# 功能：验证 HTML 导出可离线展示混合消息且不会执行会话中的标签文本
+# 设计：输入脚本标签、工具调用、错误结果和内嵌图片，检查单文件结构、转义与展示语义
+def test_html_export_is_self_contained_and_escapes_conversation_content() -> None:
+    filename, media_type, content = export_session(
+        _session(),
+        [
+            {"role": "user", "content": "<script>alert('no')</script>"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "check <repo>"},
+                    {"type": "tool_use", "name": "read_file", "input": {"path": "a.py"}},
+                    {"type": "tool_result", "content": "denied", "is_error": True},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo=",
+                        },
+                    },
+                ],
+            },
+        ],
+        "Keep <private> notes.",
+        "html",
+    )
+
+    assert filename == "sess-export.html"
+    assert media_type == "text/html; charset=utf-8"
+    assert content.startswith("<!doctype html>")
+    assert "<script>alert" not in content
+    assert "&lt;script&gt;alert(&#x27;no&#x27;)&lt;/script&gt;" in content
+    assert "Tool call · read_file" in content
+    assert '<details class="tool error">' in content
+    assert 'src="data:image/png;base64,iVBORw0KGgo="' in content
+    assert "https://" not in content and "http://" not in content

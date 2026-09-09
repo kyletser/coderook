@@ -536,7 +536,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "cmd.session.renaming": "正在重命名会话",
         "cmd.session.forking": "正在复制会话",
         "cmd.session.exporting": "正在导出会话",
-        "cmd.session.export_usage": "用法：/export [md|json] [--force --yes]",
+        "cmd.session.export_usage": "用法：/export [md|json|html] [--force --yes]",
         "cmd.session.deleting": "正在删除会话",
         "cmd.session.delete_confirm": (
             "将删除当前会话 {session} 及其全部历史；确认请输入 /delete --yes"
@@ -709,7 +709,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "command.new": "新建会话",
         "command.rename": "重命名当前会话：/rename <标题>",
         "command.fork": "复制当前会话为分支：/fork [标题]",
-        "command.export": "导出当前会话：/export [md|json]",
+        "command.export": "导出当前会话：/export [md|json|html]",
         "command.delete": "删除当前会话（需 --yes 确认）",
         "command.provider": "查看或切换 Provider route",
         "command.model": "查看或切换模型",
@@ -1331,7 +1331,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "cmd.session.renaming": "Renaming session",
         "cmd.session.forking": "Forking session",
         "cmd.session.exporting": "Exporting session",
-        "cmd.session.export_usage": "Usage: /export [md|json] [--force --yes]",
+        "cmd.session.export_usage": "Usage: /export [md|json|html] [--force --yes]",
         "cmd.session.deleting": "Deleting session",
         "cmd.session.delete_confirm": (
             "This deletes session {session} and all history; confirm with /delete --yes"

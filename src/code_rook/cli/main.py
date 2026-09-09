@@ -328,7 +328,11 @@ def _run_cli() -> int:
     fork_parser.add_argument("--title", default="")
     export_parser = session_sub.add_parser("export", help="Export conversation and notes")
     export_parser.add_argument("session_id")
-    export_parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    export_parser.add_argument(
+        "--format",
+        choices=("markdown", "json", "html"),
+        default="markdown",
+    )
     export_parser.add_argument("--output", "-o")
     export_parser.add_argument("--force", action="store_true")
     delete_parser = session_sub.add_parser("delete", help="Permanently delete a session")

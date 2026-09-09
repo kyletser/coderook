@@ -604,7 +604,7 @@ class SessionForkResult(BaseModel):
 class SessionExportCommand(BaseModel):
     type: Literal["session.export"] = "session.export"
     session_id: str
-    format: Literal["markdown", "json"] = "markdown"
+    format: Literal["markdown", "json", "html"] = "markdown"
 
 
 class SessionExportResult(BaseModel):

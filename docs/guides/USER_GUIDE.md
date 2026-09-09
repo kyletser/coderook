@@ -424,8 +424,9 @@ Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
 运行中可在 composer 切换“纠偏/排队”；队列由 TUI 与 Web 共享，不依赖任一前端进程内存。正在派发的
 消息只能通过停止活动 Turn 处理，不能从队列界面假删除；daemon 在派发结果不确定时会把该消息标为
 `blocked`，由用户确认后重试。
-`/export [md|json]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
-`/export [md|json] --force --yes` 才允许覆盖。该命令不接受自定义输出路径。
+`/export [md|json|html]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
+`/export [md|json|html] --force --yes` 才允许覆盖。HTML 是可独立打开的单文件会话页面，包含
+对话、思考折叠、工具调用与结果、图片和分支元数据，不加载外部脚本或样式。该命令不接受自定义输出路径。
 粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息交付；composer
 上方附件条持续显示序号、尺寸和短 hash。发送前可用 `/attachments remove N` 或
 `/attachments clear` 管理附件；发送失败会恢复附件。图片附件会以结构化块保存在本地 transcript，
