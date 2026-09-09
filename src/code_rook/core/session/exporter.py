@@ -24,6 +24,12 @@ def _markdown_content(content: Any) -> str:
         block_type = block.get("type")
         if block_type == "text":
             sections.append(str(block.get("text", "")))
+        elif block_type in {"thinking", "reasoning"}:
+            thinking = str(block.get("thinking", block.get("text", ""))).strip()
+            quoted = "\n".join(f"> {line}" if line else ">" for line in thinking.splitlines())
+            sections.append(f"**Thinking**\n\n{quoted}" if quoted else "**Thinking**")
+        elif block_type == "redacted_thinking":
+            sections.append("**Thinking redacted by provider**")
         elif block_type == "tool_use":
             name = str(block.get("name", "tool"))
             payload = json.dumps(block.get("input", {}), ensure_ascii=False, indent=2)
@@ -31,6 +37,13 @@ def _markdown_content(content: Any) -> str:
         elif block_type == "tool_result":
             payload = json.dumps(block.get("content", ""), ensure_ascii=False, indent=2)
             sections.append(f"**Tool result**\n\n```json\n{payload}\n```")
+        elif block_type == "image":
+            raw_source = block.get("source")
+            source = raw_source if isinstance(raw_source, dict) else block
+            media_type = str(
+                source.get("media_type", source.get("mime_type", source.get("mimeType", "image")))
+            )
+            sections.append(f"**Image attachment** · `{media_type}`")
         else:
             payload = json.dumps(block, ensure_ascii=False, indent=2)
             sections.append(f"```json\n{payload}\n```")

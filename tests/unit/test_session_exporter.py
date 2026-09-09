@@ -50,6 +50,36 @@ def test_markdown_export_preserves_text_tools_notes_and_lineage() -> None:
     assert "Keep this." in content
 
 
+# 功能：验证 Markdown 导出把思考和图片转成可读内容且不泄露内部来源元数据
+# 设计：注入带来源字段的 thinking 与图片块，检查语义化输出并排除原始 JSON 调试字段
+def test_markdown_export_renders_reasoning_and_images_without_internal_metadata() -> None:
+    _filename, _media_type, content = export_session(
+        _session(),
+        [{
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "inspect files\nthen answer",
+                    "_coderook_source": {"route_id": "private-route"},
+                },
+                {
+                    "type": "image",
+                    "source": {"media_type": "image/png", "data": "iVBORw0KGgo="},
+                },
+            ],
+        }],
+        "",
+        "markdown",
+    )
+
+    assert "**Thinking**" in content
+    assert "> inspect files\n> then answer" in content
+    assert "**Image attachment** · `image/png`" in content
+    assert "_coderook_source" not in content
+    assert "private-route" not in content
+
+
 # 功能：验证 JSON 导出保持结构并正确往返 Unicode 内容
 # 设计：解析实际导出字符串并逐层断言字段，避免仅靠字符串匹配漏掉结构变化
 def test_json_export_is_structured_and_roundtrips_unicode() -> None:
