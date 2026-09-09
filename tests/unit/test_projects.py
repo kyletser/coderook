@@ -85,6 +85,18 @@ def test_welcome_workspace_cannot_be_registered(tmp_path: Path) -> None:
         registry.register(welcome)
 
 
+# 功能：验证欢迎工作区判定不会把普通项目误认为内部占位目录
+# 设计：用同一临时状态根比较欢迎路径和相邻目录，锁定 TUI 自动恢复的工作区边界
+def test_registry_identifies_only_exact_welcome_workspace(tmp_path: Path) -> None:
+    registry = ProjectRegistry(tmp_path / "state")
+    welcome = registry.prepare_welcome_workspace()
+    ordinary = tmp_path / "project"
+    ordinary.mkdir()
+
+    assert registry.is_welcome_workspace(welcome)
+    assert not registry.is_welcome_workspace(ordinary)
+
+
 # 功能：验证受保护源码工作区会切换到隔离欢迎区且普通项目保持不变
 # 设计：替换保护判断并真实切换临时 cwd，分别覆盖重定向与无操作两条路径
 def test_enter_welcome_workspace_only_for_protected_source(

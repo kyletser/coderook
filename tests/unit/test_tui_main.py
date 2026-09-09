@@ -187,6 +187,47 @@ def test_tui_main_passes_continue_recent(
     app.run.assert_called_once_with()
 
 
+# 功能：验证欢迎工作区裸启动不会自动恢复以前的占位会话
+# 设计：让项目注册表仅把当前目录识别为欢迎区，断言默认续接关闭且显式 --continue 语义仍可区分
+def test_run_tui_starts_clean_in_welcome_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _WelcomeRegistry:
+        # 将本测试当前目录固定识别为欢迎工作区
+        def is_welcome_workspace(self, _root: Path) -> bool:
+            return True
+
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    args = SimpleNamespace(
+        env_file=None,
+        no_auto_core=False,
+        reuse_existing=True,
+        replay=None,
+        resume=None,
+        continue_recent=True,
+        continue_explicit=False,
+        message=[],
+        route=None,
+        model=None,
+        thinking=None,
+    )
+    monkeypatch.setattr(tui_main, "ProjectRegistry", _WelcomeRegistry)
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda *args, **kwargs: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main._run_tui(args)
+
+    assert factory.call_args.kwargs["continue_recent"] is False
+    app.run.assert_called_once_with()
+
+
 # 功能：TUI 启动参数把显式 route 与模型作为当前会话覆盖交给应用
 # 设计：替换 route store 和 Textual 边界，验证启动选择不修改全局活动 Provider
 def test_tui_main_passes_initial_model_selection(

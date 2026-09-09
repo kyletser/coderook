@@ -1212,6 +1212,26 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["skills"] == "列出、查看、安装或删除 skills"
 
 
+# 功能：验证欢迎工作区启动卡引导选择项目而不推荐检查不存在的仓库
+# 设计：替换项目判定为欢迎态并直接渲染纯文本，覆盖中文主标题和两个可执行入口
+def test_welcome_workspace_banner_guides_project_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _WelcomeRegistry:
+        # 将测试应用工作区标记为欢迎区
+        def is_welcome_workspace(self, _root: Path) -> bool:
+            return True
+
+    monkeypatch.setattr(tui_app_module, "ProjectRegistry", _WelcomeRegistry)
+    app = CodeRookTuiApp("127.0.0.1", 9999, locale="zh-CN")
+
+    banner = render(app._render_banner()).plain
+
+    assert "先选择一个项目" in banner
+    assert "coderook web" in banner
+    assert "解释这个仓库" not in banner
+
+
 # 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录
 # 设计：直接调用本地命令 handler 并收集 Static，避免 socket 干扰文件确认语义
 def test_tui_skills_install_requires_explicit_confirmation(

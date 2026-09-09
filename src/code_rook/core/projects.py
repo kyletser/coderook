@@ -71,15 +71,23 @@ class ProjectRegistry:
         os.chdir(target)
         return target
 
+    # 判断目录是否正是未选择用户项目时使用的欢迎工作区
+    def is_welcome_workspace(self, root: Path) -> bool:
+        try:
+            resolved = root.expanduser().resolve(strict=False)
+        except OSError:
+            return False
+        return os.path.normcase(str(resolved)) == os.path.normcase(
+            str(self.welcome_workspace.resolve(strict=False))
+        )
+
     # 判断目录是内部欢迎区或包含当前运行的 CodeRook 源码
     def is_protected_workspace(self, root: Path) -> bool:
         try:
             resolved = root.expanduser().resolve(strict=False)
         except OSError:
             return False
-        if os.path.normcase(str(resolved)) == os.path.normcase(
-            str(self.welcome_workspace.resolve(strict=False))
-        ):
+        if self.is_welcome_workspace(resolved):
             return True
         source_checkout = _running_source_checkout()
         return source_checkout is not None and (

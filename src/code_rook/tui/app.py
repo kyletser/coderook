@@ -47,6 +47,7 @@ from code_rook.core.llm.provider_presets import (
 )
 from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import ProviderRoute, get_route_preset
+from code_rook.core.projects import ProjectRegistry
 from code_rook.core.skills.manager import (
     InstallScope,
     SkillConfirmationRequired,
@@ -656,6 +657,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 渲染当前语言的启动品牌与快捷入口提示
     def _render_banner(self) -> str:
         hint = escape(tr("shell.banner_hint", self._locale))
+        if ProjectRegistry().is_welcome_workspace(self._workspace):
+            if self._locale == "zh-CN":
+                title = "先选择一个项目"
+                suggestions = (
+                    "运行 coderook web 选择或创建项目",
+                    "或在项目文件夹中重新运行 coderook",
+                )
+            else:
+                title = "Choose a project first"
+                suggestions = (
+                    "Run coderook web to choose or create a project",
+                    "Or run coderook again from a project folder",
+                )
+            lines = [f"[bold cyan]{title}[/bold cyan]", f"[dim]{hint}[/dim]"]
+            lines.extend(f"  [cyan]›[/cyan] {escape(item)}" for item in suggestions)
+            return "\n".join(lines)
         if self._locale == "zh-CN":
             title = "CodeRook 已就绪"
             suggestions = (

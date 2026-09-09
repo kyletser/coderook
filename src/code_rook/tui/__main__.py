@@ -4,6 +4,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import sys
 from pathlib import Path
 
 from code_rook.cli.commands.configure import (
@@ -94,7 +95,13 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         config.port,
         replay_run_id=args.replay,
         resume_session_id=args.resume,
-        continue_recent=args.continue_recent,
+        continue_recent=(
+            False
+            if ProjectRegistry().is_welcome_workspace(Path.cwd())
+            and not bool(getattr(args, "continue_explicit", False))
+            and args.resume is None
+            else args.continue_recent
+        ),
         auth_token=auth_token,
         provider=((active_route.catalog_id or active_route.id) if active_route is not None else ""),
         model=active_route.model if active_route is not None else "",
@@ -188,6 +195,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.reuse_existing = reuse_existing
+    args.continue_explicit = "--continue" in sys.argv[1:]
 
     while True:
         action = _run_tui(args)
