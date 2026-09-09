@@ -729,6 +729,10 @@ export function preferredThreadId(threads: ThreadRecord[]): string {
   return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
 }
 
+export function displayableThreads(threads: ThreadRecord[]): ThreadRecord[] {
+  return threads.filter((thread) => (thread.turn_count || 0) > 0 || Boolean(thread.title.trim()));
+}
+
 export function applyExtensionUiUpdate(
   current: ExtensionUiState,
   payload: Record<string, unknown>,
@@ -841,7 +845,7 @@ function AppShell({
       setSelectedId("");
       return;
     }
-    const result = await request<ThreadRecord[]>("/v1/threads");
+    const result = displayableThreads(await request<ThreadRecord[]>("/v1/threads"));
     result.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     setThreads(result);
     if (!initializedSelection.current) {

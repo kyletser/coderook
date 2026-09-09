@@ -4,6 +4,7 @@ import {
   activeFileMention,
   applyExtensionUiUpdate,
   appendRuntimeEvent,
+  displayableThreads,
   eventBelongsToThread,
   finishesCurrentThreadLoad,
   isSimpleProductQuestion,
@@ -62,6 +63,22 @@ describe("Web task submission", () => {
     expect(preferredThreadId(threads)).toBe("used");
     expect(preferredThreadId([threads[0]])).toBe("empty-new");
     expect(preferredThreadId([])).toBe("");
+  });
+
+  it("hides only untitled zero-turn sessions from the task list", () => {
+    const base = {
+      workspace: "C:/repo",
+      status: "idle",
+      created_at: "2026-08-30T00:00:00Z",
+      updated_at: "2026-08-30T00:00:00Z",
+    };
+    const threads: ThreadRecord[] = [
+      { ...base, id: "empty", title: "", turn_count: 0 },
+      { ...base, id: "named", title: "Draft task", turn_count: 0 },
+      { ...base, id: "used", title: "", turn_count: 1 },
+    ];
+
+    expect(displayableThreads(threads).map((thread) => thread.id)).toEqual(["named", "used"]);
   });
 
   it("navigates to the parent workspace directory without escaping root", () => {
