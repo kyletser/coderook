@@ -12,6 +12,7 @@ import pytest
 
 from code_rook.cli import main as cli_main
 from code_rook.cli.commands.run import _event_belongs_to_run
+from code_rook.cli.commands.sessions import _display_title, _visible_sessions
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.tui import __main__ as tui_main
@@ -120,6 +121,28 @@ def test_sessions_limit_help_is_compact_and_range_checked(
     assert cli_main._session_list_limit("200") == 200
     with pytest.raises(argparse.ArgumentTypeError):
         cli_main._session_list_limit("201")
+
+
+# 功能：验证默认 CLI 会话列表隐藏无标题零运行临时项而 --all 保留完整记录
+# 设计：用三类最小投影直接检查过滤结果，覆盖有效会话、用户命名空会话和中断残留空会话
+def test_session_list_hides_only_unused_untitled_sessions() -> None:
+    sessions = [
+        {"session_id": "used", "run_count": 1, "title": ""},
+        {"session_id": "named", "run_count": 0, "title": "draft"},
+        {"session_id": "empty", "run_count": 0, "title": ""},
+    ]
+
+    visible = _visible_sessions(sessions, include_empty=False)
+    assert [item["session_id"] for item in visible] == ["used", "named"]
+    assert _visible_sessions(sessions, include_empty=True) == sessions
+
+
+# 功能：验证 CLI 会话标题折叠换行并限制为单行摘要
+# 设计：同时覆盖空标题、多段空白和超长文本，防止真实提示词破坏终端表格布局
+def test_session_list_normalizes_title_for_terminal_table() -> None:
+    assert _display_title("") == "(untitled)"
+    assert _display_title("first\n\nsecond\tpart") == "first second part"
+    assert _display_title("abcdefgh", limit=6) == "abcde…"
 
 
 # 功能：验证 coderook --continue 直接委托 TUI 的最近会话恢复入口

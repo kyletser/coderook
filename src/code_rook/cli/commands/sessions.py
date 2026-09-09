@@ -9,6 +9,29 @@ from code_rook.core.transport.auth import IpcTokenError
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
 
+# 默认隐藏从未运行且没有标题的临时会话，--all 仍返回完整记录
+def _visible_sessions(
+    sessions: list[dict[str, Any]],
+    *,
+    include_empty: bool,
+) -> list[dict[str, Any]]:
+    if include_empty:
+        return sessions
+    return [
+        session
+        for session in sessions
+        if int(session.get("run_count", 0)) > 0 or str(session.get("title", "")).strip()
+    ]
+
+
+# 将多行或超长会话标题压成适合终端表格的一行摘要
+def _display_title(value: object, *, limit: int = 72) -> str:
+    title = " ".join(str(value or "").split()) or "(untitled)"
+    if len(title) <= limit:
+        return title
+    return title[: limit - 1].rstrip() + "…"
+
+
 async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit: int) -> int:
     try:
         client = SocketClient.from_config(config)
@@ -37,7 +60,10 @@ async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit:
             pass
         await client.close()
 
-    sessions: list[dict[str, Any]] = result.get("sessions", [])
+    sessions: list[dict[str, Any]] = _visible_sessions(
+        result.get("sessions", []),
+        include_empty=include_closed,
+    )
     if not sessions:
         print("No sessions found.")
         return 0
@@ -45,7 +71,7 @@ async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit:
     print(f"{'SESSION ID':<20} {'STATUS':<18} {'RUNS':>4}  {'UPDATED':<19}  TITLE")
     for session in sessions:
         updated = str(session.get("updated_at", ""))[:19].replace("T", " ")
-        title = str(session.get("title", "")) or "(untitled)"
+        title = _display_title(session.get("title", ""))
         print(
             f"{str(session.get('session_id', '')):<20} "
             f"{str(session.get('status', '')):<18} "

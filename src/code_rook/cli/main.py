@@ -424,7 +424,9 @@ def _run_cli() -> int:
 
     sessions_parser = subparsers.add_parser("sessions", help="List saved sessions")
     sessions_parser.add_argument(
-        "--all", action="store_true", help="Include closed one-shot and chat sessions"
+        "--all",
+        action="store_true",
+        help="Include closed and unused empty sessions",
     )
     sessions_parser.add_argument(
         "--limit",
