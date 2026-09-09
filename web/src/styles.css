@@ -437,6 +437,11 @@ body { background: #f1f1ee; color: var(--text); }
 .composer:focus-within { border-color: #bdbdb7; box-shadow: 0 5px 20px rgba(32,33,36,.08), 0 0 0 2px rgba(32,33,36,.035); }
 .composer textarea { min-height: 44px; max-height: 160px; field-sizing: content; padding: 13px 15px 2px; color: #27282d; font-size: 14px; line-height: 1.5; }
 .composer textarea::placeholder { color: #9a9a94; }
+.extension-statuses { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 0; color: #777872; font-size: 10.5px; }
+.extension-statuses span { padding: 3px 7px; border-radius: 999px; background: #f1f1ee; }
+.extension-statuses .working::before { content: "◌ "; color: #5755d9; }
+.extension-widget { margin: 8px 10px 0; padding: 8px 10px; border-left: 2px solid #7775db; border-radius: 4px 8px 8px 4px; background: #f5f5f2; color: #5d5e63; font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+.extension-widget.below { margin: 0 10px 8px; }
 .composer-bar { min-height: 42px; padding: 4px 8px 7px; }
 .composer-tools, .composer-meta { display: flex; align-items: center; gap: 4px; }
 .context-button, .attach-button, .queue-toggle { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: #74756f; font-size: 10.5px; }

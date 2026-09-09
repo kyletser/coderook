@@ -224,6 +224,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         background: #171b20;
         color: #8d98a5;
     }
+    #extension-widget-above, #extension-widget-below {
+        display: none;
+        height: auto;
+        max-height: 6;
+        padding: 0 2;
+        background: #171b20;
+        color: #aab2be;
+        overflow-y: auto;
+    }
     Screen.high-contrast #header, Screen.high-contrast #status-bar {
         background: black;
         color: white;
@@ -306,6 +315,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._run_phase_total = 0
         self._queued_message_count = 0
         self._details_expanded = False
+        self._extension_ui: dict[str, Any] = {}
         self._last_context_pct: float = 0.0
         self._last_assistant_text = ""
         self._header_state = "connecting"
@@ -356,8 +366,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         yield Label("[bold]CodeRook[/bold]", id="header")
         yield VerticalScroll(id="log-view")
         yield Static("", id="attachment-strip")
+        yield Static("", id="extension-widget-above")
         yield Static("", id="status-bar")
         yield ChatTextArea(id="prompt", show_line_numbers=False)
+        yield Static("", id="extension-widget-below")
 
     def on_mount(self) -> None:
         self._slash_items = self._build_slash_items()
@@ -737,6 +749,70 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._session_id == session_id:
             self._input_commands = context.get("input_commands", [])
             self._slash_items = self._build_slash_items()
+            self._apply_extension_ui(context.get("extension_ui", {}))
+
+    # 把会话级扩展 UI 投影应用到 TUI 的标题、状态、组件与输入框。
+    def _apply_extension_ui(
+        self,
+        state: dict[str, Any] | None = None,
+        *,
+        event: dict[str, Any] | None = None,
+    ) -> None:
+        if event is not None:
+            kind = str(event.get("kind") or "")
+            key = str(event.get("key") or "")
+            value = event.get("value")
+            current = self._extension_ui
+            if kind == "status":
+                statuses = current.setdefault("statuses", {})
+                if value is None:
+                    statuses.pop(key, None)
+                else:
+                    statuses[key] = value
+            elif kind == "widget":
+                widgets = current.setdefault("widgets", {})
+                if value is None:
+                    widgets.pop(key, None)
+                else:
+                    widgets[key] = value
+            elif kind == "editor_text":
+                prompt = self._prompt()
+                if prompt is not None:
+                    prompt.text = str(value or "")
+                    prompt.move_cursor(prompt.document.end)
+            elif kind == "editor_insert":
+                prompt = self._prompt()
+                if prompt is not None and value:
+                    prompt.insert(str(value))
+            else:
+                current[kind] = value
+        else:
+            self._extension_ui = dict(state or {})
+        title = str(self._extension_ui.get("title") or "CodeRook")
+        self.title = title
+        hidden_label = self._extension_ui.get("hidden_thinking_label")
+        for block in self.query(LLMStreamBlock):
+            block.set_hidden_label(str(hidden_label) if hidden_label else None)
+        expanded = bool(self._extension_ui.get("tools_expanded", False))
+        self._details_expanded = expanded
+        for group in self.query(ToolStepGroup):
+            group.set_class(not expanded, "collapsed")
+        for tool in self.query(ToolCallBlock):
+            tool.set_expanded(expanded)
+        widgets = self._extension_ui.get("widgets", {})
+        for placement in ("above", "below"):
+            try:
+                target = self.query_one(f"#extension-widget-{placement}", Static)
+            except NoMatches:
+                continue
+            content = "\n".join(
+                str(widget.get("content") or "")
+                for widget in widgets.values()
+                if isinstance(widget, dict) and widget.get("placement") == placement
+            ).strip()
+            target.update(escape(content))
+            target.styles.display = "block" if content else "none"
+        self._update_status_bar()
 
     # 构建按产品类别排序的本地化 Ctrl+P 命令候选
     def _build_palette_items(self) -> list[CommandPaletteItem]:
@@ -4879,10 +4955,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 "Sandbox 不可用" if self._locale == "zh-CN" else "Sandbox unavailable"
             )
         queue = f" · queue {self._queued_message_count}" if self._queued_message_count else ""
+        statuses = self._extension_ui.get("statuses", {})
+        extension_status = "".join(
+            f" · {escape(str(value))}" for value in statuses.values() if value
+        )
+        working = self._extension_ui.get("working_message")
+        if self._extension_ui.get("working_visible", True) and working:
+            extension_status += f" · {escape(str(working))}"
         status_bar.update(
             f"[blue]{self._input_runtime_mode.value.upper()}[/blue] · "
             f"[magenta]{self._authority_preset}[/magenta] · {escape(sandbox_state)} · "
-            f"ctx {self._last_context_pct * 100:.0f}% · ${self._cost_total:.4f}{queue}"
+            f"ctx {self._last_context_pct * 100:.0f}% · ${self._cost_total:.4f}"
+            f"{queue}{extension_status}"
         )
 
     # 根据连接和运行状态刷新顶部标题，并使用当前终端实际列宽选择信息层级

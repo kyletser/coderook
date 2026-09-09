@@ -847,6 +847,9 @@ def _render_rest(app: Any, event: dict[str, Any]) -> None:
                 "information" if severity == "info" else "warning"
             ),
         )
+    elif t == "extension.ui_updated":
+        if event.get("session_id") == getattr(app, "_session_id", None):
+            app._apply_extension_ui(event=event)
     elif t.startswith("llm.") or t in {"agent.stuck", "agent.repeat_notice"}:
         _render_llm_tail(app, t, event)
     elif t.startswith("session."):

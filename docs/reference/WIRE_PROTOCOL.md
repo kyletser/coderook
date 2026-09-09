@@ -14506,6 +14506,75 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### ExtensionUiUpdatedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `session_id` | `string` | yes |
+| `kind` | `string` | yes |
+| `key` | `string` | no |
+| `value` | `object` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "extension.ui_updated",
+      "default": "extension.ui_updated",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "status",
+        "working_message",
+        "working_visible",
+        "hidden_thinking_label",
+        "widget",
+        "title",
+        "editor_text",
+        "editor_insert",
+        "tools_expanded"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "key": {
+      "default": "",
+      "title": "Key",
+      "type": "string"
+    },
+    "value": {
+      "default": null,
+      "title": "Value"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "session_id",
+    "kind",
+    "ts"
+  ],
+  "title": "ExtensionUiUpdatedEvent",
+  "type": "object"
+}
+```
+
 ### LlmAttemptFinishedEvent
 
 | Field | Type | Required |

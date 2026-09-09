@@ -33,6 +33,8 @@ from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.bus.events import (
     AgentMessageEvent,
     ExtensionNotificationEvent,
+    ExtensionUiKind,
+    ExtensionUiUpdatedEvent,
     GoalContinueDecisionEvent,
     PlanReadyEvent,
     PlanResolvedEvent,
@@ -216,6 +218,7 @@ class SessionManager:
         self._extension_skill_loaders: dict[str, SkillLoader] = {}
         self._extension_prompt_paths: dict[str, tuple[Path, ...]] = {}
         self._extension_theme_paths: dict[str, tuple[Path, ...]] = {}
+        self._extension_ui: dict[str, dict[str, Any]] = {}
         self._extension_resources_ready: set[str] = set()
         self._pending_extension_messages: dict[str, list[dict[str, Any]]] = {}
         self._next_turn_extension_messages: dict[str, list[dict[str, Any]]] = {}
@@ -2086,6 +2089,42 @@ class SessionManager:
 
         host.api.notification_sender = send_notification
 
+        # 把扩展 UI contribution 保存为会话投影，并通过持久事件同步到所有前端。
+        def set_ui(kind: ExtensionUiKind, key: str, value: Any) -> None:
+            state = self._extension_ui.setdefault(sid, {
+                "statuses": {},
+                "widgets": {},
+                "working_message": None,
+                "working_visible": True,
+                "hidden_thinking_label": None,
+                "title": None,
+                "tools_expanded": False,
+            })
+            if kind == "status":
+                statuses = state["statuses"]
+                if value is None:
+                    statuses.pop(key, None)
+                else:
+                    statuses[key] = value
+            elif kind == "widget":
+                widgets = state["widgets"]
+                if value is None:
+                    widgets.pop(key, None)
+                else:
+                    widgets[key] = value
+            elif kind not in {"editor_text", "editor_insert"}:
+                state[kind] = value
+            asyncio.get_running_loop().create_task(self._bus.publish(ExtensionUiUpdatedEvent(
+                run_id=f"extension:{sid}:{uuid.uuid4().hex[:12]}",
+                session_id=sid,
+                kind=kind,
+                key=key,
+                value=deepcopy(value),
+                ts=_now(),
+            )))
+
+        host.api.ui_setter = set_ui
+
         # 让扩展命令切换当前会话模型，不修改其他会话或全局默认值
         async def set_model(provider: str, model: str) -> None:
             await self.set_model(sid, provider, model)
@@ -2302,6 +2341,7 @@ class SessionManager:
         self._extension_skill_loaders.pop(sid, None)
         self._extension_prompt_paths.pop(sid, None)
         self._extension_theme_paths.pop(sid, None)
+        self._extension_ui.pop(sid, None)
         self._extension_resources_ready.discard(sid)
 
     # 执行用户提交的扩展斜杠命令，命令处理器可选择再发送模型任务
@@ -2325,7 +2365,6 @@ class SessionManager:
         async with lock:
             previous = self._extension_hosts.pop(sid, None)
             self._clear_extension_resources(sid)
-            sender = previous.api.message_sender if previous is not None else None
             if previous is not None:
                 await previous.close()
             from code_rook.core.runner import AgentRunner
@@ -2339,12 +2378,9 @@ class SessionManager:
                     await host.close()
                     raise
                 self._extension_hosts[sid] = host
-                if sender is not None:
-                    host.api.message_sender = sender
-                else:
-                    mode = (self._authority_provider(sid).mode
-                            if self._authority_provider is not None else RuntimeMode.ACT)
-                    self._bind_extension_messages(sid, host, mode)
+                mode = (self._authority_provider(sid).mode
+                        if self._authority_provider is not None else RuntimeMode.ACT)
+                self._bind_extension_messages(sid, host, mode)
                 await host.emit_session_event({"type": "session_start", "reason": "reload"})
                 await self._discover_extension_resources(sid, host, reason="reload")
             return self.context_info(sid)
@@ -2590,6 +2626,7 @@ class SessionManager:
             "navigation": self._store.navigation_projection(sid),
             "input_commands": self.input_commands(sid),
             "theme_paths": [str(path) for path in self._extension_theme_paths.get(sid, ())],
+            "extension_ui": deepcopy(self._extension_ui.get(sid, {})),
             "route_id": session.route_id,
             "model": session.model,
             "thinking_level": session.thinking_level,

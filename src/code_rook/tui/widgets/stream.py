@@ -48,12 +48,14 @@ class LLMStreamBlock(Widget):
         self._finalized = False
         self._kind = "working"
         self._locale = locale
+        self._hidden_label: str | None = None
 
     # 根据流式与折叠状态生成思考区标题
     def _header(self) -> str:
-        state = tr(
-            "stream.thought" if self._finalized else "stream.thinking",
-            self._locale,
+        state = (
+            self._hidden_label
+            if "collapsed" in self.classes and self._hidden_label
+            else tr("stream.thought" if self._finalized else "stream.thinking", self._locale)
         )
         chevron = "›" if "collapsed" in self.classes else "⌄"
         return f"[#7f8996]◉[/#7f8996] [#8e98a5]{state}[/#8e98a5]  [dim]{chevron}[/dim]"
@@ -111,6 +113,12 @@ class LLMStreamBlock(Widget):
     # 切换思考块语言并刷新标题
     def set_locale(self, locale: str) -> None:
         self._locale = locale
+        if self.is_attached:
+            self.refresh(recompose=True)
+
+    # 设置扩展提供的折叠思考标签，并立即刷新已经挂载的标题。
+    def set_hidden_label(self, label: str | None) -> None:
+        self._hidden_label = label
         if self.is_attached:
             self.refresh(recompose=True)
 

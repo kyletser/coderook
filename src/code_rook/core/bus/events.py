@@ -734,6 +734,29 @@ class ExtensionNotificationEvent(BaseModel):
     ts: str
 
 
+ExtensionUiKind = Literal[
+    "status",
+    "working_message",
+    "working_visible",
+    "hidden_thinking_label",
+    "widget",
+    "title",
+    "editor_text",
+    "editor_insert",
+    "tools_expanded",
+]
+
+
+class ExtensionUiUpdatedEvent(BaseModel):
+    type: Literal["extension.ui_updated"] = "extension.ui_updated"
+    run_id: str
+    session_id: str
+    kind: ExtensionUiKind
+    key: str = ""
+    value: Any = None
+    ts: str
+
+
 class HookExecutedEvent(BaseModel):
     type: Literal["hook.executed"] = "hook.executed"
     hook_id: str
@@ -827,6 +850,7 @@ Event = Annotated[
     | BackgroundJobFinishedEvent
     | SkillInvokedEvent
     | ExtensionNotificationEvent
+    | ExtensionUiUpdatedEvent
     | HookExecutedEvent
     | RuntimeEventAppendedEvent,
     Discriminator("type"),

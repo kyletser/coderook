@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeFileMention,
+  applyExtensionUiUpdate,
   appendRuntimeEvent,
   eventBelongsToThread,
   isSimpleProductQuestion,
@@ -80,6 +81,21 @@ describe("Web task submission", () => {
     };
 
     expect(appendRuntimeEvent(appendRuntimeEvent([], event), event)).toEqual([event]);
+  });
+
+  it("applies extension UI contributions without discarding unrelated state", () => {
+    let state = applyExtensionUiUpdate({}, { kind: "status", key: "branch", value: "main" });
+    state = applyExtensionUiUpdate(state, {
+      kind: "widget",
+      key: "hint",
+      value: { content: "Use /review", placement: "above" },
+    });
+    state = applyExtensionUiUpdate(state, { kind: "tools_expanded", value: true });
+
+    expect(state.statuses).toEqual({ branch: "main" });
+    expect(state.widgets?.hint.content).toBe("Use /review");
+    expect(state.tools_expanded).toBe(true);
+    expect(applyExtensionUiUpdate(state, { kind: "status", key: "branch", value: null }).statuses).toEqual({});
   });
 
   it("bounds long-session event memory while preserving the newest cursor", () => {

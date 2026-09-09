@@ -10,7 +10,7 @@ from code_rook.core.agent_runtime.extensions import ExtensionHost
 from code_rook.core.agent_runtime.providers import ExtensionProvider
 from code_rook.core.agent_runtime.tools import ReadTool
 from code_rook.core.authority import RuntimeMode
-from code_rook.core.bus.events import RunFinishedEvent
+from code_rook.core.bus.events import ExtensionUiUpdatedEvent, RunFinishedEvent
 from code_rook.core.compact.compactor import Compactor
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
@@ -40,6 +40,67 @@ PROVIDER_FIXTURE = Path(__file__).parents[1] / "fixtures" / "native_extension_pr
 PROVIDER_HOOKS_FIXTURE = (
     Path(__file__).parents[1] / "fixtures" / "native_extension_provider_hooks.py"
 )
+
+
+# 功能：Python 扩展的声明式 UI API 同步更新会话投影并广播给共享前端。
+# 设计：使用真实 SessionManager 和 EventBus 调用全部状态类 API，核对投影与事件而不启动模型。
+async def test_extension_ui_contributions_reach_shared_frontends(tmp_path: Path) -> None:
+    bus = EventBus()
+    seen: list[ExtensionUiUpdatedEvent] = []
+
+    # 收集扩展 UI 事件并忽略同一总线上的其他生命周期事件。
+    async def observe(event) -> None:
+        if isinstance(event, ExtensionUiUpdatedEvent):
+            seen.append(event)
+
+    bus.subscribe(observe)
+    manager = SessionManager(
+        SessionStore(tmp_path / "sessions"),
+        lambda: AgentRunner(CodeRookConfig(), provider=MagicMock(), workspace_root=tmp_path),
+        bus,
+        workspace=tmp_path,
+    )
+    session = await manager.create("chat", "UI")
+    host = await manager.prepare_extensions(session.id)
+    assert host is not None
+
+    host.api.set_status("branch", "main")
+    host.api.set_working_message("Indexing")
+    host.api.set_working_visible(True)
+    host.api.set_hidden_thinking_label("Internal work")
+    host.api.set_widget("help", ["line one", "line two"], placement="above")
+    host.api.set_title("Project · CodeRook")
+    host.api.set_tools_expanded(True)
+    host.api.set_editor_text("review this")
+    host.api.paste_to_editor(" now")
+    await asyncio.sleep(0)
+
+    context = manager.context_info(session.id)["extension_ui"]
+    assert context["statuses"] == {"branch": "main"}
+    assert context["working_message"] == "Indexing"
+    assert context["widgets"]["help"] == {
+        "content": "line one\nline two",
+        "placement": "above",
+    }
+    assert context["title"] == "Project · CodeRook"
+    assert context["tools_expanded"] is True
+    assert [event.kind for event in seen] == [
+        "status",
+        "working_message",
+        "working_visible",
+        "hidden_thinking_label",
+        "widget",
+        "title",
+        "tools_expanded",
+        "editor_text",
+        "editor_insert",
+    ]
+    assert all(event.session_id == session.id for event in seen)
+
+    host.api.set_status("branch", None)
+    host.api.set_widget("help", None)
+    assert manager.context_info(session.id)["extension_ui"]["statuses"] == {}
+    assert manager.context_info(session.id)["extension_ui"]["widgets"] == {}
 
 
 # 功能：会话所属 Python 扩展可持久化私有状态、重命名会话并标记历史条目。
@@ -374,6 +435,13 @@ async def test_extension_receives_session_lifecycle(tmp_path: Path) -> None:
     session = await manager.create("chat", "Initial")
     await manager.rename(session.id, "Renamed")
     await manager.reload_resources(session.id)
+    reloaded = manager._extension_hosts[session.id]
+    assert reloaded.api.message_sender is not None
+    assert reloaded.api.custom_message_sender is not None
+    assert reloaded.api.notification_sender is not None
+    assert reloaded.api.ui_setter is not None
+    assert reloaded.api.model_setter is not None
+    assert reloaded.api.question_asker is not None
     await manager.close(session.id)
     events = [
         __import__("json").loads(line)

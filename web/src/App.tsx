@@ -37,6 +37,16 @@ type QueuedMessage = {
 };
 type InputCommand = { name: string; description: string; kind: string; argument_hint?: string };
 type ExtensionProvider = { id: string; name: string; models: string[] };
+type ExtensionWidget = { content: string; placement: "above" | "below" };
+export type ExtensionUiState = {
+  statuses?: Record<string, string>;
+  widgets?: Record<string, ExtensionWidget>;
+  working_message?: string | null;
+  working_visible?: boolean;
+  hidden_thinking_label?: string | null;
+  title?: string | null;
+  tools_expanded?: boolean;
+};
 type ThreadContext = {
   estimated_tokens?: number;
   navigation?: NavigationProjection | null;
@@ -45,6 +55,7 @@ type ThreadContext = {
   model?: string;
   thinking_level?: "off" | "low" | "medium" | "high";
   extension_providers?: ExtensionProvider[];
+  extension_ui?: ExtensionUiState;
 };
 type ProjectRecord = {
   id: string;
@@ -695,6 +706,33 @@ export function preferredThreadId(threads: ThreadRecord[]): string {
   return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
 }
 
+export function applyExtensionUiUpdate(
+  current: ExtensionUiState,
+  payload: Record<string, unknown>,
+): ExtensionUiState {
+  const kind = textValue(payload.kind);
+  const key = textValue(payload.key);
+  const value = payload.value;
+  if (kind === "status") {
+    const statuses = { ...(current.statuses || {}) };
+    if (value === null || value === undefined) delete statuses[key];
+    else statuses[key] = textValue(value);
+    return { ...current, statuses };
+  }
+  if (kind === "widget") {
+    const widgets = { ...(current.widgets || {}) };
+    if (value === null || value === undefined) delete widgets[key];
+    else if (typeof value === "object") widgets[key] = value as ExtensionWidget;
+    return { ...current, widgets };
+  }
+  if (kind === "working_message") return { ...current, working_message: value == null ? null : textValue(value) };
+  if (kind === "working_visible") return { ...current, working_visible: Boolean(value) };
+  if (kind === "hidden_thinking_label") return { ...current, hidden_thinking_label: value == null ? null : textValue(value) };
+  if (kind === "title") return { ...current, title: value == null ? null : textValue(value) };
+  if (kind === "tools_expanded") return { ...current, tools_expanded: Boolean(value) };
+  return current;
+}
+
 function AppShell({
   initialWorkspace,
   onWorkspaceChanged,
@@ -714,6 +752,7 @@ function AppShell({
   const [inputCommands, setInputCommands] = useState<InputCommand[]>([]);
   const [commandIndex, setCommandIndex] = useState(0);
   const [composer, setComposer] = useState("");
+  const [extensionUi, setExtensionUi] = useState<ExtensionUiState>({});
   const [mode, setMode] = useState<RunMode>("act");
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [phase, setPhase] = useState("idle");
@@ -758,6 +797,12 @@ function AppShell({
     () => activeFileMention(composer, composerCaret),
     [composer, composerCaret],
   );
+  const extensionStatuses = Object.values(extensionUi.statuses || {}).filter(Boolean);
+  const extensionWidgets = Object.values(extensionUi.widgets || {});
+
+  useEffect(() => {
+    document.title = extensionUi.title || "CodeRook";
+  }, [extensionUi.title]);
 
   const refreshActiveModel = useCallback(async () => {
     const catalog = await request<ProviderCatalog>("/v1/providers");
@@ -852,6 +897,7 @@ function AppShell({
             { name: "reload", description: tr("重新加载扩展、模板与 Skills", "Reload extensions, templates and Skills"), kind: "builtin" },
         ...(loadedContext.input_commands || []).filter((entry) => entry.name !== "reload"),
       ]);
+      setExtensionUi(loadedContext.extension_ui || {});
     } finally {
       if (
         showLoading
@@ -901,6 +947,7 @@ function AppShell({
       setThreadLoading(false);
       setHasOlderTurns(false);
       setContextTokens(0);
+      setExtensionUi({});
       const controller = new AbortController();
       if (sessionsReady) {
         void request<ThreadContext>("/v1/workspace/input-commands", { signal: controller.signal })
@@ -921,6 +968,7 @@ function AppShell({
     setInputCommands([]);
     setTurns([]);
     setItems([]);
+    setExtensionUi({});
     const cachedEvents = eventCache.current[selectedId] || [];
     setEvents(cachedEvents);
     setQueuedMessages([]);
@@ -968,6 +1016,16 @@ function AppShell({
               }
               if (event.type === "extension.notification") {
                 setNotice(textValue(event.payload.message));
+              }
+              if (event.type === "extension.ui_updated") {
+                const kind = textValue(event.payload.kind);
+                if (kind === "editor_text") {
+                  setComposer(textValue(event.payload.value));
+                } else if (kind === "editor_insert") {
+                  setComposer((current) => `${current}${textValue(event.payload.value)}`);
+                } else {
+                  setExtensionUi((current) => applyExtensionUiUpdate(current, event.payload));
+                }
               }
               if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.outcome", "run.finished"].includes(event.type)) {
                 void refreshThreads();
@@ -1058,6 +1116,7 @@ function AppShell({
             { name: "reload", description: tr("重新加载扩展、模板与 Skills", "Reload extensions, templates and Skills"), kind: "builtin" },
             ...(context.input_commands || []).filter((entry) => entry.name !== "reload"),
           ]);
+          setExtensionUi(context.extension_ui || {});
           setComposer("");
           composerDrafts.current[threadId || "__new__"] = "";
           setNotice(tr("扩展、提示模板和 Skills 已重新加载", "Extensions, templates and Skills reloaded"));
@@ -1577,6 +1636,7 @@ function AppShell({
               call={entry.call}
               result={entry.result}
               progress={entry.progress}
+              forceExpanded={Boolean(extensionUi.tools_expanded)}
               onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
               onRetry={(prompt) => { setComposer(prompt); setNotice(tr("重试建议已放入输入框，可修改后发送", "A retry suggestion was placed in the composer. Edit it before sending.")); }}
             />
@@ -1584,6 +1644,7 @@ function AppShell({
             <ToolActivityGroup
               key={entry.key}
               tools={entry.tools}
+              forceExpanded={Boolean(extensionUi.tools_expanded)}
               onOpenLocation={(path) => { setInspectorFile(path); setDrawer("files"); }}
               onRetry={(prompt) => { setComposer(prompt); setNotice(tr("重试建议已放入输入框，可修改后发送", "A retry suggestion was placed in the composer. Edit it before sending.")); }}
             />
@@ -1592,6 +1653,7 @@ function AppShell({
               key={entry.key}
               event={entry.event}
               threadId={selectedId}
+              hiddenThinkingLabel={extensionUi.hidden_thinking_label || undefined}
               onError={setError}
               onNotice={setNotice}
               onOpenChanges={() => setDrawer("changes")}
@@ -1602,6 +1664,11 @@ function AppShell({
         </section>
 
         {projectSelected && <form className="composer" onSubmit={(event) => void send(event)}>
+          {extensionWidgets.filter((widget) => widget.placement === "above").map((widget, index) => <div className="extension-widget" key={`above-${index}`}>{widget.content}</div>)}
+          {(extensionStatuses.length > 0 || (extensionUi.working_visible !== false && extensionUi.working_message)) && <div className="extension-statuses">
+            {extensionStatuses.map((status, index) => <span key={`${status}-${index}`}>{status}</span>)}
+            {extensionUi.working_visible !== false && extensionUi.working_message && <span className="working">{extensionUi.working_message}</span>}
+          </div>}
           {queuedMessages.length > 0 && <div className="message-queue" aria-label={tr("待发送消息", "Queued messages")}>
             {queuedMessages.map((message, index) => <div className={`queued-message ${message.status}`} key={message.id}>
               <span>{message.status === "dispatching" ? tr("正在发送", "Sending") : message.status === "blocked" ? tr("需要处理", "Action required") : tr(`排队 ${index + 1}`, `Queued ${index + 1}`)}</span>
@@ -1701,6 +1768,7 @@ function AppShell({
               <button className="send" aria-label={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} title={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
+          {extensionWidgets.filter((widget) => widget.placement === "below").map((widget, index) => <div className="extension-widget below" key={`below-${index}`}>{widget.content}</div>)}
         </form>}
       </main>
 
@@ -1892,6 +1960,7 @@ function TurnToolCard({
   result,
   progress,
   nested = false,
+  forceExpanded = false,
   onOpenLocation,
   onRetry,
 }: {
@@ -1899,6 +1968,7 @@ function TurnToolCard({
   result?: TurnItem;
   progress?: RuntimeEvent;
   nested?: boolean;
+  forceExpanded?: boolean;
   onOpenLocation(path: string): void;
   onRetry(prompt: string): void;
 }): ReactElement {
@@ -1908,6 +1978,8 @@ function TurnToolCard({
   const openableLocation = ["read_file", "edit_code"].includes(semanticAction) ? locations[0] : "";
   const customDetails = info.presentation.details;
   const hasDetails = Object.keys(params).length > 0 || Boolean(output) || customDetails != null;
+  const [open, setOpen] = useState(forceExpanded);
+  useEffect(() => setOpen(forceExpanded), [forceExpanded]);
   const failureExcerpt = output.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || tr("操作未完成", "Operation did not complete");
   const summary = (
     <>
@@ -1927,7 +1999,7 @@ function TurnToolCard({
   return (
     <article className={`tool-item ${nested ? "nested" : ""} ${failed ? "failed" : ""} ${running ? "running" : ""}`}>
       {hasDetails ? (
-        <details>
+        <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary className="tool-item-head">{summary}</summary>
           <div className="tool-detail">
             {Object.keys(params).length > 0 && <><small>{tr("输入", "Input")}</small><pre>{textValue(params)}</pre></>}
@@ -1944,17 +2016,20 @@ function TurnToolCard({
 
 function ToolActivityGroup({
   tools,
+  forceExpanded = false,
   onOpenLocation,
   onRetry,
 }: {
   tools: ToolTimelineEntry[];
+  forceExpanded?: boolean;
   onOpenLocation(path: string): void;
   onRetry(prompt: string): void;
 }): ReactElement {
   const infos = tools.map((tool) => toolCardInfo(tool.call, tool.result, tool.progress));
   const failedCount = infos.filter((info) => info.failed).length;
   const runningCount = infos.filter((info) => info.running).length;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(forceExpanded);
+  useEffect(() => setOpen(forceExpanded), [forceExpanded]);
   const elapsedMs = infos.reduce((total, info) => total + Math.max(0, info.elapsedMs), 0);
   const actions = new Set(infos.map((info) => info.semanticAction).filter(Boolean));
   let summary = runningCount ? tr(`正在执行 ${tools.length} 个操作`, `Running ${tools.length} operations`) : tr(`执行了 ${tools.length} 个操作`, `Ran ${tools.length} operations`);
@@ -1975,7 +2050,7 @@ function ToolActivityGroup({
         <small>{toolElapsed(elapsedMs)}</small>
       </summary>
       <div className="tool-activity-body">
-        {tools.map((tool) => <TurnToolCard key={tool.key} call={tool.call} result={tool.result} progress={tool.progress} nested onOpenLocation={onOpenLocation} onRetry={onRetry} />)}
+        {tools.map((tool) => <TurnToolCard key={tool.key} call={tool.call} result={tool.result} progress={tool.progress} nested forceExpanded={forceExpanded} onOpenLocation={onOpenLocation} onRetry={onRetry} />)}
       </div>
     </details>
   );
@@ -1984,12 +2059,14 @@ function ToolActivityGroup({
 function EventCard({
   event,
   threadId,
+  hiddenThinkingLabel,
   onError,
   onNotice,
   onOpenChanges,
 }: {
   event: RuntimeEvent;
   threadId: string;
+  hiddenThinkingLabel?: string;
   onError(value: string): void;
   onNotice(value: string): void;
   onOpenChanges(): void;
@@ -2022,7 +2099,7 @@ function EventCard({
         const part = value as Record<string, unknown>;
         if (part.type === "text") return <MarkdownText key={index} content={textValue(part.text)} />;
         if (part.type === "thinking") return <details key={index} className="intent-activity">
-          <summary>{tr("思考过程", "Thinking")}</summary>
+          <summary>{hiddenThinkingLabel || tr("思考过程", "Thinking")}</summary>
           <MarkdownText content={textValue(part.thinking)} />
         </details>;
         return null;

@@ -745,6 +745,7 @@ class RuntimeService:
                 "user_question.asked",
                 "agent.message",
                 "extension.notification",
+                "extension.ui_updated",
             }
         ):
             thread_id = str(payload.get("session_id", ""))

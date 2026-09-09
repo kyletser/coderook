@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from code_rook.core.agent_runtime.messages import from_provider, to_provider
 from code_rook.core.agent_runtime.providers import ExtensionProvider
+from code_rook.core.bus.events import ExtensionUiKind
 from code_rook.core.events.bus import EventBus
 from code_rook.core.interaction import ExtensionMessageSender, UserMessageContent
 from code_rook.core.llm.routes import ThinkingLevel
@@ -61,6 +62,7 @@ class ExtensionAPI:
         self.notification_sender: Callable[
             [str, Literal["info", "warning", "error"]], Any
         ] | None = None
+        self.ui_setter: Callable[[ExtensionUiKind, str, Any], Any] | None = None
         self.active_selection: list[str] | None = None
         self.commands: list[ExtensionCommand] = []
         self.providers: dict[str, ExtensionProvider] = {}
@@ -176,6 +178,93 @@ class ExtensionAPI:
         result = self.notification_sender(message, notification_type)
         if inspect.isawaitable(result):
             await result
+
+    # 更新会话级扩展状态项，空文本会移除对应状态。
+    def set_status(self, key: str, text: str | None) -> None:
+        normalized = key.strip()
+        if not normalized:
+            raise ValueError("status key must not be blank")
+        self._set_ui("status", normalized, text.strip() if isinstance(text, str) else None)
+
+    # 修改 Agent 运行时的简短工作提示，传空值恢复默认提示。
+    def set_working_message(self, message: str | None) -> None:
+        self._set_ui(
+            "working_message", "", message.strip() if isinstance(message, str) else None,
+        )
+
+    # 控制扩展工作提示是否在前端显示。
+    def set_working_visible(self, visible: bool) -> None:
+        if not isinstance(visible, bool):
+            raise TypeError("working visibility must be a boolean")
+        self._set_ui("working_visible", "", visible)
+
+    # 设置折叠思考内容的用户可见标签，传空值恢复产品默认文案。
+    def set_hidden_thinking_label(self, label: str | None) -> None:
+        self._set_ui(
+            "hidden_thinking_label", "", label.strip() if isinstance(label, str) else None,
+        )
+
+    # 在输入框上方或下方注册纯文本组件，传空内容撤销组件。
+    def set_widget(
+        self,
+        key: str,
+        content: str | list[str] | None,
+        *,
+        placement: Literal["above", "below"] = "above",
+    ) -> None:
+        normalized = key.strip()
+        if not normalized:
+            raise ValueError("widget key must not be blank")
+        if placement not in {"above", "below"}:
+            raise ValueError("widget placement must be above or below")
+        if isinstance(content, list):
+            if any(not isinstance(line, str) for line in content):
+                raise TypeError("widget lines must be strings")
+            text = "\n".join(content).strip()
+        elif isinstance(content, str):
+            text = content.strip()
+        elif content is None:
+            text = ""
+        else:
+            raise TypeError("widget content must be text, text lines, or None")
+        self._set_ui(
+            "widget", normalized, None if not text else {"content": text, "placement": placement},
+        )
+
+    # 修改当前产品窗口标题，不影响会话名称。
+    def set_title(self, title: str) -> None:
+        normalized = title.strip()
+        if not normalized:
+            raise ValueError("title must not be blank")
+        self._set_ui("title", "", normalized)
+
+    # 用扩展提供的文本完整替换当前会话输入框草稿。
+    def set_editor_text(self, text: str) -> None:
+        if not isinstance(text, str):
+            raise TypeError("editor text must be a string")
+        self._set_ui("editor_text", "", text)
+
+    # 把扩展提供的文本插入当前会话输入框光标位置。
+    def paste_to_editor(self, text: str) -> None:
+        if not isinstance(text, str):
+            raise TypeError("editor insertion must be a string")
+        if text:
+            self._set_ui("editor_insert", "", text)
+
+    # 控制工具详情的默认展开状态。
+    def set_tools_expanded(self, expanded: bool) -> None:
+        if not isinstance(expanded, bool):
+            raise TypeError("tools expanded must be a boolean")
+        self._set_ui("tools_expanded", "", expanded)
+
+    # 将同步扩展 UI 调用交给会话宿主并在需要时排入事件循环。
+    def _set_ui(self, kind: ExtensionUiKind, key: str, value: Any) -> None:
+        self._check_active()
+        if self.ui_setter is None:
+            raise RuntimeError("UI contributions require a session-owned host")
+        result = self.ui_setter(kind, key, deepcopy(value))
+        if inspect.isawaitable(result):
+            asyncio.ensure_future(result)
 
     # 获取运行时工具目录，装载阶段尚未绑定时给出明确提示
     def _runtime_registry(self) -> ToolRegistry:
@@ -1031,6 +1120,7 @@ class ExtensionHost:
         self.api.message_sender = None
         self.api.custom_message_sender = None
         self.api.notification_sender = None
+        self.api.ui_setter = None
         self.api.model_setter = None
         self.api.model_getter = None
         self.api.thinking_getter = None

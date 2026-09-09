@@ -166,8 +166,9 @@ iteration, and `deliver_as="next_turn"` holds it until the next user turn. An
 explicit `trigger_turn=False` appends it after the active answer so tool-call/result
 pairs are not split. When
 idle, `trigger_turn=True` starts a native Python Turn; otherwise it only appends.
-`api.notify()` is the visible info/warning/error convenience built on the same
-durable custom-message path. No Node process or second session store is involved.
+`api.notify()` publishes a separate durable thread-level info/warning/error event;
+it is visible in TUI/Web but never enters model history. No Node process or second
+session store is involved.
 
 The `input` hook runs before Skill/template expansion for initial messages,
 steering and queued follow-ups. Its event includes `text`, native image blocks,
@@ -261,10 +262,23 @@ use a source-labelled generic card in TUI and Web. Their persistent message IDs
 are shared by initial display and replay. Extension-provided renderers and custom
 image presentation are still pending.
 
+Session-owned extensions can publish declarative UI contributions through
+`set_status`, `set_working_message`, `set_working_visible`,
+`set_hidden_thinking_label`, `set_widget`, `set_title`, `set_editor_text`,
+`paste_to_editor`, and `set_tools_expanded`. Core keeps the current status/widget
+projection in session context and publishes every change as a durable
+`extension.ui_updated` event. TUI and Web consume the same event: both render
+status and text widgets, update the window title and editor, and apply the default
+tool-detail state. UI contributions are intentionally data, not executable client
+callbacks, so one Python extension works in both frontends. Reload clears the old
+projection and rebinds every session API on the replacement host rather than only
+restoring ordinary message delivery.
+
 These files run trusted Python code in the Core process, not in a sandbox; only
-configure files you trust. Project TOML cannot add extension paths. This initial
-API does not yet implement Pi's complete UI contributions or hot reload during an
-active run. It is a working extension path, not a claim of full extension parity.
+configure files you trust. Project TOML cannot add extension paths. Executable
+custom component factories, custom message/image renderers, header/footer
+replacement, and hot reload during an active run remain unsupported. It is a
+working extension path, not a claim of full extension parity.
 
 Python extensions can call `api.register_provider(name, config)` with Pi-style
 `name`, `baseUrl`, `apiKey`, `headers`, `api`, and `models` fields. Anthropic Messages,
@@ -492,8 +506,8 @@ Compaction is projected only along the selected path.
 `session.fork` and the existing HTTP fork endpoint accept an optional `leaf_seq`
 (a Ledger sequence, not a Runtime/SSE cursor). They create a separate session
 whose model context ends at that node, without rewinding workspace files.
-TUI `/tree` and the Web history drawer expose this operation. In-place navigation
-and branch-summary generation are not yet exposed as product operations.
+TUI `/tree` and the Web history drawer expose this operation. Both also expose
+in-place navigation and optional branch-summary generation as described below.
 
 ## Prompt assembly
 
@@ -649,7 +663,7 @@ Web supports pointer selection and arrow/Tab/Enter completion. TUI Ctrl+P includ
 the same input commands under Extensions; selecting them fills the composer and
 does not submit. Built-in commands take precedence in that palette. Extra template
 paths are supported through `agent.prompt_paths`; live browser visual checks and
-complete UI-contribution parity remain pending. `agent.skill_paths` supports
+executable custom renderer parity remain pending. `agent.skill_paths` supports
 explicit Skill files, package directories and collections. Session discovery and
 Runner tool assembly receive the same configured paths. Explicit unmanaged sources
 are user-trusted; managed sources retain their metadata trust and digest checks.
@@ -750,11 +764,12 @@ use the same thread-level projection, while their model-visible content remains 
 the Session Ledger.
 
 This is not a claim that the entire product has been ported. Provider and tool
-services still use CodeRook's existing Python implementations. In-place session-tree
-navigation and branch summaries have been implemented, but browser-level validation
-and full summary request auditing are outstanding. Session ownership, simplified
-configuration, and complete TUI/Web product behavior still need further migration
-and verification.
+services intentionally remain native Python implementations rather than launching
+Pi or Node as a subprocess. In-place session-tree navigation, branch summaries,
+session-scoped extension UI contributions, and resource reload have been
+implemented. Browser-level interaction validation, full summary request auditing,
+custom renderers/themes, and the remaining session/product parity still require
+migration and verification.
 The functional architecture document remains the reference for other subsystems.
 
 ## Installed-package smoke
