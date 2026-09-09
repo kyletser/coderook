@@ -332,6 +332,34 @@ def test_run_result_prefers_receipt_outcome_over_event_status() -> None:
     assert result.status == "incomplete"
 
 
+# 功能：验证模型正常结束但最终验证失败时结果卡不会误报任务完成
+# 设计：让 durable receipt 同时提供 completed outcome 与失败 verdict，断言证据状态覆盖模型终止状态
+def test_run_result_marks_failed_verification_as_unsuccessful() -> None:
+    reducer = RunEvidenceReducer()
+    result = reducer.finalize(
+        {
+            "type": "run.finished",
+            "run_id": "run-verification-failed",
+            "status": "success",
+            "outcome": "completed",
+            "steps": 2,
+        },
+        {
+            "receipt": {
+                "status": "completed",
+                "outcome": "completed",
+                "verification": [
+                    {"verdict": "fail", "gate_count": 1, "passed": 0},
+                ],
+            },
+        },
+    )
+    plain = render(str(RunResultCard(result, expanded=True).content)).plain
+
+    assert result.status == "verification_failed"
+    assert "验证未通过" in plain
+
+
 # 功能：验证结果卡只使用当前 TurnReceipt 的逐文件行数并诚实标记未知总计
 # 设计：提供一项完整统计和一项 None，断言已知和数可见且不会借用 workspace 当前 diff 补齐
 def test_run_result_line_stats_are_receipt_scoped_and_honest() -> None:

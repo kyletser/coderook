@@ -769,6 +769,7 @@ _TEXT: dict[str, dict[str, str]] = {
         ),
         "result.title.success": "任务完成",
         "result.title.failed": "任务失败",
+        "result.title.verification_failed": "验证未通过",
         "result.title.interrupted": "任务已中断",
         "result.title.incomplete": "任务未完整结束",
         "result.title.content_filtered": "模型内容被过滤",
@@ -1597,6 +1598,7 @@ _TEXT: dict[str, dict[str, str]] = {
         ),
         "result.title.success": "Task completed",
         "result.title.failed": "Task failed",
+        "result.title.verification_failed": "Verification failed",
         "result.title.interrupted": "Task interrupted",
         "result.title.incomplete": "Task incomplete",
         "result.title.content_filtered": "Model content filtered",
@@ -1949,6 +1951,8 @@ class RunEvidenceReducer:
         if not verification:
             verification = list(state.verification)
         verification_status, passed, total = _verification_summary(verification)
+        if status == "success" and verification_status == "fail":
+            status = "verification_failed"
         unavailable_raw = receipt.get("unavailable", [])
         unavailable = (
             [str(item) for item in unavailable_raw] if isinstance(unavailable_raw, list) else []
@@ -2034,6 +2038,7 @@ class RunResultCard(Static):
         color = {
             "success": "green",
             "failed": "red",
+            "verification_failed": "red",
             "interrupted": "yellow",
             "incomplete": "yellow",
             "content_filtered": "yellow",

@@ -611,8 +611,16 @@ function eventDetail(event: RuntimeEvent): string {
   return "";
 }
 
-export function resultStatusIsFailure(status: string): boolean {
-  return !["completed", "success", "succeeded"].includes(status.trim().toLowerCase());
+export function verificationHasFailure(verification: Array<Record<string, unknown>>): boolean {
+  return verification.some((item) =>
+    ["fail", "failed", "error", "timeout", "truncated"].includes(
+      textValue(item.verdict || item.status).trim().toLowerCase(),
+    ));
+}
+
+export function resultStatusIsFailure(status: string, verificationFailed = false): boolean {
+  return verificationFailed
+    || !["completed", "success", "succeeded"].includes(status.trim().toLowerCase());
 }
 
 export function resultSummaryFor(
@@ -2212,20 +2220,26 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
   const status = textValue(receipt?.outcome || receipt?.status || event.payload.status || event.payload.outcome || "failed");
   const reason = textValue(event.payload.reason || event.payload.failure_category).toLowerCase();
   const cancelled = ["cancelled", "canceled"].includes(reason) || ["cancelled", "canceled"].includes(status.toLowerCase());
-  const failed = !cancelled && resultStatusIsFailure(status);
   const changes = receipt?.changes || [];
   const changedFiles = receipt?.files_changed?.length || changes.length;
   const additions = changes.reduce((total, change) => total + Number(change.additions || 0), 0);
   const deletions = changes.reduce((total, change) => total + Number(change.deletions || 0), 0);
   const verification = receipt?.verification || [];
-  const verificationFailed = verification.some((item) => ["failed", "error", "timeout"].includes(textValue(item.status).toLowerCase()));
+  const verificationFailed = verificationHasFailure(verification);
+  const failed = !cancelled && resultStatusIsFailure(status, verificationFailed);
   const model = textValue(receipt?.route?.model);
   const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
   const rawSummary = resultSummaryFor(event.payload, receipt, detail);
   const summary = cancelled && /^(command|tool call) cancelled\.?$/i.test(rawSummary)
     ? tr("已按你的要求停止。", "Stopped at your request.")
     : rawSummary;
-  const resultTitle = cancelled ? tr("本轮已停止", "Turn stopped") : failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete");
+  const resultTitle = cancelled
+    ? tr("本轮已停止", "Turn stopped")
+    : verificationFailed
+      ? tr("验证未通过", "Verification failed")
+      : failed
+        ? tr("本轮未完成", "Turn incomplete")
+        : tr("本轮完成", "Turn complete");
   const copied = [resultTitle, summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
   return (
     <article className={`result-inline ${failed ? "failed" : ""} ${cancelled ? "cancelled" : ""}`}>

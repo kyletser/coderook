@@ -14,6 +14,7 @@ import {
   resolveWebTheme,
   resultSummaryFor,
   resultStatusIsFailure,
+  verificationHasFailure,
   workspaceHasUserProject,
   workspacePathIsDirectoryError,
 } from "./App";
@@ -129,9 +130,15 @@ describe("Web task submission", () => {
 
   it("never presents incomplete model termination as a successful result", () => {
     expect(resultStatusIsFailure("completed")).toBe(false);
+    expect(resultStatusIsFailure("completed", true)).toBe(true);
     expect(resultStatusIsFailure("incomplete")).toBe(true);
     expect(resultStatusIsFailure("length")).toBe(true);
     expect(resultStatusIsFailure("transport_error")).toBe(true);
+  });
+
+  it("treats a failed verification verdict as an unsuccessful task result", () => {
+    expect(verificationHasFailure([{ verdict: "fail", status: "ok" }])).toBe(true);
+    expect(verificationHasFailure([{ verdict: "pass" }])).toBe(false);
   });
 
   it("uses the persisted run result while the receipt projection is still loading", () => {
