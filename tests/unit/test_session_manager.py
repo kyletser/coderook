@@ -1488,6 +1488,27 @@ async def test_session_lifecycle_rename_fork_export_delete(tmp_path: Path) -> No
     assert "session.deleted" in event_types
 
 
+# 功能：验证人类可读会话导出隐藏模型增强提示而 JSON 归档保留可重放事实
+# 设计：同一消息分别导出 Markdown 与 JSON，固定面向用户和机器归档的不同语义
+async def test_session_export_uses_display_content_for_human_formats(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    session = await manager.create("chat", "export")
+    store.append_message(
+        session.id,
+        "user",
+        "summarize README\n\nBounded file references: README.md",
+        display_content="summarize @README.md",
+    )
+
+    _md_name, _md_type, markdown = await manager.export(session.id, "markdown")
+    _json_name, _json_type, archive = await manager.export(session.id, "json")
+
+    assert "summarize @README.md" in markdown
+    assert "Bounded file references" not in markdown
+    assert "Bounded file references" in archive
+
+
 async def test_session_mutations_reject_busy_session(tmp_path: Path) -> None:
     started = asyncio.Event()
     release = asyncio.Event()

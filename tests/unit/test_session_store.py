@@ -176,6 +176,29 @@ def test_thread_message_roundtrip_with_tool_blocks(tmp_path: Path) -> None:
     ]
 
 
+# 功能：验证模型增强正文与用户展示正文由同一账本事件分别投影
+# 设计：写入带图片的用户消息并读取模型、展示两种视图，确认隐藏提示不泄露且附件不丢失
+def test_display_projection_uses_visible_text_and_preserves_images(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    image = {"type": "image", "source": {"media_type": "image/png", "data": "AA=="}}
+    store.append_message(
+        "sess-1",
+        "user",
+        [{"type": "text", "text": "internal context"}, image],
+        display_content="review @screen.png",
+    )
+
+    assert store.read_messages("sess-1") == [{
+        "role": "user",
+        "content": [{"type": "text", "text": "internal context"}, image],
+    }]
+    assert store.derive_messages("sess-1", display=True) == [{
+        "role": "user",
+        "content": [{"type": "text", "text": "review @screen.png"}, image],
+    }]
+    assert store.session_tree("sess-1")[0]["preview"] == "review @screen.png"
+
+
 # 功能：验证旧 message/block transcript 保持只读兼容且后续写入只追加一个 v2 事件
 # 设计：手写无 hash 的 legacy 前缀后调用新 append_message，比较消息投影和新增行数量
 def test_legacy_transcript_reads_without_continuing_dual_write(tmp_path: Path) -> None:

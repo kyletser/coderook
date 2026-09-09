@@ -241,16 +241,20 @@ class SessionStore:
         content: MessageContent,
         run_id: str | None = None,
         message_id: str | None = None,
+        display_content: str | None = None,
     ) -> None:
+        payload: dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "message_id": message_id or "",
+        }
+        if display_content is not None:
+            payload["display_content"] = display_content
         self.append_session_event(
             sid,
             event_type="input.admitted" if role == "user" else "llm.message",
             turn_id=run_id or "",
-            payload={
-                "role": role,
-                "content": content,
-                "message_id": message_id or "",
-            },
+            payload=payload,
         )
 
     # 批量追加一次 run 新产生的消息到 thread.jsonl
@@ -477,9 +481,22 @@ class SessionStore:
                     })
                     last_message_id = None
                     continue
+                projected_content = payload.get("content")
+                visible_text = payload.get("display_content")
+                if display and payload.get("role") == "user" and isinstance(visible_text, str):
+                    if isinstance(projected_content, list):
+                        projected_content = [
+                            {"type": "text", "text": visible_text},
+                            *[
+                                item for item in projected_content
+                                if not isinstance(item, dict) or item.get("type") != "text"
+                            ],
+                        ]
+                    else:
+                        projected_content = visible_text
                 append_content(
                     role=payload.get("role"),
-                    content=payload.get("content"),
+                    content=projected_content,
                     block=payload.get("block"),
                     message_id=payload.get("message_id", ""),
                     block_id=payload.get("block_id", f"event:{ledger_seq}"),
@@ -677,7 +694,10 @@ class SessionStore:
                 "active": int(row.get("ledger_seq", line)) in active,
                 "turn_id": row.get("turn_id", row.get("run_id", "")),
                 "label": labels.get(int(row.get("ledger_seq", line))),
-                "preview": str(row.get("payload", {}).get("content", row.get("content", "")))[:240]
+                "preview": str(row.get("payload", {}).get(
+                    "display_content",
+                    row.get("payload", {}).get("content", row.get("content", "")),
+                ))[:240]
                 if row.get("type", "") in {
                     "input.admitted", "llm.message", "context.compaction.message"
                 }

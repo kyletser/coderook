@@ -1470,6 +1470,7 @@ class SessionManager:
                         if image_blocks else ledger_content,
                         run_id=run_id,
                         message_id=f"{run_id}:user",
+                        display_content=display_content,
                     )
                 await self._bus.publish(
                     SessionMessageReceivedEvent(
@@ -3223,7 +3224,9 @@ class SessionManager:
         async with lock:
             return export_session(
                 session,
-                self._store.read_messages(sid),
+                self._store.read_messages(sid)
+                if export_format == "json"
+                else self._store.derive_messages(sid, display=True),
                 self._store.read_notes(sid),
                 export_format,
             )
