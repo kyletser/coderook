@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 from code_rook.core.authority import RuntimeMode
@@ -13,7 +14,7 @@ from code_rook.core.memory import MemoryStore
 from code_rook.core.runner import AgentRunner
 from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.invocation import invoke_tool
-from code_rook.core.tools.spec import ApprovalRequirement
+from code_rook.core.tools.spec import ApprovalRequirement, ToolCatalogError
 
 
 # 从 action-family schema 提取可见 action 名称
@@ -28,8 +29,8 @@ def _actions(schema: dict[str, object]) -> set[str]:
     }
 
 
-# 功能：默认工具面暴露 memory/tasks/update_plan 且隐藏全部旧平铺名称
-# 设计：构建带 EventBus 的真实 Runner 目录，同时检查模型 schema 和内部 replay backend
+# 功能：默认 Act 工具面仅暴露原生编码工具，同时保留控制工具供显式模式调用
+# 设计：构建真实 Runner 目录，对比模型 schema 与内部注册表以固定小工具面兼容边界
 def test_default_control_tools_use_bounded_family_surface(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, bus=EventBus())
     registry = runner._build_registry(
@@ -39,7 +40,7 @@ def test_default_control_tools_use_bounded_family_surface(tmp_path: Path) -> Non
     )
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
 
-    assert {"memory", "tasks", "update_plan"} <= names
+    assert names == {"bash", "edit", "read", "write"}
     assert {
         "memory_save",
         "memory_search",
@@ -93,9 +94,12 @@ def test_memory_agent_save_defaults_to_prompt_and_can_be_disabled(tmp_path: Path
         run_id="run-memory-off",
         bus=EventBus(),
     )
-    schemas = {str(item["name"]): item for item in disabled.tool_schemas()}
-
-    assert "save" not in _actions(schemas["memory"])
+    assert disabled.get("memory") is not None
+    with pytest.raises(ToolCatalogError):
+        disabled.resolve_call(
+            "memory",
+            {"action": "save", "name": "rule", "body": "Run tests."},
+        )
     assert disabled.get("memory_save") is None
 
 

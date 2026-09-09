@@ -325,8 +325,8 @@ async def test_foreground_publishes_started_event(tmp_path: Path) -> None:
     assert started[0].description == "test task"
 
 
-# 功能：子 Agent 共享 TodoState 后，存在未完成任务时首次 end_turn 会被软状态机推迟
-# 设计：provider 连续返回两个不同结果，断言前台子 Agent 最终采用第二轮结果且调用两次模型
+# 功能：子 Agent 遇到未完成 Todo 时仍尊重模型的首次正常结束
+# 设计：provider 预置第二次响应作为哨兵，断言不因待办状态伪造续写轮次
 async def test_child_loop_uses_shared_todo_state(tmp_path: Path) -> None:
     provider = AsyncMock()
     provider.chat = AsyncMock(
@@ -352,8 +352,8 @@ async def test_child_loop_uses_shared_todo_state(tmp_path: Path) -> None:
 
     result = await tool.invoke({"description": "child", "prompt": "work"})
 
-    assert json.loads(result.content)["summary"] == "after reminder"
-    assert provider.chat.await_count == 2
+    assert json.loads(result.content)["summary"] == "too early"
+    assert provider.chat.await_count == 1
 
 
 # 功能：验证 Agent profile 的 route pin 使用用户 RouteStore 中的显式 route 和凭据

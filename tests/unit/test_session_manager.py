@@ -1156,9 +1156,19 @@ async def test_workspace_mutation_guard_coordinates_all_sessions(tmp_path: Path)
         lambda: next(runner_iter),
         EventBus(),
     )  # type: ignore[arg-type]
+
+    # 本测试只验证共享工作区门闩，不让扩展探测额外消费有限 Runner 序列
+    async def no_extensions(_session_id: str) -> None:
+        return None
+
+    manager.prepare_extensions = no_extensions  # type: ignore[method-assign]
     sessions = [await manager.create("chat") for _ in range(3)]
-    first = asyncio.create_task(manager.send_message(sessions[0].id, "one"))
-    second = asyncio.create_task(manager.send_message(sessions[1].id, "two"))
+    first = asyncio.create_task(
+        manager.send_message(sessions[0].id, "one", input_processed=True)
+    )
+    second = asyncio.create_task(
+        manager.send_message(sessions[1].id, "two", input_processed=True)
+    )
     await asyncio.gather(runners[0].started.wait(), runners[1].started.wait())
 
     mutation_entered = asyncio.Event()
@@ -1178,7 +1188,9 @@ async def test_workspace_mutation_guard_coordinates_all_sessions(tmp_path: Path)
     await asyncio.gather(first, second)
     await mutation_entered.wait()
 
-    third = asyncio.create_task(manager.send_message(sessions[2].id, "three"))
+    third = asyncio.create_task(
+        manager.send_message(sessions[2].id, "three", input_processed=True)
+    )
     await asyncio.sleep(0)
     assert not runners[2].started.is_set()
     mutation_release.set()
@@ -1306,8 +1318,16 @@ async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: 
     runners = iter([_BlockingRunner(), _Runner()])
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: next(runners), bus)  # type: ignore[arg-type]
+
+    # 本测试只验证取消和锁释放，不让扩展探测额外消费有限 Runner 序列
+    async def no_extensions(_session_id: str) -> None:
+        return None
+
+    manager.prepare_extensions = no_extensions  # type: ignore[method-assign]
     session = await manager.create("chat")
-    send_task = asyncio.create_task(manager.send_message(session.id, "long task"))
+    send_task = asyncio.create_task(
+        manager.send_message(session.id, "long task", input_processed=True)
+    )
     await started.wait()
     run_id = store.read_meta(session.id).run_ids[-1]
 
@@ -1320,7 +1340,7 @@ async def test_cancel_run_interrupts_runner_and_releases_session_lock(tmp_path: 
     assert store.read_meta(session.id).status == "interrupted"
     assert any(getattr(event, "type", "") == "session.interrupted" for event in events)
 
-    await manager.send_message(session.id, "continue")
+    await manager.send_message(session.id, "continue", input_processed=True)
     assert store.read_meta(session.id).status == "waiting_for_input"
 
 

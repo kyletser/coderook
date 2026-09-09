@@ -359,7 +359,9 @@ def test_web_tools_registered_and_gated(
     )
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
 
-    assert {"web_fetch", "web_search"} <= names
+    assert names == {"bash", "edit", "read", "write"}
+    assert registry.get("web_fetch") is not None
+    assert registry.get("web_search") is not None
     fetch = registry.get("web_fetch")
     search = registry.get("web_search")
     assert fetch is not None and search is not None

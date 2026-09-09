@@ -77,9 +77,12 @@ async def test_compact_messages_calls_provider(tmp_path: Path) -> None:
     provider.chat.assert_called_once()
     assert provider.chat.call_args.kwargs["tool_schemas"] == []
     from code_rook.core.agent_runtime.summarization import SummaryBus
+    from code_rook.core.llm.attempt import AttemptBus
 
-    assert isinstance(provider.chat.call_args.kwargs["bus"], SummaryBus)
-    assert provider.chat.call_args.kwargs["bus"]._parent is bus
+    attempt_bus = provider.chat.call_args.kwargs["bus"]
+    assert isinstance(attempt_bus, AttemptBus)
+    assert isinstance(attempt_bus._inner, SummaryBus)
+    assert attempt_bus._inner._parent is bus
     assert provider.chat.call_args.kwargs["run_id"] == "run-compact"
     assert provider.chat.call_args.kwargs["step"] == 3
 

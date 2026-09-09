@@ -489,7 +489,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         title: str,
         history_count: int | None,
     ) -> None:
-        self.run_worker(self._refresh_input_commands(session_id))
+        if self._client is not None:
+            self.run_worker(self._refresh_input_commands(session_id))
         label = tr(f"app.session.{action}", self._locale)
         if label == f"app.session.{action}":
             label = tr("app.session.ready", self._locale)

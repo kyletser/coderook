@@ -818,8 +818,8 @@ async def test_model_picker_searches_ids_and_shows_route_capabilities() -> None:
     assert app.selected == ["beta-coder"]
 
 
-# 功能：验证 /config Provider 选择器显示四种内置接入方式并支持键盘选择
-# 设计：在最小 Textual App 中选择第二项，覆盖中文名称渲染和 Selected 消息
+# 功能：验证 /config Provider 选择器显示主要内置接入方式并支持键盘选择
+# 设计：在最小 Textual App 中选择阿里云项，覆盖新增 Provider 渲染和 Selected 消息
 async def test_provider_picker_shows_four_builtin_options() -> None:
     class PickerHarness(App[None]):
         # 初始化测试宿主并收集 Provider 结果
@@ -841,13 +841,14 @@ async def test_provider_picker_shows_four_builtin_options() -> None:
         picker = app.query_one(ProviderPicker)
         plain = render(picker._render_ui()).plain
         assert "DeepSeek API" in plain
+        assert "阿里云百炼" in plain
         assert "OpenAI" in plain
         assert "Anthropic" in plain
         assert "硅基流动" in plain
 
         await pilot.press("down", "enter")
         await pilot.pause()
-        assert app.selected == ["openai"]
+        assert app.selected == ["aliyun"]
 
 
 # 功能：验证 API Key 在当前页面以密码输入方式提交
@@ -1021,7 +1022,10 @@ async def test_inline_local_provider_flow_requires_no_api_key(
         prompt.text = "/config"
         await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
         await pilot.pause()
-        for _ in range(7):
+        ollama_index = next(
+            index for index, provider in enumerate(PROVIDER_PRESETS) if provider.id == "ollama"
+        )
+        for _ in range(ollama_index):
             await pilot.press("down")
         await pilot.press("enter")
         await pilot.pause()

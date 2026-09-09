@@ -20,6 +20,7 @@ from code_rook.core.processes import (
 from code_rook.core.sandbox.planner import SandboxPlan, SandboxSpawnRequest, spawn_sandboxed_shell
 from code_rook.core.tools.base import BaseTool, ToolResult
 from code_rook.core.tools.execution_metadata import report_tool_progress
+from code_rook.core.tools.spec import ToolCaller
 
 
 # 优先选择 Git for Windows 的 Bash；避免把 cmd 命令解释器伪装成 Bash。
@@ -111,6 +112,9 @@ class CodingShellTool(BaseTool):
     params_model = ShellParams
     input_schema = ShellParams.model_json_schema()
     timeout_s = 0.0
+    allowed_callers = frozenset(
+        {ToolCaller.MODEL, ToolCaller.INTERNAL, ToolCaller.REPLAY}
+    )
 
     # 冻结现有沙箱与进程管理服务，执行仍受统一审批管线管理。
     def __init__(

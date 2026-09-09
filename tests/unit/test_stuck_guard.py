@@ -141,15 +141,15 @@ async def test_three_identical_tool_calls_are_advisory() -> None:
     stuck = [event for event in events if event.type == "agent.repeat_notice"]  # type: ignore[attr-defined]
     assert context.status == "success"
     assert context.reason is None
-    assert tool.calls == 1
+    assert tool.calls == 3
     assert len(stuck) == 1
     assert stuck[0].repeat_count == 3  # type: ignore[attr-defined]
     assert len(stuck[0].signature) == 64  # type: ignore[attr-defined]
     assert "content:a.py" not in stuck[0].signature  # type: ignore[attr-defined]
 
 
-# 功能：验证跨 step 的相同只读调用直接复用缓存且仍发布配对工具事件
-# 设计：两次相同 path 后正常结束，断言实现只调用一次但两个 tool_use_id 都有 started/finished
+# 功能：验证两次同参只读调用分别执行且仍发布配对工具事件
+# 设计：重复次数未到提醒阈值，断言不缓存、不阻止且两个 tool_use_id 都有 started/finished
 async def test_repeated_read_uses_cache_with_paired_events() -> None:
     provider = _SequenceProvider(
         [
@@ -181,7 +181,7 @@ async def test_repeated_read_uses_cache_with_paired_events() -> None:
     started = [event for event in events if event.type == "tool.call_started"]  # type: ignore[attr-defined]
     finished = [event for event in events if event.type == "tool.call_finished"]  # type: ignore[attr-defined]
     assert context.status == "success"
-    assert tool.calls == 1
+    assert tool.calls == 2
     assert [event.tool_use_id for event in started] == ["read-1", "read-2"]  # type: ignore[attr-defined]
     assert [event.tool_use_id for event in finished] == ["read-1", "read-2"]  # type: ignore[attr-defined]
 

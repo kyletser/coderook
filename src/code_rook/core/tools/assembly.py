@@ -416,5 +416,8 @@ class RuntimeToolAssembly:
                 if self._mcp_manager
                 else set()
             )
-            registry.set_model_surface(frozenset({"read", "bash", "edit", "write", *custom}))
+            active_control = {"update_goal"} if registry.get("update_goal") is not None else set()
+            registry.set_model_surface(
+                frozenset({"read", "bash", "edit", "write", *custom, *active_control})
+            )
         return registry

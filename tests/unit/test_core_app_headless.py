@@ -146,6 +146,11 @@ async def test_session_usage_summary_includes_workers_without_double_counting() 
                 )
             ]
 
+        # 当前场景没有压缩、摘要或其他辅助模型调用用量
+        async def list_auxiliary_usage(self, thread_id: str) -> list[dict[str, Any]]:
+            assert thread_id == "session-cost"
+            return []
+
     worker = SimpleNamespace(
         id="worker-1",
         session_id="session-cost",
@@ -334,6 +339,18 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         async def create(self, mode: str, title: str = "") -> Session:
             return session
 
+        # 模拟无扩展拦截时输入原样进入 headless run
+        async def process_input(
+            self,
+            session_id: str,
+            content: str,
+            *,
+            source: str,
+        ) -> tuple[str, list[Any]]:
+            assert session_id == session.id
+            assert source == "rpc"
+            return content, []
+
         # 模拟会话可接受新 turn 的同步前置校验
         async def preflight_turn_start(self, session_id: str, run_id: str) -> None:
             assert session_id == session.id
@@ -345,7 +362,11 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             content: str,
             *,
             run_id: str | None = None,
+            attachments: list[Any] | None = None,
+            input_processed: bool = False,
         ) -> str:
+            assert attachments == []
+            assert input_processed is True
             async def emit(_event: dict[str, Any]) -> None:
                 raise AssertionError("headless permission mode must not request input")
 

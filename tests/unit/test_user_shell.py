@@ -53,6 +53,7 @@ async def test_session_shell_history(tmp_path: Path, prefix: str) -> None:
     bus = EventBus()
     store = SessionStore(tmp_path / "sessions")
     routes = Mock()
+    routes.route.side_effect = ValueError("no active route")
     routes.resolve.side_effect = AssertionError("shell must not resolve model")
     runner = AgentRunner(CodeRookConfig(), bus=bus, workspace_root=tmp_path)
     manager = SessionManager(

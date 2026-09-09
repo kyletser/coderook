@@ -96,6 +96,7 @@ _SKIP_PARTS = {
     "dist",
     "node_modules",
     "reports",
+    "vendor",
 }
 _DOCS_ROOT_FILES = {"README.md"}
 _DOCS_ROOT_DIRECTORIES = {
@@ -133,6 +134,7 @@ _ROOT_DIRECTORIES = {
     "src",
     "tests",
     "web",
+    "vendor",
 }
 _ROOT_LOCAL_ENTRIES = {
     ".benchmark-results",

@@ -81,14 +81,14 @@ def _python_command(code: str) -> str:
     return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
-# 功能：验证默认 Runner 只向模型暴露 File family，旧平铺文件工具仅保留内部实现
-# 设计：同时检查模型 schema 和 registry.get，证明隐藏 alias 没有被删除也没有继续污染 prompt
+# 功能：验证默认 Runner 暴露原生文件工具，并保留 File family 供显式工具目录使用
+# 设计：先检查默认小工具面，再显式选择 File 验证 family action 与兼容 backend 均未丢失
 def test_runner_exposes_file_family_and_keeps_hidden_aliases(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
 
-    assert "File" in names
+    assert names == {"bash", "edit", "read", "write"}
     assert {
         "read_file",
         "list_dir",
@@ -100,6 +100,7 @@ def test_runner_exposes_file_family_and_keeps_hidden_aliases(tmp_path: Path) -> 
     }.isdisjoint(names)
     assert registry.get("read_file") is not None
     assert registry.get("apply_patch") is not None
+    registry.set_model_tool_allowlist(frozenset({"File"}))
     assert _file_actions(_file_schema(registry)) == {
         "read",
         "list",
@@ -111,8 +112,8 @@ def test_runner_exposes_file_family_and_keeps_hidden_aliases(tmp_path: Path) -> 
     }
 
 
-# 功能：验证默认根 Agent 工具面不超过显式上限，并包含 Artifact 与 deferred discovery 入口
-# 设计：通过 Runner 的独立装配器构建真实目录，检查数量边界和两个 R3 基础工具名称
+# 功能：验证默认根 Agent 工具面保持为四个原生编码工具且不超过显式上限
+# 设计：通过 Runner 的独立装配器构建真实目录，固定模型首轮收到的小工具面
 def test_runner_tool_assembly_keeps_default_surface_bounded(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
@@ -120,19 +121,20 @@ def test_runner_tool_assembly_keeps_default_surface_bounded(tmp_path: Path) -> N
     names = {str(schema["name"]) for schema in schemas}
 
     assert len(schemas) <= registry.model_tool_limit
-    assert {"Repository", "artifact_read", "tool_search"} <= names
+    assert names == {"bash", "edit", "read", "write"}
 
 
-# 功能：验证默认 Runner 只暴露 Git family，并保留隐藏 git_diff replay alias
-# 设计：同时检查五个 action、模型目录和内部实现表，固定旧 transcript 的兼容边界
+# 功能：验证默认小工具面隐藏 Git family，但显式选择后仍保留五个只读 action
+# 设计：同时检查默认目录、显式 family schema 和 git_diff replay backend 的兼容边界
 def test_runner_exposes_git_family_and_hides_legacy_alias(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
 
-    assert "Git" in names
+    assert "Git" not in names
     assert "git_diff" not in names
     assert registry.get("git_diff") is not None
+    registry.set_model_tool_allowlist(frozenset({"Git"}))
     assert _file_actions(_git_schema(registry)) == {
         "status",
         "diff",
@@ -190,17 +192,18 @@ async def test_git_family_executes_all_read_actions(tmp_path: Path) -> None:
     assert not blame.is_error and "filename sample.txt" in blame.content
 
 
-# 功能：验证默认 Runner 暴露 Run.tests/verifiers 且隐藏两个旧 alias
-# 设计：检查 action schema、模型可见名和内部实现表，固定 action-family 迁移后的兼容面
+# 功能：验证默认小工具面隐藏 Run family，但显式选择后保留 tests/verifiers
+# 设计：检查默认模型目录、显式 action schema 和内部兼容实现表
 def test_runner_exposes_run_family_and_hides_legacy_aliases(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
 
-    assert "Run" in names
+    assert "Run" not in names
     assert {"run_tests", "run_verifiers"}.isdisjoint(names)
     assert registry.get("run_tests") is not None
     assert registry.get("run_verifiers") is not None
+    registry.set_model_tool_allowlist(frozenset({"Run"}))
     assert _file_actions(_run_schema(registry)) == {"tests", "verifiers"}
 
 
@@ -310,8 +313,8 @@ async def test_run_tests_rechecks_manifest_after_execution(tmp_path: Path) -> No
     assert payload["verification_reason"] == "candidate_changed_during_execution"
 
 
-# 功能：验证带后台 registry 的 Runner 只暴露 Bash lifecycle family
-# 设计：检查 run/wait/interact/cancel action 和全部旧 alias 的隐藏状态，避免平铺工具重新进入 prompt
+# 功能：验证带后台 registry 的 Runner 可显式启用 Bash lifecycle family
+# 设计：默认仍保持小工具面，再选择 Bash 检查 run/wait/interact/cancel 与兼容 backend
 def test_runner_exposes_bash_lifecycle_family(tmp_path: Path) -> None:
     background = BackgroundJobRegistry(EventBus())
     runner = AgentRunner(
@@ -325,11 +328,11 @@ def test_runner_exposes_bash_lifecycle_family(tmp_path: Path) -> None:
         run_id="run-bash",
     )
     names = {str(schema["name"]) for schema in registry.tool_schemas()}
+    assert "Bash" not in names
+    registry.set_model_tool_allowlist(frozenset({"Bash"}))
     schema = next(item for item in registry.tool_schemas() if item["name"] == "Bash")
 
-    assert "Bash" in names
     assert {
-        "bash",
         "background_start",
         "background_result",
         "background_interact",
@@ -349,7 +352,7 @@ async def test_bash_default_action_keeps_permission_pipeline(
     manager = PermissionManager(timeout_s=0)
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path, permission_manager=manager)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
-    backend = registry.get("bash")
+    backend = registry.get("Bash")
     assert backend is not None
     executed: list[dict[str, object]] = []
 
@@ -358,7 +361,7 @@ async def test_bash_default_action_keeps_permission_pipeline(
         executed.append(params)
         return ToolResult("command completed")
 
-    monkeypatch.setattr(backend, "invoke", execute)
+    monkeypatch.setattr(backend._shell, "invoke", execute)  # type: ignore[attr-defined]
     bus = EventBus()
     events: list[str] = []
 
@@ -385,6 +388,7 @@ async def test_bash_default_action_keeps_permission_pipeline(
 def test_bash_default_schema_and_frozen_action_restriction(tmp_path: Path) -> None:
     runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
     registry = runner._build_registry(TaskManager(tmp_path / ".tasks"))
+    registry.set_model_tool_allowlist(frozenset({"Bash"}))
     schema = next(item for item in registry.tool_schemas() if item["name"] == "Bash")
     variant = schema["input_schema"]["oneOf"][0]
     assert variant["required"] == ["command"]
@@ -590,7 +594,7 @@ async def test_legacy_git_run_and_bash_aliases_replay(tmp_path: Path) -> None:
     )
     bash_result = await invoke_tool(
         registry,
-        ToolCallBlock(id="old-bash", name="bash", input={"command": command}),
+        ToolCallBlock(id="old-bash", name="bash", input={"command": "printf replayed"}),
         EventBus(),
         "run-replay",
         caller=ToolCaller.REPLAY,

@@ -58,6 +58,18 @@ class _Sessions:
         self.calls.append(("preflight", session_id))
         assert run_id
 
+    # 模拟无扩展处理器时 RPC 输入保持原文且不附带图片
+    async def process_input(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        source: str,
+    ) -> tuple[str, list[object]]:
+        assert session_id == "thread-1"
+        assert source == "rpc"
+        return content, []
+
     # 运行一次 turn 并记录调用
     async def send_message(
         self,
@@ -66,7 +78,11 @@ class _Sessions:
         *,
         run_id: str | None = None,
         runtime_mode: object = None,
+        attachments: list[object] | None = None,
+        input_processed: bool = False,
     ) -> str:
+        assert attachments == []
+        assert input_processed is True
         self.calls.append(("send", content))
         return run_id or ""
 

@@ -284,7 +284,7 @@ def test_cmd_configure_validates_catalog_route_before_activation(
         routes,
         CredentialStore(tmp_path / "credentials.json"),
     )
-    inputs = iter(["8", "qwen-test"])
+    inputs = iter(["ollama", "qwen-test"])
     monkeypatch.setattr(configure_module.sys.stdin, "isatty", lambda: True)
 
     configure_module.cmd_configure(
