@@ -261,3 +261,26 @@ def test_native_coding_tools_presentation(tmp_path: Path) -> None:
         assert view.action == action
         assert view.kind == kind
         assert view.locations == ("example.py",)
+
+
+# 功能：验证用户取消的工具结果使用独立终止语义且不提供失败重试动作
+# 设计：用真实 Bash action 构造 cancelled ToolResult，避免前端把主动停止误呈现成执行失败
+def test_cancelled_presentation_is_not_a_retryable_failure(tmp_path: Path) -> None:
+    registry = AgentRunner(
+        CodeRookConfig(), workspace_root=tmp_path,
+    )._build_registry(TaskManager(tmp_path / ".tasks"))
+    params = {"action": "run", "command": "sleep 30"}
+    result = ToolResult(
+        "Tool call cancelled.",
+        is_error=True,
+        error_type="cancelled",
+        failure_category="cancelled",
+    )
+
+    view = build_tool_presentation(
+        registry.resolve_call("Bash", params), params, result,
+    )
+
+    assert view.status == "cancelled"
+    assert view.failure_category == "cancelled"
+    assert view.recovery_actions == ()

@@ -143,6 +143,7 @@ def build_tool_presentation(
     enforcement = "unavailable"
     failure_category = ""
     recovery_actions: tuple[str, ...] = ()
+    cancelled = False
     if result is not None:
         usage = result.process_usage or {}
         raw_exit = usage.get("exit_code")
@@ -150,7 +151,10 @@ def build_tool_presentation(
         enforcement = result.sandbox_enforcement
         diagnostics = result.error_type or ""
         failure_category = result.failure_category or ""
-        if result.is_error:
+        cancelled = failure_category in {"cancelled", "canceled"} or diagnostics in {
+            "cancelled", "canceled",
+        }
+        if result.is_error and not cancelled:
             recovery_actions = (
                 "review_permissions",
                 "adjust_parameters",
@@ -174,7 +178,12 @@ def build_tool_presentation(
         kind=kind,
         action=action,
         title_key=spec.title_key,
-        status="running" if result is None else "failed" if result.is_error else "succeeded",
+        status=(
+            "running" if result is None
+            else "cancelled" if cancelled
+            else "failed" if result.is_error
+            else "succeeded"
+        ),
         subject=subject,
         locations=locations,
         command=command,

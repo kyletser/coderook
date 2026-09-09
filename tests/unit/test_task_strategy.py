@@ -84,8 +84,8 @@ def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) 
     assert profile.confidence >= 0.95
 
 
-# 功能：验证混合请求不能因身份关键词覆盖实际操作且普通执行保持工具可用
-# 设计：交换子句顺序并覆盖中英文、文件查询和编辑，防止只修复桌面一个样例
+# 功能：验证混合请求不能因身份关键词覆盖实际操作且普通执行保留核心工具面
+# 设计：交换子句顺序并覆盖中英文、文件查询和编辑，确认关键词画像不会硬关闭执行能力
 @pytest.mark.parametrize(
     "goal",
     [
@@ -106,16 +106,11 @@ def test_mixed_intent_is_not_conversation_gate(goal: str) -> None:
     effective = router.for_execution(profile)
     assert effective.source == "model_led"
     assert effective.strategy == TaskStrategy.DIRECT
-    tools = effective.model_tool_allowlist()
-    if effective.risk == TaskRisk.READ and "read_intent" in effective.signals:
-        assert tools is not None and "read" in tools
-        assert tools.isdisjoint({"bash", "edit", "write"})
-    else:
-        assert tools == frozenset({"__all_except_delegation__"})
+    assert effective.model_tool_allowlist() == frozenset({"__all_except_delegation__"})
 
 
-# 功能：验证目录内容询问被识别为直接只读检查并开放目录读取工具
-# 设计：覆盖用户真实中文表达和常见同义句，防止无修改意图的简单查询误入 Plan 门禁
+# 功能：验证目录内容询问被识别为直接检查且不会因只读关键词失去核心工具
+# 设计：覆盖用户真实中文表达和常见同义句，交由模型选工具并由执行权限约束实际风险
 @pytest.mark.parametrize(
     "goal",
     ["当前文件夹有什么。", "列出当前目录", "这个目录下有哪些文件"],
@@ -128,9 +123,7 @@ def test_directory_listing_routes_to_direct_read(goal: str) -> None:
     assert profile.intent == TaskIntent.INSPECT
     assert profile.risk == TaskRisk.READ
     assert profile.strategy == TaskStrategy.DIRECT
-    tools = effective.model_tool_allowlist() or frozenset()
-    assert {"read", "list_dir"}.issubset(tools)
-    assert tools.isdisjoint({"bash", "edit", "write"})
+    assert effective.model_tool_allowlist() == frozenset({"__all_except_delegation__"})
     assert profile.confidence >= 0.9
 
 

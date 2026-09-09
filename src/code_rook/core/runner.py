@@ -224,7 +224,6 @@ class AgentRunner:
         status = "failed"
         reason: str | None = None
         output = ""
-        cancelled = False
         path = store.runs_dir(session.id) / run_id
         path.mkdir(parents=True, exist_ok=True)
         bridge = SessionLedgerBridge(
@@ -241,6 +240,14 @@ class AgentRunner:
                 writer.subscribe(bus)
                 bridge.subscribe(bus)
                 await bus.publish(RunStartedEvent(run_id=run_id, goal=request.command, ts=_now()))
+                await bus.publish(RunPhaseChangedEvent(
+                    run_id=run_id,
+                    phase="executing",
+                    current=5,
+                    total=8,
+                    summary="正在运行用户命令",
+                    ts=_now(),
+                ))
                 await bus.publish(StepStartedEvent(run_id=run_id, step=1, ts=_now()))
                 try:
                     replacement = None
@@ -290,7 +297,6 @@ class AgentRunner:
                     status = "failed" if result.is_error else "success"
                     reason = result.error_type if result.is_error else None
                 except asyncio.CancelledError:
-                    cancelled = True
                     reason = "cancelled"
                     output = "Command cancelled."
                 except Exception as exc:
@@ -317,8 +323,6 @@ class AgentRunner:
         finally:
             if permissions:
                 permissions.end_turn(session.id)
-        if cancelled:
-            raise asyncio.CancelledError()
         return RunOutcome(status=status, result=output, reason=reason)
 
     # 组装所有运行时依赖，准备执行一次完整的 agent run

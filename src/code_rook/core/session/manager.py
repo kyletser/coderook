@@ -1668,7 +1668,9 @@ class SessionManager:
             self._store.write_meta(session)
             if self._runtime is not None:
                 runtime_status = (
-                    TurnStatus.COMPLETED
+                    TurnStatus.INTERRUPTED
+                    if outcome.reason == "cancelled"
+                    else TurnStatus.COMPLETED
                     if outcome.status == "success"
                     else TurnStatus.FAILED
                 )

@@ -370,6 +370,7 @@ body { background: #f1f1ee; color: var(--text); }
 .tool-status { color: #a1a19b; font-size: 11px; text-align: center; }
 .tool-kind-icon { width: 14px; height: 14px; display: inline-grid; flex: 0 0 14px; place-items: center; color: #8f908b; }
 .tool-kind-icon.failed { color: #b84c52; }
+.tool-kind-icon.cancelled, .tool-item.cancelled .tool-status { color: #8f908b; }
 .tool-item.failed .tool-status { color: #b84c52; }
 .tool-item.running .tool-status { color: #5c5ac3; }
 .tool-item-head b { color: #656660; font-size: 11px; font-weight: 520; white-space: nowrap; }

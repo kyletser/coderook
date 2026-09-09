@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic import BaseModel
 
 from code_rook.core.events.bus import EventBus
@@ -188,6 +189,36 @@ async def test_timeout_gives_timeout_error() -> None:
     assert result.error_type == "timeout"
     types = [e.type for e in events]  # type: ignore[attr-defined]
     assert "tool.call_failed" in types
+
+
+# 功能：取消执行中的工具仍发布唯一终态失败事件，避免 Runtime 留下悬空 Tool Call。
+# 设计：启动永久等待工具后取消其调用任务，验证异常继续传播且账本事件已成对收口。
+async def test_cancelled_tool_publishes_terminal_failure() -> None:
+    registry = ToolRegistry()
+    registry.register(_SlowTool())
+    bus = EventBus()
+    events: list[BaseModel] = []
+
+    # 收集取消前后的完整工具事件序列。
+    async def collect(event: BaseModel) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    task = asyncio.create_task(
+        invoke_tool(registry, _call("slow"), bus, run_id="cancelled", timeout=60),
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    failed = [
+        event for event in events if event.type == "tool.call_failed"  # type: ignore[attr-defined]
+    ]
+    assert len(failed) == 1
+    assert failed[0].error_class == "cancelled"  # type: ignore[attr-defined]
+    assert failed[0].terminal is True  # type: ignore[attr-defined]
 
 
 # 功能：验证工具内部抛出异常时被捕获并转为 runtime_error，错误信息保留原始异常消息

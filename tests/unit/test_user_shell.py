@@ -9,8 +9,12 @@ from code_rook.core.agent_runtime.user_shell import execute_user_shell, parse_us
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runner import AgentRunner
+from code_rook.core.runtime.models import TurnStatus
+from code_rook.core.runtime.service import RuntimeService
+from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session.manager import SessionManager
 from code_rook.core.session.store import SessionStore
+from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.registry import ToolRegistry
 
 
@@ -85,6 +89,48 @@ async def test_session_shell_history(tmp_path: Path, prefix: str) -> None:
         events = (store.runs_dir(session.id) / run_id / "events.jsonl").read_text("utf-8")
         assert '"shell-result"' in events
         assert '"status":"success"' in events.replace(" ", "")
+        assert '"type":"run.phase_changed"' in events.replace(" ", "")
+        assert '"phase":"executing"' in events.replace(" ", "")
         routes.resolve.assert_not_called()
     finally:
         await manager.cancel_all()
+
+
+# 功能：用户停止直接 Shell 后将 Turn 落为中断，并让会话恢复空闲。
+# 设计：替换实际进程调用为可取消屏障，贯穿 Runner、SessionManager 与 Runtime 投影验证终态。
+async def test_cancel_user_shell_finishes_runtime_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+
+    # 模拟一个只会被用户停止的长时间命令。
+    async def blocking_shell(*args: object, **kwargs: object) -> ToolResult:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr("code_rook.core.runner.execute_user_shell", blocking_shell)
+    bus = EventBus()
+    store = SessionStore(tmp_path / "sessions")
+    runtime = RuntimeService(RuntimeStore(tmp_path / "runtime.db"), tmp_path, bus=bus)
+    runner = AgentRunner(CodeRookConfig(), bus=bus, workspace_root=tmp_path)
+    manager = SessionManager(
+        store, lambda: runner, bus, workspace=tmp_path, runtime_service=runtime,
+    )
+    session = await manager.create("chat")
+    sending = asyncio.create_task(manager.send_message(session.id, "!long-command"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        run_id = store.read_meta(session.id).run_ids[-1]
+
+        await asyncio.wait_for(manager.cancel_run(run_id), timeout=5)
+        assert await asyncio.wait_for(sending, timeout=5) == run_id
+
+        turn = await runtime.get_turn(run_id)
+        thread = await runtime.get_thread(session.id)
+        assert turn.status == TurnStatus.INTERRUPTED
+        assert thread.status.value == "idle"
+        assert store.read_meta(session.id).status == "waiting_for_input"
+    finally:
+        await manager.cancel_all()
+        await asyncio.gather(sending, return_exceptions=True)

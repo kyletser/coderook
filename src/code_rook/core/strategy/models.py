@@ -75,8 +75,7 @@ class TaskProfile(BaseModel):
     # 返回用于模型可见工具裁剪的顶层工具名集合，None 表示保留完整目录
     def model_tool_allowlist(self) -> frozenset[str] | None:
         if self.source == "model_led" and self.strategy == TaskStrategy.DIRECT:
-            if self.risk != TaskRisk.READ or "read_intent" not in self.signals:
-                return frozenset({"__all_except_delegation__"})
+            return frozenset({"__all_except_delegation__"})
         if self.intent == TaskIntent.ANSWER:
             return frozenset()
         if self.strategy == TaskStrategy.DELEGATE:
@@ -128,11 +127,7 @@ class TaskProfile(BaseModel):
 
     # 返回只读画像对 action family 的精确动作裁剪表
     def model_action_allowlist(self) -> dict[str, frozenset[str]]:
-        if (
-            self.source == "model_led"
-            and self.strategy == TaskStrategy.DIRECT
-            and (self.risk != TaskRisk.READ or "read_intent" not in self.signals)
-        ):
+        if self.source == "model_led" and self.strategy == TaskStrategy.DIRECT:
             return {}
         if self.strategy == TaskStrategy.DELEGATE:
             return {

@@ -587,6 +587,20 @@ async def invoke_tool(
                     )
                 return result
 
+        except asyncio.CancelledError:
+            cancelled_result = ToolResult(
+                "Tool call cancelled.", is_error=True, error_type="cancelled",
+                sandbox_enforcement=sandbox_enforcement, failure_category="cancelled",
+            )
+            cancelled_result.presentation = build_tool_presentation(
+                resolved_call, dict(tool_call.input), cancelled_result,
+            ).model_dump(mode="json")
+            await _fail(
+                bus, run_id, tool_call, "cancelled", cancelled_result.content, elapsed(),
+                step=step, sandbox_enforcement=sandbox_enforcement,
+                terminal_result=cancelled_result,
+            )
+            raise
         except RateLimitedError as exc:
             error_class = "rate_limited"
             error_message = str(exc)

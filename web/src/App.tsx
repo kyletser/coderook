@@ -431,7 +431,7 @@ function MarkdownText({ content }: { content: string }): ReactElement {
 function toolActionLabel(
   toolName: string,
   params: Record<string, unknown>,
-  state: "running" | "succeeded" | "failed",
+  state: "running" | "succeeded" | "failed" | "cancelled",
   semanticAction = "",
 ): string {
   const labels: Record<string, string> = {
@@ -447,10 +447,16 @@ function toolActionLabel(
   };
   const semantic = labels[semanticAction];
   if (semantic) {
+    if (state === "cancelled") {
+      if (semanticAction === "run_command") return tr("命令已取消", "Command cancelled");
+      if (semanticAction === "run_tests") return tr("验证已取消", "Checks cancelled");
+      return tr(`${semantic}已取消`, `${semantic} cancelled`);
+    }
     if (semanticAction === "run_command") return state === "failed" ? tr("运行失败", "Command failed") : state === "running" ? tr("正在运行", "Running") : tr("已运行", "Command finished");
     if (semanticAction === "run_tests") return state === "failed" ? tr("验证失败", "Checks failed") : state === "running" ? tr("正在验证", "Running checks") : tr("已验证", "Checks passed");
     return state === "failed" ? tr(`${semantic}失败`, `${semantic} failed`) : state === "running" ? tr(`正在${semantic}`, `Running ${semantic.toLowerCase()}`) : semantic;
   }
+  if (state === "cancelled") return tr(`${toolName} 已取消`, `${toolName} cancelled`);
   if (["Bash", "Run", "bash", "run"].includes(toolName)) {
     return state === "failed" ? tr("命令执行失败", "Command failed") : state === "running" ? tr("正在运行命令", "Running command") : tr("运行命令", "Run command");
   }
@@ -1203,7 +1209,11 @@ function AppShell({
           },
         );
         if (started.handled) setNotice(tr("输入已由扩展处理", "Input handled by extension"));
-        else setTurns((current) => [...current, started]);
+        else {
+          setTurns((current) => [...current, started]);
+          setPhase(isUserShell(content) ? "executing" : "understanding");
+        }
+        void refreshThreads();
         void loadThread(threadId);
       }
       setComposer("");
@@ -1297,15 +1307,23 @@ function AppShell({
     if (!activeTurn) return;
     const threadId = selectedId;
     try {
-      await request(`/v1/turns/${encodeURIComponent(activeTurn.id)}/interrupt`, {
-        method: "POST",
-        body: "{}",
-      });
+      const interrupted = await request<TurnRecord>(
+        `/v1/turns/${encodeURIComponent(activeTurn.id)}/interrupt`, {
+          method: "POST",
+          body: "{}",
+        },
+      );
+      if (selectedIdRef.current === threadId) {
+        setTurns((current) => current.map((turn) =>
+          turn.id === interrupted.id ? interrupted : turn));
+        setPhase("idle");
+      }
+      void refreshThreads();
       setNotice(tr("已请求停止当前任务", "Stop requested for the active task."));
-      const result = await request<{ messages: QueuedMessage[] }>(
+      const messages = await request<QueuedMessage[]>(
         `/v1/threads/${encodeURIComponent(threadId)}/queue`,
       );
-      const pending = result.messages.filter((message) =>
+      const pending = messages.filter((message) =>
         message.status === "blocked" && message.error.startsWith("Run stopped;"),
       );
       if (selectedIdRef.current !== threadId || pending.length === 0) return;
@@ -1467,7 +1485,13 @@ function AppShell({
         .filter((item) => item.kind === "message" && textValue(item.payload.role) === "user")
         .map((item) => [item.turn_id, messageContent(item.payload.content)]),
     );
-    const resultPriority: Record<string, number> = { "turn.finished": 1, "run.finished": 2, "run.outcome": 3 };
+    const resultPriority: Record<string, number> = {
+      "turn.finished": 1,
+      "turn.failed": 1,
+      "turn.interrupted": 1,
+      "run.finished": 2,
+      "run.outcome": 3,
+    };
     const preferredResultSeq = new Map<string, number>();
     for (const event of events) {
       if (!(event.type in resultPriority)) continue;
@@ -1588,16 +1612,19 @@ function AppShell({
         </nav>
         <div className="section-title"><span>{tr("最近任务", "Recent tasks")}</span><span>{threads.length}</span></div>
         <nav className="sessions">
-          {threads.map((thread) => (
+          {threads.map((thread) => {
+            const displayStatus = thread.id === selectedId && activeTurn ? "running" : thread.status;
+            return (
             <button
               className={`session ${thread.id === selectedId ? "selected" : ""}`}
               key={thread.id}
               onClick={() => selectThread(thread.id)}
             >
               <span>{thread.title || tr("未命名任务", "Untitled task")}</span>
-              <small><i className={`session-status ${thread.status}`} />{statusLabel(thread.status)} <em>· {displayTime(thread.updated_at)}</em></small>
+              <small><i className={`session-status ${displayStatus}`} />{statusLabel(displayStatus)} <em>· {displayTime(thread.updated_at)}</em></small>
             </button>
-          ))}
+            );
+          })}
           {!threads.length && <p className="empty">{tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")}</p>}
         </nav>
         <div className="sidebar-foot"><span className="connection-dot" />{tr("本机 Core 已连接", "Local Core connected")}<small>0.2 beta</small></div>
@@ -1929,6 +1956,7 @@ function TurnItemCard({ item }: { item: TurnItem }): ReactElement {
 }
 
 type ToolCardInfo = {
+  cancelled: boolean;
   failed: boolean;
   running: boolean;
   params: Record<string, unknown>;
@@ -1948,14 +1976,16 @@ function toolCardInfo(call?: TurnItem, result?: TurnItem, progress?: RuntimeEven
   const rawPresentation = resultPayload.presentation || progress?.payload.presentation || callPayload.presentation;
   const presentation = rawPresentation && typeof rawPresentation === "object" ? rawPresentation as Record<string, unknown> : {};
   const toolName = textValue(resultPayload.tool_name || callPayload.tool_name || presentation.title || tr("工具", "Tool"));
-  const failed = Boolean(resultPayload.is_error || resultPayload.error_message || resultPayload.error_class) || ["error", "failed"].includes(textValue(resultPayload.status));
+  const terminalCategory = textValue(resultPayload.failure_category || resultPayload.error_class || presentation.failure_category || presentation.status).toLowerCase();
+  const cancelled = ["cancelled", "canceled"].includes(terminalCategory);
+  const failed = !cancelled && (Boolean(resultPayload.is_error || resultPayload.error_message || resultPayload.error_class) || ["error", "failed"].includes(textValue(resultPayload.status)));
   const running = !result;
   const rawParams = callPayload.params;
   const params = rawParams && typeof rawParams === "object" ? rawParams as Record<string, unknown> : {};
   const semanticAction = inferToolAction(toolName, params, presentation);
   const subject = textValue(presentation.subject || presentation.command || params.command || params.path || params.query);
   const output = textValue(presentation.summary || resultPayload.error_message || resultPayload.output || resultPayload.result || progress?.payload.output_tail);
-  const state = failed ? "failed" : running ? "running" : "succeeded";
+  const state = cancelled ? "cancelled" : failed ? "failed" : running ? "running" : "succeeded";
   const title = toolActionLabel(toolName, params, state, semanticAction);
   const elapsedMs = Number(resultPayload.elapsed_ms || progress?.payload.elapsed_ms || presentation.elapsed_ms || 0);
   const rawLocations = presentation.locations;
@@ -1967,7 +1997,7 @@ function toolCardInfo(call?: TurnItem, result?: TurnItem, progress?: RuntimeEven
     `请先诊断失败原因，再重试“${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? `（${target}）` : ""}。不要原样重复已经失败的调用。`,
     `Diagnose the failure, then retry “${toolActionLabel(toolName, params, "succeeded", semanticAction)}”${target ? ` (${target})` : ""}. Do not repeat the failed call unchanged.`,
   );
-  return { failed, running, params, presentation, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction };
+  return { cancelled, failed, running, params, presentation, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction };
 }
 
 function TurnToolCard({
@@ -1988,7 +2018,7 @@ function TurnToolCard({
   onRetry(prompt: string): void;
 }): ReactElement {
   const info = toolCardInfo(call, result, progress);
-  const { failed, running, params, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction } = info;
+  const { cancelled, failed, running, params, title, subject, output, elapsedMs, locations, retryPrompt, semanticAction } = info;
   const elapsed = toolElapsed(elapsedMs);
   const openableLocation = ["read_file", "edit_code"].includes(semanticAction) ? locations[0] : "";
   const customDetails = info.presentation.details;
@@ -1999,8 +2029,8 @@ function TurnToolCard({
   const summary = (
     <>
       {["run_command", "run_tests"].includes(semanticAction)
-        ? <span className={`tool-kind-icon ${failed ? "failed" : ""}`}><Icon name="terminal" size={13} /></span>
-        : <span className="tool-status">{failed ? "×" : running ? "◌" : "✓"}</span>}
+        ? <span className={`tool-kind-icon ${failed ? "failed" : cancelled ? "cancelled" : ""}`}><Icon name="terminal" size={13} /></span>
+        : <span className="tool-status">{failed ? "×" : cancelled ? "–" : running ? "◌" : "✓"}</span>}
       <b>{title}</b>
       {locations[0]
         ? openableLocation
@@ -2012,7 +2042,7 @@ function TurnToolCard({
     </>
   );
   return (
-    <article className={`tool-item ${nested ? "nested" : ""} ${failed ? "failed" : ""} ${running ? "running" : ""}`}>
+    <article className={`tool-item ${nested ? "nested" : ""} ${failed ? "failed" : ""} ${cancelled ? "cancelled" : ""} ${running ? "running" : ""}`}>
       {hasDetails ? (
         <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary className="tool-item-head">{summary}</summary>
@@ -2180,7 +2210,9 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
     return () => controller.abort();
   }, [turnId]);
   const status = textValue(receipt?.outcome || receipt?.status || event.payload.status || event.payload.outcome || "failed");
-  const failed = resultStatusIsFailure(status);
+  const reason = textValue(event.payload.reason || event.payload.failure_category).toLowerCase();
+  const cancelled = ["cancelled", "canceled"].includes(reason) || ["cancelled", "canceled"].includes(status.toLowerCase());
+  const failed = !cancelled && resultStatusIsFailure(status);
   const changes = receipt?.changes || [];
   const changedFiles = receipt?.files_changed?.length || changes.length;
   const additions = changes.reduce((total, change) => total + Number(change.additions || 0), 0);
@@ -2189,11 +2221,15 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
   const verificationFailed = verification.some((item) => ["failed", "error", "timeout"].includes(textValue(item.status).toLowerCase()));
   const model = textValue(receipt?.route?.model);
   const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
-  const summary = resultSummaryFor(event.payload, receipt, detail);
-  const copied = [failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete"), summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
+  const rawSummary = resultSummaryFor(event.payload, receipt, detail);
+  const summary = cancelled && /^(command|tool call) cancelled\.?$/i.test(rawSummary)
+    ? tr("已按你的要求停止。", "Stopped at your request.")
+    : rawSummary;
+  const resultTitle = cancelled ? tr("本轮已停止", "Turn stopped") : failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete");
+  const copied = [resultTitle, summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
   return (
-    <article className={`result-inline ${failed ? "failed" : ""}`}>
-      <span>{failed ? tr("本轮未完成", "Turn incomplete") : tr("本轮完成", "Turn complete")}</span>
+    <article className={`result-inline ${failed ? "failed" : ""} ${cancelled ? "cancelled" : ""}`}>
+      <span>{resultTitle}</span>
       {summary && <small>{summary}</small>}
       <div className="result-evidence">
         {changedFiles > 0 && <em>{tr(`${changedFiles} 个文件`, `${changedFiles} files`)} · +{additions} / -{deletions}</em>}
