@@ -31,7 +31,7 @@ def parse_user_shell(text: str) -> UserShellCommand | None:
     return UserShellCommand(command, not excluded) if command else None
 
 
-# 直接执行用户命令，复用工具审批、Hook、输出和取消管线，不创建模型请求。
+# 直接执行用户已授权的命令，复用 Hook、沙箱、输出和取消管线，不创建模型请求。
 async def execute_user_shell(
     request: UserShellCommand, *, registry: ToolRegistry, bus: EventBus,
     run_id: str, operation_id: str, session_id: str = "",
@@ -47,5 +47,5 @@ async def execute_user_shell(
         bus, run_id,
         permission_manager=permission_manager, session_id=session_id, hooks=hooks,
         caller=ToolCaller.INTERNAL, artifact_store=artifact_store,
-        authority_snapshot=authority_snapshot, step=1,
+        authority_snapshot=authority_snapshot, user_authorized=True, step=1,
     )

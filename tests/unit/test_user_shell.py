@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -27,8 +27,8 @@ def test_user_shell_prefixes() -> None:
     assert parse_user_shell("!!  ") is None
 
 
-# 功能：用户命令通过正式工具管线直接执行并返回真实非零状态，无 Provider 参与。
-# 设计：构造真实 Bash 工具和事件总线，命令可观测地输出文本并退出 7。
+# 功能：用户命令无需二次审批即可通过正式工具管线执行并返回真实非零状态
+# 设计：注入会报错的权限替身并运行真实 Bash，证明显式 ! 命令跳过审批但保留执行语义
 async def test_user_shell_executes_without_provider(tmp_path: Path) -> None:
     try:
         bash_executable()
@@ -36,14 +36,20 @@ async def test_user_shell_executes_without_provider(tmp_path: Path) -> None:
         pytest.skip("Bash unavailable")
     registry = ToolRegistry()
     registry.register(CodingShellTool(tmp_path, None, None))
+    permissions = Mock()
+    permissions.check_and_wait = AsyncMock(
+        side_effect=AssertionError("explicit user shell must not request approval")
+    )
     request = parse_user_shell("!printf direct-output; exit 7")
     assert request is not None
     result = await execute_user_shell(
-        request, registry=registry, bus=EventBus(), run_id="user-shell", operation_id="shell-1",
+        request, registry=registry, bus=EventBus(), run_id="user-shell",
+        operation_id="shell-1", permission_manager=permissions,
     )
     assert "direct-output" in result.content
     assert result.is_error
     assert result.process_usage == {"exit_code": 7}
+    permissions.check_and_wait.assert_not_awaited()
 
 
 # 功能：直接命令经会话入口执行并返回结果，!! 不进入模型历史且不解析路由。

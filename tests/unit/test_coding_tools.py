@@ -183,6 +183,17 @@ async def test_read_has_explicit_pagination(tmp_path: Path) -> None:
     assert (await tool.invoke({"path": "file.txt", "offset": 5})).is_error
 
 
+# 功能：原生 read 可以直接列出目录内容，简单探索不必调用需要审批的 Shell。
+# 设计：创建包含隐藏目录和文件的真实工作区，验证目录树由同一个 read 工具返回。
+async def test_read_lists_workspace_directories(tmp_path: Path) -> None:
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "README.md").write_text("project", encoding="utf-8")
+    result = await ReadTool(WorkspaceBoundary(tmp_path)).invoke({"path": "."})
+    assert not result.is_error
+    assert ".hidden/" in result.content
+    assert "README.md" in result.content
+
+
 # 功能：Unicode/尾空格模糊匹配不会改写未触及的行。
 # 设计：使用智能引号与尾空格，并在邻行保留同类字符，排除整文件归一化污染。
 def test_fuzzy_edit_preserves_untouched_lines() -> None:

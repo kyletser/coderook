@@ -106,8 +106,12 @@ def test_mixed_intent_is_not_conversation_gate(goal: str) -> None:
     effective = router.for_execution(profile)
     assert effective.source == "model_led"
     assert effective.strategy == TaskStrategy.DIRECT
-    assert effective.model_tool_allowlist() == frozenset({"__all_except_delegation__"})
-    assert effective.model_action_allowlist() == {}
+    tools = effective.model_tool_allowlist()
+    if effective.risk == TaskRisk.READ and "read_intent" in effective.signals:
+        assert tools is not None and "read" in tools
+        assert tools.isdisjoint({"bash", "edit", "write"})
+    else:
+        assert tools == frozenset({"__all_except_delegation__"})
 
 
 # 功能：验证目录内容询问被识别为直接只读检查并开放目录读取工具
@@ -117,12 +121,16 @@ def test_mixed_intent_is_not_conversation_gate(goal: str) -> None:
     ["当前文件夹有什么。", "列出当前目录", "这个目录下有哪些文件"],
 )
 def test_directory_listing_routes_to_direct_read(goal: str) -> None:
-    profile = TaskStrategyRouter().classify_rules(goal)
+    router = TaskStrategyRouter()
+    profile = router.classify_rules(goal)
+    effective = router.for_execution(profile)
 
     assert profile.intent == TaskIntent.INSPECT
     assert profile.risk == TaskRisk.READ
     assert profile.strategy == TaskStrategy.DIRECT
-    assert "list_dir" in (profile.model_tool_allowlist() or frozenset())
+    tools = effective.model_tool_allowlist() or frozenset()
+    assert {"read", "list_dir"}.issubset(tools)
+    assert tools.isdisjoint({"bash", "edit", "write"})
     assert profile.confidence >= 0.9
 
 

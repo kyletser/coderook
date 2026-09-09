@@ -242,6 +242,7 @@ async def invoke_tool(
     caller: ToolCaller | str = ToolCaller.MODEL,
     artifact_store: ArtifactStore | None = None,
     authority_snapshot: AuthoritySnapshot | None = None,
+    user_authorized: bool = False,
     step: int = 0,
     prepared_arguments: PreparedToolArguments | None = None,
 ) -> ToolResult:
@@ -422,7 +423,7 @@ async def invoke_tool(
                 step=step,
             )
 
-    if permission_manager is not None:
+    if permission_manager is not None and not user_authorized:
         async def _emit_permission(raw: dict[str, Any]) -> None:
             if approval_context is not None:
                 raw = dict(raw)

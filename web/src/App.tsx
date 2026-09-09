@@ -667,6 +667,15 @@ export function eventBelongsToThread(activeThreadId: string, streamThreadId: str
   return Boolean(activeThreadId) && activeThreadId === streamThreadId;
 }
 
+export function finishesCurrentThreadLoad(
+  activeThreadId: string,
+  loadedThreadId: string,
+  activeVersion: number,
+  completedVersion: number,
+): boolean {
+  return activeThreadId === loadedThreadId && activeVersion === completedVersion;
+}
+
 export function workspaceHasUserProject(workspace: string): boolean {
   return !/(?:^|[\\/])\.coderook[\\/]welcome-workspace[\\/]?$/i.test(workspace);
 }
@@ -899,11 +908,12 @@ function AppShell({
       ]);
       setExtensionUi(loadedContext.extension_ui || {});
     } finally {
-      if (
-        showLoading
-        && selectedIdRef.current === threadId
-        && threadLoadVersions.current[threadId] === version
-      ) setThreadLoading(false);
+      if (finishesCurrentThreadLoad(
+        selectedIdRef.current,
+        threadId,
+        threadLoadVersions.current[threadId],
+        version,
+      )) setThreadLoading(false);
     }
   }, []);
 

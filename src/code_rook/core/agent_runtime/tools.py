@@ -11,6 +11,7 @@ from code_rook.core.agent_runtime.editing import replace_regions
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.editing.engine import EditEngine, content_hash
 from code_rook.core.tools.base import BaseTool, ToolResult, ToolSideEffect
+from code_rook.core.tools.builtin.list_dir import ListDirTool
 from code_rook.core.tools.builtin.read_image import ReadImageTool
 from code_rook.core.tools.builtin.write_file import WriteFileTool
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
@@ -25,7 +26,11 @@ class ReadParams(BaseModel):
 class ReadTool(BaseTool):
     name = "read"
     description = (
-        "Read text or an image. Text is capped at 2000 lines or 50KB; use offset/limit to continue."
+        "Read text, inspect an image, or list a directory inside the workspace. "
+        "Text is capped at 2000 lines or 50KB; use offset/limit to continue."
+    )
+    prompt_guidelines = (
+        "Use read with a directory path to list its contents instead of running ls or find.",
     )
     params_model = ReadParams
     input_schema = ReadParams.model_json_schema()
@@ -61,6 +66,9 @@ class ReadTool(BaseTool):
                 break
             else:
                 raise
+        if path.is_dir():
+            relative = path.relative_to(boundary.root).as_posix() or "."
+            return await ListDirTool(boundary).invoke({"path": relative, "max_depth": 2})
         if path.suffix.lower() in {
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
         }:

@@ -346,8 +346,10 @@ TUI and Web send `!command` directly to the Python shell runner, without a model
 request or provider readiness check. The result is shown and included in the next
 model context. `!!command` preserves the execution events but excludes the command
 and result from model history. Commands submitted during a model run are queued
-as separate executions rather than injected as steering instructions. Both forms
-still use the existing permission and tool pipeline.
+as separate executions rather than injected as steering instructions. The typed
+command itself is explicit user authorization, so neither form opens a redundant
+permission card. Both still use the normal Hook, sandbox, cancellation, output,
+Artifact, presentation, and audit pipeline.
 
 Before a `!` or `!!` command reaches that pipeline, Python extensions receive the
 Pi-compatible `user_bash` event (`command`, `excludeFromContext`, and `cwd`). The
@@ -522,7 +524,7 @@ plus explicitly configured MCP tools. Explicit Plan/strategy/preset tool lists
 retain their constrained catalogs. Historical tool names remain callable through
 the existing permission pipeline but are not advertised by the default surface.
 
-`read` provides offset/limit pagination and image results. It reads the current
+`read` provides offset/limit pagination, bounded directory listings, and image results. It reads the current
 file on every invocation, including external editor changes between requests.
 Native `read` and legacy `read_image` bypass the old text-only read cache, which
 cannot preserve multimodal results. Other legacy tools retain their existing

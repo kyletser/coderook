@@ -43,6 +43,7 @@ _TEST_DELIVERABLE_RE = re.compile(
 _FIX_PRIMARY_RE = re.compile(r"(?i)(修复|修好|\bfix\b)")
 _SHELL_RE = re.compile(
     r"(?i)(命令|终端|运行|启动|安装|构建|提交|推送|执行.{0,20}(ruff|mypy|pytest)|"
+    r"桌面(?:上|里)?有什么|下载目录|磁盘(?:空间|容量)|电脑性能|系统负载|"
     r"\b(?:shell|terminal|command|commands|run|execute|install|build|commit|push)\b)"
 )
 _EXTERNAL_RE = re.compile(

@@ -5,6 +5,7 @@ import {
   applyExtensionUiUpdate,
   appendRuntimeEvent,
   eventBelongsToThread,
+  finishesCurrentThreadLoad,
   isSimpleProductQuestion,
   modelContentFor,
   parentWorkspacePath,
@@ -36,6 +37,12 @@ describe("Web task submission", () => {
   it("rejects events emitted by a previously selected thread", () => {
     expect(eventBelongsToThread("thread-b", "thread-a")).toBe(false);
     expect(eventBelongsToThread("thread-b", "thread-b")).toBe(true);
+  });
+
+  it("finishes restoring when a newer refresh supersedes the initial thread load", () => {
+    expect(finishesCurrentThreadLoad("thread-1", "thread-1", 2, 2)).toBe(true);
+    expect(finishesCurrentThreadLoad("thread-1", "thread-1", 2, 1)).toBe(false);
+    expect(finishesCurrentThreadLoad("thread-2", "thread-1", 2, 2)).toBe(false);
   });
 
   it("restores the newest non-empty thread before a newer unused draft", () => {
