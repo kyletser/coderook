@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import uuid
@@ -185,6 +186,7 @@ class SessionManager:
         skill_paths: tuple[Path, ...] = (),
         follow_up_mode: Literal["one-at-a-time", "all"] = "one-at-a-time",
         image_auto_resize: bool = True,
+        shutdown_requester: Callable[[], Any] | None = None,
     ) -> None:
         if workspace_mutation_guard is not None and workspace_mutation_lock is not None:
             raise ValueError(
@@ -200,6 +202,7 @@ class SessionManager:
         self._prompt_paths = prompt_paths
         self._skill_paths = skill_paths
         self._follow_up_mode = follow_up_mode
+        self._shutdown_requester = shutdown_requester
         self._subagent_registry = subagent_registry
         self._runtime = runtime_service
         self._interaction_manager = interaction_manager
@@ -2194,6 +2197,22 @@ class SessionManager:
         def is_idle() -> bool:
             return self.active_run_id(sid) is None
 
+        # 汇总内存纠偏、扩展消息和持久派发任务，供扩展决定是否继续排队。
+        def has_pending_messages() -> bool:
+            run_id = self.active_run_id(sid)
+            interaction_pending = (
+                run_id is not None
+                and self._interaction_manager is not None
+                and self._interaction_manager.has_pending_messages(run_id)
+            )
+            dispatcher = self._queue_dispatch_tasks.get(sid)
+            return bool(
+                interaction_pending
+                or self._pending_extension_messages.get(sid)
+                or self._next_turn_extension_messages.get(sid)
+                or dispatcher is not None and not dispatcher.done()
+            )
+
         # 等待当前活动任务的 finished 屏障，避免只等 asyncio Task 返回。
         async def wait_for_idle() -> None:
             run_id = self.active_run_id(sid)
@@ -2211,6 +2230,15 @@ class SessionManager:
             await self.cancel_run(run_id)
             return True
 
+        # 等待当前会话完成后转交 Core 的有序退出信号。
+        async def request_shutdown() -> None:
+            if self._shutdown_requester is None:
+                raise RuntimeError("Core shutdown is not available")
+            await wait_for_idle()
+            result = self._shutdown_requester()
+            if inspect.isawaitable(result):
+                await result
+
         # 复用正式压缩入口，确保摘要与 Ledger 事件语义一致。
         async def compact_session(focus: str) -> Any:
             return await self.compact(sid, focus)
@@ -2219,11 +2247,161 @@ class SessionManager:
         async def reload_session() -> dict[str, Any]:
             return await self.reload_resources(sid)
 
+        # 暴露当前有效 Prompt 的基础输入快照，不返回 Provider 凭据。
+        def system_prompt_options() -> dict[str, Any]:
+            trusted = (
+                self._authority_provider is not None
+                and self._authority_provider(sid).workspace_trust == WorkspaceTrust.TRUSTED
+            )
+            return {
+                "system_prompt": host.api.get_system_prompt(),
+                "active_tools": (
+                    host.api.get_active_tools() if host.api.registry is not None else []
+                ),
+                "cwd": str(self._workspace),
+                "skills": [
+                    skill.name
+                    for skill in self._skill_loader_for(sid).list_for_execution(
+                        workspace_trusted=trusted
+                    )
+                ],
+            }
+
+        # 从扩展命令创建新会话，并保留显式或当前父会话关系。
+        async def create_session(options: dict[str, Any]) -> dict[str, Any]:
+            if not is_idle():
+                raise HandlerError(
+                    SESSION_BUSY, "wait for the active turn before creating a session"
+                )
+            decision = await host.emit_session_event({
+                "type": "session_before_switch",
+                "reason": "new",
+            })
+            if decision is not None and decision.get("cancel") is True:
+                return {"cancelled": True, "session_id": sid}
+            source = self._get_session(sid)
+            created = await self.create(
+                "chat",
+                str(options.get("title", "")),
+                preset_id=str(options.get("preset_id", source.preset_id)),
+            )
+            created.route_id = source.route_id
+            created.model = source.model
+            created.thinking_level = source.thinking_level
+            parent_reference = options.get("parent_session")
+            created.parent_session_id = (
+                None
+                if parent_reference is None
+                else self._session_id_from_reference(str(parent_reference))
+            )
+            self._store.write_meta(created)
+            if self._runtime is not None:
+                await self._runtime.sync_session(created)
+            created_host = await self.prepare_extensions(created.id)
+            if created_host is not None:
+                for callback_name in ("setup", "with_session"):
+                    callback = options.get(callback_name)
+                    if not callable(callback):
+                        continue
+                    callback_result = callback(created_host.api)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+            return {"cancelled": False, "session_id": created.id}
+
+        # 把扩展的 before/at 位置换算为现有 Ledger 分支节点后创建 Fork。
+        async def fork_session(entry_id: str, options: dict[str, Any]) -> dict[str, Any]:
+            try:
+                target = int(entry_id)
+            except ValueError as exc:
+                raise ValueError("entry_id must be a ledger sequence") from exc
+            position = options.get("position", "at")
+            leaf = target
+            if position == "before":
+                item = next(
+                    (entry for entry in self._store.session_tree(sid) if entry["seq"] == target),
+                    None,
+                )
+                if item is None:
+                    raise ValueError("session entry does not exist")
+                leaf = int(item["parent_seq"] or 0)
+            try:
+                forked = await self.fork(sid, leaf_seq=leaf, position=str(position))
+            except HandlerError as exc:
+                if exc.code == INVALID_PARAMS and "cancelled by extension" in str(exc):
+                    return {"cancelled": True, "session_id": sid}
+                raise
+            callback = options.get("with_session")
+            if callable(callback):
+                forked_host = await self.prepare_extensions(forked.id)
+                if forked_host is not None:
+                    callback_result = callback(forked_host.api)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+            return {"cancelled": False, "session_id": forked.id}
+
+        # 复用正式树导航，确保摘要、标签和持久事件与 TUI/Web 完全一致。
+        async def navigate_session(target_id: str, options: dict[str, Any]) -> dict[str, Any]:
+            try:
+                target = int(target_id)
+            except ValueError as exc:
+                raise ValueError("target_id must be a ledger sequence") from exc
+            try:
+                result = await self.navigate_tree(
+                    sid,
+                    target,
+                    summarize=bool(options.get("summarize", False)),
+                    focus=str(options.get("custom_instructions", "")),
+                    label=str(options.get("label", "")),
+                )
+                return {"cancelled": False, **result}
+            except HandlerError as exc:
+                if exc.code == INVALID_PARAMS and "cancelled by extension" in str(exc):
+                    return {"cancelled": True, "session_id": sid}
+                raise
+
+        # 在扩展切换前允许生命周期钩子取消，再恢复目标会话并返回稳定标识。
+        async def switch_session(
+            reference: str, options: dict[str, Any],
+        ) -> dict[str, Any]:
+            target_sid = self._session_id_from_reference(reference)
+            if target_sid == sid:
+                return {"cancelled": False, "session_id": sid}
+            if not is_idle():
+                raise HandlerError(
+                    SESSION_BUSY, "wait for the active turn before switching sessions"
+                )
+            decision = await host.emit_session_event({
+                "type": "session_before_switch",
+                "reason": "resume",
+                "targetSessionId": target_sid,
+                "targetSessionFile": str(
+                    self._store.session_dir(target_sid) / "thread.jsonl"
+                ),
+            })
+            if decision is not None and decision.get("cancel") is True:
+                return {"cancelled": True, "session_id": sid}
+            target = await self.resume(target_sid)
+            callback = options.get("with_session")
+            if callable(callback):
+                target_host = await self.prepare_extensions(target.id)
+                if target_host is not None:
+                    callback_result = callback(target_host.api)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+            return {"cancelled": False, "session_id": target.id}
+
         host.api.idle_getter = is_idle
+        host.api.pending_messages_getter = has_pending_messages
         host.api.idle_waiter = wait_for_idle
         host.api.run_aborter = abort_run
+        host.api.shutdown_requester = request_shutdown
         host.api.compaction_requester = compact_session
         host.api.resource_reloader = reload_session
+        host.api.system_prompt_options_getter = system_prompt_options
+        host.api.session_creator = create_session
+        host.api.session_forker = fork_session
+        host.api.tree_navigator = navigate_session
+        host.api.session_switcher = switch_session
 
         # 扩展 UI 问题复用正式 InteractionManager，活动与空闲会话使用同一响应通道。
         async def ask_extension_question(
@@ -2691,6 +2869,27 @@ class SessionManager:
             sessions = [session for session in sessions if session.status != "closed"]
         return sessions[:limit]
 
+    # 将扩展传入的会话 ID 或 thread.jsonl 路径解析为当前工作区会话 ID。
+    def _session_id_from_reference(self, reference: str) -> str:
+        normalized = reference.strip()
+        if normalized in self._sessions:
+            return normalized
+        candidate = Path(normalized).expanduser()
+        for session_id in self._sessions:
+            directory = self._store.session_dir(session_id)
+            if candidate == directory or candidate == directory / "thread.jsonl":
+                return session_id
+            try:
+                resolved_targets = {
+                    directory.resolve(),
+                    (directory / "thread.jsonl").resolve(),
+                }
+                if candidate.resolve() in resolved_targets:
+                    return session_id
+            except OSError:
+                continue
+        raise HandlerError(INVALID_PARAMS, "session reference does not exist")
+
     # 重新打开一个持久化 chat session，使后续消息沿用原 thread
     async def resume(self, sid: str) -> Session:
         await self._ensure_runtime_sessions()
@@ -2794,7 +2993,8 @@ class SessionManager:
 
     # 切换同一会话的上下文路径，不执行任务也不回滚工作区文件。
     async def navigate_tree(
-        self, sid: str, target_seq: int, *, summarize: bool = False, focus: str = ""
+        self, sid: str, target_seq: int, *, summarize: bool = False, focus: str = "",
+        label: str = "",
     ) -> dict[str, Any]:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -2828,7 +3028,7 @@ class SessionManager:
                     "userWantsSummary": summarize,
                     "customInstructions": focus or None,
                     "replaceInstructions": False,
-                    "label": None,
+                    "label": label or None,
                 },
             })
             if decision is not None and decision.get("cancel") is True:
@@ -2839,10 +3039,10 @@ class SessionManager:
             else focus
         )
         replace_instructions = bool(decision and decision.get("replaceInstructions") is True)
-        label = (
+        resolved_label = (
             str(decision["label"])
             if decision is not None and isinstance(decision.get("label"), str)
-            else ""
+            else label
         )
         extension_summary = decision.get("summary") if decision is not None else None
         supplied_summary = (
@@ -2900,7 +3100,7 @@ class SessionManager:
                     audit=audit_summary,
                 )
             result = self._store.navigate_tree(
-                sid, target_seq, summary=summary, label=label,
+                sid, target_seq, summary=summary, label=resolved_label,
             )
             self._pending_plans.pop(sid, None)
             self._pending_plans_loaded.add(sid)
@@ -2911,7 +3111,7 @@ class SessionManager:
                 await self._runtime.record_navigation(sid, target_seq, result["ledger_seq"])
         if host is not None:
             summary_entry = (
-                {"summary": summary, "label": label or None} if summary else None
+                {"summary": summary, "label": resolved_label or None} if summary else None
             )
             await host.emit_session_event({
                 "type": "session_tree",
@@ -2930,6 +3130,7 @@ class SessionManager:
         *,
         preset_id: str | None = None,
         leaf_seq: int | None = None,
+        position: str = "at",
     ) -> Session:
         await self._ensure_runtime_sessions()
         source = self._get_session(sid)
@@ -2941,7 +3142,7 @@ class SessionManager:
             decision = await source_host.emit_session_event({
                 "type": "session_before_fork",
                 "entryId": str(leaf_seq) if leaf_seq is not None else "",
-                "position": "at",
+                "position": position,
             })
             if decision is not None and decision.get("cancel") is True:
                 raise HandlerError(INVALID_PARAMS, "session fork cancelled by extension")

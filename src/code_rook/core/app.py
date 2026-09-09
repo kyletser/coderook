@@ -598,6 +598,13 @@ class CoreApp:
             self._shutdown_event.set()
         return CoreShutdownResult()
 
+    # 接收 Python 扩展的有序退出请求，并复用 daemon 的统一关闭信号。
+    def _request_extension_shutdown(self) -> None:
+        logger.info("shutdown requested by Python extension")
+        if self._shutdown_event is None:
+            raise RuntimeError("Core shutdown event is not ready")
+        self._shutdown_event.set()
+
     # 返回当前 Core 实际采用的纠偏与后续消息交付方式
     async def _agent_settings_get_handler(
         self, params: dict[str, Any]
@@ -978,6 +985,7 @@ class CoreApp:
             workspace=boundary.root,
             compaction_config=self._config.compaction,
             summary_retry_policy=self._config.llm.retry,
+            shutdown_requester=self._request_extension_shutdown,
         )
         self._worker_controller = WorkerController(
             registry=self._subagent_registry,

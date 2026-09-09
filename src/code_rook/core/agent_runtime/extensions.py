@@ -75,10 +75,17 @@ class ExtensionAPI:
         self.session_name_setter: Callable[[str], Any] | None = None
         self.entry_label_setter: Callable[[str, str | None], Any] | None = None
         self.idle_getter: Callable[[], bool] | None = None
+        self.pending_messages_getter: Callable[[], bool] | None = None
         self.idle_waiter: Callable[[], Any] | None = None
         self.run_aborter: Callable[[], Any] | None = None
+        self.shutdown_requester: Callable[[], Any] | None = None
         self.compaction_requester: Callable[[str], Any] | None = None
         self.resource_reloader: Callable[[], Any] | None = None
+        self.system_prompt_options_getter: Callable[[], dict[str, Any]] | None = None
+        self.session_creator: Callable[[dict[str, Any]], Any] | None = None
+        self.session_forker: Callable[[str, dict[str, Any]], Any] | None = None
+        self.tree_navigator: Callable[[str, dict[str, Any]], Any] | None = None
+        self.session_switcher: Callable[[str, dict[str, Any]], Any] | None = None
         self.question_asker: Callable[[str, str, list[str], bool], Any] | None = None
         self._system_prompt = ""
         self._context_usage: dict[str, int | float | None] | None = None
@@ -410,6 +417,13 @@ class ExtensionAPI:
             raise RuntimeError("Idle state requires a session-owned host")
         return self.idle_getter()
 
+    # 返回当前会话是否还有纠偏、后续轮或持久队列消息等待处理。
+    def has_pending_messages(self) -> bool:
+        self._check_active()
+        if self.pending_messages_getter is None:
+            raise RuntimeError("Pending message state requires a session-owned host")
+        return self.pending_messages_getter()
+
     # 等待所属会话的当前任务完整安定，空闲时立即返回。
     async def wait_for_idle(self) -> None:
         self._check_active()
@@ -428,6 +442,94 @@ class ExtensionAPI:
         if inspect.isawaitable(result):
             result = await result
         return bool(result)
+
+    # 请求宿主在当前会话安定后有序退出，不直接终止正在写入的任务。
+    def shutdown(self) -> None:
+        self._check_active()
+        if self.shutdown_requester is None:
+            raise RuntimeError("Shutdown requires a session-owned host")
+        result = self.shutdown_requester()
+        if inspect.isawaitable(result):
+            asyncio.ensure_future(result)
+
+    # 返回构建当前有效 System Prompt 的只读基础输入快照。
+    def get_system_prompt_options(self) -> dict[str, Any]:
+        self._check_active()
+        if self.system_prompt_options_getter is None:
+            raise RuntimeError("System prompt options require a session-owned host")
+        return deepcopy(self.system_prompt_options_getter())
+
+    # 创建同工作区的新会话并返回其稳定 ID，扩展可选择记录父会话关系。
+    async def new_session(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._check_active()
+        if self.session_creator is None:
+            raise RuntimeError("Session creation requires a session-owned host")
+        result = self.session_creator(deepcopy(options or {}))
+        resolved = await result if inspect.isawaitable(result) else result
+        if not isinstance(resolved, dict):
+            raise TypeError("Session creation must return an object")
+        return resolved
+
+    # 从当前会话指定账本条目创建独立 Fork，会话文件和上下文均由 Core 管理。
+    async def fork(
+        self,
+        entry_id: str,
+        *,
+        position: Literal["before", "at"] = "before",
+        with_session: Callable[[ExtensionAPI], Any] | None = None,
+    ) -> dict[str, Any]:
+        self._check_active()
+        if position not in {"before", "at"}:
+            raise ValueError("fork position must be before or at")
+        if self.session_forker is None:
+            raise RuntimeError("Session fork requires a session-owned host")
+        result = self.session_forker(
+            entry_id, {"position": position, "with_session": with_session}
+        )
+        resolved = await result if inspect.isawaitable(result) else result
+        if not isinstance(resolved, dict):
+            raise TypeError("Session fork must return an object")
+        return resolved
+
+    # 将当前会话上下文导航到已有账本节点，可选生成离开分支摘要。
+    async def navigate_tree(
+        self,
+        target_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str = "",
+        label: str = "",
+    ) -> dict[str, Any]:
+        self._check_active()
+        if self.tree_navigator is None:
+            raise RuntimeError("Session tree navigation requires a session-owned host")
+        result = self.tree_navigator(target_id, {
+            "summarize": summarize,
+            "custom_instructions": custom_instructions,
+            "label": label,
+        })
+        resolved = await result if inspect.isawaitable(result) else result
+        if not isinstance(resolved, dict):
+            raise TypeError("Session tree navigation must return an object")
+        return resolved
+
+    # 打开同一 Core 管理的另一会话，并执行扩展的切换前生命周期钩子。
+    async def switch_session(
+        self,
+        session_reference: str,
+        *,
+        with_session: Callable[[ExtensionAPI], Any] | None = None,
+    ) -> dict[str, Any]:
+        self._check_active()
+        if self.session_switcher is None:
+            raise RuntimeError("Session switching requires a session-owned host")
+        result = self.session_switcher(
+            session_reference, {"with_session": with_session}
+        )
+        resolved = await result if inspect.isawaitable(result) else result
+        if not isinstance(resolved, dict):
+            raise TypeError("Session switching must return an object")
+        return resolved
 
     # 使用当前会话 Provider 执行一次正式上下文压缩。
     async def compact(self, focus: str = "") -> Any:
@@ -1130,10 +1232,17 @@ class ExtensionHost:
         self.api.session_name_setter = None
         self.api.entry_label_setter = None
         self.api.idle_getter = None
+        self.api.pending_messages_getter = None
         self.api.idle_waiter = None
         self.api.run_aborter = None
+        self.api.shutdown_requester = None
         self.api.compaction_requester = None
         self.api.resource_reloader = None
+        self.api.system_prompt_options_getter = None
+        self.api.session_creator = None
+        self.api.session_forker = None
+        self.api.tree_navigator = None
+        self.api.session_switcher = None
         self.api.question_asker = None
         self.api._tool_registrar = None
         self.api._command_registrar = None

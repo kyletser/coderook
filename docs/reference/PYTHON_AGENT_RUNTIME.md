@@ -584,7 +584,7 @@ for ordinary navigation. All three summary paths now share `complete_summary`
 and the configured LLM retry policy. Each retry starts from an unmodified request;
 stream fragments stay out of the answer timeline, authentication failures do not
 retry, and cancellation interrupts backoff. Summary usage is attributed as described
-above; complete request/attempt snapshot auditing remains to be completed.
+above; request attempts and terminal outcomes are recorded as auxiliary Ledger events.
 
 Compaction and branch summaries now append cumulative, sorted `read-files` and
 `modified-files` lists computed from tool calls. Modified paths are excluded
@@ -755,10 +755,24 @@ Python extensions can inspect and change it through `get_thinking_level()` and
 `set_thinking_level()`.
 
 Session-owned Python extensions also expose Pi-style runtime control through
-`is_idle()`, `wait_for_idle()`, `abort()`, `compact(focus)`, and `reload()`.
+`is_idle()`, `has_pending_messages()`, `wait_for_idle()`, `abort()`,
+`compact(focus)`, `reload()`, and `shutdown()`.
 They call the same SessionManager operations as TUI/Web, so cancellation preserves
 pending input, compaction remains append-only, and resource reload refreshes the
 shared command catalog instead of creating a second extension runtime.
+
+Extension commands can also use `get_system_prompt_options()`, `new_session()`,
+`fork()`, `navigate_tree()`, and `switch_session()`. These operations call the
+native SessionManager and Session Ledger instead of manipulating JSONL files.
+New sessions inherit the owning session's preset, route, model and thinking level;
+forks keep lineage; navigation shares the same branch summary and label path as
+TUI/Web; switching accepts a session ID, session directory, or `thread.jsonl`
+path and runs the cancellable `session_before_switch` lifecycle event. Results
+include the target `session_id`, which suits CodeRook's multi-session daemon rather
+than replacing a process-global session object. `new_session()` supports `setup`
+and `with_session` callbacks, while `fork()` and `switch_session()` support
+`with_session`; each callback receives the newly bound Python `ExtensionAPI`, so
+handoff logic can safely send messages or update metadata in the target session.
 
 Python extensions can request `select()`, `confirm()`, and free-form `input()`
 through the same durable question cards used by built-in tools. Prompts created by
@@ -776,11 +790,10 @@ portable HTML form by default.
 
 This is not a claim that the entire product has been ported. Provider and tool
 services intentionally remain native Python implementations rather than launching
-Pi or Node as a subprocess. In-place session-tree navigation, branch summaries,
-session-scoped extension UI contributions, and resource reload have been
-implemented. Browser-level interaction validation, full summary request auditing,
-custom renderers/themes, and the remaining session/product parity still require
-migration and verification.
+Pi or Node as a subprocess. The core session, tool, provider, compaction, queue,
+branch and extension-control paths are native Python. Browser-level interaction
+validation and some product-surface parity still require migration and verification;
+custom renderers and themes are deliberately outside the core-runtime migration.
 The functional architecture document remains the reference for other subsystems.
 
 ## Installed-package smoke

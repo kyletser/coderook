@@ -178,6 +178,69 @@ async def test_extension_runtime_controls_are_awaitable(tmp_path: Path) -> None:
     ]
 
 
+# 功能：会话扩展可判断待处理消息，并原生完成新建、Fork、导航、切换与有序退出。
+# 设计：使用真实 SessionManager 和 Ledger 串联全部操作，只替换关闭信号以避免启动 daemon。
+async def test_extension_session_controls_use_native_manager(tmp_path: Path) -> None:
+    stopped = asyncio.Event()
+    config = CodeRookConfig()
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: AgentRunner(config, provider=MagicMock(), workspace_root=tmp_path),
+        EventBus(),
+        workspace=tmp_path,
+        shutdown_requester=stopped.set,
+    )
+    source = await manager.create("chat", "Source")
+    store.append_message(source.id, "user", "Original question")
+    store.append_message(source.id, "assistant", "Original answer")
+    target = store.read_session_events(source.id)[-1].seq
+    host = await manager.prepare_extensions(source.id)
+    assert host is not None
+
+    options = host.api.get_system_prompt_options()
+    assert options["cwd"] == str(tmp_path)
+    assert options["active_tools"] == []
+    assert not host.api.has_pending_messages()
+
+    await host.api.send_message({
+        "custom_type": "handoff",
+        "content": "next session note",
+    }, deliver_as="next_turn")
+    assert host.api.has_pending_messages()
+
+    replacement_names: list[str | None] = []
+    created = await host.api.new_session({
+        "title": "Created",
+        "parent_session": source.id,
+        "with_session": lambda api: replacement_names.append(api.get_session_name()),
+    })
+    created_session = manager.get_session(created["session_id"])
+    assert created_session.parent_session_id == source.id
+    forked = await host.api.fork(
+        str(target),
+        position="at",
+        with_session=lambda api: replacement_names.append(api.get_session_name()),
+    )
+    assert manager.get_session(forked["session_id"]).parent_session_id == source.id
+
+    navigated = await host.api.navigate_tree(str(target), label="answer")
+    assert navigated["session_id"] == source.id
+    switched = await host.api.switch_session(
+        created_session.id,
+        with_session=lambda api: replacement_names.append(api.get_session_name()),
+    )
+    assert switched == {"cancelled": False, "session_id": created_session.id}
+    assert replacement_names == ["Created", "Source (fork)", "Created"]
+    host.api.on("session_before_switch", lambda event: {"cancel": True})
+    cancelled = await host.api.switch_session(forked["session_id"])
+    assert cancelled == {"cancelled": True, "session_id": source.id}
+
+    host.api.shutdown()
+    await asyncio.wait_for(stopped.wait(), timeout=1)
+    await manager.cancel_all()
+
+
 # 功能：Python 扩展的选择、确认和输入 API 使用与 Agent 提问相同的交互通道。
 # 设计：在空闲会话监听真实问题事件并即时作答，核对三种交互的返回语义和 session 归属。
 async def test_extension_interactive_prompts_use_shared_question_channel(tmp_path: Path) -> None:

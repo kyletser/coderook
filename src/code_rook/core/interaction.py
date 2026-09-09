@@ -167,6 +167,10 @@ class InteractionManager:
         self._extension_followups[run_id].append(deepcopy(message))
         return True
 
+    # 判断活动运行是否仍有尚未送入模型的纠偏或扩展后续消息。
+    def has_pending_messages(self, run_id: str) -> bool:
+        return bool(self._steering.get(run_id) or self._extension_followups.get(run_id))
+
     # 停止时取回尚未送入模型的全部纠偏，供会话层保存为可恢复草稿。
     def take_pending_steering(self, run_id: str) -> list[UserMessageContent]:
         return list(self._steering.pop(run_id, deque()))
