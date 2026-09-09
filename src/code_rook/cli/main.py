@@ -284,6 +284,11 @@ def _run_cli() -> int:
     )
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose a provider route")
     doctor_parser.add_argument("route_id", nargs="?", help="Configured route ID")
+    doctor_parser.add_argument(
+        "--route",
+        dest="route_option",
+        help="Configured route ID (option form)",
+    )
     doctor_parser.add_argument("--json", action="store_true", help="Print JSON result")
     doctor_parser.add_argument(
         "--repair",
@@ -609,13 +614,16 @@ def _run_cli() -> int:
     elif args.command == "config-status":
         print_llm_status(config)
     elif args.command == "doctor":
-        if args.route_id == "runtime":
+        if args.route_id and args.route_option and args.route_id != args.route_option:
+            parser.error("doctor route specified twice with different values")
+        doctor_route_id = args.route_option or args.route_id
+        if doctor_route_id == "runtime":
             return cmd_runtime_doctor(repair=args.repair, as_json=args.json)
-        elif args.route_id in {None, "all"}:
+        elif doctor_route_id in {None, "all"}:
             if args.repair:
                 parser.error("--repair requires 'coderook doctor runtime'")
             cmd_system_doctor(config, as_json=args.json)
-        elif args.route_id == "bundle":
+        elif doctor_route_id == "bundle":
             if args.repair or args.json:
                 parser.error("doctor bundle does not support --repair or --json")
             cmd_diagnostic_bundle(
@@ -626,7 +634,7 @@ def _run_cli() -> int:
         else:
             if args.repair:
                 parser.error("--repair requires 'coderook doctor runtime'")
-            return cmd_doctor(config, args.route_id, as_json=args.json)
+            return cmd_doctor(config, doctor_route_id, as_json=args.json)
     elif args.command == "provider":
         if args.provider_command == "list":
             cmd_provider_list(config)

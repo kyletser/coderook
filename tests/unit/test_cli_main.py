@@ -526,6 +526,35 @@ def test_runtime_doctor_exit_code_is_preserved(monkeypatch) -> None:
     assert captured == {"repair": True, "as_json": True}
 
 
+# 功能：验证 Doctor 支持与其他模型命令一致的 --route 参数形式
+# 设计：替换真实网络探针并经完整 argparse 分发，固定选项别名传入同一个诊断入口
+def test_provider_doctor_accepts_route_option(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "doctor", "--route", "aliyun", "--json"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_doctor",
+        lambda passed, route_id, *, as_json: captured.update({
+            "config": passed,
+            "route_id": route_id,
+            "as_json": as_json,
+        }) or 0,
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    assert captured == {"config": config, "route_id": "aliyun", "as_json": True}
+
+
 # 功能：验证 CLI 边界把损坏凭据文档转成脱敏非零结果而不泄露原始正文
 # 设计：让真实 CredentialStore 在 provider list 分支读取坏文件，断言返回码与 stderr 均稳定
 def test_cli_credential_store_error_is_safe_and_nonzero(
