@@ -1509,6 +1509,32 @@ async def test_session_export_uses_display_content_for_human_formats(tmp_path: P
     assert "Bounded file references" in archive
 
 
+# 功能：验证首次发送的实时会话事件不会泄露模型增强提示
+# 设计：同时观察 EventBus 与模型账本，断言前端事件使用展示正文而模型历史保留完整上下文
+async def test_session_live_message_event_uses_display_content(tmp_path: Path) -> None:
+    events: list[object] = []
+    bus = EventBus()
+
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
+    session = await manager.create("chat", "display")
+    await manager.send_message(
+        session.id,
+        "review README\n\nBounded file references: README.md",
+        display_content="review @README.md",
+    )
+
+    received = next(
+        event for event in events if getattr(event, "type", "") == "session.message_received"
+    )
+    assert getattr(received, "content") == "review @README.md"
+    assert "Bounded file references" in str(store.read_messages(session.id)[0]["content"])
+
+
 async def test_session_mutations_reject_busy_session(tmp_path: Path) -> None:
     started = asyncio.Event()
     release = asyncio.Event()

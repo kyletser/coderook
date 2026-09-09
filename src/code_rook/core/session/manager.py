@@ -1475,7 +1475,7 @@ class SessionManager:
                 await self._bus.publish(
                     SessionMessageReceivedEvent(
                         session_id=sid,
-                        content=ledger_content,
+                        content=display_content or ledger_content,
                         ts=_now(),
                     )
                 )
