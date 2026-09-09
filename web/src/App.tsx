@@ -2224,7 +2224,12 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
   const changedFiles = receipt?.files_changed?.length || changes.length;
   const additions = changes.reduce((total, change) => total + Number(change.additions || 0), 0);
   const deletions = changes.reduce((total, change) => total + Number(change.deletions || 0), 0);
-  const verification = receipt?.verification || [];
+  const eventVerification = Array.isArray(event.payload.verification)
+    ? event.payload.verification.filter(
+        (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+  const verification = receipt ? receipt.verification : eventVerification;
   const verificationFailed = verificationHasFailure(verification);
   const failed = !cancelled && resultStatusIsFailure(status, verificationFailed);
   const model = textValue(receipt?.route?.model);

@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
+from code_rook.core.bus.events import VerificationFailedEvent
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
@@ -442,6 +443,66 @@ async def test_run_finished_event_published_on_success(tmp_path: Path) -> None:
     assert finished.outcome == "completed"  # type: ignore[attr-defined]
     assert finished.failure_category is None  # type: ignore[attr-defined]
     assert finished.result_summary == "done"  # type: ignore[attr-defined]
+
+
+# 功能：验证最终事件直接携带本轮最新验证证据，前端无需等待 Receipt 才能识别失败
+# 设计：Provider 在结束前发布失败验证事件，断言 run.finished 内联相同工具的最终 verdict
+async def test_run_finished_includes_latest_verification(tmp_path: Path) -> None:
+    class _VerificationProvider(_EndTurnProvider):
+        # 在返回最终回答前发布一条失败验证事件
+        async def chat(
+            self,
+            messages: list[dict[str, object]],
+            tool_schemas: list[dict[str, object]],
+            bus: EventBus,
+            run_id: str,
+            *,
+            step: int = 0,
+            system: str | None = None,
+            thinking: str | None = None,
+        ) -> LlmResponse:
+            await bus.publish(
+                VerificationFailedEvent(
+                    run_id=run_id,
+                    step=step,
+                    tool="Run",
+                    action="test",
+                    gate_count=1,
+                    passed=0,
+                    failed=1,
+                    failure_class="command_failed",
+                    paths=["tests"],
+                    gates=[],
+                    ts="2026-09-09T00:00:00Z",
+                )
+            )
+            return await super().chat(
+                messages,
+                tool_schemas,
+                bus,
+                run_id,
+                step=step,
+                system=system,
+                thinking=thinking,
+            )
+
+    events = await _run(provider=_VerificationProvider(), tmp_path=tmp_path)
+    finished = next(event for event in events if event.type == "run.finished")
+
+    assert finished.verification == [  # type: ignore[attr-defined]
+        {
+            "step": 1,
+            "tool": "Run",
+            "action": "test",
+            "verdict": "fail",
+            "gate_count": 1,
+            "passed": 0,
+            "failed": 1,
+            "failure_class": "command_failed",
+            "paths": ["tests"],
+            "gates": [],
+        }
+    ]
 
 
 # 功能：验证步数耗尽时 run.finished 携带 failed 状态和正确的失败原因

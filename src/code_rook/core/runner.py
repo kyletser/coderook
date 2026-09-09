@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from pydantic import JsonValue
+
 from code_rook.core.agent_runtime.extensions import ExtensionHost
 from code_rook.core.agent_runtime.prompt import build_system_prompt
 from code_rook.core.agent_runtime.shell import CodingShellTool
@@ -23,6 +25,7 @@ from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.events import (
     AgentMessageEvent,
     LlmRouteSelectedEvent,
+    LspDiagnosticsEvent,
     RunFailureCategory,
     RunFinishedEvent,
     RunOutcomeStatus,
@@ -655,6 +658,7 @@ class AgentRunner:
             if isinstance(active_ledger, SessionLedgerBridge):
                 active_ledger.subscribe(bus)
             tracked_phase = ""
+            verification_by_tool: dict[str, dict[str, JsonValue]] = {}
 
             # 根据可信工具与验证事件发布唯一阶段信号，TUI 不再自行猜测运行状态
             async def publish_runtime_phase(event: object) -> None:
@@ -666,6 +670,14 @@ class AgentRunner:
                     return
                 phase: Literal["exploring", "executing", "verifying"] | None = None
                 summary = ""
+                if isinstance(
+                    event,
+                    (LspDiagnosticsEvent, VerificationCompletedEvent, VerificationFailedEvent),
+                ):
+                    verification_by_tool[event.tool] = event.model_dump(
+                        mode="json",
+                        exclude={"type", "run_id", "ts"},
+                    )
                 if isinstance(event, (VerificationCompletedEvent, VerificationFailedEvent)):
                     phase = "verifying"
                     summary = "正在核对验证结果"
@@ -1276,6 +1288,7 @@ class AgentRunner:
                     steps=context.step,
                     outcome=public_outcome,
                     failure_category=failure_category,
+                    verification=list(verification_by_tool.values()) or None,
                     result_summary=context.result.strip()[:4_000] or None,
                     ts=_now(),
                 )
