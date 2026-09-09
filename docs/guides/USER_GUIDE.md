@@ -397,6 +397,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | `Ctrl+Shift+C` | 复制选择或上一条回复 |
 | `Ctrl+P` | 打开分类命令面板；常用项置顶，Labs 默认隐藏 |
 | `Ctrl+O` | 展开或收起推理、工具步骤与完整输出 |
+| `Ctrl+G` | 在 `$VISUAL`/`$EDITOR` 中编辑当前输入；Windows 未配置时使用记事本 |
 | `Ctrl+Q` | 退出 TUI；会话和 Core 状态不会被删除 |
 
 常用命令：

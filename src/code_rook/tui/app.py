@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 from rich.markup import escape
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
@@ -66,6 +66,7 @@ from code_rook.tui.commands import (
     visible_slash_commands,
 )
 from code_rook.tui.connection import TuiConnection
+from code_rook.tui.external_editor import ExternalEditorError, edit_text_externally
 from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
     ChangeCenterOverlay,
@@ -159,6 +160,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding("ctrl+p", "command_palette", "command palette", show=False, priority=True),
         Binding("ctrl+o", "toggle_details", "toggle details", show=False, priority=True),
+        Binding("ctrl+g", "external_editor", "external editor", show=False, priority=True),
         Binding(
             "ctrl+end",
             "scroll_log_end",
@@ -874,6 +876,26 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         for tool in self.query(ToolCallBlock):
             tool.set_expanded(self._details_expanded)
 
+    # 暂停 TUI 并用系统编辑器修改当前 composer，保存后回填但不自动提交
+    def action_external_editor(self) -> None:
+        prompt = self._prompt()
+        if prompt is None or prompt.disabled:
+            self.notify(tr("app.editor.unavailable", self._locale), severity="warning")
+            return
+        try:
+            with self.suspend():
+                edited = edit_text_externally(prompt.text)
+        except (ExternalEditorError, SuspendNotSupported) as exc:
+            self.notify(
+                tr("app.editor.failed", self._locale, error=str(exc)),
+                severity="error",
+            )
+            return
+        prompt.text = edited
+        prompt.move_cursor(prompt.document.end)
+        prompt.focus()
+        self.notify(tr("app.editor.loaded", self._locale))
+
     # 复制失败工具的完整错误内容并给出就地反馈
     def on_tool_call_block_copy_requested(
         self,
@@ -1182,6 +1204,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("Ctrl+Shift+C", tr("help.copy", self._locale)),
             ("Ctrl+End", tr("help.scroll", self._locale)),
             ("Ctrl+P", tr("help.palette", self._locale)),
+            ("Ctrl+G", tr("help.editor", self._locale)),
             ("Ctrl+Q", tr("help.quit", self._locale)),
         ]
         lines = [f"[bold cyan]{escape(tr('help.keys', self._locale))}[/bold cyan]"]

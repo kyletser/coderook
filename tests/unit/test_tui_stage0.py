@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -240,11 +241,42 @@ async def test_help_command_renders_keys_and_commands(
         body = "\n".join(appended)
         assert "键位" in body
         assert "Ctrl+End" in body
+        assert "Ctrl+G" in body
         assert "命令" in body
         assert "/rename" in body
         assert "/fork" in body
         assert "/export" in body
         assert "/delete" in body
+
+
+# 功能：Ctrl+G 保存后的外部编辑器内容会回填当前输入且不会自动提交
+# 设计：在真实 Textual composer 上替换挂起上下文和编辑器进程，只验证用户可感知的回填边界
+async def test_external_editor_action_updates_composer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app_module, "_load_input_history", lambda: [])
+    monkeypatch.setattr(
+        tui_app_module,
+        "edit_text_externally",
+        lambda text: f"{text}\n补充说明",
+    )
+
+    class EditorHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并用空上下文替代真实终端挂起
+        def on_mount(self) -> None:
+            self.suspend = nullcontext  # type: ignore[method-assign]
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = EditorHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 30)) as pilot:
+        prompt = app.query_one("#prompt", ChatTextArea)
+        prompt.disabled = False
+        prompt.text = "原始任务"
+
+        app.action_external_editor()
+        await pilot.pause()
+
+        assert prompt.text == "原始任务\n补充说明"
 
 
 # 功能：验证 Ctrl+C 取消任务需要二次确认，第一次只提示不发送取消
