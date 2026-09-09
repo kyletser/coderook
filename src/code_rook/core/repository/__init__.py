@@ -4,6 +4,7 @@ from code_rook.core.repository.index import (
     RepositoryIndex,
     RepositorySnapshot,
     RepositorySymbol,
+    workspace_repository_paths,
 )
 from code_rook.core.repository.test_commands import (
     TestCommandCandidate,
@@ -21,6 +22,7 @@ __all__ = [
     "RepositorySnapshot",
     "RepositorySymbol",
     "RepositoryTool",
+    "workspace_repository_paths",
     "TestCommandCandidate",
     "TestCommandDiscovery",
     "discover_test_commands",

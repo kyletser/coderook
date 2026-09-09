@@ -590,6 +590,45 @@ def _repository_files(
     )
 
 
+# 快速列出 Git 工作区文件及其父目录，非 Git 项目回退统一忽略规则遍历
+def workspace_repository_paths(boundary: WorkspaceBoundary) -> tuple[str, ...]:
+    raw = _git_bytes(
+        boundary.root,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    )
+    files: list[str] = []
+    if raw:
+        for value in _iter_nul_records(raw):
+            relative = _decode_git_path(value)
+            if relative is None:
+                continue
+            try:
+                if boundary.resolve(relative).is_file():
+                    files.append(relative)
+            except (OSError, PermissionError):
+                continue
+    else:
+        files.extend(
+            relative
+            for _path, relative in iter_workspace_files(
+                boundary,
+                boundary.root,
+                include_hidden=True,
+            )
+        )
+    paths = set(files)
+    for relative in files:
+        for parent in Path(relative).parents:
+            if parent == Path("."):
+                break
+            paths.add(parent.as_posix())
+    return tuple(sorted(paths, key=lambda value: (value.casefold(), value)))
+
+
 # 解析 porcelain v1 的 NUL 格式并正确跳过 rename/copy 的第二路径字段
 def _parse_git_status_paths(raw: bytes) -> tuple[str, ...]:
     records = iter(_iter_nul_records(raw))

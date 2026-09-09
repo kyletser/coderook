@@ -23,6 +23,7 @@ from code_rook.core.llm.routes import ProviderRoute, ThinkingLevel, get_route_pr
 from code_rook.core.permissions.manager import PermissionManager
 from code_rook.core.processes import ProcessSupervisor
 from code_rook.core.receipts.models import TurnReceipt
+from code_rook.core.repository import workspace_repository_paths
 from code_rook.core.runs import new_run_id
 from code_rook.core.runtime.models import (
     RuntimeEventRecord,
@@ -42,6 +43,31 @@ from code_rook.core.workspace import WorkspaceBoundary
 
 logger = logging.getLogger(__name__)
 _TURN_DURABILITY_TIMEOUT_S = 10.0
+
+
+# 按文件名匹配强度、路径深度和稳定字典序排列工作区搜索结果
+def _workspace_search_rank(
+    item: dict[str, object],
+    query: str,
+) -> tuple[int, int, int, str]:
+    name = str(item.get("name", "")).casefold()
+    path = str(item.get("path", "")).casefold()
+    if name == query:
+        match_rank = 0
+    elif name.startswith(query):
+        match_rank = 1
+    elif path.startswith(query):
+        match_rank = 2
+    elif query in name:
+        match_rank = 3
+    else:
+        match_rank = 4
+    return (
+        match_rank,
+        path.count("/"),
+        0 if item.get("kind") == "file" else 1,
+        path,
+    )
 
 
 class RuntimeApiService:
@@ -224,7 +250,15 @@ class RuntimeApiService:
         if not selected.is_dir():
             raise ValueError("workspace path is not a directory")
         normalized_query = query.strip().casefold()
-        roots = selected.rglob("*") if normalized_query else selected.iterdir()
+        if normalized_query:
+            relative_paths = await asyncio.to_thread(workspace_repository_paths, boundary)
+            roots = (
+                boundary.resolve(relative)
+                for relative in relative_paths
+                if boundary.resolve(relative).is_relative_to(selected)
+            )
+        else:
+            roots = selected.iterdir()
         entries: list[dict[str, object]] = []
         skipped = {
             ".git",
@@ -238,6 +272,7 @@ class RuntimeApiService:
             "dist",
             "build",
         }
+        result_limit = max(1, min(limit, 500))
         for candidate in roots:
             if any(part in skipped for part in candidate.relative_to(boundary.root).parts):
                 continue
@@ -256,14 +291,17 @@ class RuntimeApiService:
                     "size": candidate.stat().st_size if candidate.is_file() else None,
                 }
             )
-            if len(entries) >= max(1, min(limit, 500)):
-                break
-        entries.sort(key=lambda item: (item["kind"] != "directory", str(item["path"])))
+        if normalized_query:
+            entries.sort(key=lambda item: _workspace_search_rank(item, normalized_query))
+        else:
+            entries.sort(key=lambda item: (item["kind"] != "directory", str(item["path"])))
+        truncated = len(entries) > result_limit
+        entries = entries[:result_limit]
         return {
             "root": str(boundary.root),
             "path": selected.relative_to(boundary.root).as_posix() or ".",
             "entries": entries,
-            "truncated": len(entries) >= max(1, min(limit, 500)),
+            "truncated": truncated,
         }
 
     # 在工作区边界内读取有界文本文件，二进制与超大文件只返回安全元数据

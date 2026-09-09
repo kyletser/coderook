@@ -1,7 +1,36 @@
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from code_rook.core.api.service import RuntimeApiService
+from code_rook.core.workspace import WorkspaceBoundary
+
+
+# 功能：工作区文件搜索优先返回文件名前缀匹配，而不是较早遍历到的路径子串
+# 设计：在临时工作区混放 README 与 weread 文件，并限制结果数以覆盖排序发生在截断之前
+async def test_workspace_file_search_ranks_name_prefix_before_path_substring(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "weread_refresh.py").write_text("", encoding="utf-8")
+    (tmp_path / "README.md").write_text("root", encoding="utf-8")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "README-guide.md").write_text("guide", encoding="utf-8")
+    service = RuntimeApiService(
+        MagicMock(),
+        MagicMock(),
+        workspace_boundary=WorkspaceBoundary(tmp_path),
+    )
+
+    result = await service.list_workspace_files(query="READ", limit=2)
+
+    entries = result["entries"]
+    assert isinstance(entries, list)
+    assert [entry["path"] for entry in entries] == [
+        "README.md",
+        "docs/README-guide.md",
+    ]
+    assert result["truncated"] is True
 
 
 # 功能：Web 从用户消息新建分支时返回原文草稿，并把新会话定位到该消息之前
