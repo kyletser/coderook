@@ -12,6 +12,16 @@ from code_rook.tui import __main__ as tui_main
 from code_rook.tui.app import ConfigSwitch, ModelSwitch
 
 
+# 保持 TUI 单元测试所在目录不被产品入口切换，项目重定向行为由专项测试覆盖
+@pytest.fixture(autouse=True)
+def _keep_tui_test_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        tui_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        lambda _self: Path.cwd(),
+    )
+
+
 # 功能：默认启动 TUI 时先确保 Core 就绪，再读取 token 并运行界面
 # 设计：替换所有外部边界并记录调用顺序，避免测试启动真实 daemon 或 Textual 终端
 def test_tui_main_auto_starts_core_before_reading_token(

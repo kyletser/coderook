@@ -20,6 +20,7 @@ from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.processes import mark_agent_process_environment
+from code_rook.core.projects import ProjectRegistry
 from code_rook.core.state_migration import migrate_legacy_state
 from code_rook.core.transport.auth import IpcTokenError, read_ipc_token
 from code_rook.tui.app import CodeRookTuiApp, ConfigSwitch, ModelSwitch
@@ -105,6 +106,7 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
 # coderook-tui 入口：未配置模型也可进入，并支持从 /config 返回后重新加载
 def main() -> None:
     mark_agent_process_environment()
+    ProjectRegistry().enter_welcome_workspace_if_protected()
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook-tui", description="CodeRook TUI")
     parser.add_argument(

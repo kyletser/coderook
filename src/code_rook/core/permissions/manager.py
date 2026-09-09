@@ -427,7 +427,6 @@ class PermissionManager:
         if session_mode.mode != "interactive":
             if (
                 not outside_cwd
-                and not windows_shell_requires_approval
                 and session_mode.mode == "allow_list"
                 and bool(
                     {tool_name, *scope.lookup_keys}
@@ -438,7 +437,6 @@ class PermissionManager:
             if session_mode.mode == "fail_fast":
                 return False, "headless_fail_fast"
             if windows_shell_requires_approval:
-                # Windows 无真实 OS 沙箱，allow-list 也不得静默执行 shell，保持强制审批不变式
                 return False, "headless_unsandboxed_shell"
             return False, "headless_deny"
 

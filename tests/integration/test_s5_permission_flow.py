@@ -223,8 +223,8 @@ async def test_headless_deny_returns_tool_error_but_allows_replanning(tmp_path: 
     assert getattr(failed, "error_class", "") == "permission_denied"
 
 
-# 功能：验证 headless allow-list 在有沙箱平台执行显式工具但不绕过 Windows Shell 强制审批
-# 设计：使用同一 Bash 调用按平台断言完成或拒绝事件，锁定无人值守模式的安全降级差异
+# 功能：验证 headless allow-list 在所有平台执行用户显式允许的工作区内 Shell
+# 设计：使用真实 Runner 和同一 Bash 调用，断言无需二次审批且产生配对完成事件
 async def test_headless_allow_list_respects_platform_shell_enforcement(
     tmp_path: Path,
 ) -> None:
@@ -244,9 +244,4 @@ async def test_headless_allow_list_respects_platform_shell_enforcement(
     assert outcome.status == "success"
     event_types = [getattr(event, "type", "") for event in events]
     assert "permission.requested" not in event_types
-    if os.name == "nt":
-        assert "tool.call_finished" not in event_types
-        failed = next(event for event in events if getattr(event, "type", "") == "tool.call_failed")
-        assert getattr(failed, "error_class", "") == "permission_denied"
-    else:
-        assert "tool.call_finished" in event_types
+    assert "tool.call_finished" in event_types

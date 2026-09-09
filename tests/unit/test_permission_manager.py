@@ -9,6 +9,7 @@ from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
+    RuntimeMode,
     SandboxCapability,
     ToolAction,
     WorkspaceTrust,
@@ -191,6 +192,34 @@ async def test_headless_allow_list_is_explicit_and_cannot_bypass_boundary() -> N
     assert (write_allowed, write_decision) == (False, "headless_deny")
     assert (outside_allowed, outside_decision) == (False, "headless_deny")
     assert mgr._pending == {}
+
+
+# 功能：验证 Windows 无 OS 沙箱时显式 headless allow-list 仍授权工作区内 Bash
+# 设计：注入 windows_none 权限快照并调用真实权限决策，区分用户显式授权与自动放行
+async def test_headless_allow_list_explicitly_allows_windows_shell() -> None:
+    mgr = _make_manager()
+    mgr.set_session_mode("headless", "allow_list", allow_tools=["bash"])
+    mgr._session_authorities["headless"] = AuthoritySnapshot(
+        mode=RuntimeMode.ACT,
+        profile=AuthorityProfile.AUTO_REVIEW,
+        workspace_trust=WorkspaceTrust.TRUSTED,
+        sandbox=SandboxCapability(
+            kind="windows_none",
+            available=False,
+            reason="test",
+        ),
+    )
+    _, emitter = await _collect_emitted()
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="bash",
+        tool_name="bash",
+        params={"command": "pwd && ls -la"},
+        session_id="headless",
+        event_emitter=emitter,
+    )
+
+    assert (allowed, decision) == (True, "headless_allow_list")
 
 
 async def test_headless_modes_preserve_default_allow_tools() -> None:

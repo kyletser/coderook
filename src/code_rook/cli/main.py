@@ -103,6 +103,7 @@ def _run_cli() -> int:
     explicit_tui = bool(tui_probe) and tui_probe[0] == "tui"
     print_mode = "--print" in tui_probe or "-p" in tui_probe
     if print_mode:
+        ProjectRegistry().enter_welcome_workspace_if_protected()
         quick = argparse.ArgumentParser(
             prog="coderook --print",
             description="Run one coding task and print the final answer",
@@ -135,6 +136,7 @@ def _run_cli() -> int:
         not tui_probe[0].startswith("-") and tui_probe[0] not in _TOP_LEVEL_COMMANDS
     )
     if not tui_probe or tui_probe[0] in tui_flags or explicit_tui or prompt_tui:
+        ProjectRegistry().enter_welcome_workspace_if_protected()
         if explicit_tui:
             raw_index = 1 if sys.argv[1] == "tui" else 3
             del sys.argv[raw_index]
@@ -475,9 +477,14 @@ def _run_cli() -> int:
         registry = ProjectRegistry()
         if registry.is_protected_workspace(Path.cwd()):
             os.chdir(registry.prepare_welcome_workspace())
+    elif args.command in {"run", "review", "chat", "sessions", "memory"}:
+        ProjectRegistry().enter_welcome_workspace_if_protected()
 
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
+
+    if args.command in {"run", "review", "chat", "sessions", "memory"}:
+        ensure_core_running(config, env_file=args.env_file)
 
     if args.command == "web":
         return cmd_web(

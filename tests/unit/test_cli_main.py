@@ -16,6 +16,16 @@ from code_rook.core.llm.credentials import CredentialStore
 from code_rook.tui import __main__ as tui_main
 
 
+# 保持 CLI 单元测试所在目录不被产品入口切换，项目重定向行为由专项测试覆盖
+@pytest.fixture(autouse=True)
+def _keep_cli_test_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        cli_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        lambda _self: Path.cwd(),
+    )
+
+
 # 功能：验证 headless run 只接收自身事件，同时允许无归属的全局状态事件
 # 设计：直接覆盖匹配、其他 run 和缺失 run_id 三种输入，锁定早期缓冲回放的过滤规则
 def test_headless_run_event_ownership_filter() -> None:
@@ -147,6 +157,45 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "output_format": "text",
         "thinking_level": "high",
     }
+
+
+# 功能：验证常规 run 命令会先把 Core 绑定到当前工作区再提交任务
+# 设计：替换启动器与执行边界并记录顺序，防止脚本任务误发给其他项目的存量 Core
+def test_run_command_binds_core_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = CodeRookConfig()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "coderook",
+            "run",
+            "--goal",
+            "查看当前目录",
+            "--permission-mode",
+            "allow-list",
+            "--allow-tool",
+            "bash",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_core_running",
+        lambda passed, *, env_file: calls.append(f"core:{passed is config}:{env_file}"),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda *_args, **_kwargs: calls.append("run"),
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    assert calls == ["core:True:None", "run"]
 
 
 # 功能：验证 coderook web 可切换到显式工作区并把 no-open 选项交给 Web 启动器
@@ -299,6 +348,8 @@ def test_review_command_dispatches_structured_preset(monkeypatch) -> None:
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
     monkeypatch.setattr(cli_main, "get_config", lambda: config)
     monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    ensure = MagicMock()
+    monkeypatch.setattr(cli_main, "ensure_core_running", ensure)
     monkeypatch.setattr(
         cli_main,
         "cmd_review",
@@ -309,6 +360,7 @@ def test_review_command_dispatches_structured_preset(monkeypatch) -> None:
 
     cli_main.main()
 
+    ensure.assert_called_once_with(config, env_file=None)
     assert captured == {
         "goal": "Review auth",
         "config": config,
@@ -325,6 +377,8 @@ def test_memory_auto_command_dispatches_typed_setting(monkeypatch) -> None:
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
     monkeypatch.setattr(cli_main, "get_config", lambda: config)
     monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    ensure = MagicMock()
+    monkeypatch.setattr(cli_main, "ensure_core_running", ensure)
     monkeypatch.setattr(
         cli_main,
         "cmd_memory",
@@ -337,6 +391,7 @@ def test_memory_auto_command_dispatches_typed_setting(monkeypatch) -> None:
     result = cli_main.main()
 
     assert result == 0
+    ensure.assert_called_once_with(config, env_file=None)
     assert captured == {
         "config": config,
         "action": "auto",

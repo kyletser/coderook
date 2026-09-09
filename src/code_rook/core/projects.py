@@ -62,6 +62,15 @@ class ProjectRegistry:
         self.welcome_workspace.mkdir(parents=False, exist_ok=True)
         return self.welcome_workspace.resolve(strict=True)
 
+    # 从 CodeRook 自身源码启动产品时切到隔离欢迎区，普通项目保持原目录
+    def enter_welcome_workspace_if_protected(self) -> Path:
+        current = Path.cwd().resolve()
+        if not self.is_protected_workspace(current):
+            return current
+        target = self.prepare_welcome_workspace()
+        os.chdir(target)
+        return target
+
     # 判断目录是内部欢迎区或包含当前运行的 CodeRook 源码
     def is_protected_workspace(self, root: Path) -> bool:
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,33 @@ def test_welcome_workspace_cannot_be_registered(tmp_path: Path) -> None:
     assert registry.is_protected_workspace(welcome) is True
     with pytest.raises(ValueError, match="welcome workspace"):
         registry.register(welcome)
+
+
+# 功能：验证受保护源码工作区会切换到隔离欢迎区且普通项目保持不变
+# 设计：替换保护判断并真实切换临时 cwd，分别覆盖重定向与无操作两条路径
+def test_enter_welcome_workspace_only_for_protected_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state_root = tmp_path / "state"
+    ordinary = tmp_path / "ordinary"
+    source = tmp_path / "source"
+    ordinary.mkdir()
+    source.mkdir()
+    registry = ProjectRegistry(state_root=state_root)
+    monkeypatch.setattr(registry, "is_protected_workspace", lambda path: Path(path) == source)
+
+    original = Path.cwd()
+    try:
+        os.chdir(ordinary)
+        assert registry.enter_welcome_workspace_if_protected() == ordinary
+        assert Path.cwd() == ordinary
+
+        os.chdir(source)
+        assert registry.enter_welcome_workspace_if_protected() == registry.welcome_workspace
+        assert Path.cwd() == registry.welcome_workspace
+    finally:
+        os.chdir(original)
 
 
 @pytest.mark.parametrize("name", ["../escape", "nested/name", "CON", "bad:name"])
