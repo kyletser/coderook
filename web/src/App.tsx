@@ -90,7 +90,7 @@ type TimelineEntry =
   | { kind: "item"; key: string; timestamp: string; item: TurnItem }
   | ToolTimelineEntry
   | { kind: "tool_group"; key: string; timestamp: string; tools: ToolTimelineEntry[] }
-  | { kind: "event"; key: string; timestamp: string; event: RuntimeEvent };
+  | { kind: "event"; key: string; timestamp: string; event: RuntimeEvent; hasAssistantMessage?: boolean };
 type IconName = "rook" | "menu" | "plus" | "files" | "changes" | "models" | "settings" | "edit" | "fork" | "download" | "trash" | "arrow" | "arrowUp" | "image" | "stop" | "terminal";
 type ProductDialogOptions = {
   title: string;
@@ -1512,6 +1512,12 @@ function AppShell({
     const entries: TimelineEntry[] = [];
     const piMessages = piMessageSnapshots(events);
     const piTurns = new Set(piMessages.filter(event => event.payload.role === "assistant").map(event => event.turn_id));
+    const assistantTurns = new Set([
+      ...piTurns,
+      ...items
+        .filter((item) => item.kind === "message" && textValue(item.payload.role) === "assistant")
+        .map((item) => item.turn_id),
+    ]);
     for (const event of piMessages) {
       if (event.turn_id && !loadedTurnIds.has(event.turn_id)) continue;
       entries.push({
@@ -1565,6 +1571,7 @@ function AppShell({
         key: `event:${event.seq}`,
         timestamp: event.ts,
         event,
+        hasAssistantMessage: Boolean(eventRunId && assistantTurns.has(eventRunId)),
       });
     }
     const historyOrder = new Map(items.map((item, index) => [item.id, index]));
@@ -1698,6 +1705,7 @@ function AppShell({
               key={entry.key}
               event={entry.event}
               threadId={selectedId}
+              hasAssistantMessage={entry.hasAssistantMessage}
               hiddenThinkingLabel={extensionUi.hidden_thinking_label || undefined}
               onError={setError}
               onNotice={setNotice}
@@ -2112,6 +2120,7 @@ function ToolActivityGroup({
 function EventCard({
   event,
   threadId,
+  hasAssistantMessage = false,
   hiddenThinkingLabel,
   onError,
   onNotice,
@@ -2119,6 +2128,7 @@ function EventCard({
 }: {
   event: RuntimeEvent;
   threadId: string;
+  hasAssistantMessage?: boolean;
   hiddenThinkingLabel?: string;
   onError(value: string): void;
   onNotice(value: string): void;
@@ -2170,7 +2180,7 @@ function EventCard({
     );
   }
   if (isResult) {
-    return <ResultCard event={event} detail={detail} onOpenChanges={onOpenChanges} />;
+    return <ResultCard event={event} detail={detail} hasAssistantMessage={hasAssistantMessage} onOpenChanges={onOpenChanges} />;
   }
   return (
     <article className={`event-card ${event.type.replaceAll(".", "-")}`}>
@@ -2206,7 +2216,7 @@ function EventCard({
   );
 }
 
-function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; detail: string; onOpenChanges(): void }): ReactElement {
+function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { event: RuntimeEvent; detail: string; hasAssistantMessage: boolean; onOpenChanges(): void }): ReactElement | null {
   const [receipt, setReceipt] = useState<TurnReceipt | null>(null);
   const turnId = event.turn_id || textValue(event.payload.run_id);
   useEffect(() => {
@@ -2245,11 +2255,13 @@ function ResultCard({ event, detail, onOpenChanges }: { event: RuntimeEvent; det
       : failed
         ? tr("本轮未完成", "Turn incomplete")
         : tr("本轮完成", "Turn complete");
+  const hasDurableEvidence = changedFiles > 0 || verification.length > 0;
+  if (hasAssistantMessage && !failed && !cancelled && !hasDurableEvidence) return null;
   const copied = [resultTitle, summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
   return (
     <article className={`result-inline ${failed ? "failed" : ""} ${cancelled ? "cancelled" : ""}`}>
       <span>{resultTitle}</span>
-      {summary && <small>{summary}</small>}
+      {!hasAssistantMessage && summary && <small>{summary}</small>}
       <div className="result-evidence">
         {changedFiles > 0 && <em>{tr(`${changedFiles} 个文件`, `${changedFiles} files`)} · +{additions} / -{deletions}</em>}
         {verification.length > 0 && <em className={verificationFailed ? "failed" : ""}>{verificationFailed ? tr("验证失败", "Checks failed") : tr(`${verification.length} 项验证通过`, `${verification.length} checks passed`)}</em>}
