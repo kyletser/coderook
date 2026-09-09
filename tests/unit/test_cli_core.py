@@ -223,8 +223,8 @@ def test_ensure_core_running_spawns_and_waits(
     assert core.ensure_core_running(CodeRookConfig(), timeout_s=1.0) is True
 
 
-# 功能：验证空闲 daemon 绑定其他 workspace 时启动器会有序重启到当前目录
-# 设计：模拟旧 workspace 元数据、受管 PID 和成功关闭，再让新进程返回当前 workspace，覆盖安全切换路径
+# 功能：验证空闲 daemon 绑定其他 workspace 时启动器在同一进程内切换到当前目录
+# 设计：替换项目激活调用并让停止与派生在误调用时失败，证明普通切换不会中断其他前端连接
 def test_ensure_core_running_switches_idle_managed_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -232,28 +232,51 @@ def test_ensure_core_running_switches_idle_managed_workspace(
     current = tmp_path / "current"
     current.mkdir()
     monkeypatch.chdir(current)
-    metadata = iter(
-        [
-            {"workspace": str(tmp_path / "other"), "active_runs": 0},
-            {"workspace": str(current), "active_runs": 0},
-        ]
+    monkeypatch.setattr(
+        core,
+        "_core_metadata",
+        lambda _config: {"workspace": str(tmp_path / "other"), "active_runs": 0},
     )
-    monkeypatch.setattr(core, "_core_metadata", lambda _config: next(metadata))
-    monkeypatch.setattr(core, "_running_pid", lambda: 1234)
-    stopped = MagicMock(return_value=True)
-    monkeypatch.setattr(core, "stop_core", stopped)
+    activated: list[Path] = []
 
-    async def port_closed(_config: CodeRookConfig) -> bool:
-        return False
+    async def activate(_config: CodeRookConfig, workspace: Path) -> None:
+        activated.append(workspace)
 
-    proc = MagicMock()
-    proc.poll.return_value = None
-    monkeypatch.setattr(core, "_port_open", port_closed)
-    monkeypatch.setattr(core, "_spawn_core", lambda: proc)
-    monkeypatch.setattr(core.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(core, "_activate_workspace", activate)
+    monkeypatch.setattr(
+        core,
+        "stop_core",
+        MagicMock(side_effect=AssertionError("must not stop")),
+    )
+    monkeypatch.setattr(
+        core,
+        "_spawn_core",
+        MagicMock(side_effect=AssertionError("must not spawn")),
+    )
 
-    assert core.ensure_core_running(CodeRookConfig(), timeout_s=1.0) is True
-    stopped.assert_called_once()
+    assert core.ensure_core_running(CodeRookConfig(), timeout_s=1.0) is False
+    assert activated == [current.resolve()]
+
+
+# 功能：验证从受保护安装目录执行管理命令时复用 Core 当前工作区
+# 设计：显式启用 reuse_existing 并让切换、停止与派生全部在误调用时失败，覆盖只读管理入口不扰动产品会话
+def test_ensure_core_running_can_reuse_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        core,
+        "_core_metadata",
+        lambda _config: {"workspace": str(tmp_path / "active"), "active_runs": 1},
+    )
+    for name in ("_activate_workspace", "stop_core", "_spawn_core"):
+        monkeypatch.setattr(
+            core,
+            name,
+            MagicMock(side_effect=AssertionError(f"must not call {name}")),
+        )
+
+    assert core.ensure_core_running(CodeRookConfig(), reuse_existing=True) is False
 
 
 # 功能：验证其他 workspace 仍有活动 run 时启动器拒绝切换 daemon

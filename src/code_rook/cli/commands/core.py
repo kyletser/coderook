@@ -85,6 +85,34 @@ def validate_core_workspace(
         )
 
 
+# 在现有 Core 进程内切换工作区，保持 Web、TUI 与 IPC 连接不被 daemon 重启打断
+async def _activate_workspace(config: CodeRookConfig, workspace: Path) -> None:
+    client = SocketClient.from_config(config)
+    await client.connect()
+    event_loop = asyncio.create_task(client.run_event_loop())
+    try:
+        opened = await client.send_command("project.open", {"path": str(workspace)})
+        project_id = opened.get("id") if isinstance(opened, dict) else None
+        if not isinstance(project_id, str) or not project_id:
+            raise CoreLaunchError("Core did not return a project id for the requested workspace")
+        activated = await client.send_command(
+            "project.activate",
+            {"project_id": project_id},
+        )
+        served_workspace = activated.get("workspace") if isinstance(activated, dict) else None
+        if not isinstance(served_workspace, str) or not _same_workspace(
+            served_workspace,
+            workspace,
+        ):
+            raise CoreLaunchError("Core did not activate the requested workspace")
+    except (IpcError, OSError) as exc:
+        raise CoreLaunchError(f"Could not switch Core workspace: {exc}") from exc
+    finally:
+        event_loop.cancel()
+        await asyncio.gather(event_loop, return_exceptions=True)
+        await client.close()
+
+
 # 启动后台 Core 并显式转发用户选择的环境文件，返回进程对象供就绪等待
 def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
     command = [sys.executable, "-m", "code_rook.core"]
@@ -116,12 +144,13 @@ def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
     return proc
 
 
-# 确保 Core 可用；显式 env 文件会强制受管实例重启以冻结同一 overlay
+# 确保 Core 可用；普通工作区切换复用进程，显式 env 文件才重启以冻结 overlay
 def ensure_core_running(
     config: CodeRookConfig,
     timeout_s: float = 10.0,
     *,
     env_file: Path | None = None,
+    reuse_existing: bool = False,
 ) -> bool:
     requested_workspace = Path.cwd().resolve()
     metadata = _core_metadata(config)
@@ -132,7 +161,7 @@ def ensure_core_running(
             served_workspace,
             requested_workspace,
         )
-        if same_workspace and env_file is None:
+        if env_file is None and (same_workspace or reuse_existing):
             return False
         active_runs = _metadata_count(metadata, "active_runs")
         if active_runs:
@@ -142,6 +171,14 @@ def ensure_core_running(
                 f"{served_workspace or '<unknown>'} ({active_runs} active run(s)); "
                 "finish or cancel that work before restarting Core"
             )
+        if env_file is None:
+            try:
+                asyncio.run(_activate_workspace(config, requested_workspace))
+            except CoreLaunchError:
+                raise
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise CoreLaunchError(f"Could not switch Core workspace: {exc}") from exc
+            return False
         if not stop_core(config):
             raise CoreLaunchError(
                 f"Could not stop the Core serving {served_workspace or '<unknown>'}"

@@ -3038,6 +3038,8 @@ class CoreApp:
         server.register("core.ping", self._ping_handler)
         server.register("core.shutdown", self._shutdown_handler)
         server.register("web.launch", self._web_launch_handler)
+        server.register("project.open", self._project_open_handler)
+        server.register("project.activate", self._project_activate_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("goal.create", self._goal_create_handler)
         server.register("goal.get", self._goal_get_handler)

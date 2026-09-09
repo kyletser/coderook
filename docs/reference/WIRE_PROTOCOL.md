@@ -15257,6 +15257,66 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### ProjectActivateCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `project_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "project.activate",
+      "default": "project.activate",
+      "title": "Type",
+      "type": "string"
+    },
+    "project_id": {
+      "minLength": 1,
+      "title": "Project Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_id"
+  ],
+  "title": "ProjectActivateCommand",
+  "type": "object"
+}
+```
+
+### ProjectOpenCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `path` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "project.open",
+      "default": "project.open",
+      "title": "Type",
+      "type": "string"
+    },
+    "path": {
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "ProjectOpenCommand",
+  "type": "object"
+}
+```
+
 ### RecoveryAvailableEvent
 
 | Field | Type | Required |

@@ -582,6 +582,7 @@ def _run_cli() -> int:
         )
         return 0
 
+    reuse_active_workspace = False
     if args.command == "web" and args.workspace is not None:
         workspace = args.workspace.expanduser().resolve()
         if not workspace.is_dir():
@@ -594,13 +595,21 @@ def _run_cli() -> int:
         if registry.is_protected_workspace(Path.cwd()):
             os.chdir(registry.prepare_welcome_workspace())
     elif args.command in {"run", "review", "chat", "sessions", "session", "memory"}:
-        ProjectRegistry().enter_welcome_workspace_if_protected()
+        before_redirect = Path.cwd().resolve()
+        redirected = ProjectRegistry().enter_welcome_workspace_if_protected()
+        reuse_active_workspace = (
+            args.command in {"sessions", "session", "memory"}
+            and redirected != before_redirect
+        )
 
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
 
     if args.command in {"run", "review", "chat", "sessions", "session", "memory"}:
-        ensure_core_running(config, env_file=args.env_file)
+        if reuse_active_workspace:
+            ensure_core_running(config, env_file=args.env_file, reuse_existing=True)
+        else:
+            ensure_core_running(config, env_file=args.env_file)
 
     if args.command == "web":
         return cmd_web(

@@ -65,6 +65,29 @@ class WebLaunchResult(BaseModel):
     workspace: str
 
 
+class ProjectOpenCommand(BaseModel):
+    type: Literal["project.open"] = "project.open"
+    path: str = Field(min_length=1)
+
+
+class ProjectOpenResult(BaseModel):
+    id: str
+    name: str
+    root: str
+    kind: str
+    created_at: float
+    last_opened_at: float
+
+
+class ProjectActivateCommand(BaseModel):
+    type: Literal["project.activate"] = "project.activate"
+    project_id: str = Field(min_length=1)
+
+
+class ProjectActivateResult(BaseModel):
+    workspace: str
+
+
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
     goal: str
@@ -1243,6 +1266,8 @@ Command = Annotated[
     CoreAuthenticateCommand
     | CoreShutdownCommand
     | WebLaunchCommand
+    | ProjectOpenCommand
+    | ProjectActivateCommand
     | PingCommand
     | AgentRunCommand
     | GoalCreateCommand
