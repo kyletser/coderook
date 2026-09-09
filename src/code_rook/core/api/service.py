@@ -599,9 +599,14 @@ class RuntimeApiService:
     # 从指定会话创建可独立继续的历史 Fork，并返回新的 durable thread
     async def fork_thread(
         self, thread_id: str, *, title: str = "", leaf_seq: int | None = None
-    ) -> ThreadRecord:
+    ) -> dict[str, object]:
         session = await self._sessions.fork(thread_id, title, leaf_seq=leaf_seq)
-        return await self._runtime.get_thread(session.id)
+        editor_text = ""
+        if leaf_seq is not None:
+            navigation = await self._sessions.navigate_tree(session.id, leaf_seq)
+            editor_text = str(navigation.get("editor_text", ""))
+        thread = await self._runtime.get_thread(session.id)
+        return {**thread.model_dump(mode="json"), "editor_text": editor_text}
 
     # 导出会话为 Markdown 或 JSON 正文，不在服务端写入用户任意路径
     async def export_thread(

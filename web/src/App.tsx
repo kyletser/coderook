@@ -1790,7 +1790,12 @@ function AppShell({
           threadId={selectedId}
           workspace={workspace}
           initialFile={inspectorFile}
-          onFork={(thread) => { setThreads((current) => [thread, ...current]); selectThread(thread.id); setDrawer(null); }}
+          onFork={(thread, editorText) => {
+            composerDrafts.current[thread.id] = editorText;
+            setThreads((current) => [thread, ...current]);
+            selectThread(thread.id);
+            setDrawer(null);
+          }}
           onNavigate={(threadId, editorText) => {
             if (selectedIdRef.current !== threadId) return;
             setComposer(editorText);
@@ -2215,7 +2220,7 @@ function DrawerPanel({
   threadId: string;
   workspace: string;
   initialFile: string;
-  onFork(thread: ThreadRecord): void;
+  onFork(thread: ThreadRecord, editorText: string): void;
   onNavigate(threadId: string, editorText: string): void;
   onClose(): void;
   onReference(path: string): void;

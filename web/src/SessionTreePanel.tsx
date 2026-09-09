@@ -12,7 +12,7 @@ type Entry = {
 export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: {
   threadId: string;
   tr(zh: string, en: string): string;
-  onFork(thread: ThreadRecord): void;
+  onFork(thread: ThreadRecord, editorText: string): void;
   onNavigate(threadId: string, editorText: string): void;
   onError(message: string): void;
 }) {
@@ -34,10 +34,10 @@ export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: 
   async function fork(seq: number) {
     setPending(seq);
     try {
-      const thread = await request<ThreadRecord>(`/v1/threads/${encodeURIComponent(threadId)}/fork`, {
+      const thread = await request<ThreadRecord & { editor_text?: string }>(`/v1/threads/${encodeURIComponent(threadId)}/fork`, {
         method: "POST", body: JSON.stringify({ leaf_seq: seq }),
       });
-      onFork(thread);
+      onFork(thread, thread.editor_text || "");
     } catch (error) {
       onError(String(error));
     } finally {
