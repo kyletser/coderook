@@ -148,10 +148,10 @@ class HttpApiServer:
 
     # 停止接受请求并关闭所有普通与 SSE 连接
     async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        server = self._server
+        self._server = None
+        if server is not None:
+            server.close()
         writers = list(self._clients)
         for writer in writers:
             writer.close()
@@ -170,6 +170,11 @@ class HttpApiServer:
                     len(writers),
                 )
         self._clients.clear()
+        if server is not None:
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=1.0)
+            except TimeoutError:
+                logger.warning("timed out closing HTTP listener")
 
     # 读取并路由单个 HTTP 请求，响应后关闭普通连接
     async def _handle_client(

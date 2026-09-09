@@ -13,6 +13,7 @@ from code_rook.core.transport.auth import IpcTokenError
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
 _PID_FILE = Path.home() / ".coderook" / "coderook-core.pid"
+_CORE_LOCK_FILE = Path.home() / ".coderook" / "core.lock"
 
 
 class CoreLaunchError(RuntimeError):
@@ -141,16 +142,6 @@ def ensure_core_running(
                 f"{served_workspace or '<unknown>'} ({active_runs} active run(s)); "
                 "finish or cancel that work before restarting Core"
             )
-        if _running_pid() is None:
-            reason = (
-                "an explicit env file requires a verified restart"
-                if same_workspace and env_file is not None
-                else "the requested workspace differs"
-            )
-            raise CoreLaunchError(
-                "Core was not started by this CLI and cannot be safely reused because "
-                f"{reason}: {served_workspace or '<unknown>'}; stop it manually, then retry"
-            )
         if not stop_core(config):
             raise CoreLaunchError(
                 f"Could not stop the Core serving {served_workspace or '<unknown>'}"
@@ -256,19 +247,28 @@ async def _port_open(config: CodeRookConfig) -> bool:
     return True
 
 
-# 读取 PID 文件并确认进程存活，进程已消失则删除文件并返回 None
+# 从启动记录或 daemon 单写者锁读取真实存活 PID
 def _running_pid() -> int | None:
-    if not _PID_FILE.exists():
-        return None
-    try:
-        pid = int(_PID_FILE.read_text().strip())
-        if not _pid_exists(pid):
+    daemon_pid: int | None = None
+    if _CORE_LOCK_FILE.exists():
+        try:
+            candidate = int(_CORE_LOCK_FILE.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError, UnicodeError):
+            candidate = 0
+        if candidate > 0 and _pid_exists(candidate):
+            daemon_pid = candidate
+
+    launcher_pid: int | None = None
+    if _PID_FILE.exists():
+        try:
+            candidate = int(_PID_FILE.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError, UnicodeError):
+            candidate = 0
+        if candidate > 0 and _pid_exists(candidate):
+            launcher_pid = candidate
+        else:
             _PID_FILE.unlink(missing_ok=True)
-            return None
-        return pid
-    except (ValueError, OSError):
-        _PID_FILE.unlink(missing_ok=True)
-        return None
+    return daemon_pid if daemon_pid is not None else launcher_pid
 
 
 # 经 IPC 请求 daemon 有序关闭；连接或认证失败时抛出由调用方降级处理
@@ -287,11 +287,9 @@ async def _request_shutdown(config: CodeRookConfig) -> None:
         await client.close()
 
 
-# 停止 Core：优先 IPC 优雅关闭，失败回退 SIGTERM；等待进程退出后返回是否执行了停止
+# 停止 Core：优先 IPC 优雅关闭，PID 仅作为失败后的强制终止手段
 def stop_core(config: CodeRookConfig | None = None, timeout_s: float = 5.0) -> bool:
     pid = _running_pid()
-    if pid is None:
-        return False
     graceful = False
     if config is not None:
         try:
@@ -299,19 +297,32 @@ def stop_core(config: CodeRookConfig | None = None, timeout_s: float = 5.0) -> b
             graceful = True
         except (ConnectionRefusedError, OSError, IpcTokenError, IpcError, TimeoutError):
             graceful = False
+    if not graceful and pid is None:
+        return False
     if not graceful:
+        assert pid is not None
         os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout_s
-    while _pid_exists(pid) and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        still_running = (
+            asyncio.run(_port_open(config))
+            if graceful and config is not None
+            else pid is not None and _pid_exists(pid)
+        )
+        if not still_running:
+            _PID_FILE.unlink(missing_ok=True)
+            return True
         time.sleep(0.05)
-    if graceful and _pid_exists(pid):
+    if graceful and pid is not None and _pid_exists(pid):
         # 优雅关闭超时仍未退出，回退强制终止以避免残留进程
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + timeout_s
         while _pid_exists(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
     _PID_FILE.unlink(missing_ok=True)
-    return True
+    if graceful and config is not None:
+        return not asyncio.run(_port_open(config))
+    return pid is not None and not _pid_exists(pid)
 
 
 # 打印 daemon 当前状态（running / not running）
@@ -344,7 +355,8 @@ def cmd_core_start(config: CodeRookConfig, *, env_file: Path | None = None) -> N
 
     if started:
         pid = _running_pid()
-        print(f"started  pid={pid}  ({config.host}:{config.port})")
+        pid_text = f"  pid={pid}" if pid is not None else ""
+        print(f"started{pid_text}  ({config.host}:{config.port})")
     else:
         print(f"already running  ({config.host}:{config.port})")
 
@@ -352,11 +364,11 @@ def cmd_core_start(config: CodeRookConfig, *, env_file: Path | None = None) -> N
 # 优先经 IPC 有序停止 daemon，未运行时提示
 def cmd_core_stop(config: CodeRookConfig) -> None:
     pid = _running_pid()
-    if pid is None:
+    if not stop_core(config):
         print("not running")
         return
-    stop_core(config)
-    print(f"stopped  pid={pid}")
+    pid_text = f"  pid={pid}" if pid is not None else ""
+    print(f"stopped{pid_text}")
 
 
 # 重启后台 Core，使磁盘上的最新配置立即生效
@@ -369,4 +381,6 @@ def cmd_core_restart(config: CodeRookConfig, *, env_file: Path | None = None) ->
         # 与 start 保持一致：重启失败同样必须以非零码退出
         raise SystemExit(1) from exc
     action = "restarted" if stopped else ("started" if started else "already running")
-    print(f"{action}  pid={_running_pid()}  ({config.host}:{config.port})")
+    pid = _running_pid()
+    pid_text = f"  pid={pid}" if pid is not None else ""
+    print(f"{action}{pid_text}  ({config.host}:{config.port})")

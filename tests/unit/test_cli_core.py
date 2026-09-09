@@ -17,6 +17,25 @@ def test_pid_exists_detects_current_process_and_missing_pid() -> None:
     assert not core._pid_exists(2_147_483_647)
 
 
+# 功能：验证虚拟环境启动器 PID 失效后仍能从 daemon 锁文件恢复真实进程号
+# 设计：让启动 PID 指向已退出进程、锁文件指向存活进程，覆盖 Windows 启动器转交子进程场景
+def test_running_pid_falls_back_to_daemon_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "coderook-core.pid"
+    lock_file = tmp_path / "core.lock"
+    pid_file.write_text("1001", encoding="utf-8")
+    lock_file.write_text("2002\n    ", encoding="utf-8")
+    monkeypatch.setattr(core, "_PID_FILE", pid_file)
+    monkeypatch.setattr(core, "_CORE_LOCK_FILE", lock_file)
+    monkeypatch.setattr(core, "_pid_exists", lambda pid: pid == 2002)
+
+    assert core._running_pid() == 2002
+    assert not pid_file.exists()
+    assert lock_file.exists()
+
+
 # 功能：验证 Core 已就绪时 ensure_core_running 直接复用且不派生新进程
 # 设计：替换 readiness 探针并让 spawn 在误调用时立刻失败，精确覆盖单实例复用语义
 def test_ensure_core_running_reuses_ready_daemon(
@@ -72,28 +91,62 @@ def test_explicit_env_restarts_same_workspace_managed_core(
     spawned.assert_called_once_with(env_file)
 
 
-# 功能：验证显式 env 文件不会复用无法验证启动参数的非受管 Core
-# 设计：返回当前 workspace 元数据但不提供受管 PID，断言失败关闭且不尝试停止或派生
-def test_explicit_env_refuses_unmanaged_same_workspace_core(
+# 功能：验证认证可用但 PID 文件缺失的空闲 Core 仍可通过 IPC 有序重启
+# 设计：模拟 Windows 启动器 PID 已退出但 daemon 仍存活，确保不再要求用户手工清理进程
+def test_explicit_env_restarts_authenticated_core_without_pid_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(
-        core,
-        "_core_metadata",
-        lambda _config: {"workspace": str(Path.cwd()), "active_runs": 0},
+    metadata = iter(
+        [
+            {"workspace": str(Path.cwd()), "active_runs": 0},
+            {"workspace": str(Path.cwd()), "active_runs": 0},
+        ]
     )
+    monkeypatch.setattr(core, "_core_metadata", lambda _config: next(metadata))
     monkeypatch.setattr(core, "_running_pid", lambda: None)
-    stop = MagicMock(side_effect=AssertionError("must not stop unmanaged Core"))
-    spawn = MagicMock(side_effect=AssertionError("must not spawn before safe stop"))
+    stop = MagicMock(return_value=True)
+    proc = MagicMock()
+    proc.poll.return_value = None
+    spawn = MagicMock(return_value=proc)
     monkeypatch.setattr(core, "stop_core", stop)
     monkeypatch.setattr(core, "_spawn_core", spawn)
 
-    with pytest.raises(core.CoreLaunchError, match="explicit env file requires"):
-        core.ensure_core_running(CodeRookConfig(), env_file=tmp_path / "deployment.env")
+    async def port_closed(_config: CodeRookConfig) -> bool:
+        return False
 
-    stop.assert_not_called()
-    spawn.assert_not_called()
+    monkeypatch.setattr(core, "_port_open", port_closed)
+    monkeypatch.setattr(core.time, "sleep", lambda _seconds: None)
+
+    env_file = tmp_path / "deployment.env"
+    assert core.ensure_core_running(CodeRookConfig(), env_file=env_file) is True
+
+    stop.assert_called_once()
+    spawn.assert_called_once_with(env_file)
+
+
+# 功能：验证 PID 文件缺失时 stop 仍通过已认证 IPC 关闭 Core
+# 设计：让端口在一次轮询后关闭，证明优雅退出不依赖易失的启动器进程号
+def test_stop_core_uses_authenticated_shutdown_without_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(core, "_running_pid", lambda: None)
+    shutdown = MagicMock()
+
+    async def request_shutdown(_config: CodeRookConfig) -> None:
+        shutdown()
+
+    ports = iter([True, False])
+
+    async def port_open(_config: CodeRookConfig) -> bool:
+        return next(ports)
+
+    monkeypatch.setattr(core, "_request_shutdown", request_shutdown)
+    monkeypatch.setattr(core, "_port_open", port_open)
+    monkeypatch.setattr(core.time, "sleep", lambda _seconds: None)
+
+    assert core.stop_core(CodeRookConfig(), timeout_s=1.0) is True
+    shutdown.assert_called_once_with()
 
 
 # 功能：验证受管 Core 停止后仍占用端口时不会被当作已携带 overlay 的新实例

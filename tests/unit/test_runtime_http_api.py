@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -745,3 +746,27 @@ async def test_sse_tail_only_limits_initial_history(tmp_path: Path) -> None:
         assert resumed == [2]
     finally:
         await server.stop()
+
+
+# 功能：验证存在浏览器 SSE 长连接时 HTTP server 仍能立即停止
+# 设计：保持真实 TCP 流不主动断开，再用短超时约束 stop 必须先关闭客户端后等待监听器
+async def test_http_server_stop_closes_active_sse_connection(tmp_path: Path) -> None:
+    server, _service, base_url = await _start_server(tmp_path)
+    url = httpx.URL(base_url)
+    reader, writer = await asyncio.open_connection(url.host, url.port)
+    writer.write(
+        (
+            "GET /v1/threads/thread-1/events?after_seq=3 HTTP/1.1\r\n"
+            f"Host: {url.host}:{url.port}\r\n"
+            "Authorization: Bearer test-token\r\n"
+            "Connection: keep-alive\r\n\r\n"
+        ).encode("ascii")
+    )
+    await writer.drain()
+    response_head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=1.0)
+    assert b"200 OK" in response_head
+
+    await asyncio.wait_for(server.stop(), timeout=2.0)
+    assert await asyncio.wait_for(reader.read(), timeout=1.0) == b""
+    writer.close()
+    await writer.wait_closed()
