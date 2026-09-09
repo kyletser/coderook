@@ -61,7 +61,7 @@ follow_up_mode = "one-at-a-time"
 
 默认目录优先，额外路径按配置顺序加载，同名只使用第一份可读模板。相对路径以当前项目为基准。更新路径配置后重启 Core；模板内容修改后可用 `/reload` 刷新补全，执行时会读取最新正文。
 
-`steering_mode`（纠偏）与 `follow_up_mode`（后续消息）可分别改为 `all`，一次交付当前排队的消息；默认 `one-at-a-time` 每次交付一条。纠偏在下一次模型决策前生效，后续消息等当前回答与工具调用结束后才进入同一运行。配置变更后重启 Core。
+`steering_mode`（纠偏）与 `follow_up_mode`（后续消息）可分别改为 `all`，一次交付当前排队的消息；默认 `one-at-a-time` 每次交付一条。纠偏在下一次模型决策前生效，后续消息等当前回答与工具调用结束后才进入同一运行。TOML 是首次默认值；之后可在 Web 设置中即时切换，或使用 `/delivery steering|follow-up one|all`，选择保存在 `~/.coderook/agent-settings.json` 并在下次启动恢复。
 
 `skill_paths` 支持单个 Markdown Skill、含 `SKILL.md` 的包目录或包含多个 Skill 的目录。用户显式配置的手工维护 Skill 可以直接使用，无需复制安装；受管 Skill 仍保留其安装信任与完整性检查。加载顺序为用户目录、项目目录、显式路径，之后才是内建与旧目录兼容项；同名采用先发现的条目，项目不覆盖用户同名 Skill。使用 `/skill:名称 参数` 调用，其参考文件可通过 `read` 读取。
 
@@ -404,7 +404,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 类别 | 命令 |
 |---|---|
 | 帮助与输入 | `/help`、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]` |
-| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes` |
+| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes`、`/delivery` |
 | 模型 | `/config`、`/provider`、`/model`、`/thinking off\|low\|medium\|high`、`/doctor` |
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
 | 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/compact`、`/cost` |

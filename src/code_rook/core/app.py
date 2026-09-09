@@ -21,6 +21,10 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 import code_rook
+from code_rook.core.agent_runtime.settings import (
+    AgentDeliverySettings,
+    AgentDeliverySettingsStore,
+)
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.api import HttpApiServer, RuntimeApiService
 from code_rook.core.api.auth import load_or_create_api_token
@@ -33,6 +37,10 @@ from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
     AgentRunCommand,
     AgentRunResult,
+    AgentSettingsGetCommand,
+    AgentSettingsInfo,
+    AgentSettingsResult,
+    AgentSettingsSetCommand,
     ArtifactGcCommand,
     ArtifactGcResult,
     ArtifactListCommand,
@@ -394,6 +402,7 @@ class CoreApp:
         self._runtime_api: RuntimeApiService | None = None
         self._socket_server: SocketServer | None = None
         self._state_layout: UserStateLayout | None = None
+        self._agent_settings_store: AgentDeliverySettingsStore | None = None
         self._session_store: SessionStore | None = None
         self._workspace_switch_lock = asyncio.Lock()
         self._project_registry = ProjectRegistry()
@@ -589,6 +598,43 @@ class CoreApp:
             self._shutdown_event.set()
         return CoreShutdownResult()
 
+    # 返回当前 Core 实际采用的纠偏与后续消息交付方式
+    async def _agent_settings_get_handler(
+        self, params: dict[str, Any]
+    ) -> AgentSettingsResult:
+        AgentSettingsGetCommand.model_validate(params)
+        assert self._config is not None
+        return AgentSettingsResult(
+            settings=AgentSettingsInfo(
+                steering_mode=self._config.agent.steering_mode,
+                follow_up_mode=self._config.agent.follow_up_mode,
+            )
+        )
+
+    # 持久保存交付方式并立即应用到活动 Core 的消息队列
+    async def _agent_settings_set_handler(
+        self, params: dict[str, Any]
+    ) -> AgentSettingsResult:
+        cmd = AgentSettingsSetCommand.model_validate(params)
+        assert self._config is not None
+        assert self._agent_settings_store is not None
+        settings = AgentDeliverySettings(
+            steering_mode=cmd.steering_mode,
+            follow_up_mode=cmd.follow_up_mode,
+        )
+        self._agent_settings_store.save(settings)
+        self._config.agent.steering_mode = settings.steering_mode
+        self._config.agent.follow_up_mode = settings.follow_up_mode
+        self._interaction_manager.set_steering_mode(settings.steering_mode)
+        if self._sessions is not None:
+            self._sessions.set_follow_up_mode(settings.follow_up_mode)
+        return AgentSettingsResult(
+            settings=AgentSettingsInfo(
+                steering_mode=settings.steering_mode,
+                follow_up_mode=settings.follow_up_mode,
+            )
+        )
+
     # 经已认证 IPC 返回固定的本机浏览器地址
     async def _web_launch_handler(self, params: dict[str, Any]) -> WebLaunchResult:
         WebLaunchCommand.model_validate(params)
@@ -633,6 +679,8 @@ class CoreApp:
             "memory.delete": self._memory_delete_handler,
             "memory.settings.get": self._memory_settings_get_handler,
             "memory.settings.set": self._memory_settings_set_handler,
+            "agent.settings.get": self._agent_settings_get_handler,
+            "agent.settings.set": self._agent_settings_set_handler,
         }
         handler = handlers.get(command)
         if handler is None:
@@ -2909,6 +2957,17 @@ class CoreApp:
             logger.info("recovered %d interrupted goals", len(recovered_goals))
         self._bus.subscribe(self._goal_usage_event_handler)
         await self._initialize_provider_catalog(state_layout.root)
+        self._agent_settings_store = AgentDeliverySettingsStore(
+            state_layout.root / "agent-settings.json"
+        )
+        delivery_settings = self._agent_settings_store.load(
+            AgentDeliverySettings(
+                steering_mode=self._config.agent.steering_mode,
+                follow_up_mode=self._config.agent.follow_up_mode,
+            )
+        )
+        self._config.agent.steering_mode = delivery_settings.steering_mode
+        self._config.agent.follow_up_mode = delivery_settings.follow_up_mode
         await self._start_workspace_runtime(
             Path.cwd().resolve(),
             recover_stale_turns=True,
@@ -2961,6 +3020,8 @@ class CoreApp:
         server.register("turn.steer", self._turn_steer_handler)
         server.register("turn.items", self._turn_items_handler)
         server.register("runtime.capabilities", self._runtime_capabilities_handler)
+        server.register("agent.settings.get", self._agent_settings_get_handler)
+        server.register("agent.settings.set", self._agent_settings_set_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("event.unsubscribe", self._unsubscribe_handler)
         server.register("session.create", self._session_create_handler)

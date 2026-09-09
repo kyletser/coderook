@@ -2515,9 +2515,8 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const [objective, setObjective] = useState("");
   const [memoryBody, setMemoryBody] = useState("");
   const [skillSource, setSkillSource] = useState("");
-  const endpoint = tab === "interface" ? "" : tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
+  const endpoint = tab === "interface" ? "/v1/agent/settings" : tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
   const load = useCallback(() => {
-    if (tab === "interface") { setData({}); return Promise.resolve(); }
     if ((tab === "goals" || tab === "workers") && !threadId) { setData({}); return Promise.resolve(); }
     return request<Record<string, unknown>>(endpoint).then(setData).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
   }, [endpoint, onError, tab, threadId]);
@@ -2532,6 +2531,7 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const servers = (data.servers || []) as Array<Record<string, unknown>>;
   const memories = (data.memories || []) as Array<Record<string, unknown>>;
   const memorySettings = (data.settings || {}) as Record<string, unknown>;
+  const deliverySettings = (data.settings || {}) as Record<string, unknown>;
   const workerFollowup = async (workerId: string) => {
     const message = await dialog({
       title: tr("向 Worker 发送后续指令", "Send follow-up to worker"),
@@ -2666,6 +2666,17 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
+  const updateDelivery = async (key: "steering_mode" | "follow_up_mode", value: string) => {
+    const steeringMode = key === "steering_mode" ? value : textValue(deliverySettings.steering_mode || "one-at-a-time");
+    const followUpMode = key === "follow_up_mode" ? value : textValue(deliverySettings.follow_up_mode || "one-at-a-time");
+    try {
+      await request("/v1/agent/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ steering_mode: steeringMode, follow_up_mode: followUpMode }),
+      });
+      await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
   const tabLabels = {
     interface: tr("界面", "Interface"), goals: "Goals", workers: "Workers", skills: "Skills", mcp: "MCP", memory: tr("记忆", "Memory"),
   };
@@ -2673,6 +2684,8 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     {tab === "interface" && <div className="advanced-list interface-preferences">
       <section><div><b>{tr("界面语言", "Interface language")}</b><span className="stable">{preferences.locale}</span></div><p>{tr("仅改变 CodeRook Web 的界面文案；模型回答、日志和代码内容保持原文。", "Changes only CodeRook Web labels. Model responses, logs, and code remain unchanged.")}</p><select aria-label={tr("界面语言", "Interface language")} value={preferences.locale} onChange={(event) => preferences.setLocale(event.target.value as WebLocale)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></section>
       <section><div><b>{tr("显示对比度", "Display contrast")}</b><span className="stable">{preferences.theme === "light" ? tr("浅色", "Light") : tr("高对比", "High contrast")}</span></div><p>{tr("默认保持浅色产品界面；高对比模式加强文字、边框和焦点可见性。", "The default stays light. High contrast strengthens text, borders, and focus visibility.")}</p><select aria-label={tr("显示对比度", "Display contrast")} value={preferences.theme} onChange={(event) => preferences.setTheme(event.target.value as WebTheme)}><option value="light">{tr("浅色", "Light")}</option><option value="high-contrast">{tr("高对比", "High contrast")}</option></select></section>
+      <section><div><b>{tr("纠偏消息", "Steering messages")}</b><span className="stable">{textValue(deliverySettings.steering_mode || "one-at-a-time")}</span></div><p>{tr("运行中发送的纠偏可逐条交给模型，或把当前待处理纠偏一次全部交付。", "Deliver active-run steering one message at a time, or deliver all pending steering together.")}</p><select aria-label={tr("纠偏消息交付", "Steering delivery")} value={textValue(deliverySettings.steering_mode || "one-at-a-time")} onChange={(event) => void updateDelivery("steering_mode", event.target.value)}><option value="one-at-a-time">{tr("逐条交付", "One at a time")}</option><option value="all">{tr("一次全部交付", "All together")}</option></select></section>
+      <section><div><b>{tr("后续消息", "Follow-up messages")}</b><span className="stable">{textValue(deliverySettings.follow_up_mode || "one-at-a-time")}</span></div><p>{tr("当前回答结束后，可逐条处理排队消息，或把同模式消息合并交给下一次决策。", "After the current answer, process queued messages one at a time or admit all same-mode messages together.")}</p><select aria-label={tr("后续消息交付", "Follow-up delivery")} value={textValue(deliverySettings.follow_up_mode || "one-at-a-time")} onChange={(event) => void updateDelivery("follow_up_mode", event.target.value)}><option value="one-at-a-time">{tr("逐条交付", "One at a time")}</option><option value="all">{tr("一次全部交付", "All together")}</option></select></section>
     </div>}
     {tab === "goals" && <div className="advanced-list">
       <form className="inline-create" onSubmit={async (event) => { event.preventDefault(); if (await mutate("/v1/goals", { session_id: threadId, objective, start: false })) setObjective(""); }}><input value={objective} onChange={(event) => setObjective(event.target.value)} placeholder={tr("创建有界长任务 Goal", "Create a bounded long-running goal")} /><button disabled={!threadId || !objective.trim()}>{tr("创建", "Create")}</button></form>

@@ -810,6 +810,11 @@ class HttpApiServer:
                 "memory.settings.get" if request.method == "GET" else "memory.settings.set",
                 {} if request.method == "GET" else _json_object(request.body),
             )
+        if path == "/v1/agent/settings" and request.method in {"GET", "PATCH"}:
+            return HTTPStatus.OK, await self._dispatch_control(
+                "agent.settings.get" if request.method == "GET" else "agent.settings.set",
+                {} if request.method == "GET" else _json_object(request.body),
+            )
         if path == "/v1/skills" and request.method == "GET":
             return HTTPStatus.OK, await self._service.list_skills()
         if path == "/v1/skills/install" and request.method == "POST":

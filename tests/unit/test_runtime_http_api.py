@@ -460,6 +460,57 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
         await server.stop()
 
 
+# 功能：验证 Web 的 Agent 交付设置通过同一 typed Core 控制面读取并更新
+# 设计：给真实 HTTP server 注入记录型 dispatcher，分别请求 GET 与 PATCH 并核对命令和完整设置快照
+async def test_agent_delivery_settings_http_route(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    # 记录 HTTP 路由下发到 Core 的设置命令
+    async def dispatch(command: str, params: dict[str, Any]) -> dict[str, object]:
+        calls.append((command, params))
+        if command == "agent.settings.get":
+            return {
+                "settings": {
+                    "steering_mode": "one-at-a-time",
+                    "follow_up_mode": "one-at-a-time",
+                }
+            }
+        return {"settings": params}
+
+    service = _FakeRuntimeApi(tmp_path)
+    server = HttpApiServer(
+        "127.0.0.1",
+        0,
+        "test-token",
+        service,  # type: ignore[arg-type]
+        control_dispatcher=dispatch,
+    )
+    host, port = await server.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://{host}:{port}",
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            current = await client.get("/v1/agent/settings")
+            updated = await client.patch(
+                "/v1/agent/settings",
+                json={"steering_mode": "all", "follow_up_mode": "one-at-a-time"},
+            )
+        assert current.status_code == 200
+        assert current.json()["settings"]["steering_mode"] == "one-at-a-time"
+        assert updated.status_code == 200
+        assert updated.json()["settings"]["steering_mode"] == "all"
+        assert calls == [
+            ("agent.settings.get", {}),
+            (
+                "agent.settings.set",
+                {"steering_mode": "all", "follow_up_mode": "one-at-a-time"},
+            ),
+        ]
+    finally:
+        await server.stop()
+
+
 # 功能：验证 Provider Doctor 校验失败通过 HTTP 422 返回脱敏结构而不是通用 500
 # 设计：让 fake service 抛出真实 ConfigurationValidationError，并检查前端恢复所需的分类与上游状态码
 async def test_http_provider_validation_failure_is_actionable(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import pytest
 
 from code_rook.tui.commands import (
     BUILTIN_SLASH_COMMANDS,
+    _cmd_delivery,
     _cmd_goal,
     _cmd_workers,
     _parse_goal_create_args,
@@ -102,6 +103,57 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
     actual = {cmd.name: cmd.description for cmd in BUILTIN_SLASH_COMMANDS}
     assert all(actual.get(name) == description for name, description in previous)
     assert actual["preset"] == "通过 fork 切换冻结 Agent Preset"
+    assert actual["delivery"] == "切换运行中消息的交付方式"
+
+
+# 功能：验证 /delivery 从 Core 读取现值并将用户选择作为完整设置快照写回
+# 设计：用最小异步客户端捕获 get/set 顺序，避免仅验证命令注册而遗漏真正的即时切换链路
+async def test_delivery_command_updates_shared_core_setting() -> None:
+    class _Client:
+        # 初始化命令调用记录
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, str]]] = []
+
+        # 返回并更新固定交付设置快照
+        async def send_command(self, method: str, params: dict[str, str]) -> dict[str, Any]:
+            self.calls.append((method, params))
+            if method == "agent.settings.get":
+                return {
+                    "settings": {
+                        "steering_mode": "one-at-a-time",
+                        "follow_up_mode": "one-at-a-time",
+                    }
+                }
+            return {"settings": dict(params)}
+
+    class _TextArea:
+        text = "/delivery steering all"
+
+    class _App:
+        # 初始化命令需要的客户端、语言和输出槽
+        def __init__(self) -> None:
+            self._client = _Client()
+            self._locale = "zh-CN"
+            self.output: list[Any] = []
+
+        # 收集命令产生的用户可见状态行
+        def _append(self, item: Any) -> None:
+            self.output.append(item)
+
+    app = _App()
+    area = _TextArea()
+
+    await _cmd_delivery(app, area, "/delivery steering all")  # type: ignore[arg-type]
+
+    assert area.text == ""
+    assert app._client.calls == [
+        ("agent.settings.get", {}),
+        (
+            "agent.settings.set",
+            {"steering_mode": "all", "follow_up_mode": "one-at-a-time"},
+        ),
+    ]
+    assert app.output
 
 
 # 功能：验证每个命令是否提供可调用的 handler 且 need_connection 取值合法

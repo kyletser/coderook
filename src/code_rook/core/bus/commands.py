@@ -402,6 +402,25 @@ class RuntimeCapabilitiesResult(RuntimeCapabilitiesSnapshot):
     pass
 
 
+class AgentSettingsInfo(BaseModel):
+    steering_mode: Literal["one-at-a-time", "all"]
+    follow_up_mode: Literal["one-at-a-time", "all"]
+
+
+class AgentSettingsGetCommand(BaseModel):
+    type: Literal["agent.settings.get"] = "agent.settings.get"
+
+
+class AgentSettingsSetCommand(BaseModel):
+    type: Literal["agent.settings.set"] = "agent.settings.set"
+    steering_mode: Literal["one-at-a-time", "all"]
+    follow_up_mode: Literal["one-at-a-time", "all"]
+
+
+class AgentSettingsResult(BaseModel):
+    settings: AgentSettingsInfo
+
+
 class SessionCreateCommand(BaseModel):
     type: Literal["session.create"] = "session.create"
     mode: SessionMode = "chat"
@@ -1235,6 +1254,8 @@ Command = Annotated[
     | TurnSteerCommand
     | TurnItemsCommand
     | RuntimeCapabilitiesCommand
+    | AgentSettingsGetCommand
+    | AgentSettingsSetCommand
     | SessionCreateCommand
     | SessionSendMessageCommand
     | SessionQueueMessageCommand

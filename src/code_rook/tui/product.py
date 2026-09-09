@@ -537,6 +537,9 @@ _TEXT: dict[str, dict[str, str]] = {
         "cmd.session.forking": "正在复制会话",
         "cmd.session.exporting": "正在导出会话",
         "cmd.session.export_usage": "用法：/export [md|json|html] [--force --yes]",
+        "cmd.delivery.usage": "用法：/delivery [steering|follow-up] [one|all]",
+        "cmd.delivery.current": "消息交付 · 纠偏 {steering} · 后续 {follow_up}",
+        "cmd.delivery.updated": "消息交付已更新 · 纠偏 {steering} · 后续 {follow_up}",
         "cmd.session.deleting": "正在删除会话",
         "cmd.session.delete_confirm": (
             "将删除当前会话 {session} 及其全部历史；确认请输入 /delete --yes"
@@ -1332,6 +1335,11 @@ _TEXT: dict[str, dict[str, str]] = {
         "cmd.session.forking": "Forking session",
         "cmd.session.exporting": "Exporting session",
         "cmd.session.export_usage": "Usage: /export [md|json|html] [--force --yes]",
+        "cmd.delivery.usage": "Usage: /delivery [steering|follow-up] [one|all]",
+        "cmd.delivery.current": "Message delivery · steering {steering} · follow-up {follow_up}",
+        "cmd.delivery.updated": (
+            "Message delivery updated · steering {steering} · follow-up {follow_up}"
+        ),
         "cmd.session.deleting": "Deleting session",
         "cmd.session.delete_confirm": (
             "This deletes session {session} and all history; confirm with /delete --yes"

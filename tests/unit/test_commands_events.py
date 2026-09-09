@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from code_rook.core.authority import AuthorityProfile, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.commands import (
     AgentRunCommand,
+    AgentSettingsSetCommand,
     BackgroundCancelCommand,
     BackgroundGetCommand,
     CoreAuthenticateCommand,
@@ -385,6 +386,22 @@ def test_session_lifecycle_commands_validate() -> None:
         SessionRenameCommand(session_id="sess-1", title="")
     with pytest.raises(ValidationError):
         SessionExportCommand(session_id="sess-1", format="xml")  # type: ignore[arg-type]
+
+
+# 功能：验证 Agent 交付设置只接受 Pi 兼容的逐条或全部模式
+# 设计：用合法双设置和单个非法值覆盖判别模型边界，确保错误不会到达运行中队列
+def test_agent_delivery_settings_validate() -> None:
+    settings = AgentSettingsSetCommand(
+        steering_mode="all",
+        follow_up_mode="one-at-a-time",
+    )
+
+    assert settings.type == "agent.settings.set"
+    with pytest.raises(ValidationError):
+        AgentSettingsSetCommand(
+            steering_mode="batch",  # type: ignore[arg-type]
+            follow_up_mode="one-at-a-time",
+        )
 
 
 def test_run_cancel_protocol_roundtrip() -> None:

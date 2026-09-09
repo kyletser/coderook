@@ -63,6 +63,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "history": "session",
     "language": "session",
     "theme": "session",
+    "delivery": "session",
     "attachments": "session",
     "changes": "review",
     "diff": "review",
@@ -107,6 +108,7 @@ _DIRECT_PALETTE_COMMANDS = {
     "context",
     "cost",
     "attachments",
+    "delivery",
     "mcp",
     "jobs",
 }
@@ -406,6 +408,57 @@ async def _cmd_language(app: Any, ta: ChatTextArea, content: str) -> None:
 async def _cmd_theme(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
     app._handle_theme_command(content.removeprefix("/theme").strip())
+
+
+# 查看或即时切换纠偏与后续消息的交付方式
+async def _cmd_delivery(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None:
+        _warn(app, "cmd.core_disconnected")
+        return
+    args = content.removeprefix("/delivery").strip().lower().split()
+    aliases = {
+        "one": "one-at-a-time",
+        "one-at-a-time": "one-at-a-time",
+        "all": "all",
+    }
+    if len(args) not in {0, 2} or (
+        args
+        and (
+            args[0] not in {"steering", "follow-up"}
+            or args[1] not in aliases
+        )
+    ):
+        _warn(app, "cmd.delivery.usage")
+        return
+    try:
+        result = await app._client.send_command("agent.settings.get", {})
+        settings = dict(result.get("settings", {}))
+        if args:
+            key = "steering_mode" if args[0] == "steering" else "follow_up_mode"
+            settings[key] = aliases[args[1]]
+            result = await app._client.send_command(
+                "agent.settings.set",
+                {
+                    "steering_mode": settings.get("steering_mode", "one-at-a-time"),
+                    "follow_up_mode": settings.get("follow_up_mode", "one-at-a-time"),
+                },
+            )
+            settings = dict(result.get("settings", settings))
+        message_key = "cmd.delivery.updated" if args else "cmd.delivery.current"
+        app._append(
+            Static(
+                tr(
+                    message_key,
+                    app._locale,
+                    steering=settings.get("steering_mode", "one-at-a-time"),
+                    follow_up=settings.get("follow_up_mode", "one-at-a-time"),
+                ),
+                classes="log-line",
+            )
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        app._show_safe_error("delivery", exc, action="settings")
 
 
 # 查看、移除或清空当前 composer 的待发送图片
@@ -1319,6 +1372,14 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         _cmd_theme,
         usage="auto|dark|light|high-contrast",
         arg_candidates=("auto", "dark", "light", "high-contrast"),
+    ),
+    SlashCommand(
+        "delivery",
+        "切换运行中消息的交付方式",
+        True,
+        _cmd_delivery,
+        usage="steering|follow-up one|all",
+        arg_candidates=("steering one", "steering all", "follow-up one", "follow-up all"),
     ),
     SlashCommand(
         "attachments",

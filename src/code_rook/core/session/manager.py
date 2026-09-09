@@ -242,6 +242,10 @@ class SessionManager:
         )
         self._rehydrate()
 
+    # 即时更新同一 Core 下后续消息的批量交付方式
+    def set_follow_up_mode(self, mode: Literal["one-at-a-time", "all"]) -> None:
+        self._follow_up_mode = mode
+
     # 读取新会话应继承的当前模型，不因未配置 Provider 阻止浏览会话。
     def _default_model_selection(self) -> tuple[str, str, ThinkingLevel]:
         if self._route_registry is None:

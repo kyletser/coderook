@@ -619,7 +619,11 @@ an overflow. A zero automatic-compaction threshold disables this path as well.
 Running-task interaction follows Pi's default one-at-a-time steering queue: consecutive user
 corrections reach separate model turns, including messages received during
 compaction. The internal `InteractionManager` supports explicit `all` delivery
-for callers that need batch behavior; this is not yet a user-facing setting.
+for callers that need batch behavior. TUI `/delivery` and the Web settings drawer
+now read and update both delivery modes through the same typed Core commands. The
+selection applies immediately, persists in the user state directory, and is
+restored on the next Core start; TOML values remain the initial defaults before a
+user choice exists.
 Plain-text follow-ups in the current mode are claimed from the durable queue
 by the native loop after the current answer, one at a time. They keep the same
 run and context. Queue removal follows transcript persistence. Image follow-ups

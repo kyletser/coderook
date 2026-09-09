@@ -13786,6 +13786,70 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### AgentSettingsGetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.settings.get",
+      "default": "agent.settings.get",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "AgentSettingsGetCommand",
+  "type": "object"
+}
+```
+
+### AgentSettingsSetCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `steering_mode` | `string` | yes |
+| `follow_up_mode` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "agent.settings.set",
+      "default": "agent.settings.set",
+      "title": "Type",
+      "type": "string"
+    },
+    "steering_mode": {
+      "enum": [
+        "one-at-a-time",
+        "all"
+      ],
+      "title": "Steering Mode",
+      "type": "string"
+    },
+    "follow_up_mode": {
+      "enum": [
+        "one-at-a-time",
+        "all"
+      ],
+      "title": "Follow Up Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "steering_mode",
+    "follow_up_mode"
+  ],
+  "title": "AgentSettingsSetCommand",
+  "type": "object"
+}
+```
+
 ### ArtifactGcCommand
 
 | Field | Type | Required |
