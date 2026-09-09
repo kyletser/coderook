@@ -38,11 +38,17 @@ def cmd_web(
 ) -> int:
     current = Path.cwd().resolve()
     registry = ProjectRegistry()
+    reuse_existing = False
     if registry.is_protected_workspace(current):
         if explicit_workspace:
             raise ValueError("CodeRook's internal source cannot be opened as a project")
         os.chdir(registry.prepare_welcome_workspace())
-    ensure_core_running(config, env_file=env_file)
+        reuse_existing = True
+    ensure_core_running(
+        config,
+        env_file=env_file,
+        reuse_existing=reuse_existing,
+    )
     url = asyncio.run(_request_launch_url(config))
     opened = False if no_open else webbrowser.open(url, new=2)
     if no_open or not opened:
