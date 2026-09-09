@@ -1284,6 +1284,87 @@ async def test_tui_route_and_model_switch_update_route_store(tmp_path: Path) -> 
     assert len(appended) == 2
 
 
+# 功能：验证 TUI 新增 Provider 后立即把 route/model 绑定到当前会话
+# 设计：用内存凭据和记录型 IPC 替身跑真实保存路径，防止界面已切换但下一轮仍使用旧模型
+async def test_tui_configured_provider_binds_current_session(tmp_path: Path) -> None:
+    class _Credentials:
+        # 初始化仅供本测试使用的内存凭据表
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        # 保存 route 凭据并返回稳定的 file 引用
+        def save(self, route_id: str, secret: str, *, prefer_keyring: bool = True) -> str:
+            del prefer_keyring
+            self.values[route_id] = secret
+            return f"file:{route_id}"
+
+        # 解析已保存凭据供配置服务读取
+        def resolve(self, credential_ref: str) -> object:
+            from code_rook.core.llm.credentials import CredentialResolution
+
+            _, _, route_id = credential_ref.partition(":")
+            value = self.values.get(route_id)
+            return CredentialResolution(
+                value=value,
+                source="file" if value else "missing",
+            )
+
+    class _Doctor:
+        # 返回与候选 route 摘要绑定的成功结果
+        async def check(self, route: object, _credential: object) -> ProviderDoctorResult:
+            return _doctor_success(route, "file")
+
+    class _Client:
+        # 初始化 IPC 调用记录
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        # 记录会话模型更新并模拟 Core 成功响应
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            return {
+                "session_id": params["session_id"],
+                "route_id": params["route_id"],
+                "model": params["model"],
+            }
+
+    routes = RouteStore(tmp_path / "routes.json")
+    client = _Client()
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        route_store=routes,
+        credential_store=_Credentials(),  # type: ignore[arg-type]
+        provider_doctor=_Doctor(),  # type: ignore[arg-type]
+    )
+    app._client = client  # type: ignore[assignment]
+    app._session_id = "sess-current"
+    app._discovered_config_models = ("deepseek-chat",)
+    app._append = lambda _widget: None  # type: ignore[method-assign]
+    app._update_header = lambda _state: None  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+    provider = next(item for item in PROVIDER_PRESETS if item.id == "deepseek")
+
+    await app._save_config_route(provider, "test-secret", "deepseek-chat")
+
+    assert client.calls == [
+        (
+            "session.set_model",
+            {
+                "session_id": "sess-current",
+                "route_id": "deepseek",
+                "model": "deepseek-chat",
+            },
+        )
+    ]
+    assert app._route == "deepseek"
+    assert app._model == "deepseek-chat"
+
+
 # 功能：验证 TUI doctor 显示分类和凭据来源，但不显示任何 API key 正文
 # 设计：注入固定诊断器与凭据 stub，调用真实展示方法并检查渲染文本和输入恢复
 async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:

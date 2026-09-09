@@ -3825,6 +3825,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._show_safe_error("provider-validation", exc, action="generic")
             self._restore_ready_prompt()
             return
+        if not await self._bind_session_model(route):
+            self._restore_ready_prompt()
+            return
         self._provider = provider.id
         self._route = route.id
         self._model = route.model
