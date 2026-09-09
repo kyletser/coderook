@@ -220,6 +220,7 @@ from code_rook.core.bus.commands import (
 from code_rook.core.bus.envelope import INVALID_PARAMS, EventPushEnvelope, HandlerError
 from code_rook.core.bus.events import (
     AuditDegradedEvent,
+    CoreWorkspaceChangedEvent,
     VerificationCompletedEvent,
 )
 from code_rook.core.capabilities import (
@@ -1074,6 +1075,13 @@ class CoreApp:
         except (OSError, RuntimeError, SystemExit, ValueError) as exc:
             raise HandlerError(INVALID_PARAMS, str(exc)) from exc
         self._project_registry.register(target)
+        await self._bus.publish(
+            CoreWorkspaceChangedEvent(
+                previous_workspace=str(current),
+                workspace=str(target),
+                ts=_now(),
+            )
+        )
         return {"workspace": str(target)}
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）

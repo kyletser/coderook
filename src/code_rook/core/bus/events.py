@@ -37,6 +37,13 @@ class CoreStartedEvent(BaseModel):
     version: str
 
 
+class CoreWorkspaceChangedEvent(BaseModel):
+    type: Literal["core.workspace_changed"] = "core.workspace_changed"
+    previous_workspace: str
+    workspace: str
+    ts: str
+
+
 class AuditDegradedEvent(BaseModel):
     type: Literal["audit.degraded"] = "audit.degraded"
     source: str
@@ -787,6 +794,7 @@ class RuntimeEventAppendedEvent(BaseModel):
 # 根据 type 字段决定事件类型的判别联合
 Event = Annotated[
     CoreStartedEvent
+    | CoreWorkspaceChangedEvent
     | AuditDegradedEvent
     | RunStartedEvent
     | RunPhaseChangedEvent

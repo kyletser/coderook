@@ -14543,6 +14543,47 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### CoreWorkspaceChangedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `previous_workspace` | `string` | yes |
+| `workspace` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "core.workspace_changed",
+      "default": "core.workspace_changed",
+      "title": "Type",
+      "type": "string"
+    },
+    "previous_workspace": {
+      "title": "Previous Workspace",
+      "type": "string"
+    },
+    "workspace": {
+      "title": "Workspace",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "previous_workspace",
+    "workspace",
+    "ts"
+  ],
+  "title": "CoreWorkspaceChangedEvent",
+  "type": "object"
+}
+```
+
 ### ExtensionNotificationEvent
 
 | Field | Type | Required |

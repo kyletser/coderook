@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -94,6 +95,26 @@ def test_top_level_help_exposes_primary_entrypoints(
     assert "coderook web" in output
     assert "coderook run --help" in output
     assert "--route" in output
+
+
+# 功能：会话列表帮助用紧凑范围占位符展示 limit 而不是展开两百个数字
+# 设计：执行真实子命令帮助并检查公开文本，同时锁定越界参数返回 argparse 错误
+def test_sessions_limit_help_is_compact_and_range_checked(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["coderook", "sessions", "--help"])
+    with pytest.raises(SystemExit) as raised:
+        cli_main.main()
+    output = capsys.readouterr().out
+    assert raised.value.code == 0
+    assert "--limit 1..200" in output
+    assert "{1,2,3,4" not in output
+
+    assert cli_main._session_list_limit("1") == 1
+    assert cli_main._session_list_limit("200") == 200
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli_main._session_list_limit("201")
 
 
 # 功能：验证 coderook --continue 直接委托 TUI 的最近会话恢复入口

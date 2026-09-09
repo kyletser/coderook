@@ -23,9 +23,23 @@ async def test_project_switch_rebinds_workspace_without_restarting_core(
     second_target = tmp_path / "second-project"
     second_target.mkdir()
     ipc = SocketClient("127.0.0.1", free_port, auth_token=ipc_token)
+    workspace_events: list[dict[str, object]] = []
+    workspace_changed = asyncio.Event()
+
+    # 捕获同一 IPC 连接上的项目切换通知，证明其他前端无需重连 Core
+    def capture_workspace_event(event: dict[str, object]) -> None:
+        if event.get("type") == "core.workspace_changed":
+            workspace_events.append(event)
+            workspace_changed.set()
+
+    ipc.on_event(capture_workspace_event)
     await ipc.connect()
     event_loop = asyncio.create_task(ipc.run_event_loop())
     try:
+        await ipc.send_command(
+            "event.subscribe",
+            {"topics": ["core.workspace_changed"], "scope": "global"},
+        )
         launch = await ipc.send_command("web.launch", {})
         origin = f"http://127.0.0.1:{api_port}"
         assert launch["url"] == f"{origin}/"
@@ -45,6 +59,8 @@ async def test_project_switch_rebinds_workspace_without_restarting_core(
             )
             assert activated.status_code == 200
             assert activated.json() == {"workspace": str(target.resolve())}
+            await asyncio.wait_for(workspace_changed.wait(), timeout=2.0)
+            assert workspace_events[-1]["workspace"] == str(target.resolve())
             assert running_daemon.poll() is None
             assert running_daemon.pid > 0
             session = await browser.get("/v1/web/session")

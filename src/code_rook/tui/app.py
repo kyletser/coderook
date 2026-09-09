@@ -65,7 +65,7 @@ from code_rook.tui.commands import (
     match_slash_command,
     visible_slash_commands,
 )
-from code_rook.tui.connection import TuiConnection
+from code_rook.tui.connection import TuiConnection, _select_recent_session
 from code_rook.tui.external_editor import ExternalEditorError, edit_text_externally
 from code_rook.tui.ipc_actions import IpcActionError
 from code_rook.tui.panels import (
@@ -1023,7 +1023,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             except NoMatches:
                 pass
             return
-        if self._file_reference_paths is None:
+        if self._file_reference_paths is None or event.query == "":
             self._file_reference_paths = list_workspace_file_references(self._workspace)
         try:
             popup = self.query_one(FileCompleteWidget)
@@ -1204,6 +1204,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("Ctrl+Shift+C", tr("help.copy", self._locale)),
             ("Ctrl+End", tr("help.scroll", self._locale)),
             ("Ctrl+P", tr("help.palette", self._locale)),
+            ("Ctrl+O", tr("help.details", self._locale)),
             ("Ctrl+G", tr("help.editor", self._locale)),
             ("Ctrl+Q", tr("help.quit", self._locale)),
         ]
@@ -5094,8 +5095,64 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except Exception:
             log.exception("_handle_event crashed  event_type=%s", event.get("type", "?"))
 
+    # 在保持 IPC 连接的情况下跟随 Core 工作区切换并打开新项目最近会话
+    async def _adopt_workspace_change(self, workspace: str) -> None:
+        client = self._client
+        if client is None:
+            return
+        target = Path(workspace).resolve()
+        if target == self._workspace:
+            return
+        previous_session = self._session_id
+        self._snapshot_session_composer()
+        if previous_session is not None:
+            await self._connection.unsubscribe_session(previous_session)
+        self._workspace = target
+        self._artifact_store = ArtifactStore(target / ".coderook" / "artifacts")
+        self._file_reference_paths = None
+        self._pending_image_attachments.clear()
+        self._refresh_attachment_strip()
+        self._input_history_enabled = _input_history_enabled(target)
+        self._input_history_path = _input_history_path(target)
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.set_history(
+                _load_input_history(
+                    path=self._input_history_path,
+                    enabled=self._input_history_enabled,
+                ),
+                path=self._input_history_path,
+                enabled=self._input_history_enabled,
+            )
+        self._session_id = None
+        self._resume_session_id = None
+        self._history_loaded = False
+        listing = await client.send_command(
+            "session.list",
+            {"include_closed": False, "limit": 50},
+        )
+        selected = _select_recent_session(listing.get("sessions", []))
+        if selected is None:
+            await self._create_and_switch_session()
+        else:
+            await self._switch_session(selected)
+        self.notify(
+            f"已切换项目：{target.name}"
+            if self._locale != "en-US"
+            else f"Switched project: {target.name}"
+        )
+
     # 独立处理 daemon 全局事件，审计故障只展示脱敏诊断且不污染当前任务时间线
     def _handle_daemon_event(self, event: dict[str, Any]) -> None:
+        if event.get("type") == "core.workspace_changed":
+            workspace = event.get("workspace")
+            if isinstance(workspace, str) and workspace:
+                self.run_worker(
+                    self._adopt_workspace_change(workspace),
+                    name="adopt_workspace_change",
+                    exclusive=False,
+                )
+            return
         if event.get("type") != "audit.degraded":
             return
         identifier = str(event.get("diagnostic_id", "") or "AUD-UNKNOWN")

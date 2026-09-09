@@ -110,6 +110,17 @@ def _resolve_requested_route(route_id: str | None, model: str | None) -> str | N
     return active.id
 
 
+# 将会话列表上限校验为 1 到 200，避免 argparse 在帮助页展开两百个候选值
+def _session_list_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer from 1 to 200") from exc
+    if not 1 <= limit <= 200:
+        raise argparse.ArgumentTypeError("limit must be from 1 to 200")
+    return limit
+
+
 # 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
 def main() -> int:
     mark_agent_process_environment()
@@ -406,7 +417,13 @@ def _run_cli() -> int:
     sessions_parser.add_argument(
         "--all", action="store_true", help="Include closed one-shot and chat sessions"
     )
-    sessions_parser.add_argument("--limit", type=int, default=50, choices=range(1, 201))
+    sessions_parser.add_argument(
+        "--limit",
+        type=_session_list_limit,
+        default=50,
+        metavar="1..200",
+        help="Maximum sessions to show (default: 50)",
+    )
 
     session_parser = subparsers.add_parser("session", help="Manage a saved session")
     session_sub = session_parser.add_subparsers(dest="session_command")
