@@ -593,13 +593,13 @@ def _run_cli() -> int:
         registry = ProjectRegistry()
         if registry.is_protected_workspace(Path.cwd()):
             os.chdir(registry.prepare_welcome_workspace())
-    elif args.command in {"run", "review", "chat", "sessions", "memory"}:
+    elif args.command in {"run", "review", "chat", "sessions", "session", "memory"}:
         ProjectRegistry().enter_welcome_workspace_if_protected()
 
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
 
-    if args.command in {"run", "review", "chat", "sessions", "memory"}:
+    if args.command in {"run", "review", "chat", "sessions", "session", "memory"}:
         ensure_core_running(config, env_file=args.env_file)
 
     if args.command == "web":

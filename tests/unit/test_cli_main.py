@@ -297,6 +297,38 @@ def test_run_command_binds_core_before_dispatch(monkeypatch: pytest.MonkeyPatch)
     assert calls == ["core:True:None", "run"]
 
 
+# 功能：验证单会话管理命令也会先启动并绑定当前工作区 Core
+# 设计：用 rename 覆盖全部 session 子命令共享的前置分发路径，断言启动发生在业务调用之前
+def test_session_command_binds_core_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = CodeRookConfig()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "session", "rename", "sess-example", "New title"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_core_running",
+        lambda passed, *, env_file: calls.append(f"core:{passed is config}:{env_file}"),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_session_rename",
+        lambda *_args, **_kwargs: calls.append("rename"),
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    assert calls == ["core:True:None", "rename"]
+
+
 # 功能：验证 coderook web 可切换到显式工作区并把 no-open 选项交给 Web 启动器
 # 设计：替换配置与启动器并记录 cwd，覆盖 argparse、路径解析和 Core 启动前工作区绑定
 def test_web_command_dispatches_selected_workspace(monkeypatch, tmp_path: Path) -> None:
