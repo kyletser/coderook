@@ -54,6 +54,7 @@ from code_rook.cli.commands.trace import cmd_trace
 from code_rook.cli.commands.version import cmd_version
 from code_rook.cli.commands.web import cmd_web
 from code_rook.core.config import get_config
+from code_rook.core.input_context import augment_file_references
 from code_rook.core.llm.credentials import CredentialStoreError
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
@@ -75,6 +76,25 @@ def _configure_utf8_stdio() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
+
+
+# 读取显式管道到快捷执行入口的文本，交互式终端不消费标准输入
+def _read_piped_stdin() -> str:
+    try:
+        if sys.stdin.isatty():
+            return ""
+        return sys.stdin.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+# 将任务说明与管道正文组合为一次模型请求，纯管道内容可直接作为任务
+def _merge_piped_input(message: str, piped_input: str) -> str:
+    if not piped_input:
+        return message
+    if not message:
+        return piped_input
+    return f"{message}\n\nInput provided through stdin:\n{piped_input}"
 
 
 # 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
@@ -113,8 +133,22 @@ def _run_cli() -> int:
         quick.add_argument(
             "--thinking", choices=("off", "low", "medium", "high"),
         )
-        quick.add_argument("message", nargs="+", help="Task to execute")
+        quick.add_argument("message", nargs="*", help="Task to execute")
         quick_args = quick.parse_args(sys.argv[1:])
+        visible_goal = " ".join(quick_args.message).strip()
+        goal = _merge_piped_input(visible_goal, _read_piped_stdin())
+        if not goal:
+            quick.error("a task or piped input is required")
+        goal = augment_file_references(
+            goal,
+            visible_goal,
+            Path.cwd(),
+            explicit_references=(
+                value[1:]
+                for value in quick_args.message
+                if value.startswith("@") and len(value) > 1
+            ),
+        )
         migrate_legacy_state()
         config = (
             get_config()
@@ -124,11 +158,12 @@ def _run_cli() -> int:
         setup_logging(config)
         ensure_core_running(config, env_file=quick_args.env_file)
         cmd_run(
-            " ".join(quick_args.message).strip(),
+            goal,
             config,
-            permission_mode="allow-list",
+            permission_mode="allow_list",
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
+            final_only=True,
             thinking_level=quick_args.thinking,
         )
         return 0
@@ -689,7 +724,7 @@ def _run_cli() -> int:
         if args.question_mode == "preset" and not args.answer:
             parser.error("--answer is required in preset question mode")
         cmd_run(
-            args.goal,
+            augment_file_references(args.goal, args.goal, Path.cwd()),
             config,
             permission_mode=args.permission_mode.replace("-", "_"),
             allow_tools=args.allow_tool,

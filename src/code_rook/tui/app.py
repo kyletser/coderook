@@ -27,6 +27,7 @@ from code_rook.core.configuration import (
     ConfigurationValidationError,
 )
 from code_rook.core.features import labs_enabled
+from code_rook.core.input_context import augment_file_references
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctor
 from code_rook.core.llm.pricing import (
@@ -1623,39 +1624,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
     # 把 @文件 解析为有界工作区引用，只注入路径和读取规则而不盲目附加全文
     def _augment_file_references(self, content: str, visible_content: str) -> str:
-        raw_refs = [
-            token[1:].strip(".,;，。；:：")
-            for token in visible_content.split()
-            if token.startswith("@") and len(token) > 1
-        ][:8]
-        resolved: list[str] = []
-        for raw in raw_refs:
-            candidate = (self._workspace / raw).resolve()
-            try:
-                candidate.relative_to(self._workspace)
-            except ValueError:
-                continue
-            if candidate.is_file():
-                resolved.append(candidate.relative_to(self._workspace).as_posix())
-                continue
-            matches = [
-                path
-                for path in self._workspace.rglob(f"*{Path(raw).name}*")
-                if path.is_file()
-                and ".git" not in path.parts
-                and ".coderook" not in path.parts
-            ][:2]
-            if len(matches) == 1:
-                resolved.append(matches[0].relative_to(self._workspace).as_posix())
-        if not resolved:
-            return content
-        unique = list(dict.fromkeys(resolved))
-        return (
-            content
-            + "\n\nBounded file references selected by the user: "
-            + json.dumps(unique, ensure_ascii=False)
-            + ". Read only the ranges needed for this task; do not inject entire files by default."
-        )
+        return augment_file_references(content, visible_content, self._workspace)
 
     # 保留直接 Shell 原文，其余输入附加有界文件引用
     def _prepare_model_content(self, visible_content: str) -> str:

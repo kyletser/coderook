@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from code_rook.core.input_context import (
+    augment_file_references,
+    extract_file_reference_tokens,
+    resolve_file_references,
+)
+
+
+# 功能：从自然任务文本中提取有限数量的 @文件 标记并清理句末标点
+# 设计：同时使用中英文标点和普通正文，验证解析不把非引用词误收为路径
+def test_extract_file_reference_tokens() -> None:
+    assert extract_file_reference_tokens("比较 @src/app.py， 和 @README.md. 然后总结") == [
+        "src/app.py",
+        "README.md",
+    ]
+
+
+# 功能：文件引用只解析工作区内的精确路径或唯一模糊匹配
+# 设计：创建精确文件、唯一模糊文件和越界文件，覆盖正常补全与目录逃逸拒绝
+def test_resolve_file_references_stays_inside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("readme", encoding="utf-8")
+    source = workspace / "src"
+    source.mkdir()
+    (source / "service.py").write_text("service", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    assert resolve_file_references(
+        workspace,
+        ["README.md", "service", "../secret.txt"],
+    ) == ["README.md", "src/service.py"]
+
+
+# 功能：模型输入仅追加文件路径和按需读取约束，不提前注入文件全文
+# 设计：以显式参数传入含空格路径，验证 CLI 参数边界不会因重新分词而丢失文件
+def test_augment_file_references_preserves_explicit_path_with_spaces(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "design notes.md"
+    target.write_text("PRIVATE FULL CONTENT", encoding="utf-8")
+
+    result = augment_file_references(
+        "总结 @design notes.md",
+        "总结 @design notes.md",
+        tmp_path,
+        explicit_references=["design notes.md"],
+    )
+
+    assert '\"design notes.md\"' in result
+    assert "PRIVATE FULL CONTENT" not in result
+    assert "Read only the ranges needed" in result

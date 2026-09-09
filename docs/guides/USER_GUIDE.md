@@ -649,6 +649,17 @@ uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
 uv run coderook trace --follow
 ```
 
+一次性任务可以直接引用工作区文件，也可以接收 PowerShell 管道输入：
+
+```powershell
+uv run coderook -p "@README.md" "概括这个文件"
+Get-Content .\build.log | uv run coderook -p "定位失败原因"
+```
+
+`@文件` 只把工作区相对路径和按需读取约束交给 Agent，模型再通过 `read` 读取必要范围，不会在
+提交前把整个文件塞入上下文。管道正文和命令行中的任务说明会合并为同一次请求；省略任务说明时，
+管道正文本身就是任务。文本模式始终在结束时输出最终回答，包括不发送流式 token 的 Provider。
+
 Headless 默认在需要人工审批时 fail-fast。只允许明确工具：
 
 ```bash

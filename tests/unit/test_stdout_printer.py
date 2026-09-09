@@ -90,6 +90,73 @@ async def test_run_finished_prints_status_and_steps(capsys: pytest.CaptureFixtur
     assert "4" in out
 
 
+# 功能：非流式模型完成后文本模式仍打印 Runtime 持久化的最终回答
+# 设计：不发送 llm.token，仅调用结果补写入口，复现 OpenAI 兼容端点只见成功状态的问题
+def test_text_printer_writes_final_result_without_token_events(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    printer = StdoutPrinter()
+
+    printer.write_result(
+        HeadlessRunResult(
+            run_id="run-plain",
+            status="success",
+            exit_code=0,
+            result="alpha beta",
+            steps=1,
+        )
+    )
+
+    assert capsys.readouterr().out.strip() == "alpha beta"
+
+
+# 功能：流式回答已经打印时不在结束阶段重复输出同一最终正文
+# 设计：先发送可见 token 再补写完整结果，以输出出现次数锁定去重行为
+async def test_text_printer_does_not_duplicate_streamed_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    printer = StdoutPrinter()
+    await printer.handle({"type": "llm.token", "run_id": "run-stream", "token": "done"})
+
+    printer.write_result(
+        HeadlessRunResult(
+            run_id="run-stream",
+            status="success",
+            exit_code=0,
+            result="done",
+            steps=1,
+        )
+    )
+
+    assert capsys.readouterr().out.count("done") == 1
+
+
+# 功能：最终结果模式完全隐藏运行、步骤、工具和流式 token 进度
+# 设计：依次发送典型进度事件再写权威结果，断言 stdout 只有可继续管道处理的正文
+async def test_text_printer_final_only_emits_answer(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    printer = StdoutPrinter(final_only=True)
+    await printer.handle({"type": "run.started", "run_id": "run-final"})
+    await printer.handle({"type": "step.started", "run_id": "run-final", "step": 1})
+    await printer.handle({"type": "llm.token", "run_id": "run-final", "token": "partial"})
+    await printer.handle(
+        {"type": "run.finished", "run_id": "run-final", "status": "success", "steps": 1}
+    )
+
+    printer.write_result(
+        HeadlessRunResult(
+            run_id="run-final",
+            status="success",
+            exit_code=0,
+            result="clean answer",
+            steps=1,
+        )
+    )
+
+    assert capsys.readouterr().out == "clean answer\n"
+
+
 # 功能：验证不同终态会映射成稳定且可脚本判断的退出码
 # 设计：直接测试纯映射函数，避免启动 daemon 并覆盖成功、权限和普通失败三条分支
 def test_permission_required_has_scriptable_exit_code() -> None:

@@ -70,9 +70,18 @@ Explicit product entries are:
 coderook          # TUI (default)
 coderook "fix the failing tests"  # TUI and submit the first task
 coderook -p "explain this repository"  # run once and print the answer
+coderook -p "@README.md" "summarize this file"  # reference a workspace file on demand
 coderook tui      # TUI (explicit)
 coderook web      # local browser workspace
 coderook run ...  # script/headless mode
+```
+
+PowerShell and POSIX pipelines can provide the input for a one-shot task without a temporary
+file. The final assistant answer is printed even when the selected Provider does not emit token
+events:
+
+```powershell
+Get-Content .\build.log | uv run coderook -p "explain the failure"
 ```
 
 Configure a route in the TUI with `/config`, or use the CLI:

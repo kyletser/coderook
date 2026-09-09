@@ -152,11 +152,64 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
     assert captured == {
         "goal": "读取项目 总结结构",
         "config": config,
-        "permission_mode": "allow-list",
+        "permission_mode": "allow_list",
         "allow_tools": ["read", "bash", "edit", "write"],
         "output_format": "text",
+        "final_only": True,
         "thinking_level": "high",
     }
+
+
+# 功能：快捷打印模式将管道正文与任务说明合并后提交给 Agent
+# 设计：用非交互 StringIO 模拟 PowerShell 管道，验证 stdin 不会被忽略或拆成第二次运行
+def test_print_shorthand_accepts_piped_input(monkeypatch) -> None:
+    from io import StringIO
+
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(sys, "argv", ["coderook", "--print", "总结以下内容"])
+    monkeypatch.setattr(sys, "stdin", StringIO("alpha\nbeta\n"))
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **_kwargs: captured.update({"goal": goal}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["goal"] == "总结以下内容\n\nInput provided through stdin:\nalpha\nbeta"
+
+
+# 功能：快捷打印模式把带空格的 @文件 参数转换为按需读取的工作区引用
+# 设计：保留 argv 的参数边界并检查模型输入，避免 join 后把一个文件名拆成多个无效 token
+def test_print_shorthand_resolves_explicit_file_argument(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    target = tmp_path / "design notes.md"
+    target.write_text("do not inline", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["coderook", "--print", "@design notes.md", "总结"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **_kwargs: captured.update({"goal": goal}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert '\"design notes.md\"' in str(captured["goal"])
+    assert "do not inline" not in str(captured["goal"])
 
 
 # 功能：验证常规 run 命令会先把 Core 绑定到当前工作区再提交任务

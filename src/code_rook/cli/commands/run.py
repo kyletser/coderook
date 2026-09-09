@@ -29,9 +29,11 @@ def _run_finished_exit_code(status: str, reason: str | None) -> int:
 
 class StdoutPrinter:
     # 接收 dict 格式的事件并将运行进度格式化打印到终端
-    def __init__(self) -> None:
+    def __init__(self, *, final_only: bool = False) -> None:
         self._inline = False  # True while LLM tokens are mid-line
         self._run_start: float = 0.0
+        self._printed_visible_text = False
+        self._final_only = final_only
 
     # 若当前行有未换行的 token，补一个换行符
     def _ensure_newline(self) -> None:
@@ -41,6 +43,8 @@ class StdoutPrinter:
 
     # 根据事件 type 字段分发并格式化打印到 stdout/stderr
     async def handle(self, event: dict[str, Any]) -> None:
+        if self._final_only:
+            return
         t = event.get("type", "")
 
         if t == "run.started":
@@ -52,8 +56,10 @@ class StdoutPrinter:
             print(f"[step {event.get('step')}] planning...")
 
         elif t == "llm.token":
-            print(event.get("token", ""), end="", flush=True)
-            self._inline = True
+            token = str(event.get("token", ""))
+            print(token, end="", flush=True)
+            self._inline = bool(token)
+            self._printed_visible_text = self._printed_visible_text or bool(token)
 
         elif t == "agent.decision" and not event.get("has_visible_text"):
             self._ensure_newline()
@@ -86,6 +92,12 @@ class StdoutPrinter:
                 f"[run] {event.get('status', '')}  {event.get('steps')} steps  "
                 f"{elapsed:.1f}s{reason_text}"
             )
+
+    # 非流式 Provider 没有 token 事件时补打 Runtime 中的权威最终回答
+    def write_result(self, result: HeadlessRunResult) -> None:
+        self._ensure_newline()
+        if result.result and not self._printed_visible_text:
+            print(result.result)
 
 
 class StreamJsonPrinter:
@@ -194,6 +206,7 @@ async def _run_async(
     output_format: OutputFormat = "text",
     event_filters: list[str] | None = None,
     include_partial: bool = False,
+    final_only: bool = False,
     resume_session_id: str | None = None,
     thinking_level: str | None = None,
     question_mode: str = "fail_fast",
@@ -210,7 +223,9 @@ async def _run_async(
         print(f"error: IPC authentication failed: {auth_error}", file=sys.stderr)
         return 1
 
-    text_printer = StdoutPrinter() if output_format == "text" else None
+    text_printer = (
+        StdoutPrinter(final_only=final_only) if output_format == "text" else None
+    )
     stream_printer = (
         StreamJsonPrinter(
             event_filters=event_filters,
@@ -350,7 +365,9 @@ async def _run_async(
     try:
         final_result = await _fetch_final_result(client, run_id, finished_event)
         exit_code = final_result.exit_code
-        if output_format == "json":
+        if text_printer is not None:
+            text_printer.write_result(final_result)
+        elif output_format == "json":
             print(final_result.model_dump_json())
         elif stream_printer is not None:
             stream_printer.write_result(final_result)
@@ -384,6 +401,7 @@ def cmd_run(
     output_format: OutputFormat = "text",
     event_filters: list[str] | None = None,
     include_partial: bool = False,
+    final_only: bool = False,
     resume_session_id: str | None = None,
     thinking_level: str | None = None,
     question_mode: str = "fail_fast",
@@ -400,6 +418,7 @@ def cmd_run(
                 output_format=output_format,
                 event_filters=event_filters,
                 include_partial=include_partial,
+                final_only=final_only,
                 resume_session_id=resume_session_id,
                 thinking_level=thinking_level,
                 question_mode=question_mode,
