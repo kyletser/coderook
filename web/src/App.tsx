@@ -1,6 +1,6 @@
 import { createContext, FormEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
-import { bootstrap, request, streamEvents } from "./api";
+import { bootstrap, refreshSession, request, streamEvents } from "./api";
 import { browserBridge } from "./platform";
 import { piMessageSnapshots } from "./piMessages";
 import { SessionTreePanel } from "./SessionTreePanel";
@@ -822,6 +822,7 @@ function AppShell({
   );
   const extensionStatuses = Object.values(extensionUi.statuses || {}).filter(Boolean);
   const extensionWidgets = Object.values(extensionUi.widgets || {});
+  const projectSelected = workspaceHasUserProject(workspace);
 
   useEffect(() => {
     document.title = extensionUi.title || "CodeRook";
@@ -834,6 +835,12 @@ function AppShell({
   }, [preferences.locale]);
 
   const refreshThreads = useCallback(async () => {
+    if (!projectSelected) {
+      initializedSelection.current = true;
+      setThreads([]);
+      setSelectedId("");
+      return;
+    }
     const result = await request<ThreadRecord[]>("/v1/threads");
     result.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     setThreads(result);
@@ -841,7 +848,7 @@ function AppShell({
       initializedSelection.current = true;
       setSelectedId(preferredThreadId(result));
     }
-  }, []);
+  }, [projectSelected]);
 
   useEffect(() => {
     void refreshThreads()
@@ -1609,7 +1616,6 @@ function AppShell({
     previousTimelineSize.current = timelineEntries.length;
   }, [timelineEntries]);
   const tokenUsage = contextTokens;
-  const projectSelected = workspaceHasUserProject(workspace);
   const workspaceName = projectSelected
     ? workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
     : tr("选择项目", "Choose project");
@@ -1640,7 +1646,9 @@ function AppShell({
             </button>
             );
           })}
-          {!threads.length && <p className="empty">{tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")}</p>}
+          {!threads.length && <p className="empty">{projectSelected
+            ? tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")
+            : tr("选择项目后，任务会显示在这里。", "Tasks appear here after you choose a project.")}</p>}
         </nav>
         <div className="sidebar-foot"><span className="connection-dot" />{tr("本机 Core 已连接", "Local Core connected")}<small>0.2 beta</small></div>
       </aside>
@@ -2791,6 +2799,33 @@ function AppContent(): ReactElement {
   useEffect(() => {
     bootstrap().then((result) => { setWorkspace(result.workspace); setReady(true); }).catch((reason: unknown) => setFatal(reason instanceof Error ? reason.message : String(reason)));
   }, []);
+  useEffect(() => {
+    if (!ready) return undefined;
+    let disposed = false;
+    let refreshing = false;
+    const refreshWorkspace = async () => {
+      if (disposed || refreshing || document.visibilityState === "hidden") return;
+      refreshing = true;
+      try {
+        const result = await refreshSession();
+        if (!disposed) setWorkspace((current) => result.workspace || current);
+      } catch {
+        // 临时断连由现有请求与事件流恢复；工作区轮询不覆盖当前可用界面
+      } finally {
+        refreshing = false;
+      }
+    };
+    const onVisibilityChange = () => { if (document.visibilityState === "visible") void refreshWorkspace(); };
+    window.addEventListener("focus", refreshWorkspace);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    const interval = window.setInterval(() => void refreshWorkspace(), 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWorkspace);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [ready]);
   if (fatal) return <div className="fatal"><span>♜</span><h1>{tr("无法连接本地 CodeRook Core", "Unable to connect to the local CodeRook Core")}</h1><p>{fatal}</p><p>{tr("请刷新页面；如果 Core 未运行，再执行", "Refresh the page. If Core is not running, run")} <code>coderook web</code>。</p></div>;
   if (!ready) return <div className="loading"><span>♜</span><p>{tr("正在连接本地工作区…", "Connecting to the local workspace…")}</p></div>;
   return <ProductDialogProvider><AppShell key={workspace} initialWorkspace={workspace} onWorkspaceChanged={setWorkspace} /></ProductDialogProvider>;

@@ -67,6 +67,11 @@ export async function bootstrap(): Promise<{ workspace: string }> {
   return { workspace: session.workspace };
 }
 
+export async function refreshSession(): Promise<{ workspace: string }> {
+  const session = await establishSession();
+  return { workspace: session.workspace };
+}
+
 export async function streamEvents(
   threadId: string,
   afterSeq: number,
