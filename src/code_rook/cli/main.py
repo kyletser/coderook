@@ -39,6 +39,7 @@ from code_rook.cli.commands.session import (
     cmd_session_delete,
     cmd_session_export,
     cmd_session_fork,
+    cmd_session_import,
     cmd_session_rename,
 )
 from code_rook.cli.commands.sessions import cmd_sessions
@@ -335,6 +336,11 @@ def _run_cli() -> int:
     )
     export_parser.add_argument("--output", "-o")
     export_parser.add_argument("--force", action="store_true")
+    import_parser = session_sub.add_parser(
+        "import", help="Import a CodeRook JSON or Pi JSONL session"
+    )
+    import_parser.add_argument("path")
+    import_parser.add_argument("--title", default="")
     delete_parser = session_sub.add_parser("delete", help="Permanently delete a session")
     delete_parser.add_argument("session_id")
     delete_parser.add_argument("--yes", action="store_true", help="Confirm permanent deletion")
@@ -661,6 +667,8 @@ def _run_cli() -> int:
                 args.force,
                 config,
             )
+        elif args.session_command == "import":
+            cmd_session_import(args.path, args.title, config)
         elif args.session_command == "delete":
             cmd_session_delete(args.session_id, args.yes, config)
         else:

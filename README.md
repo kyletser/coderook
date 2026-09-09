@@ -122,7 +122,7 @@ Useful TUI commands:
 |---|---|
 | `/config`, `/provider`, `/model`, `/doctor` | Configure and diagnose model routes |
 | `/plan`, `/mode`, `/permissions`, `/trust`, `/sandbox` | Control execution and safety |
-| `/sessions`, `/new`, `/rename`, `/fork`, `/export`, `/delete` | Manage durable sessions |
+| `/sessions`, `/new`, `/rename`, `/fork`, `/export`, `/import`, `/delete` | Manage durable sessions, including CodeRook JSON and Pi JSONL import |
 | `/changes` (`/diff` alias), `/stage`, `/commit`, `/review`, `/turn`, `/rewind` | Inspect, select, commit, and recover changes |
 | `/goal` | Manage a durable goal and its bounded continuation policy |
 | `/compact [focus]` | Compact older context while preserving task facts and complete tool pairs |
@@ -217,7 +217,7 @@ mode and permission controls remain available. Default session compaction keeps 
 tool interactions and appends a summary projection without rewriting the Ledger. Sessions preserve
 images for later turns; non-vision routes receive omission placeholders instead.
 See the [Python runtime reference](docs/reference/PYTHON_AGENT_RUNTIME.md) for implementation
-boundaries and remaining migration work. Older routing and compaction strategies remain available
+boundaries and the completed core-migration scope. Older routing and compaction strategies remain available
 for explicit experiments, not as the default coding experience.
 Multi-agent plans are bounded to three Workers, require a Delegation Ticket, reject dependency
 cycles and overlapping Write Claims, and keep writes in independent worktrees until digest-bound review.

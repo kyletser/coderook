@@ -111,6 +111,33 @@ async def test_session_create_history_close_over_ipc(
     )
     assert exported["result"]["filename"] == f"{fork_id}.json"
     assert session_id in exported["result"]["content"]
+    portable = json.loads(exported["result"]["content"])
+    portable["messages"] = [{"role": "user", "content": "hello world"}]
+    imported = await _send_recv(
+        reader,
+        writer,
+        "session.import",
+        {"content": json.dumps(portable), "filename": "roundtrip.json"},
+        req_id="import",
+    )
+    imported_id = imported["result"]["session"]["session_id"]
+    assert imported["result"]["source_format"] == "coderook-json"
+    assert imported["result"]["imported_messages"] == 1
+    imported_history = await _send_recv(
+        reader,
+        writer,
+        "session.get_history",
+        {"session_id": imported_id},
+        req_id="import-history",
+    )
+    assert imported_history["result"]["messages"][0]["content"] == "hello world"
+    await _send_recv(
+        reader,
+        writer,
+        "session.delete",
+        {"session_id": imported_id},
+        req_id="import-delete",
+    )
     deleted = await _send_recv(
         reader,
         writer,

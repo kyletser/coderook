@@ -45,6 +45,7 @@ uv run coderook-core
 | `DELETE` | `/v1/threads/{id}` | 显式确认后删除空闲 thread |
 | `POST` | `/v1/threads/{id}/fork` | 创建独立会话 fork |
 | `GET` | `/v1/threads/{id}/export` | 导出 markdown/json 正文 |
+| `POST` | `/v1/threads/import` | 导入 CodeRook JSON 或 Pi JSONL 会话正文 |
 | `GET` | `/v1/threads/{id}/context` | 上下文与 checkpoint 摘要 |
 | `GET` | `/v1/threads/{id}/turns` | 列出 durable turns；支持 `limit=1..100` 与 `before={turn_id}` 向前分页 |
 | `GET/POST` | `/v1/threads/{id}/queue` | 读取或追加 TUI/Web 共享的持久后续消息队列 |

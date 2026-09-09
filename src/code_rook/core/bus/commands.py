@@ -632,6 +632,19 @@ class SessionExportResult(BaseModel):
     content: str
 
 
+class SessionImportCommand(BaseModel):
+    type: Literal["session.import"] = "session.import"
+    content: str = Field(min_length=1, max_length=3 * 1024 * 1024)
+    filename: str = Field(default="", max_length=260)
+    title: str = Field(default="", max_length=200)
+
+
+class SessionImportResult(BaseModel):
+    session: SessionInfo
+    imported_messages: int = Field(ge=0)
+    source_format: Literal["coderook-json", "pi-jsonl"]
+
+
 class SessionDeleteCommand(BaseModel):
     type: Literal["session.delete"] = "session.delete"
     session_id: str
@@ -1274,6 +1287,7 @@ Command = Annotated[
     | SessionTreeCommand
     | SessionNavigateCommand
     | SessionExportCommand
+    | SessionImportCommand
     | SessionDeleteCommand
     | SessionCloseCommand
     | PermissionRespondCommand

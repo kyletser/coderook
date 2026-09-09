@@ -15,6 +15,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -283,6 +284,34 @@ async def _cmd_export(app: Any, ta: ChatTextArea, content: str) -> None:
     app.run_worker(
         app._do_export_session(fmt, overwrite=overwrite),
         name="export_session",
+        exclusive=False,
+    )
+
+
+# 从显式文件路径导入 CodeRook JSON 或 Pi JSONL 会话。
+async def _cmd_import(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None or app._busy:
+        _warn(app, "cmd.core_busy")
+        return
+    raw_path = content.removeprefix("/import").strip()
+    if not raw_path:
+        _warn(app, "cmd.session.import_usage")
+        return
+    try:
+        parts = shlex.split(raw_path, posix=False)
+    except ValueError:
+        _warn(app, "cmd.session.import_usage")
+        return
+    if len(parts) != 1:
+        _warn(app, "cmd.session.import_usage")
+        return
+    source = Path(parts[0].strip('"')).expanduser()
+    ta.disabled = True
+    _progress(app, ta, "cmd.session.importing")
+    app.run_worker(
+        app._do_import_session(source),
+        name="import_session",
         exclusive=False,
     )
 
@@ -1325,6 +1354,13 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         _cmd_export,
         usage="md|json|html",
         arg_candidates=("md", "json"),
+    ),
+    SlashCommand(
+        "import",
+        "导入 CodeRook JSON 或 Pi JSONL 会话：/import <文件>",
+        True,
+        _cmd_import,
+        usage="<文件>",
     ),
     SlashCommand("delete", "删除当前会话（需 --yes 确认）", True, _cmd_delete),
     SlashCommand(

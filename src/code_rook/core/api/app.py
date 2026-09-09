@@ -480,6 +480,20 @@ class HttpApiServer:
                 mode,
             )
             return HTTPStatus.CREATED, thread
+        if request.method == "POST" and path == "/v1/threads/import":
+            body = _json_object(request.body)
+            content = body.get("content")
+            filename = body.get("filename", "")
+            title = body.get("title", "")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("content must be non-empty text")
+            if not isinstance(filename, str) or not isinstance(title, str):
+                raise ValueError("filename and title must be text")
+            return HTTPStatus.CREATED, await self._service.import_thread(
+                content,
+                filename=filename,
+                title=title,
+            )
         match = _THREAD_ACTION.fullmatch(path)
         if match and match.group(2) == "tree" and request.method == "GET":
             return HTTPStatus.OK, await self._service.thread_tree(match.group(1))

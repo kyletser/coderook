@@ -404,7 +404,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 类别 | 命令 |
 |---|---|
 | 帮助与输入 | `/help`、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]` |
-| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/delete --yes`、`/delivery` |
+| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/import`、`/delete --yes`、`/delivery` |
 | 模型 | `/config`、`/provider`、`/model`、`/thinking off\|low\|medium\|high`、`/doctor` |
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
 | 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/compact`、`/cost` |
@@ -427,6 +427,8 @@ Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
 `/export [md|json|html]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
 `/export [md|json|html] --force --yes` 才允许覆盖。HTML 是可独立打开的单文件会话页面，包含
 对话、思考折叠、工具调用与结果、图片和分支元数据，不加载外部脚本或样式。该命令不接受自定义输出路径。
+`/import <文件>` 可把 CodeRook JSON 导出或 Pi JSONL 的当前活动分支导入为本工作区中的新会话；导入后
+使用当前 CodeRook Provider、权限和工具配置继续，不复制来源运行时状态。
 粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息交付；composer
 上方附件条持续显示序号、尺寸和短 hash。发送前可用 `/attachments remove N` 或
 `/attachments clear` 管理附件；发送失败会恢复附件。图片附件会以结构化块保存在本地 transcript，

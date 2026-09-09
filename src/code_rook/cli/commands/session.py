@@ -113,6 +113,28 @@ async def _export(
     return 0
 
 
+# 读取可移植会话文件并通过 Core 创建可继续的新会话。
+async def _import(path: str, title: str, config: CodeRookConfig) -> int:
+    source = Path(path).expanduser()
+    try:
+        content = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"error: could not read session import: {exc}", file=sys.stderr)
+        return 1
+    code, result = await _call(
+        config,
+        "session.import",
+        {"content": content, "filename": source.name, "title": title},
+    )
+    if result is not None:
+        session = result["session"]
+        print(
+            f"imported {source} -> {session['session_id']}  "
+            f"({result['source_format']}, {result['imported_messages']} messages)"
+        )
+    return code
+
+
 async def _delete(session_id: str, confirmed: bool, config: CodeRookConfig) -> int:
     if not confirmed:
         print("error: session deletion is permanent; pass --yes to confirm", file=sys.stderr)
@@ -143,6 +165,11 @@ def cmd_session_export(
     config: CodeRookConfig,
 ) -> None:
     sys.exit(asyncio.run(_export(session_id, export_format, output, force, config)))
+
+
+# 从 CodeRook JSON 或 Pi JSONL 文件导入可继续的会话。
+def cmd_session_import(path: str, title: str, config: CodeRookConfig) -> None:
+    sys.exit(asyncio.run(_import(path, title, config)))
 
 
 def cmd_session_delete(session_id: str, confirmed: bool, config: CodeRookConfig) -> None:

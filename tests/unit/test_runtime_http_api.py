@@ -76,6 +76,7 @@ class _FakeRuntimeApi:
         self.turn_query: tuple[int | None, str | None] | None = None
         self.model_selection: tuple[str, str, str] | None = None
         self.thinking_selection: tuple[str, str] | None = None
+        self.session_import: tuple[str, str, str] | None = None
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
@@ -91,6 +92,21 @@ class _FakeRuntimeApi:
         assert mode in {"chat", "one_shot"}
         self.thread = self.thread.model_copy(update={"title": title})
         return self.thread
+
+    # 记录浏览器上传的可移植会话正文并返回新会话摘要。
+    async def import_thread(
+        self,
+        content: str,
+        *,
+        filename: str = "",
+        title: str = "",
+    ) -> dict[str, object]:
+        self.session_import = (content, filename, title)
+        return {
+            "thread": self.thread,
+            "imported_messages": 2,
+            "source_format": "coderook-json",
+        }
 
     # 记录 Web 为当前会话选择的 Python 扩展 Provider 与模型。
     async def set_thread_model(
@@ -335,6 +351,18 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             )
             assert response.status_code == 201
             assert response.json()["title"] == "Created"
+
+            response = await client.post(
+                "/v1/threads/import",
+                json={"content": '{"schema_version":1}', "filename": "task.json"},
+            )
+            assert response.status_code == 201
+            assert response.json()["imported_messages"] == 2
+            assert service.session_import == (
+                '{"schema_version":1}',
+                "task.json",
+                "",
+            )
 
             response = await client.post(
                 "/v1/threads/thread-1/model",

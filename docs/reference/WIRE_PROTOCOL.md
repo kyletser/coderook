@@ -15397,6 +15397,51 @@ The following command and event models are discovered directly from the typed di
 }
 ```
 
+### SessionImportCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `content` | `string` | yes |
+| `filename` | `string` | no |
+| `title` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.import",
+      "default": "session.import",
+      "title": "Type",
+      "type": "string"
+    },
+    "content": {
+      "maxLength": 3145728,
+      "minLength": 1,
+      "title": "Content",
+      "type": "string"
+    },
+    "filename": {
+      "default": "",
+      "maxLength": 260,
+      "title": "Filename",
+      "type": "string"
+    },
+    "title": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content"
+  ],
+  "title": "SessionImportCommand",
+  "type": "object"
+}
+```
+
 ### SessionInterruptedEvent
 
 | Field | Type | Required |

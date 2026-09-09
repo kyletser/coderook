@@ -646,6 +646,21 @@ class SessionStore:
             }
         return None
 
+    # 返回导入会话的固定历史前缀，供 Web 与后续真实 Turn 组合展示。
+    def import_projection(self, sid: str) -> dict[str, Any] | None:
+        rows = self._read_rows(sid)
+        for line, row in reversed(rows):
+            if row.get("type") != "session.imported":
+                continue
+            sequence = int(row.get("ledger_seq", line))
+            return {
+                "thread_id": sid,
+                "ledger_seq": sequence,
+                "messages": self.derive_messages(sid, leaf_seq=max(0, sequence - 1)),
+                "excluded_turn_ids": [],
+            }
+        return None
+
     # 返回可导航的历史节点及父指针，分支外的记录仍可再次选中。
     def session_tree(self, sid: str) -> list[dict[str, Any]]:
         from code_rook.core.agent_runtime.session_tree import build_session_path, entry_parents
@@ -1218,6 +1233,12 @@ class SessionStore:
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
+
+    # 用导入文件中的完整笔记正文原子替换 notes.md。
+    def write_notes(self, sid: str, content: str) -> None:
+        path = self.session_dir(sid)
+        path.mkdir(parents=True, exist_ok=True)
+        self._replace_file(path / "notes.md", content.encode("utf-8"))
 
     # 将一条主动笔记追加到 notes.md
     def append_note(self, sid: str, content: str, run_id: str) -> None:

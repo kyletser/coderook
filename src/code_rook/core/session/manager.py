@@ -70,6 +70,7 @@ from code_rook.core.runtime.models import QueuedMessageRecord, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import QueuedMessageDispatchingError
 from code_rook.core.session.exporter import SessionExportFormat, export_session
+from code_rook.core.session.importer import SessionImportFormat, import_session_content
 from code_rook.core.session.model import Session, SessionMode
 from code_rook.core.session.store import SessionStore
 from code_rook.core.skills.loader import SkillError, SkillLoader
@@ -2803,9 +2804,12 @@ class SessionManager:
     def context_info(self, sid: str) -> dict[str, Any]:
         session = self._get_session(sid)
         messages = self._store.read_messages(sid)
+        navigation = self._store.navigation_projection(sid)
+        if navigation is None:
+            navigation = self._store.import_projection(sid)
         return {
             "message_count": len(messages),
-            "navigation": self._store.navigation_projection(sid),
+            "navigation": navigation,
             "input_commands": self.input_commands(sid),
             "theme_paths": [str(path) for path in self._extension_theme_paths.get(sid, ())],
             "extension_ui": deepcopy(self._extension_ui.get(sid, {})),
@@ -3221,6 +3225,52 @@ class SessionManager:
                 self._store.read_notes(sid),
                 export_format,
             )
+
+    # 将 CodeRook JSON 或 Pi JSONL 转成当前工作区内可继续的原生会话。
+    async def import_session(
+        self,
+        content: str,
+        *,
+        filename: str = "",
+        title: str = "",
+    ) -> tuple[Session, int, SessionImportFormat]:
+        imported = import_session_content(content)
+        resolved_title = title.strip() or imported.title.strip() or "Imported session"
+        session = await self.create("chat", resolved_title[:200])
+        async with self._locks[session.id]:
+            for index, message in enumerate(imported.messages):
+                self._store.append_message(
+                    session.id,
+                    str(message["role"]),
+                    message["content"],
+                    run_id="session-import",
+                    message_id=f"session-import:{index}",
+                )
+            if imported.notes:
+                self._store.write_notes(session.id, imported.notes)
+            self._store.append_session_event(
+                session.id,
+                event_type="session.imported",
+                payload={
+                    "source_format": imported.source_format,
+                    "filename": Path(filename).name if filename else "",
+                    "message_count": len(imported.messages),
+                },
+                provenance="import",
+            )
+            session.status = "waiting_for_input"
+            session.updated_at = _now()
+            self._store.write_meta(session)
+            if self._runtime is not None:
+                await self._runtime.sync_session(session)
+        await self._bus.publish(
+            SessionWaitingForInputEvent(
+                session_id=session.id,
+                last_run_id="",
+                ts=session.updated_at,
+            )
+        )
+        return session, len(imported.messages), imported.source_format
 
     async def delete(self, sid: str) -> None:
         await self._ensure_runtime_sessions()

@@ -128,6 +128,8 @@ from code_rook.core.bus.commands import (
     SessionGetAuthorityCommand,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
+    SessionImportCommand,
+    SessionImportResult,
     SessionInfo,
     SessionListCommand,
     SessionListQueueCommand,
@@ -1879,6 +1881,21 @@ class CoreApp:
             content=content,
         )
 
+    # 导入 CodeRook JSON 或 Pi JSONL 为可继续的本地会话。
+    async def _session_import_handler(self, params: dict[str, Any]) -> SessionImportResult:
+        assert self._sessions is not None
+        cmd = SessionImportCommand.model_validate(params)
+        session, count, source_format = await self._sessions.import_session(
+            cmd.content,
+            filename=cmd.filename,
+            title=cmd.title,
+        )
+        return SessionImportResult(
+            session=self._session_info(session),
+            imported_messages=count,
+            source_format=source_format,
+        )
+
     async def _session_delete_handler(self, params: dict[str, Any]) -> SessionDeleteResult:
         assert self._sessions is not None
         cmd = SessionDeleteCommand.model_validate(params)
@@ -3056,6 +3073,7 @@ class CoreApp:
         server.register("session.tree", self._session_tree_handler)
         server.register("session.navigate", self._session_navigate_handler)
         server.register("session.export", self._session_export_handler)
+        server.register("session.import", self._session_import_handler)
         server.register("session.delete", self._session_delete_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)

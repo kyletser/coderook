@@ -615,6 +615,25 @@ class RuntimeApiService:
         )
         return {"filename": filename, "media_type": media_type, "content": content}
 
+    # 导入可移植会话正文并返回新建的 durable thread 投影。
+    async def import_thread(
+        self,
+        content: str,
+        *,
+        filename: str = "",
+        title: str = "",
+    ) -> dict[str, object]:
+        session, count, source_format = await self._sessions.import_session(
+            content,
+            filename=filename,
+            title=title,
+        )
+        return {
+            "thread": await self._runtime.get_thread(session.id),
+            "imported_messages": count,
+            "source_format": source_format,
+        }
+
     # 删除空闲会话及其 runtime 投影，活动会话由 SessionManager 拒绝
     async def delete_thread(self, thread_id: str) -> dict[str, object]:
         await self._sessions.delete(thread_id)

@@ -557,7 +557,7 @@ provider's existing output ceiling and any enclosing Goal budget. The automatic
 trigger also checks the estimated next input plus this reserve against capacity.
 Summary budget scopes are task-local and restored after each request.
 
-## Remaining migration
+## Core migration status
 
 The Core now exposes `session.navigate` and `POST /v1/threads/{id}/navigate`
 with a Ledger `target_seq`. Selecting a user message returns its text for the
@@ -573,6 +573,16 @@ from thread context, excludes pre-navigation runs, and appends subsequent live
 turns. Refresh uses the same projection; user text is restored without sending.
 Tool call/results in selected history remain tool cards, not raw user messages.
 Browser-level visual validation remains outstanding.
+
+Portable session flow is now bidirectional. `session.import`,
+`POST /v1/threads/import`, `coderook session import`, and TUI `/import` accept a
+CodeRook JSON export or the active branch of a Pi JSONL session. Pi text,
+thinking, image, tool-call and tool-result blocks are converted into native
+CodeRook messages, while abandoned branches and pre-compaction history stay out
+of the active model context. The imported prefix is written as ordinary v2
+Ledger events and remains visible in both TUI and Web when later CodeRook Turns
+are appended. Provider credentials, permissions and runtime process state are
+not copied from the source session.
 
 Optional branch summarization is available through `summarize: true` on navigation,
 Ctrl+S in the TUI history picker, and the Web history checkbox. It summarizes
@@ -788,13 +798,13 @@ and tool details, and embedded conversation images. It contains no external
 scripts, styles or network dependencies, and the Web frontend downloads this
 portable HTML form by default.
 
-This is not a claim that the entire product has been ported. Provider and tool
-services intentionally remain native Python implementations rather than launching
-Pi or Node as a subprocess. The core session, tool, provider, compaction, queue,
-branch and extension-control paths are native Python. Browser-level interaction
-validation and some product-surface parity still require migration and verification;
-custom renderers and themes are deliberately outside the core-runtime migration.
-The functional architecture document remains the reference for other subsystems.
+The agreed core migration scope is complete. Provider and tool services remain
+native Python implementations rather than launching Pi or Node as a subprocess;
+session/tree/import, model/tool loop, Provider routing, compaction, queue,
+recovery, extensions, prompts, Skills, images and in-flight interaction all run
+inside the Python Core. UI-only custom renderers/themes and browser visual
+acceptance remain outside this core scope. The functional architecture document
+remains the reference for other subsystems.
 
 ## Installed-package smoke
 
@@ -810,5 +820,5 @@ uv build
 uv run --isolated --no-project --with ./dist/coderook-0.2.0b1-py3-none-any.whl python scripts/smoke_wheel.py dist/coderook-0.2.0b1-py3-none-any.whl
 ```
 
-This verifies installation and backend entry points, not browser interaction or
-complete feature parity with Pi.
+This verifies installation and backend entry points, not browser visual acceptance
+or UI-only feature parity with Pi.

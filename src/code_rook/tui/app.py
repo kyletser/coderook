@@ -4024,6 +4024,33 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         finally:
             self._restore_ready_prompt()
 
+    # 读取本地会话文件并切换到 Core 创建的可继续会话。
+    async def _do_import_session(self, source: Path) -> None:
+        if self._client is None:
+            return
+        try:
+            content = source.read_text(encoding="utf-8")
+            result = await self._client.send_command(
+                "session.import",
+                {"content": content, "filename": source.name},
+            )
+            session = result.get("session", {})
+            session_id = str(session.get("session_id", ""))
+            if not session_id:
+                raise ValueError("session import result is missing session_id")
+            await self._switch_session(session_id)
+            self.notify(
+                tr(
+                    "app.session.imported",
+                    self._locale,
+                    count=int(result.get("imported_messages", 0)),
+                )
+            )
+        except (IpcError, RuntimeError, OSError, ValueError) as exc:
+            self._show_safe_error("session-import", exc, action="session")
+        finally:
+            self._restore_ready_prompt()
+
     # 删除当前会话并自动新建空会话
     async def _do_delete_session(self) -> None:
         if self._client is None or self._session_id is None:
