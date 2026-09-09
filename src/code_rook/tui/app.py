@@ -510,13 +510,12 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         label = tr(f"app.session.{action}", self._locale)
         if label == f"app.session.{action}":
             label = tr("app.session.ready", self._locale)
-        short_id = escape(session_id)
         title_text = f"  [bold]{escape(title)}[/bold]" if title else ""
         history_text = ""
         if history_count is not None:
             history = tr("app.session.history", self._locale, count=history_count)
             history_text = f"  [dim]{history}[/dim]"
-        message = f"[cyan]{label}[/cyan]  [dim]{short_id}[/dim]{title_text}{history_text}"
+        message = f"[cyan]{label}[/cyan]{title_text}{history_text}"
         if action == "reconnected":
             self._append(Static(message, classes="log-line"))
         else:
@@ -544,7 +543,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     f"startup:readiness:{readiness.status}:{readiness.route_id or '-'}",
                     ReadinessCard(readiness, locale=self._locale),
                 )
-        if not bool(self._sandbox.get("available", False)):
+        if (
+            not bool(self._sandbox.get("available", False))
+            and not ProjectRegistry().is_welcome_workspace(self._workspace)
+        ):
             kind = escape(str(self._sandbox.get("kind", "none")))
             reason = escape(str(self._sandbox.get("reason", "unavailable")))
             self._show_product_notice(

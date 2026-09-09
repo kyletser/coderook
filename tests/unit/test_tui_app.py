@@ -1224,12 +1224,21 @@ def test_welcome_workspace_banner_guides_project_selection(
 
     monkeypatch.setattr(tui_app_module, "ProjectRegistry", _WelcomeRegistry)
     app = CodeRookTuiApp("127.0.0.1", 9999, locale="zh-CN")
+    appended: list[Widget] = []
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._sandbox = {
+        "available": False,
+        "kind": "windows_none",
+        "reason": "no OS isolation backend is available on Windows",
+    }
 
     banner = render(app._render_banner()).plain
+    app._show_startup_state()
 
     assert "先选择一个项目" in banner
     assert "coderook web" in banner
     assert "解释这个仓库" not in banner
+    assert not any("Sandbox DEGRADED" in str(widget) for widget in appended)
 
 
 # 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录
@@ -2640,6 +2649,8 @@ def test_session_ready_notice_describes_context_source() -> None:
     assert "Session resumed" in output
     assert "4 history message(s)" in output
     assert "Session reconnected" in output
+    assert "sess-1" not in output
+    assert "sess-2" not in output
 
 
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式
