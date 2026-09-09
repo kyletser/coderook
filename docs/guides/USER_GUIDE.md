@@ -428,7 +428,9 @@ Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
 `blocked`，由用户确认后重试。
 `/export [md|json|html]` 使用 session/title 生成默认目标，目标已存在时拒绝覆盖并显示精确路径；只有
 `/export [md|json|html] --force --yes` 才允许覆盖。HTML 是可独立打开的单文件会话页面，包含
-对话、思考折叠、工具调用与结果、图片和分支元数据，不加载外部脚本或样式。该命令不接受自定义输出路径。
+对话、思考折叠、工具调用与结果、图片和分支元数据，不加载外部脚本或样式。Markdown 与 HTML 使用
+用户实际提交的展示正文，不暴露 `@文件`、管道输入等内部模型增强提示；Markdown 将思考和图片呈现为
+可读区块。JSON 保留模型可重放正文，适合归档和再次导入。该命令不接受自定义输出路径。
 `/import <文件>` 可把 CodeRook JSON 导出或 Pi JSONL 的当前活动分支导入为本工作区中的新会话；导入后
 使用当前 CodeRook Provider、权限和工具配置继续，不复制来源运行时状态。
 粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息交付；composer

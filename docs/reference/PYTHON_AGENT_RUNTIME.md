@@ -793,12 +793,16 @@ reconnect to them without inventing a fake Agent turn. Visible idle custom messa
 use the same thread-level projection, while their model-visible content remains in
 the Session Ledger.
 
-Session export is also shared by CLI, TUI and Web. Markdown and JSON remain
-available for editing and machine processing; HTML produces a self-contained,
-responsive conversation page with session lineage, notes, collapsible thinking
-and tool details, and embedded conversation images. It contains no external
-scripts, styles or network dependencies, and the Web frontend downloads this
-portable HTML form by default.
+Session export is also shared by CLI, TUI and Web. The append-only input event
+stores both model-ready content and optional user-facing content, so reopening,
+tree previews, Markdown, and HTML never reconstruct hidden file-reference or
+stdin augmentation as user text. Markdown renders thinking and image attachments
+as readable sections instead of dumping transport metadata. JSON intentionally
+retains the model-ready content for archive/import fidelity. HTML produces a
+self-contained, responsive conversation page with session lineage, notes,
+collapsible thinking and tool details, and embedded conversation images. It
+contains no external scripts, styles or network dependencies, and the Web
+frontend downloads this portable HTML form by default.
 
 The agreed core migration scope is complete. Provider and tool services remain
 native Python implementations rather than launching Pi or Node as a subprocess;
