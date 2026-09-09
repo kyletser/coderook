@@ -84,6 +84,58 @@ def _doctor_success(route: object, credential_source: str = "keyring") -> Provid
     )
 
 
+# 功能：验证退出 TUI 时会删除从未使用的空白会话
+# 设计：用记录型 IPC 替身返回零运行、空历史会话，直接覆盖退出清理的三个权威查询与删除动作
+async def test_discard_unused_session_removes_empty_session() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    client = AsyncMock()
+    client.send_command.side_effect = [
+        {
+            "sessions": [
+                {
+                    "session_id": "sess-empty",
+                    "run_count": 0,
+                    "title": "",
+                }
+            ]
+        },
+        {"messages": [], "display_messages": []},
+        {"session_id": "sess-empty"},
+    ]
+    app._client = client
+    app._session_id = "sess-empty"
+
+    assert await app._discard_unused_session() is True
+    assert client.send_command.await_args_list[-1].args == (
+        "session.delete",
+        {"session_id": "sess-empty"},
+    )
+
+
+# 功能：验证有运行记录的会话退出时不会被当作空白临时会话删除
+# 设计：让列表返回同一会话但 run_count 为一，断言清理在读取历史前停止且不发送删除命令
+async def test_discard_unused_session_keeps_used_session() -> None:
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    client = AsyncMock()
+    client.send_command.return_value = {
+        "sessions": [
+            {
+                "session_id": "sess-used",
+                "run_count": 1,
+                "title": "真实任务",
+            }
+        ]
+    }
+    app._client = client
+    app._session_id = "sess-used"
+
+    assert await app._discard_unused_session() is False
+    client.send_command.assert_awaited_once_with(
+        "session.list",
+        {"include_closed": True, "limit": 200},
+    )
+
+
 # 功能：验证权限审批面板以紧凑层级展示工具、请求、选项和决策说明
 # 设计：渲染 Rich markup 后检查可见文本，避免样式标签掩盖内容回归
 def test_permission_panel_shows_request_context_and_choices() -> None:

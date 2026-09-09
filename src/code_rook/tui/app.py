@@ -1128,9 +1128,56 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         prompt.move_cursor(prompt.document.end)
         return True
 
-    # 退出只断开界面，session 保留在 Core 中以便下次 resume
+    # 删除从未输入、没有运行记录且仍为空白标题的临时会话
+    async def _discard_unused_session(self) -> bool:
+        client = self._client
+        session_id = self._session_id
+        prompt = self._prompt()
+        if (
+            client is None
+            or session_id is None
+            or self._busy
+            or self._active_run_id is not None
+            or self._active_goal_id is not None
+            or self._queued_message_count
+            or self._pending_image_attachments
+            or (prompt is not None and bool(prompt.text.strip()))
+        ):
+            return False
+        listed = await client.send_command(
+            "session.list",
+            {"include_closed": True, "limit": 200},
+        )
+        session = next(
+            (
+                item
+                for item in listed.get("sessions", [])
+                if item.get("session_id") == session_id
+            ),
+            None,
+        )
+        if not isinstance(session, dict):
+            return False
+        title = str(session.get("title", "")).strip()
+        if int(session.get("run_count", 0)) != 0 or title not in {"", "Untitled"}:
+            return False
+        history = await client.send_command(
+            "session.get_history",
+            {"session_id": session_id},
+        )
+        if history.get("messages") or history.get("display_messages"):
+            return False
+        await client.send_command("session.delete", {"session_id": session_id})
+        return True
+
+    # 退出时保留真实会话，仅清理本次打开后从未使用的空会话
     async def action_quit(self) -> None:
-        self.exit()
+        try:
+            await self._discard_unused_session()
+        except (IpcError, RuntimeError, OSError, ValueError, TypeError):
+            log.debug("could not discard unused session during quit", exc_info=True)
+        finally:
+            self.exit()
 
     # 将日志视图跳回底部，恢复自动跟随
     def action_scroll_log_end(self) -> None:
