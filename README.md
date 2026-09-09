@@ -71,6 +71,7 @@ coderook          # TUI (default)
 coderook "fix the failing tests"  # TUI and submit the first task
 coderook -p "explain this repository"  # run once and print the answer
 coderook -p "@README.md" "summarize this file"  # reference a workspace file on demand
+coderook --route aliyun --model qwen3.8-flash "inspect this project"  # session-only model
 coderook tui      # TUI (explicit)
 coderook web      # local browser workspace
 coderook run ...  # script/headless mode
@@ -83,6 +84,9 @@ events:
 ```powershell
 Get-Content .\build.log | uv run coderook -p "explain the failure"
 ```
+
+`--route` and `--model` may also be used with `-p` or `coderook run`; the selection is persisted
+only on that session and does not replace the globally active Provider route.
 
 Configure a route in the TUI with `/config`, or use the CLI:
 

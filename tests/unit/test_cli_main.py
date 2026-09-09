@@ -76,6 +76,26 @@ def test_no_arguments_launches_tui(
     assert migrated == []
 
 
+# 功能：顶层帮助直接展示交互、单次打印、Web 和脚本四个主要产品入口
+# 设计：执行真实 argparse 帮助并捕获退出，避免帮助文本再次与已实现的快捷路由漂移
+def test_top_level_help_exposes_primary_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["coderook", "--help"])
+
+    with pytest.raises(SystemExit) as raised:
+        cli_main.main()
+
+    output = capsys.readouterr().out
+    assert raised.value.code == 0
+    assert 'coderook "fix the failing tests"' in output
+    assert "coderook -p" in output
+    assert "coderook web" in output
+    assert "coderook run --help" in output
+    assert "--route" in output
+
+
 # 功能：验证 coderook --continue 直接委托 TUI 的最近会话恢复入口
 # 设计：保留原始 argv 并替换 TUI main，确认该顶层体验参数不会落入旧 CLI argparse
 def test_continue_flag_launches_tui(monkeypatch) -> None:
@@ -156,6 +176,8 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "allow_tools": ["read", "bash", "edit", "write"],
         "output_format": "text",
         "final_only": True,
+        "route_id": None,
+        "model": None,
         "thinking_level": "high",
     }
 

@@ -71,6 +71,8 @@ class AgentRunCommand(BaseModel):
     permission_mode: Literal["deny", "fail_fast", "allow_list"] = "fail_fast"
     allow_tools: list[str] = Field(default_factory=list)
     resume_session_id: str | None = None
+    route_id: str | None = Field(default=None, min_length=1, max_length=256)
+    model: str | None = Field(default=None, min_length=1, max_length=256)
     thinking_level: ThinkingLevel | None = None
     question_mode: Literal["fail_fast", "timeout", "preset"] = "fail_fast"
     question_timeout_s: float | None = Field(default=None, gt=0, le=3600)
@@ -79,6 +81,8 @@ class AgentRunCommand(BaseModel):
     @model_validator(mode="after")
     # 校验 headless 提问策略所需参数并拒绝无效组合
     def _validate_question_policy(self) -> AgentRunCommand:
+        if self.model is not None and self.route_id is None:
+            raise ValueError("route_id is required when model is selected")
         if self.question_mode == "timeout" and self.question_timeout_s is None:
             raise ValueError("question_timeout_s is required in timeout mode")
         if self.question_mode == "preset" and not self.preset_answers:

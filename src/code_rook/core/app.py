@@ -1101,6 +1101,12 @@ class CoreApp:
             if cmd.resume_session_id is not None
             else await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
         )
+        if cmd.route_id is not None:
+            session = await self._sessions.set_model(
+                session.id,
+                cmd.route_id,
+                cmd.model or "",
+            )
         if cmd.thinking_level is not None:
             session = await self._sessions.set_thinking(session.id, cmd.thinking_level)
         run_id = new_run_id()

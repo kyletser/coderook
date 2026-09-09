@@ -329,14 +329,25 @@ def test_disabled_labs_do_not_resume_workflows() -> None:
     assert calls == ["resume"]
 
 
+# 功能：验证 headless 运行绑定指定模型、应用权限策略并在结束后清理会话状态
+# 设计：用最小会话服务执行真实 PermissionManager 决策，覆盖模型选择与后台任务回收的完整边界
 async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     manager = PermissionManager()
     checked = asyncio.Event()
     decisions: list[tuple[bool, str]] = []
+    selected_models: list[tuple[str, str]] = []
     session = Session("sess-headless", "one_shot", "active", "", "t", "t")
 
     class _Sessions:
         async def create(self, mode: str, title: str = "") -> Session:
+            return session
+
+        # 按请求为本次一次性会话绑定显式 route 与模型
+        async def set_model(self, session_id: str, route_id: str, model: str) -> Session:
+            assert session_id == session.id
+            selected_models.append((route_id, model))
+            session.route_id = route_id
+            session.model = model
             return session
 
         # 模拟无扩展拦截时输入原样进入 headless run
@@ -390,12 +401,15 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "goal": "edit",
         "permission_mode": "allow_list",
         "allow_tools": ["edit_file"],
+        "route_id": "route-explicit",
+        "model": "model-explicit",
     })
     await asyncio.wait_for(checked.wait(), timeout=1)
     await asyncio.sleep(0)
 
     assert result.run_id
     assert decisions == [(True, "headless_allow_list")]
+    assert selected_models == [("route-explicit", "model-explicit")]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]
 

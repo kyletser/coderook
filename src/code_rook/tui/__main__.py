@@ -18,7 +18,7 @@ from code_rook.cli.commands.core import (
 from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
-from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.processes import mark_agent_process_environment
 from code_rook.core.projects import ProjectRegistry
 from code_rook.core.state_migration import migrate_legacy_state
@@ -54,6 +54,17 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     config = get_config() if env_file is None else get_config(env_file=env_file)
     routes = RouteStore()
     active_route = routes.active()
+    requested_route_id = str(getattr(args, "route", "") or "")
+    requested_model = str(getattr(args, "model", "") or "")
+    if requested_route_id:
+        try:
+            routes.get(requested_route_id)
+        except RouteStoreError as exc:
+            raise SystemExit(f"Unknown Provider route: {requested_route_id}") from exc
+    elif requested_model:
+        if active_route is None:
+            raise SystemExit("--model requires --route when no active route is configured")
+        requested_route_id = active_route.id
     _setup_logging(config.logging.level)
     try:
         if args.no_auto_core:
@@ -98,6 +109,8 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
             )
         ),
         initial_prompt=" ".join(getattr(args, "message", [])).strip(),
+        initial_route_id=requested_route_id,
+        initial_model=requested_model,
         initial_thinking_level=getattr(args, "thinking", None),
     )
     return app.run()
@@ -148,6 +161,8 @@ def main() -> None:
         choices=("off", "low", "medium", "high"),
         help="Set the thinking level for the opened session",
     )
+    parser.add_argument("--route", help="Provider route for the opened session")
+    parser.add_argument("--model", help="Model override for the opened session")
     parser.add_argument(
         "message",
         nargs="*",

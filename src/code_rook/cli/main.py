@@ -56,6 +56,7 @@ from code_rook.cli.commands.web import cmd_web
 from code_rook.core.config import get_config
 from code_rook.core.input_context import augment_file_references
 from code_rook.core.llm.credentials import CredentialStoreError
+from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.processes import mark_agent_process_environment
@@ -97,6 +98,18 @@ def _merge_piped_input(message: str, piped_input: str) -> str:
     return f"{message}\n\nInput provided through stdin:\n{piped_input}"
 
 
+# 为单次模型覆盖补齐活动 route，避免仅有模型 ID 时由 Core 猜测 Provider
+def _resolve_requested_route(route_id: str | None, model: str | None) -> str | None:
+    if route_id:
+        return route_id
+    if not model:
+        return None
+    active = RouteStore().active()
+    if active is None:
+        raise ValueError("--model requires --route when no active route is configured")
+    return active.id
+
+
 # 在 CLI 进程边界把 typed 凭据故障转换为不含密钥正文的稳定非零结果
 def main() -> int:
     mark_agent_process_environment()
@@ -116,6 +129,7 @@ def main() -> int:
 def _run_cli() -> int:
     tui_flags = {
         "--continue", "--new", "--resume", "--replay", "--no-auto-core", "--thinking",
+        "--route", "--model",
     }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
@@ -133,8 +147,14 @@ def _run_cli() -> int:
         quick.add_argument(
             "--thinking", choices=("off", "low", "medium", "high"),
         )
+        quick.add_argument("--route", help="Provider route for this task")
+        quick.add_argument("--model", help="Model override for this task")
         quick.add_argument("message", nargs="*", help="Task to execute")
         quick_args = quick.parse_args(sys.argv[1:])
+        try:
+            requested_route = _resolve_requested_route(quick_args.route, quick_args.model)
+        except ValueError as exc:
+            quick.error(str(exc))
         visible_goal = " ".join(quick_args.message).strip()
         goal = _merge_piped_input(visible_goal, _read_piped_stdin())
         if not goal:
@@ -164,6 +184,8 @@ def _run_cli() -> int:
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
             final_only=True,
+            route_id=requested_route,
+            model=quick_args.model,
             thinking_level=quick_args.thinking,
         )
         return 0
@@ -181,12 +203,42 @@ def _run_cli() -> int:
         return 0
 
     migrate_legacy_state()
-    parser = argparse.ArgumentParser(prog="coderook", description="CodeRook CLI")
+    parser = argparse.ArgumentParser(
+        prog="coderook",
+        description="Local coding agent with interactive, browser, and scripted modes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Common starts:\n"
+            "  coderook                              Open the TUI\n"
+            "  coderook \"fix the failing tests\"     Open the TUI and submit a task\n"
+            "  coderook -p \"explain this project\"    Print one final answer\n"
+            "  coderook web                         Open the local Web workspace\n"
+            "  coderook run --help                   Show automation options"
+        ),
+    )
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     parser.add_argument(
         "--env-file",
         type=Path,
         help="Explicit environment file; repository .env files are never loaded automatically",
+    )
+    interactive = parser.add_argument_group("interactive shortcuts")
+    interactive.add_argument(
+        "-p", "--print", action="store_true", help="Run once and print only the final answer",
+    )
+    interactive.add_argument(
+        "--continue", dest="continue_recent", action="store_true",
+        help="Resume the most recent session in this workspace",
+    )
+    interactive.add_argument(
+        "--new", action="store_true", help="Start a new interactive session",
+    )
+    interactive.add_argument("--resume", metavar="SESSION_ID", help="Resume a saved session")
+    interactive.add_argument("--route", help="Provider route for the opened session")
+    interactive.add_argument("--model", help="Model override for the opened session")
+    interactive.add_argument(
+        "--thinking", choices=("off", "low", "medium", "high"),
+        help="Thinking level for the opened session",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -425,6 +477,8 @@ def _run_cli() -> int:
         choices=("off", "low", "medium", "high"),
         help="Set the thinking level for this session",
     )
+    run_parser.add_argument("--route", help="Provider route for this run")
+    run_parser.add_argument("--model", help="Model override for this run")
     run_parser.add_argument(
         "--question-mode",
         choices=("fail-fast", "timeout", "preset"),
@@ -723,6 +777,10 @@ def _run_cli() -> int:
             parser.error("--question-timeout is required in timeout question mode")
         if args.question_mode == "preset" and not args.answer:
             parser.error("--answer is required in preset question mode")
+        try:
+            requested_route = _resolve_requested_route(args.route, args.model)
+        except ValueError as exc:
+            parser.error(str(exc))
         cmd_run(
             augment_file_references(args.goal, args.goal, Path.cwd()),
             config,
@@ -732,6 +790,8 @@ def _run_cli() -> int:
             event_filters=args.event_filter,
             include_partial=args.include_partial,
             resume_session_id=args.resume,
+            route_id=requested_route,
+            model=args.model,
             thinking_level=args.thinking,
             question_mode=args.question_mode.replace("-", "_"),
             question_timeout_s=args.question_timeout,

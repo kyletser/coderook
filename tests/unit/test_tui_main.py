@@ -153,6 +153,39 @@ def test_tui_main_passes_continue_recent(
     app.run.assert_called_once_with()
 
 
+# 功能：TUI 启动参数把显式 route 与模型作为当前会话覆盖交给应用
+# 设计：替换 route store 和 Textual 边界，验证启动选择不修改全局活动 Provider
+def test_tui_main_passes_initial_model_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    route = SimpleNamespace(id="route-a", model="default-a", catalog_id="catalog-a")
+    route_store = MagicMock()
+    route_store.active.return_value = route
+    route_store.get.return_value = route
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook-tui", "--route", "route-a", "--model", "model-b"],
+    )
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: route_store)
+    monkeypatch.setattr(tui_main, "list_models", lambda *_args: ["default-a", "model-b"])
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda _config: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    assert factory.call_args.kwargs["initial_route_id"] == "route-a"
+    assert factory.call_args.kwargs["initial_model"] == "model-b"
+    app.run.assert_called_once_with()
+
+
 # 功能：TUI 入口把位置参数合并为连接成功后自动提交的一条初始任务。
 # 设计：隔离 Core 与 Textual，仅检查构造参数，避免测试中发起真实模型请求。
 def test_tui_main_passes_initial_prompt(

@@ -208,6 +208,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `permission_mode` | `string` | no |
 | `allow_tools` | `array` | no |
 | `resume_session_id` | `string | null` | no |
+| `route_id` | `string | null` | no |
+| `model` | `string | null` | no |
 | `thinking_level` | `string | null` | no |
 | `question_mode` | `string` | no |
 | `question_timeout_s` | `number | null` | no |
@@ -254,6 +256,34 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Resume Session Id"
+    },
+    "route_id": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Route Id"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
     },
     "thinking_level": {
       "anyOf": [

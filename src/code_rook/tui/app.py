@@ -261,6 +261,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         core_recovery: Callable[[], object] | None = None,
         locale: str | None = None,
         initial_prompt: str = "",
+        initial_route_id: str = "",
+        initial_model: str = "",
         initial_thinking_level: Literal["off", "low", "medium", "high"] | None = None,
     ) -> None:
         super().__init__()
@@ -288,6 +290,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._core_recovery = core_recovery
         self._initial_prompt = initial_prompt.strip()
         self._initial_prompt_submitted = False
+        self._initial_route_id = initial_route_id.strip()
+        self._initial_model = initial_model.strip()
+        self._initial_model_applied = False
         self._initial_thinking_level = initial_thinking_level
         self._initial_thinking_applied = False
         self._config_provider: ProviderPreset | None = None
@@ -4137,6 +4142,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 title=title,
             ),
         )
+        await self._apply_initial_model_selection(session_id)
         if self._initial_thinking_level is not None and not self._initial_thinking_applied:
             await ipc_actions.set_session_thinking(
                 self._client, session_id, self._initial_thinking_level,
@@ -4156,6 +4162,32 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             and self._pending_question_id is None
         ):
             self._restore_ready_prompt()
+
+    # 首次会话加载时应用命令行指定的 route/model，失败则保留界面但不误用其他模型提交任务
+    async def _apply_initial_model_selection(self, session_id: str) -> None:
+        if self._initial_model_applied or not self._initial_route_id:
+            return
+        self._initial_model_applied = True
+        if self._client is None:
+            return
+        try:
+            result = await ipc_actions.set_session_model(
+                self._client,
+                session_id,
+                self._initial_route_id,
+                self._initial_model,
+            )
+        except IpcActionError as exc:
+            self._initial_prompt = ""
+            self._show_safe_error("model-switch", exc, action="model")
+            return
+        raw_session = result.get("session")
+        session = raw_session if isinstance(raw_session, dict) else {}
+        self._route = str(session.get("route_id") or self._initial_route_id)
+        self._provider = self._route
+        self._model = str(session.get("model") or self._initial_model)
+        if self._model and self._model not in self._models:
+            self._models.append(self._model)
 
     # 保存离开会话时的草稿与待发送图片，避免 composer 跨会话污染
     def _snapshot_session_composer(self) -> None:
