@@ -93,7 +93,10 @@ class LLMStreamBlock(Widget):
     # 将当前可见模型消息标记为意图说明或最终回答
     def set_kind(self, kind: str) -> None:
         self._kind = kind
-        self.set_class(kind in {"answer", "respond"}, "answer")
+        is_answer = kind in {"answer", "respond"}
+        self.set_class(is_answer, "answer")
+        if is_answer:
+            self.remove_class("collapsed")
         if self.is_attached:
             self.refresh(recompose=True)
 

@@ -1529,6 +1529,7 @@ async def test_llm_block_finalize_renders_selectable_markdown() -> None:
 async def test_llm_block_switches_from_thinking_timeline_to_answer() -> None:
     block = LLMStreamBlock()
     block.append_token("正在分析项目。")
+    block.add_class("collapsed")
 
     class ThinkingHarness(App[None]):
         # 挂载流式块以读取 Textual 计算后的 CSS 状态
@@ -1547,7 +1548,9 @@ async def test_llm_block_switches_from_thinking_timeline_to_answer() -> None:
         await pilot.pause()
 
         assert "answer" in block.classes
+        assert "collapsed" not in block.classes
         assert not block.query_one(".message-kind", Static).display
+        assert block.query_one(".assistant-response", Markdown).display
 
 
 # 功能：验证 agent.decision 完成当前思考块并保留实际动作意图状态
