@@ -61,7 +61,7 @@ def test_cli_configures_utf8_stdio(monkeypatch) -> None:
 
 
 # 功能：验证无参数 coderook 直接进入 TUI 启动路径
-# 设计：替换 TUI 入口并固定 argv，确认 CLI 只委托一次且不重复执行旧状态迁移
+# 设计：替换 TUI 入口并让顶层工作区重定向在误调用时失败，确认重定向只由 TUI 自身执行一次
 def test_no_arguments_launches_tui(
     monkeypatch,
 ) -> None:
@@ -70,6 +70,11 @@ def test_no_arguments_launches_tui(
     monkeypatch.setattr(sys, "argv", ["coderook"])
     monkeypatch.setattr(tui_main, "main", lambda: launched.append(True))
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: migrated.append(True))
+    monkeypatch.setattr(
+        cli_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        MagicMock(side_effect=AssertionError("TUI owns workspace redirection")),
+    )
 
     cli_main.main()
 

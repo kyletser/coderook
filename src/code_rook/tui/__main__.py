@@ -70,7 +70,14 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         if args.no_auto_core:
             validate_core_workspace(config, env_file=env_file)
         else:
-            if env_file is None:
+            reuse_existing = bool(getattr(args, "reuse_existing", False))
+            if reuse_existing:
+                ensure_core_running(
+                    config,
+                    env_file=env_file,
+                    reuse_existing=True,
+                )
+            elif env_file is None:
                 ensure_core_running(config)
             else:
                 ensure_core_running(config, env_file=env_file)
@@ -103,9 +110,18 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
             None
             if args.no_auto_core
             else (
-                (lambda: ensure_core_running(config))
+                (
+                    lambda: ensure_core_running(
+                        config,
+                        reuse_existing=bool(getattr(args, "reuse_existing", False)),
+                    )
+                )
                 if env_file is None
-                else lambda: ensure_core_running(config, env_file=env_file)
+                else lambda: ensure_core_running(
+                    config,
+                    env_file=env_file,
+                    reuse_existing=bool(getattr(args, "reuse_existing", False)),
+                )
             )
         ),
         initial_prompt=" ".join(getattr(args, "message", [])).strip(),
@@ -119,7 +135,9 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
 # coderook-tui 入口：未配置模型也可进入，并支持从 /config 返回后重新加载
 def main() -> None:
     mark_agent_process_environment()
-    ProjectRegistry().enter_welcome_workspace_if_protected()
+    before_redirect = Path.cwd().resolve()
+    redirected = ProjectRegistry().enter_welcome_workspace_if_protected()
+    reuse_existing = redirected != before_redirect
     migrate_legacy_state()
     parser = argparse.ArgumentParser(prog="coderook-tui", description="CodeRook TUI")
     parser.add_argument(
@@ -169,6 +187,7 @@ def main() -> None:
         help="Optional initial task submitted after the session is ready",
     )
     args = parser.parse_args()
+    args.reuse_existing = reuse_existing
 
     while True:
         action = _run_tui(args)

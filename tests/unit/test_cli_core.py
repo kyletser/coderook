@@ -264,10 +264,12 @@ def test_ensure_core_running_can_reuse_active_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    active = tmp_path / "active"
+    active.mkdir()
     monkeypatch.setattr(
         core,
         "_core_metadata",
-        lambda _config: {"workspace": str(tmp_path / "active"), "active_runs": 1},
+        lambda _config: {"workspace": str(active), "active_runs": 1},
     )
     for name in ("_activate_workspace", "stop_core", "_spawn_core"):
         monkeypatch.setattr(
@@ -277,6 +279,7 @@ def test_ensure_core_running_can_reuse_active_workspace(
         )
 
     assert core.ensure_core_running(CodeRookConfig(), reuse_existing=True) is False
+    assert Path.cwd() == active
 
 
 # 功能：验证其他 workspace 仍有活动 run 时启动器拒绝切换 daemon

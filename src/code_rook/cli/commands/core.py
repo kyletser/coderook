@@ -161,7 +161,17 @@ def ensure_core_running(
             served_workspace,
             requested_workspace,
         )
-        if env_file is None and (same_workspace or reuse_existing):
+        if env_file is None and same_workspace:
+            return False
+        if env_file is None and reuse_existing:
+            if not served_workspace:
+                raise CoreLaunchError("Core did not report its active workspace")
+            try:
+                os.chdir(Path(served_workspace).resolve(strict=True))
+            except OSError as exc:
+                raise CoreLaunchError(
+                    f"Core workspace is no longer available: {served_workspace}"
+                ) from exc
             return False
         active_runs = _metadata_count(metadata, "active_runs")
         if active_runs:

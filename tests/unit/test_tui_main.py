@@ -54,6 +54,40 @@ def test_tui_main_auto_starts_core_before_reading_token(
     app.run.assert_called_once_with()
 
 
+# 功能：验证从受保护目录启动 TUI 时复用已运行 Core 的活动项目
+# 设计：直接向 TUI 装配入口传入 reuse_existing 标志，断言启动器收到该标志且界面仍正常构造
+def test_run_tui_reuses_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    args = SimpleNamespace(
+        env_file=None,
+        no_auto_core=False,
+        reuse_existing=True,
+        replay=None,
+        resume=None,
+        continue_recent=True,
+        message=[],
+        route=None,
+        model=None,
+        thinking=None,
+    )
+    ensure = MagicMock()
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", ensure)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", MagicMock(return_value=app))
+
+    tui_main._run_tui(args)
+
+    ensure.assert_called_once_with(config, env_file=None, reuse_existing=True)
+    app.run.assert_called_once_with()
+
+
 # 功能：验证 TUI 显式环境文件同时用于本进程配置和自动启动的 Core
 # 设计：捕获配置加载与 daemon 启动参数，确保两进程读取同一用户选择且不依赖仓库 .env
 def test_tui_main_forwards_explicit_env_file_to_core(

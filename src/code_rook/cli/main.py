@@ -209,7 +209,6 @@ def _run_cli() -> int:
         not tui_probe[0].startswith("-") and tui_probe[0] not in _TOP_LEVEL_COMMANDS
     )
     if not tui_probe or tui_probe[0] in tui_flags or explicit_tui or prompt_tui:
-        ProjectRegistry().enter_welcome_workspace_if_protected()
         if explicit_tui:
             raw_index = 1 if sys.argv[1] == "tui" else 3
             del sys.argv[raw_index]
