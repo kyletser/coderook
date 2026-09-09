@@ -22,9 +22,9 @@ def build_runtime_context(workspace_root: Path, *, command_shell: str | None = N
     if command_shell is not None:
         shell = command_shell
     elif os.name == "nt":
-        shell = Path(os.environ.get("COMSPEC", "cmd.exe")).name
+        shell = "Bash (Git Bash on Windows); use Bash syntax, not cmd.exe syntax"
     else:
-        shell = Path(os.environ.get("SHELL", "sh")).name
+        shell = "Bash"
     return "\n".join(
         [
             f"- Operating system: {platform.system()} {platform.release()}",

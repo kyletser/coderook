@@ -197,6 +197,8 @@ def _public_run_outcome(
         return "transport_error", "network"
     if normalized in {"permission_denied", "permission_timeout"}:
         return "failed", "permission"
+    if normalized in {"nonzero_exit", "timeout"}:
+        return "failed", "tool"
     if normalized == "route_capability_error":
         return "failed", "configuration"
     if normalized.startswith("sandbox"):
@@ -319,10 +321,35 @@ class AgentRunner:
                     step=1, ts=_now(),
                 ))
                 await bus.publish(StepFinishedEvent(run_id=run_id, step=1, ts=_now()))
-                await bus.publish(RunFinishedEvent(
-                    run_id=run_id, status=status, reason=reason, steps=1,
-                    result_summary=output[:4000], ts=_now(),
-                ))
+                public_outcome, failure_category = _public_run_outcome(status, reason)
+                await bus.publish(
+                    RunPhaseChangedEvent(
+                        run_id=run_id,
+                        phase=(
+                            "completed"
+                            if public_outcome == "completed"
+                            else "interrupted"
+                            if public_outcome == "cancelled"
+                            else "failed"
+                        ),
+                        current=8,
+                        total=8,
+                        summary=reason or status,
+                        ts=_now(),
+                    )
+                )
+                await bus.publish(
+                    RunFinishedEvent(
+                        run_id=run_id,
+                        status=status,
+                        reason=reason,
+                        steps=1,
+                        outcome=public_outcome,
+                        failure_category=failure_category,
+                        result_summary=output[:4000],
+                        ts=_now(),
+                    )
+                )
         finally:
             if permissions:
                 permissions.end_turn(session.id)
@@ -584,11 +611,7 @@ class AgentRunner:
             session_notes=notes,
             global_context=global_ctx,
             project_context=project_ctx,
-            runtime_context=build_runtime_context(
-                self._workspace_boundary.root,
-                command_shell="Bash (Git Bash on Windows); use Bash syntax, not cmd.exe syntax"
-                if tool_whitelist is None and runtime_mode == RuntimeMode.ACT else None,
-            ),
+            runtime_context=build_runtime_context(self._workspace_boundary.root),
             capability_context=(
                 build_capability_context(
                     active_skill_loader.list_for_execution(workspace_trusted=workspace_trusted),

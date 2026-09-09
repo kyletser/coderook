@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from code_rook.core.agent_runtime.shell import CodingShellTool, bash_executable
-from code_rook.core.agent_runtime.user_shell import execute_user_shell, parse_user_shell
+from code_rook.core.agent_runtime.user_shell import (
+    UserShellCommand,
+    execute_user_shell,
+    parse_user_shell,
+)
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.runner import AgentRunner
@@ -13,6 +17,7 @@ from code_rook.core.runtime.models import TurnStatus
 from code_rook.core.runtime.service import RuntimeService
 from code_rook.core.runtime.store import RuntimeStore
 from code_rook.core.session.manager import SessionManager
+from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.registry import ToolRegistry
@@ -56,6 +61,47 @@ async def test_user_shell_executes_without_provider(tmp_path: Path) -> None:
     permissions.check_and_wait.assert_not_awaited()
 
 
+# 功能：直接命令失败时发布失败终态、工具失败类别并返回非零语义
+# 设计：运行真实 Bash exit 7 并收集总线事件，覆盖 CLI 与 Web 共用的最终状态来源
+async def test_user_shell_failure_publishes_terminal_failure(tmp_path: Path) -> None:
+    try:
+        bash_executable()
+    except RuntimeError:
+        pytest.skip("Bash unavailable")
+    observed: list[object] = []
+
+    # 收集直接命令完整事件序列，验证前端不需要自行推断终态
+    async def collect(event: object) -> None:
+        observed.append(event)
+
+    store = SessionStore(tmp_path / "sessions")
+    session = Session("sess-shell-failed", "chat", "active", "Shell", "now", "now")
+    store.write_meta(session)
+    runner = AgentRunner(
+        CodeRookConfig(),
+        workspace_root=tmp_path,
+        extra_handlers=[collect],  # type: ignore[list-item]
+    )
+
+    outcome = await runner.run_user_shell(
+        UserShellCommand("exit 7"),
+        run_id="shell-failed",
+        session=session,
+        store=store,
+    )
+    finished = next(event for event in observed if getattr(event, "type", "") == "run.finished")
+    phases = [
+        getattr(event, "phase", "")
+        for event in observed
+        if getattr(event, "type", "") == "run.phase_changed"
+    ]
+
+    assert outcome.status == "failed" and outcome.reason == "nonzero_exit"
+    assert phases == ["executing", "failed"]
+    assert getattr(finished, "outcome") == "failed"
+    assert getattr(finished, "failure_category") == "tool"
+
+
 # 功能：直接命令经会话入口执行并返回结果，!! 不进入模型历史且不解析路由。
 # 设计：使用真实 Runner、账本与 Bash，路由替身若被调用立即失败，覆盖完整派发链。
 @pytest.mark.parametrize("prefix", ["!", "!!"])
@@ -91,6 +137,8 @@ async def test_session_shell_history(tmp_path: Path, prefix: str) -> None:
         assert '"status":"success"' in events.replace(" ", "")
         assert '"type":"run.phase_changed"' in events.replace(" ", "")
         assert '"phase":"executing"' in events.replace(" ", "")
+        assert '"phase":"completed"' in events.replace(" ", "")
+        assert '"outcome":"completed"' in events.replace(" ", "")
         routes.resolve.assert_not_called()
     finally:
         await manager.cancel_all()

@@ -13,6 +13,8 @@ def test_runtime_context_describes_host_and_workspace(tmp_path: Path) -> None:
     context = build_runtime_context(tmp_path)
 
     assert str(tmp_path.resolve()) in context
+    assert "Command shell: Bash" in context
+    assert "Command shell: cmd.exe" not in context
     assert "bash tool runs host shell commands" in context
     assert "operating-system utilities" in context
     assert "approval" in context
