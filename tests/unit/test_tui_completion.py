@@ -4,8 +4,12 @@ from textual.app import App, ComposeResult
 
 from code_rook.tui.commands import BUILTIN_SLASH_COMMANDS, complete_command_arg_text
 from code_rook.tui.widgets.input import (
+    ChatTextArea,
     CompletionItem,
+    FileCompleteWidget,
     SlashCompleteWidget,
+    _complete_file_reference,
+    _file_reference_query,
     _fuzzy_match,
 )
 
@@ -98,3 +102,43 @@ def test_builtin_commands_usage_and_arg_candidates_types() -> None:
     by_name = {cmd.name: cmd for cmd in BUILTIN_SLASH_COMMANDS}
     assert by_name["mode"].arg_candidates == ("plan", "act", "operate")
     assert by_name["permissions"].usage == "ask|auto-review|full-access"
+
+
+# 功能：文件引用查询识别输入末尾普通与带空格路径，并能替换为稳定引用语法
+# 设计：直接覆盖普通 token、未闭合引号和非末尾引用，固定解析与插入之间的文本契约
+def test_file_reference_query_and_completion_text() -> None:
+    assert _file_reference_query("检查 @src/ap") == "src/ap"
+    assert _file_reference_query('检查 @"design no') == "design no"
+    assert _file_reference_query("@README.md 后续") is None
+    assert _complete_file_reference("检查 @des", "docs/design notes.md") == (
+        '检查 @"docs/design notes.md" '
+    )
+
+
+# 功能：在 TUI 输入 @查询后按 Tab 会插入选中文件而不是切换运行模式
+# 设计：挂载真实文件候选与 ChatTextArea，驱动键盘事件验证完整消息链和含空格路径引用
+async def test_file_completion_tab_inserts_selected_path() -> None:
+    class _Harness(App[None]):
+        # 挂载一个文件补全弹窗和聊天输入框
+        def compose(self) -> ComposeResult:
+            yield FileCompleteWidget(["docs/design notes.md", "src/app.py"])
+            yield ChatTextArea(id="prompt", show_line_numbers=False)
+
+        # 初始化查询并聚焦 composer
+        def on_mount(self) -> None:
+            popup = self.query_one(FileCompleteWidget)
+            popup.set_query("design")
+            prompt = self.query_one(ChatTextArea)
+            prompt.text = "总结 @design"
+            prompt.focus()
+
+        # 把文件候选选择消息交回输入框完成替换
+        def on_file_complete_widget_selected(self, message: FileCompleteWidget.Selected) -> None:
+            self.query_one(ChatTextArea).complete_file_reference(message.path)
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.query_one(ChatTextArea).text == '总结 @"docs/design notes.md" '

@@ -5,6 +5,7 @@ from pathlib import Path
 from code_rook.core.input_context import (
     augment_file_references,
     extract_file_reference_tokens,
+    list_workspace_file_references,
     resolve_file_references,
 )
 
@@ -12,9 +13,12 @@ from code_rook.core.input_context import (
 # 功能：从自然任务文本中提取有限数量的 @文件 标记并清理句末标点
 # 设计：同时使用中英文标点和普通正文，验证解析不把非引用词误收为路径
 def test_extract_file_reference_tokens() -> None:
-    assert extract_file_reference_tokens("比较 @src/app.py， 和 @README.md. 然后总结") == [
+    assert extract_file_reference_tokens(
+        '比较 @src/app.py，、@README.md. 和 @"design notes.md" 然后总结'
+    ) == [
         "src/app.py",
         "README.md",
+        "design notes.md",
     ]
 
 
@@ -54,3 +58,16 @@ def test_augment_file_references_preserves_explicit_path_with_spaces(
     assert '\"design notes.md\"' in result
     assert "PRIVATE FULL CONTENT" not in result
     assert "Read only the ranges needed" in result
+
+
+# 功能：TUI 文件候选跳过依赖、缓存和 CodeRook 内部目录并保持稳定相对路径
+# 设计：在可见目录和三类忽略目录放置同名文件，直接核对候选清单只含用户源码
+def test_list_workspace_file_references_skips_generated_directories(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("app", encoding="utf-8")
+    for directory in (".git", ".coderook", "node_modules"):
+        path = tmp_path / directory
+        path.mkdir()
+        (path / "hidden.py").write_text("hidden", encoding="utf-8")
+
+    assert list_workspace_file_references(tmp_path) == ["src/app.py"]

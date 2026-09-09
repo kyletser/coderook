@@ -404,6 +404,113 @@ class SlashCompleteWidget(Static):
         self.update("\n".join(lines))
 
 
+_TRAILING_FILE_REFERENCE = re.compile(r'(?:^|\s)@(?:"([^"]*)|([^\s]*))$')
+
+
+# 返回输入末尾正在编辑的 @文件 查询，其他位置或已结束引用返回 None
+def _file_reference_query(text: str) -> str | None:
+    match = _TRAILING_FILE_REFERENCE.search(text)
+    if match is None:
+        return None
+    return match.group(1) if match.group(1) is not None else (match.group(2) or "")
+
+
+# 用选定路径替换输入末尾的文件查询，含空格路径自动使用双引号包裹
+def _complete_file_reference(text: str, path: str) -> str:
+    token = f'@"{path}"' if any(char.isspace() for char in path) else f"@{path}"
+    match = _TRAILING_FILE_REFERENCE.search(text)
+    if match is None:
+        return text
+    return f"{text[:match.start()].rstrip()} {token} ".lstrip()
+
+
+class FileCompleteWidget(Static):
+    """工作区文件模糊补全弹窗，只返回路径而不读取文件正文。"""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    FileCompleteWidget {
+        height: auto;
+        max-height: 12;
+        padding: 0 1;
+        margin: 0 2;
+        background: $surface;
+        border: round $surface-lighten-2;
+    }
+    """
+
+    class Selected(Message):
+        # 初始化文件补全选择消息并携带工作区相对路径
+        def __init__(self, path: str) -> None:
+            self.path = path
+            super().__init__()
+
+    # 初始化完整路径清单并建立首屏候选
+    def __init__(self, paths: list[str], *, locale: str = "en-US") -> None:
+        super().__init__("")
+        self._paths = list(paths)
+        self._filtered = self._paths[:10]
+        self._cursor = 0
+        self._locale = locale
+
+    # 按路径和文件名做模糊筛选并只展示前十项
+    def set_query(self, query: str) -> None:
+        matched: list[tuple[int, int, str]] = []
+        for order, path in enumerate(self._paths):
+            if _fuzzy_match(query, Path(path).name):
+                matched.append((0, order, path))
+            elif _fuzzy_match(query, path):
+                matched.append((1, order, path))
+        matched.sort(key=lambda item: (item[0], item[1]))
+        self._filtered = [path for _, _, path in matched[:10]]
+        self._cursor = min(self._cursor, max(0, len(self._filtered) - 1))
+        if self.is_attached:
+            self._redraw()
+
+    # 向上循环移动文件候选光标
+    def move_up(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor - 1) % len(self._filtered)
+            self._redraw()
+
+    # 向下循环移动文件候选光标
+    def move_down(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor + 1) % len(self._filtered)
+            self._redraw()
+
+    # 发布当前选中的工作区文件路径
+    def select_current(self) -> None:
+        if self._filtered:
+            self.post_message(self.Selected(self._filtered[self._cursor]))
+
+    # 判断当前是否存在可选择的文件候选
+    def has_selection(self) -> bool:
+        return bool(self._filtered)
+
+    # 挂载后绘制第一批候选
+    def on_mount(self) -> None:
+        self._redraw()
+
+    # 绘制简洁路径列表和键盘操作提示
+    def _redraw(self) -> None:
+        if not self._filtered:
+            message = "没有匹配文件" if self._locale != "en-US" else "No matching files"
+            self.update(f"[dim]  {message}[/dim]")
+            return
+        lines: list[str] = []
+        for index, path in enumerate(self._filtered):
+            marker = "[bold cyan]❯" if index == self._cursor else " "
+            suffix = "[/bold cyan]" if index == self._cursor else ""
+            lines.append(f"  {marker} @{escape(path)}{suffix}")
+        hint = "↑↓ 选择 · Tab/Enter 插入 · Esc 关闭" if self._locale != "en-US" else (
+            "↑↓ select · Tab/Enter insert · Esc close"
+        )
+        lines.append(f"[dim]  {hint}[/dim]")
+        self.update("\n".join(lines))
+
+
 class ChatTextArea(TextArea):
     """支持 Enter 提交、Cmd/Shift/Alt+Enter 换行的多行聊天输入框。"""
 
@@ -437,6 +544,12 @@ class ChatTextArea(TextArea):
 
     # 输入内容以 / 开头且无空格时发布，query 为 / 之后的字符串（可为空串）；None 表示收起弹窗
     class SlashChanged(Message):
+        def __init__(self, query: str | None) -> None:
+            self.query = query
+            super().__init__()
+
+    class FileReferenceChanged(Message):
+        # 初始化文件引用查询变化消息，None 表示关闭候选
         def __init__(self, query: str | None) -> None:
             self.query = query
             super().__init__()
@@ -554,22 +667,33 @@ class ChatTextArea(TextArea):
             self.post_message(ChatTextArea.SlashChanged(query=text[1:]))
         else:
             self.post_message(ChatTextArea.SlashChanged(query=None))
+        self.post_message(ChatTextArea.FileReferenceChanged(_file_reference_query(text)))
 
     # Enter 提交；↑↓/Tab/Esc 路由到自动补全弹窗；Cmd/Shift/Alt+Enter 插入换行；其余键交回 TextArea
     async def _on_key(self, event: events.Key) -> None:
         key = event.key
 
-        popup: SlashCompleteWidget | None = None
+        popup: SlashCompleteWidget | FileCompleteWidget | None = None
         try:
             popup = self.app.query_one(SlashCompleteWidget)
         except NoMatches:
-            popup = None
+            try:
+                popup = self.app.query_one(FileCompleteWidget)
+            except NoMatches:
+                popup = None
 
         if key == "enter":
             event.stop()
             event.prevent_default()
             query = self.text[1:] if self.text.startswith("/") else ""
-            if popup is not None and popup.has_selection() and not popup.has_exact_match(query):
+            if (
+                isinstance(popup, SlashCompleteWidget)
+                and popup.has_selection()
+                and not popup.has_exact_match(query)
+            ):
+                popup.select_current()
+                return
+            if isinstance(popup, FileCompleteWidget) and popup.has_selection():
                 popup.select_current()
                 return
             if self.text.strip():
@@ -600,7 +724,10 @@ class ChatTextArea(TextArea):
             elif key == "escape":
                 event.stop()
                 event.prevent_default()
-                self.post_message(ChatTextArea.SlashChanged(query=None))
+                if isinstance(popup, FileCompleteWidget):
+                    self.post_message(ChatTextArea.FileReferenceChanged(query=None))
+                else:
+                    self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
         if key == "up" and popup is None and (not self.text or self._history_index is not None):
             event.stop()
@@ -618,3 +745,8 @@ class ChatTextArea(TextArea):
             self.post_message(ChatTextArea.CycleMode())
             return
         await super()._on_key(event)
+
+    # 把选定工作区路径写回当前 @查询并将光标移动到末尾
+    def complete_file_reference(self, path: str) -> None:
+        self.text = _complete_file_reference(self.text, path)
+        self.move_cursor(self.document.end)

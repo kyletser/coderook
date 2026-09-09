@@ -27,7 +27,10 @@ from code_rook.core.configuration import (
     ConfigurationValidationError,
 )
 from code_rook.core.features import labs_enabled
-from code_rook.core.input_context import augment_file_references
+from code_rook.core.input_context import (
+    augment_file_references,
+    list_workspace_file_references,
+)
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctor
 from code_rook.core.llm.pricing import (
@@ -113,6 +116,7 @@ from code_rook.tui.widgets.input import (
     ChatTextArea,
     CompletionItem,
     ConfigApiKeyPrompt,
+    FileCompleteWidget,
     SlashCompleteWidget,
     _clear_input_history,
     _input_history_enabled,
@@ -350,6 +354,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_question_id: str | None = None
         self._answering_question = False
         self._slash_items: list[CompletionItem] = []
+        self._file_reference_paths: list[str] | None = None
         self._input_commands: list[dict[str, str]] = []
         self._artifact_store = ArtifactStore(Path.cwd() / ".coderook" / "artifacts")
         self._pending_image_attachments: list[dict[str, object]] = []
@@ -982,6 +987,36 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             prompt.move_cursor(prompt.document.end)
         try:
             self.query_one(SlashCompleteWidget).remove()
+        except NoMatches:
+            pass
+
+    # 根据输入末尾的 @查询挂载、筛选或关闭工作区文件补全弹窗
+    def on_chat_text_area_file_reference_changed(
+        self,
+        event: ChatTextArea.FileReferenceChanged,
+    ) -> None:
+        if event.query is None:
+            try:
+                self.query_one(FileCompleteWidget).remove()
+            except NoMatches:
+                pass
+            return
+        if self._file_reference_paths is None:
+            self._file_reference_paths = list_workspace_file_references(self._workspace)
+        try:
+            popup = self.query_one(FileCompleteWidget)
+        except NoMatches:
+            popup = FileCompleteWidget(self._file_reference_paths, locale=self._locale)
+            self.mount(popup, before="#prompt")
+        popup.set_query(event.query)
+
+    # 将用户选中的相对路径插入 composer 并关闭文件候选弹窗
+    def on_file_complete_widget_selected(self, event: FileCompleteWidget.Selected) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.complete_file_reference(event.path)
+        try:
+            self.query_one(FileCompleteWidget).remove()
         except NoMatches:
             pass
 
