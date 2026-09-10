@@ -1858,14 +1858,17 @@ def _verification_summary(
     for item in evidence:
         gate_count = int(item.get("gate_count", 0) or 0)
         item_passed = int(item.get("passed", 0) or 0)
-        total += max(gate_count, item_passed)
+        item_total = max(gate_count, item_passed)
+        total += item_total
         passed += item_passed
         verdict = str(item.get("verdict", item.get("status", ""))).casefold()
         failed = failed or verdict in {"fail", "failed", "error"}
-        unknown = unknown or verdict in {"", "unavailable", "timeout", "truncated"}
+        unknown = unknown or (
+            item_total > 0 and verdict in {"", "unavailable", "timeout", "truncated"}
+        )
     if failed:
         return "fail", passed, total
-    if unknown:
+    if unknown or total == 0:
         return "unknown", passed, total
     return "pass", passed, total
 

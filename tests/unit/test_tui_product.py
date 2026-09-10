@@ -277,6 +277,46 @@ def test_run_result_reducer_prefers_authoritative_receipt() -> None:
     assert "/turn run-1" in plain
 
 
+# 功能：验证已通过的真实测试不会被零门禁的可选诊断降级为“证据不足”
+# 设计：组合 Bash 测试通过收据与 unavailable LSP 事件，确认只统计实际执行的验证门禁
+def test_run_result_ignores_unavailable_zero_gate_diagnostic() -> None:
+    finish = {
+        "type": "run.finished",
+        "run_id": "run-tested",
+        "status": "success",
+        "outcome": "completed",
+        "steps": 4,
+    }
+    inspection = {
+        "turn": {"status": "completed"},
+        "receipt": {
+            "status": "completed",
+            "finished_at": "2026-09-11T00:00:00+00:00",
+            "verification": [
+                {
+                    "tool": "python-diagnostics",
+                    "status": "unavailable",
+                    "diagnostic_count": 0,
+                },
+                {
+                    "tool": "bash",
+                    "action": "tests",
+                    "verdict": "pass",
+                    "gate_count": 1,
+                    "passed": 1,
+                },
+            ],
+            "unavailable": ["cost"],
+        },
+    }
+
+    result = RunEvidenceReducer().finalize(finish, inspection)
+
+    assert result.verification_status == "pass"
+    assert result.verification_passed == 1
+    assert result.verification_total == 1
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_status", "expected_title"),
     [
