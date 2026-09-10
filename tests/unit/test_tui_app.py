@@ -2073,6 +2073,24 @@ async def test_tool_step_group_collects_and_collapses_tools() -> None:
         assert "collapsed" not in group.classes
 
 
+# 功能：验证待审批的修改工具不会在执行前宣称代码已经修改
+# 设计：用 edit_code Presentation 对比运行中与成功终态，锁定时态而不依赖权限弹窗
+def test_tool_step_group_does_not_claim_pending_edit_completed() -> None:
+    block = ToolCallBlock(
+        "write",
+        {"path": "pending.py", "content": "value = 1"},
+        presentation={"action": "edit_code", "kind": "diff"},
+    )
+    group = ToolStepGroup(1)
+    group.add_tool(block)
+
+    assert group._action_summary() == "修改代码"  # type: ignore[attr-defined]
+
+    block.set_result("updated pending.py", 10)
+
+    assert group._action_summary() == "修改了代码"  # type: ignore[attr-defined]
+
+
 # 功能：验证工具失败时活动组保持紧凑且展开后提供复制与安全重试入口
 # 设计：使用带语义 Presentation 的失败工具更新父组，先检查折叠摘要，再手动展开读取恢复提示
 async def test_tool_failure_stays_collapsed_with_recovery_actions() -> None:

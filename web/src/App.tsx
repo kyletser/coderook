@@ -454,6 +454,9 @@ function toolActionLabel(
     }
     if (semanticAction === "run_command") return state === "failed" ? tr("运行失败", "Command failed") : state === "running" ? tr("正在运行", "Running") : tr("已运行", "Command finished");
     if (semanticAction === "run_tests") return state === "failed" ? tr("验证失败", "Checks failed") : state === "running" ? tr("正在验证", "Running checks") : tr("已验证", "Checks passed");
+    if (state === "running" && semanticAction === "edit_code") {
+      return tr("准备修改代码", "Prepare code changes");
+    }
     return state === "failed" ? tr(`${semantic}失败`, `${semantic} failed`) : state === "running" ? tr(`正在${semantic}`, `Running ${semantic.toLowerCase()}`) : semantic;
   }
   if (state === "cancelled") return tr(`${toolName} 已取消`, `${toolName} cancelled`);
@@ -2144,7 +2147,7 @@ function ToolActivityGroup({
   let summary = runningCount ? tr(`正在执行 ${tools.length} 个操作`, `Running ${tools.length} operations`) : tr(`执行了 ${tools.length} 个操作`, `Ran ${tools.length} operations`);
   if ([...actions].every((action) => ["read_file", "browse_files", "search_code", "git"].includes(action))) summary = runningCount ? tr("正在检查工作区", "Inspecting the workspace") : tr("检查了工作区", "Inspected the workspace");
   else if (actions.size === 1 && actions.has("run_command")) summary = runningCount ? tr(`正在运行 ${tools.length} 个命令`, `Running ${tools.length} commands`) : tr(`运行了 ${tools.length} 个命令`, `Ran ${tools.length} commands`);
-  else if (actions.has("edit_code") && actions.size === 1) summary = runningCount ? tr("正在修改代码", "Editing code") : tr("修改了代码", "Edited code");
+  else if (actions.has("edit_code") && actions.size === 1) summary = runningCount ? tr("准备修改代码", "Prepare code changes") : tr("修改了代码", "Edited code");
   else if (actions.size === 1 && actions.has("run_tests")) summary = runningCount ? tr("正在运行验证", "Running checks") : tr("运行了验证", "Ran checks");
   return (
     <details className={`tool-activity ${failedCount ? "failed" : ""} ${runningCount ? "running" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>

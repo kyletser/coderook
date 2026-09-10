@@ -511,6 +511,7 @@ class ToolStepGroup(Widget):
 
     # 按工具种类聚合同一步的自然动作摘要
     def _action_summary(self) -> str:
+        finished = all(block._finished for block in self._blocks)
         semantic_actions = {
             str(block._presentation.get("action") or "")
             for block in self._blocks
@@ -522,18 +523,30 @@ class ToolStepGroup(Widget):
             "search_code",
             "git",
         }:
-            return "检查了工作区" if self._locale != "en-US" else "Inspected workspace"
+            if finished:
+                return "检查了工作区" if self._locale != "en-US" else "Inspected workspace"
+            return "检查工作区" if self._locale != "en-US" else "Inspect workspace"
         if semantic_actions == {"run_command"}:
             count = len(self._blocks)
+            if not finished:
+                return (
+                    f"运行 {count} 个命令"
+                    if self._locale != "en-US"
+                    else f"Run {count} commands"
+                )
             return (
                 f"运行了 {count} 个命令"
                 if self._locale != "en-US"
                 else f"Ran {count} commands"
             )
         if semantic_actions == {"run_tests"}:
-            return "运行了验证" if self._locale != "en-US" else "Ran verification"
+            if finished:
+                return "运行了验证" if self._locale != "en-US" else "Ran verification"
+            return "运行验证" if self._locale != "en-US" else "Run verification"
         if semantic_actions == {"edit_code"}:
-            return "修改了代码" if self._locale != "en-US" else "Changed code"
+            if finished:
+                return "修改了代码" if self._locale != "en-US" else "Changed code"
+            return "修改代码" if self._locale != "en-US" else "Change code"
         manifest_kinds = [
             str(block._presentation.get("kind") or "") for block in self._blocks
         ]
