@@ -63,6 +63,9 @@ _REPLAY_TOPICS = [*_THREAD_TOPICS, *_LIVE_TOPICS]
 # session.resume 在活动 Turn 持锁时返回的稳定 JSON-RPC 错误码
 _SESSION_BUSY_ERROR = -32012
 
+# session.resume 遇到一次性任务时返回的稳定 JSON-RPC 错误码
+_SESSION_NOT_RESUMABLE_ERROR = -32013
+
 
 @dataclass
 class SessionUiState:
@@ -623,7 +626,7 @@ class TuiConnection:
         if callable(callback):
             callback(action, session_id, title, history_count)
 
-    # 恢复空闲会话；活动会话持锁时改读权威 thread 投影并只读附着
+    # 恢复空闲会话；活动会话附着投影，一次性任务则复制为可继续会话
     async def resume_or_attach_session(
         self,
         client: Any,
@@ -635,6 +638,20 @@ class TuiConnection:
                 {"session_id": session_id},
             )
         except IpcError as exc:
+            if exc.code == _SESSION_NOT_RESUMABLE_ERROR:
+                forked = await client.send_command(
+                    "session.fork",
+                    {"session_id": session_id},
+                )
+                raw_fork = forked.get("session")
+                if not isinstance(raw_fork, dict):
+                    raise ValueError("session.fork returned malformed session") from exc
+                fork_id = raw_fork.get("session_id")
+                if not isinstance(fork_id, str) or not fork_id or fork_id == session_id:
+                    raise ValueError("session.fork returned an invalid session") from exc
+                info = dict(raw_fork)
+                info["forked_from_session_id"] = session_id
+                return info, False
             if exc.code != _SESSION_BUSY_ERROR:
                 raise
             fetched = await client.send_command(
@@ -840,7 +857,15 @@ class TuiConnection:
                         reconnecting=reconnecting,
                     )
                     self._show_session_ready(
-                        "reconnected" if reconnecting else "resumed",
+                        (
+                            "reconnected"
+                            if reconnecting
+                            else (
+                                "continued"
+                                if resumed_info.get("forked_from_session_id")
+                                else "resumed"
+                            )
+                        ),
                         self._app._session_id,
                         resumed_title,
                         history_count,

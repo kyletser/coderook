@@ -49,6 +49,57 @@ def test_select_recent_session_prefers_nonempty_and_reuses_empty() -> None:
     assert _select_recent_session([]) is None
 
 
+# 功能：验证 TUI 打开一次性 run 会话时会保留历史并转为可继续的 chat 会话
+# 设计：让 fake Core 先返回不可恢复错误，再断言连接层精确调用 session.fork 且返回新会话而非进入重连循环
+async def test_one_shot_session_is_forked_for_interactive_continue() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _FakeClient:
+        # 模拟一次性会话不能原地恢复，但可完整分叉为交互会话
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, Any],
+        ) -> dict[str, Any]:
+            calls.append((method, dict(params)))
+            if method == "session.resume":
+                raise IpcError(-32013, "only chat sessions can be resumed")
+            if method == "session.fork":
+                return {
+                    "session": {
+                        "session_id": "sess-chat",
+                        "title": "Headless result (fork)",
+                        "mode": "chat",
+                        "last_run_id": None,
+                    }
+                }
+            raise AssertionError(f"unexpected command: {method}")
+
+    class _FakeApp:
+        _client = None
+
+    connection = TuiConnection(
+        _FakeApp(),
+        None,
+        host="127.0.0.1",
+        port=7437,
+    )
+
+    info, attached = await connection.resume_or_attach_session(
+        _FakeClient(),
+        "sess-one-shot",
+    )
+
+    assert attached is False
+    assert info["session_id"] == "sess-chat"
+    assert info["mode"] == "chat"
+    assert info["forked_from_session_id"] == "sess-one-shot"
+    assert calls == [
+        ("session.resume", {"session_id": "sess-one-shot"}),
+        ("session.fork", {"session_id": "sess-one-shot"}),
+    ]
+
+
 # 功能：验证 daemon 尚未启动时首次拒绝连接会立即禁用输入并显示恢复建议
 # 设计：让 fake client 在 connect 阶段抛出 ConnectionRefusedError，等首次状态回调后取消重试循环
 async def test_initial_connection_refusal_marks_app_disconnected() -> None:
