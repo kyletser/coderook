@@ -2083,12 +2083,16 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._update_header("running" if self._busy else "ready")
 
     # 在 worker 中执行手动压缩命令，完成后显示结果横幅
-    async def _do_compact(self) -> None:
+    async def _do_compact(self, focus: str = "") -> None:
         if self._client is None or self._session_id is None:
             return
         self._append(Static("[dim]compacting context...[/dim]", classes="log-line"))
         try:
-            result = await ipc_actions.compact(self._client, self._session_id)
+            result = await ipc_actions.compact(
+                self._client,
+                self._session_id,
+                focus,
+            )
             summary_tokens = result.get("summary_tokens", 0)
             saved_tokens = result.get("saved_tokens", 0)
             retained_messages = result.get("retained_messages", 0)

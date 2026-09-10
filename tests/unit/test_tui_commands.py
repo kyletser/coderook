@@ -7,6 +7,7 @@ import pytest
 
 from code_rook.tui.commands import (
     BUILTIN_SLASH_COMMANDS,
+    _cmd_compact,
     _cmd_delivery,
     _cmd_goal,
     _cmd_workers,
@@ -15,6 +16,45 @@ from code_rook.tui.commands import (
     match_slash_command,
     visible_slash_commands,
 )
+
+
+# 功能：验证 TUI 手动压缩命令会把用户指定的重点保留内容传给应用层
+# 设计：用最小 App 替身捕获协程调用参数，避免启动 Textual 应用和真实 daemon
+async def test_compact_command_preserves_focus() -> None:
+    class _TextArea:
+        text = "/compact 保留失败原因和下一步"
+
+    class _App:
+        # 初始化命令执行所需状态和参数捕获槽
+        def __init__(self) -> None:
+            self._client = object()
+            self._session_id = "sess-compact"
+            self._busy = False
+            self.focuses: list[str] = []
+            self.pending: list[Coroutine[Any, Any, None]] = []
+
+        # 捕获传给实际压缩动作的重点保留内容
+        async def _do_compact(self, focus: str = "") -> None:
+            self.focuses.append(focus)
+
+        # 保存 Textual worker 协程供测试显式等待
+        def run_worker(
+            self,
+            coroutine: Coroutine[Any, Any, None],
+            *,
+            name: str,
+            exclusive: bool,
+        ) -> None:
+            del name, exclusive
+            self.pending.append(coroutine)
+
+    app = _App()
+    area = _TextArea()
+    await _cmd_compact(app, area, area.text)  # type: ignore[arg-type]
+    await app.pending[0]
+
+    assert area.text == ""
+    assert app.focuses == ["保留失败原因和下一步"]
 
 
 # 功能：Worker start 命令解析角色、route、模型、预算和显式写入范围

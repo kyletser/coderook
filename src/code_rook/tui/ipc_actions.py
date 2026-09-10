@@ -41,11 +41,15 @@ async def send(
 
 
 # 手动压缩当前会话上下文，返回 compaction 结果
-async def compact(client: SocketClient, session_id: str) -> dict[str, Any]:
+async def compact(
+    client: SocketClient,
+    session_id: str,
+    focus: str = "",
+) -> dict[str, Any]:
     return await send(
         client,
         "session.compact",
-        {"session_id": session_id, "focus": ""},
+        {"session_id": session_id, "focus": focus},
     )
 
 

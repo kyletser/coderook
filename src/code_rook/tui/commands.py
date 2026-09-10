@@ -401,9 +401,10 @@ async def _cmd_config(app: Any, ta: ChatTextArea, content: str) -> None:
 
 
 async def _cmd_compact(app: Any, ta: ChatTextArea, content: str) -> None:
+    focus = content.removeprefix("/compact").strip()
     ta.text = ""
     if app._client is not None and app._session_id is not None and not app._busy:
-        app.run_worker(app._do_compact(), name="compact", exclusive=False)
+        app.run_worker(app._do_compact(focus), name="compact", exclusive=False)
 
 
 async def _cmd_copy(app: Any, ta: ChatTextArea, content: str) -> None:
@@ -1373,7 +1374,13 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     ),
     SlashCommand("doctor", "诊断活动 Provider route", False, _cmd_doctor),
     SlashCommand("config", "更换 LLM API、模型或密钥", False, _cmd_config),
-    SlashCommand("compact", "手动压缩上下文", True, _cmd_compact),
+    SlashCommand(
+        "compact",
+        "手动压缩上下文",
+        True,
+        _cmd_compact,
+        usage="[需要重点保留的内容]",
+    ),
     SlashCommand("copy", "复制上一条回复", False, _cmd_copy),
     SlashCommand(
         "history",

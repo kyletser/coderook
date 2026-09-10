@@ -50,10 +50,10 @@ class _ErrorClient:
 # 设计：fake 记录调用并返回固定 payload，断言方法名与参数完全一致
 async def test_compact_success() -> None:
     client = _FakeClient({"session.compact": {"summary_tokens": 10}})
-    result = await ipc_actions.compact(client, "sess-1")
+    result = await ipc_actions.compact(client, "sess-1", "保留失败原因")
     assert result["summary_tokens"] == 10
     assert client.calls == [
-        ("session.compact", {"session_id": "sess-1", "focus": ""})
+        ("session.compact", {"session_id": "sess-1", "focus": "保留失败原因"})
     ]
 
 
