@@ -344,3 +344,35 @@ def test_validate_core_workspace_rejects_unverifiable_explicit_env(
             CodeRookConfig(),
             env_file=tmp_path / "deployment.env",
         )
+
+
+# 功能：验证从其他目录重启 Core 时仍保留 daemon 当前服务的项目
+# 设计：用当前元数据指向独立项目，在停止与再启动之间捕获 cwd 排除回落到调用目录
+def test_core_restart_preserves_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    caller = tmp_path / "caller"
+    active = tmp_path / "active"
+    caller.mkdir()
+    active.mkdir()
+    monkeypatch.chdir(caller)
+    monkeypatch.setattr(
+        core,
+        "_core_metadata",
+        lambda _config: {"workspace": str(active), "active_runs": 0},
+    )
+    monkeypatch.setattr(core, "stop_core", lambda _config: True)
+    observed: list[Path] = []
+
+    def ensure(_config: CodeRookConfig, *, env_file: Path | None = None) -> bool:
+        del env_file
+        observed.append(Path.cwd())
+        return True
+
+    monkeypatch.setattr(core, "ensure_core_running", ensure)
+    monkeypatch.setattr(core, "_running_pid", lambda: 1234)
+
+    core.cmd_core_restart(CodeRookConfig())
+
+    assert observed == [active.resolve()]

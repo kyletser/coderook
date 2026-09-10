@@ -248,6 +248,64 @@ def test_receipt_tracks_mutating_file_family_actions_only() -> None:
     assert receipt.changes[0].path == "src/changed.py"
 
 
+# 功能：Receipt 能从原生 write/edit 工具的成功结果恢复文件及增删行证据
+# 设计：使用真实 Runtime item 形状配对调用与结果，覆盖新原生工具名与旧别名分叉
+def test_receipt_tracks_native_write_and_edit_results() -> None:
+    turn = TurnRecord(
+        id="turn-native-editing",
+        thread_id="thread-native-editing",
+        status=TurnStatus.COMPLETED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    items: list[TurnItemRecord] = []
+    for index, (tool_name, path, additions, deletions) in enumerate(
+        (
+            ("write", "calculator.py", 2, 0),
+            ("edit", "test_calculator.py", 3, 1),
+        ),
+        start=1,
+    ):
+        tool_call_id = f"native-{index}"
+        items.extend(
+            [
+                TurnItemRecord(
+                    id=f"call-{index}",
+                    turn_id=turn.id,
+                    kind=TurnItemKind.TOOL_CALL,
+                    tool_call_id=tool_call_id,
+                    payload={"tool_name": tool_name, "params": {"path": path}},
+                    created_at=_now(),
+                ),
+                TurnItemRecord(
+                    id=f"result-{index}",
+                    turn_id=turn.id,
+                    kind=TurnItemKind.TOOL_RESULT,
+                    tool_call_id=tool_call_id,
+                    payload={
+                        "tool_name": tool_name,
+                        "output": (
+                            f'{{"path":"{path}","additions":{additions},'
+                            f'"deletions":{deletions}}}'
+                        ),
+                    },
+                    created_at=_now(),
+                ),
+            ]
+        )
+
+    receipt = build_turn_receipt(turn, items, [])
+
+    assert receipt.files_changed == ["calculator.py", "test_calculator.py"]
+    assert [change.model_dump() for change in receipt.changes] == [
+        {"path": "calculator.py", "additions": 2, "deletions": 0},
+        {"path": "test_calculator.py", "additions": 3, "deletions": 1},
+    ]
+    assert "files_changed" not in receipt.unavailable
+    assert "changes" not in receipt.unavailable
+    assert "change_line_stats" not in receipt.unavailable
+
+
 # 功能：Receipt 只把成功文件工具的结构化结果计入逐文件增删行证据
 # 设计：串联 write 与 patch 两种结果格式并聚合同一路径，覆盖 deletions/removals 字段兼容
 def test_receipt_aggregates_successful_change_line_stats() -> None:

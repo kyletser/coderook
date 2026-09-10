@@ -75,7 +75,7 @@ def _is_mutating_file_call(item: TurnItemRecord) -> bool:
         params = {}
     if tool_name == "apply_patch" and params.get("dry_run") is True:
         return False
-    if tool_name in {"apply_patch", "edit_file", "write_file"}:
+    if tool_name in {"apply_patch", "edit", "edit_file", "write", "write_file"}:
         return True
     if tool_name != "File":
         return False

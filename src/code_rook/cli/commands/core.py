@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from code_rook.core.config import CodeRookConfig
+from code_rook.core.projects import ProjectRegistry
 from code_rook.core.transport.auth import IpcTokenError
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
@@ -53,6 +54,25 @@ def _metadata_count(metadata: dict[str, object], key: str) -> int:
         except ValueError:
             return 0
     return 0
+
+
+# 重启前进入 Core 当前项目，未运行时避免把 CodeRook 源码目录当作用户工作区
+def _adopt_restart_workspace(config: CodeRookConfig) -> Path:
+    metadata = _core_metadata(config)
+    if metadata is not None:
+        served_workspace = str(metadata.get("workspace") or "")
+        if served_workspace:
+            try:
+                workspace = Path(served_workspace).resolve(strict=True)
+            except OSError as exc:
+                raise CoreLaunchError(
+                    f"Core workspace is no longer available: {served_workspace}"
+                ) from exc
+            if not workspace.is_dir():
+                raise CoreLaunchError(f"Core workspace is not a directory: {served_workspace}")
+            os.chdir(workspace)
+            return workspace
+    return ProjectRegistry().enter_welcome_workspace_if_protected()
 
 
 # 校验手动 Core 的 workspace；显式 env overlay 无可验身份时失败关闭
@@ -420,6 +440,11 @@ def cmd_core_stop(config: CodeRookConfig) -> None:
 
 # 重启后台 Core，使磁盘上的最新配置立即生效
 def cmd_core_restart(config: CodeRookConfig, *, env_file: Path | None = None) -> None:
+    try:
+        _adopt_restart_workspace(config)
+    except CoreLaunchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     stopped = stop_core(config)
     try:
         started = ensure_core_running(config, env_file=env_file)
