@@ -252,6 +252,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "session_name": "",
         "delete_session_after": False,
         "resume_session_id": None,
+        "fork_session_id": None,
         "continue_recent": False,
         "route_id": None,
         "model": None,
@@ -286,6 +287,33 @@ def test_print_shorthand_can_continue_recent_session(monkeypatch) -> None:
     assert captured["delete_session_after"] is False
     assert captured["continue_recent"] is True
     assert captured["resume_session_id"] is None
+
+
+# 功能：快捷打印入口可从指定历史会话创建新分支并在分支中执行任务。
+# 设计：捕获 --fork 的 headless 参数，确认它不会被误解释为原会话 resume 或最近会话 continue。
+def test_print_shorthand_can_fork_session(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "-p", "--fork", "sess-source", "尝试另一种实现"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["fork_session_id"] == "sess-source"
+    assert captured["resume_session_id"] is None
+    assert captured["continue_recent"] is False
 
 
 # 功能：快捷打印模式支持显式临时会话，不把一次性任务留在历史列表。

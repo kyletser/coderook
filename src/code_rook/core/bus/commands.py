@@ -98,6 +98,7 @@ class AgentRunCommand(BaseModel):
     session_mode: Literal["chat", "one_shot"] = "one_shot"
     session_name: str = Field(default="", max_length=200)
     resume_session_id: str | None = None
+    fork_session_id: str | None = None
     route_id: str | None = Field(default=None, min_length=1, max_length=256)
     model: str | None = Field(default=None, min_length=1, max_length=256)
     thinking_level: ThinkingLevel | None = None
@@ -108,6 +109,8 @@ class AgentRunCommand(BaseModel):
     @model_validator(mode="after")
     # 校验 headless 提问策略所需参数并拒绝无效组合
     def _validate_question_policy(self) -> AgentRunCommand:
+        if self.resume_session_id is not None and self.fork_session_id is not None:
+            raise ValueError("resume_session_id and fork_session_id are mutually exclusive")
         if self.model is not None and self.route_id is None:
             raise ValueError("route_id is required when model is selected")
         if self.question_mode == "timeout" and self.question_timeout_s is None:

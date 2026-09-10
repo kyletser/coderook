@@ -231,6 +231,7 @@ async def _run_async(
     session_name: str = "",
     delete_session_after: bool = False,
     resume_session_id: str | None = None,
+    fork_session_id: str | None = None,
     continue_recent: bool = False,
     route_id: str | None = None,
     model: str | None = None,
@@ -303,7 +304,7 @@ async def _run_async(
     started_session_id = ""
 
     try:
-        if continue_recent and resume_session_id is None:
+        if continue_recent and resume_session_id is None and fork_session_id is None:
             listed = await client.send_command(
                 "session.list",
                 {"include_closed": False, "limit": 50},
@@ -350,6 +351,7 @@ async def _run_async(
                 "session_mode": session_mode,
                 "session_name": session_name,
                 "resume_session_id": resume_session_id,
+                "fork_session_id": fork_session_id,
                 "route_id": route_id,
                 "model": model,
                 "thinking_level": thinking_level,
@@ -478,6 +480,7 @@ def cmd_run(
     session_name: str = "",
     delete_session_after: bool = False,
     resume_session_id: str | None = None,
+    fork_session_id: str | None = None,
     continue_recent: bool = False,
     route_id: str | None = None,
     model: str | None = None,
@@ -503,6 +506,7 @@ def cmd_run(
                 session_name=session_name,
                 delete_session_after=delete_session_after,
                 resume_session_id=resume_session_id,
+                fork_session_id=fork_session_id,
                 continue_recent=continue_recent,
                 route_id=route_id,
                 model=model,

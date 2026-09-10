@@ -808,6 +808,33 @@ class TuiConnection:
                 reconnecting = bool(
                     resume_session_id is not None and self._app._history_loaded
                 )
+                forked_info: dict[str, Any] | None = None
+                fork_session_id = str(
+                    getattr(self._app, "_fork_session_id", "") or ""
+                )
+                if fork_session_id and not bool(
+                    getattr(self._app, "_fork_session_applied", False)
+                ):
+                    initial_name = str(
+                        getattr(self._app, "_initial_session_name", "") or ""
+                    )
+                    forked = await client.send_command(
+                        "session.fork",
+                        {
+                            "session_id": fork_session_id,
+                            "title": initial_name,
+                        },
+                    )
+                    raw_forked = forked.get("session")
+                    if not isinstance(raw_forked, dict):
+                        raise RuntimeError("session fork result is missing session")
+                    forked_info = raw_forked
+                    resume_session_id = str(raw_forked.get("session_id", ""))
+                    if not resume_session_id:
+                        raise RuntimeError("session fork result is missing session_id")
+                    self._app._fork_session_applied = True
+                    if initial_name:
+                        self._app._initial_session_name_applied = True
                 if resume_session_id is None and getattr(
                     self._app,
                     "_continue_recent",
@@ -847,10 +874,13 @@ class TuiConnection:
                         0,
                     )
                 else:
-                    resumed_info, attached_active = await self.resume_or_attach_session(
-                        client,
-                        resume_session_id,
-                    )
+                    if forked_info is None:
+                        resumed_info, attached_active = await self.resume_or_attach_session(
+                            client,
+                            resume_session_id,
+                        )
+                    else:
+                        resumed_info, attached_active = forked_info, False
                     initial_name = str(
                         getattr(self._app, "_initial_session_name", "") or ""
                     )
@@ -896,7 +926,10 @@ class TuiConnection:
                             if reconnecting
                             else (
                                 "continued"
-                                if resumed_info.get("forked_from_session_id")
+                                if (
+                                    resumed_info.get("forked_from_session_id")
+                                    or resumed_info.get("parent_session_id")
+                                )
                                 else "resumed"
                             )
                         ),

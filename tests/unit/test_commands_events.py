@@ -494,6 +494,12 @@ def test_agent_run_headless_permission_protocol() -> None:
     ).session_name == "Auth review"
     with pytest.raises(ValidationError):
         AgentRunCommand(goal="inspect", tools=["unknown"])  # type: ignore[list-item]
+    with pytest.raises(ValidationError):
+        AgentRunCommand(
+            goal="inspect",
+            resume_session_id="sess-a",
+            fork_session_id="sess-b",
+        )
 
 
 # 功能：验证 session 消息可显式携带 Plan Mode 且默认仍为 Act

@@ -105,11 +105,17 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         config.port,
         replay_run_id=args.replay,
         resume_session_id=args.resume,
+        fork_session_id=getattr(args, "fork", None),
         continue_recent=(
             False
-            if ProjectRegistry().is_welcome_workspace(Path.cwd())
-            and not bool(getattr(args, "continue_explicit", False))
-            and args.resume is None
+            if (
+                bool(getattr(args, "fork", None))
+                or (
+                    ProjectRegistry().is_welcome_workspace(Path.cwd())
+                    and not bool(getattr(args, "continue_explicit", False))
+                    and args.resume is None
+                )
+            )
             else args.continue_recent
         ),
         auth_token=auth_token,
@@ -175,6 +181,11 @@ def main() -> None:
         help="Resume a saved chat session",
     )
     source.add_argument(
+        "--fork",
+        metavar="SESSION_ID",
+        help="Fork a saved session and continue in the new branch",
+    )
+    source.add_argument(
         "-c", "--continue",
         dest="continue_recent",
         action="store_true",
@@ -223,6 +234,7 @@ def main() -> None:
             add_model(current.llm.provider, action.model)
             switch_llm_model(current, action.model)
             args.resume = action.session_id
+            args.fork = None
             args.continue_recent = False
         elif isinstance(action, ConfigSwitch):
             current = (
@@ -238,6 +250,7 @@ def main() -> None:
                 action.model,
             )
             args.resume = action.session_id
+            args.fork = None
             args.continue_recent = False
         else:
             break

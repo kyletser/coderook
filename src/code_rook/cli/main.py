@@ -180,8 +180,8 @@ def main() -> int:
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
     tui_flags = {
-        "-c", "-r", "-n", "--continue", "--new", "--resume", "--replay", "--name",
-        "--no-auto-core", "--thinking", "--route", "--model",
+        "-c", "-r", "-n", "--continue", "--new", "--resume", "--fork", "--replay",
+        "--name", "--no-auto-core", "--thinking", "--route", "--model",
     }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
@@ -215,6 +215,11 @@ def _run_cli() -> int:
             "-r", "--resume",
             metavar="SESSION_ID",
             help="Resume a saved session",
+        )
+        session_choice.add_argument(
+            "--fork",
+            metavar="SESSION_ID",
+            help="Fork a saved session and continue in the new branch",
         )
         session_choice.add_argument(
             "--no-session",
@@ -281,6 +286,7 @@ def _run_cli() -> int:
             session_name=quick_args.name or "",
             delete_session_after=quick_args.no_session,
             resume_session_id=quick_args.resume,
+            fork_session_id=quick_args.fork,
             continue_recent=quick_args.continue_recent,
             route_id=requested_route,
             model=quick_args.model,
@@ -606,6 +612,11 @@ def _run_cli() -> int:
         "--resume",
         metavar="SESSION_ID",
         help="Append this goal to an existing resumable chat session",
+    )
+    run_session.add_argument(
+        "--fork",
+        metavar="SESSION_ID",
+        help="Fork a saved session and run in the new branch",
     )
     run_session.add_argument(
         "--no-session",
@@ -948,6 +959,7 @@ def _run_cli() -> int:
             session_name=args.name or "",
             delete_session_after=args.no_session,
             resume_session_id=args.resume,
+            fork_session_id=args.fork,
             route_id=requested_route,
             model=args.model,
             thinking_level=args.thinking,

@@ -212,6 +212,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `session_mode` | `string` | no |
 | `session_name` | `string` | no |
 | `resume_session_id` | `string | null` | no |
+| `fork_session_id` | `string | null` | no |
 | `route_id` | `string | null` | no |
 | `model` | `string | null` | no |
 | `thinking_level` | `string | null` | no |
@@ -308,6 +309,18 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Resume Session Id"
+    },
+    "fork_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fork Session Id"
     },
     "route_id": {
       "anyOf": [

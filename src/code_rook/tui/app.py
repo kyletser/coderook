@@ -258,6 +258,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         port: int,
         replay_run_id: str | None = None,
         resume_session_id: str | None = None,
+        fork_session_id: str | None = None,
         continue_recent: bool = True,
         auth_token: str | None = None,
         provider: str = "",
@@ -283,6 +284,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._theme_mode = "auto"
         self._replay_run_id = replay_run_id
         self._resume_session_id = resume_session_id
+        self._fork_session_id = fork_session_id
+        self._fork_session_applied = False
         self._continue_recent = continue_recent
         self._auth_token = auth_token
         self._provider = provider

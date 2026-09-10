@@ -1113,6 +1113,11 @@ class CoreApp:
             session = await self._sessions.resume(cmd.resume_session_id)
             if cmd.session_name:
                 session = await self._sessions.rename(session.id, cmd.session_name)
+        elif cmd.fork_session_id is not None:
+            session = await self._sessions.fork(
+                cmd.fork_session_id,
+                cmd.session_name,
+            )
         else:
             session = await self._sessions.create(
                 mode=cmd.session_mode,
