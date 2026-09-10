@@ -40,8 +40,8 @@ def test_resolve_file_references_stays_inside_workspace(tmp_path: Path) -> None:
     ) == ["README.md", "src/service.py"]
 
 
-# 功能：模型输入仅追加文件路径和按需读取约束，不提前注入文件全文
-# 设计：以显式参数传入含空格路径，验证 CLI 参数边界不会因重新分词而丢失文件
+# 功能：模型输入追加用户显式引用的文件内容并保留含空格路径
+# 设计：以显式参数传入含空格路径，同时断言模型获得正文而界面仍可使用原始输入
 def test_augment_file_references_preserves_explicit_path_with_spaces(
     tmp_path: Path,
 ) -> None:
@@ -56,8 +56,26 @@ def test_augment_file_references_preserves_explicit_path_with_spaces(
     )
 
     assert '\"design notes.md\"' in result
-    assert "PRIVATE FULL CONTENT" not in result
-    assert "Read only the ranges needed" in result
+    assert "PRIVATE FULL CONTENT" in result
+    assert "truncated=\"false\"" in result
+    assert "reference data" in result
+
+
+# 功能：超大文件引用只进入有界摘要并明确告知模型已截断
+# 设计：构造超过单文件限额的首尾标记，断言头部可见、尾部不可见且 truncated 为 true
+def test_augment_file_references_truncates_large_files(tmp_path: Path) -> None:
+    target = tmp_path / "large.txt"
+    target.write_text("BEGIN\n" + ("x" * 30_000) + "\nEND", encoding="utf-8")
+
+    result = augment_file_references(
+        "inspect @large.txt",
+        "inspect @large.txt",
+        tmp_path,
+    )
+
+    assert "BEGIN" in result
+    assert "END" not in result
+    assert "truncated=\"true\"" in result
 
 
 # 功能：TUI 文件候选跳过依赖、缓存和 CodeRook 内部目录并保持稳定相对路径

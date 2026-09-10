@@ -305,8 +305,8 @@ def test_read_piped_stdin_decodes_windows_chinese_bytes(
     assert cli_main._read_piped_stdin() == "中文 PIPE_OK"
 
 
-# 功能：快捷打印模式把带空格的 @文件 参数转换为按需读取的工作区引用
-# 设计：保留 argv 的参数边界并检查模型输入，避免 join 后把一个文件名拆成多个无效 token
+# 功能：快捷打印模式把带空格的 @文件 参数转换为有界工作区文件内容
+# 设计：保留 argv 的参数边界并分别检查模型与展示输入，避免含空格路径被错误拆分或泄露增强文本到界面
 def test_print_shorthand_resolves_explicit_file_argument(
     monkeypatch,
     tmp_path: Path,
@@ -330,7 +330,8 @@ def test_print_shorthand_resolves_explicit_file_argument(
     assert cli_main.main() == 0
 
     assert '\"design notes.md\"' in str(captured["goal"])
-    assert "do not inline" not in str(captured["goal"])
+    assert "do not inline" in str(captured["goal"])
+    assert "truncated=\"false\"" in str(captured["goal"])
     assert captured["display_content"] == "@design notes.md 总结"
 
 
