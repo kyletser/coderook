@@ -209,6 +209,7 @@ async def _run_async(
     include_partial: bool = False,
     final_only: bool = False,
     resume_session_id: str | None = None,
+    continue_recent: bool = False,
     route_id: str | None = None,
     model: str | None = None,
     thinking_level: str | None = None,
@@ -279,6 +280,27 @@ async def _run_async(
     run_id: str | None = None
 
     try:
+        if continue_recent and resume_session_id is None:
+            listed = await client.send_command(
+                "session.list",
+                {"include_closed": False, "limit": 50},
+            )
+            sessions = listed.get("sessions", [])
+            if isinstance(sessions, list):
+                for item in sessions:
+                    if not isinstance(item, dict) or item.get("mode", "chat") != "chat":
+                        continue
+                    run_count = item.get("run_count", 0)
+                    if not (
+                        isinstance(run_count, int)
+                        and not isinstance(run_count, bool)
+                        and run_count > 0
+                    ) and not item.get("last_run_id"):
+                        continue
+                    candidate = item.get("session_id")
+                    if isinstance(candidate, str) and candidate:
+                        resume_session_id = candidate
+                        break
         await client.send_command(
             "event.subscribe",
             {
@@ -410,6 +432,7 @@ def cmd_run(
     include_partial: bool = False,
     final_only: bool = False,
     resume_session_id: str | None = None,
+    continue_recent: bool = False,
     route_id: str | None = None,
     model: str | None = None,
     thinking_level: str | None = None,
@@ -430,6 +453,7 @@ def cmd_run(
                 include_partial=include_partial,
                 final_only=final_only,
                 resume_session_id=resume_session_id,
+                continue_recent=continue_recent,
                 route_id=route_id,
                 model=model,
                 thinking_level=thinking_level,

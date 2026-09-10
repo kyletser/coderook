@@ -159,6 +159,23 @@ def _run_cli() -> int:
         quick.add_argument(
             "--thinking", choices=("off", "low", "medium", "high"),
         )
+        session_choice = quick.add_mutually_exclusive_group()
+        session_choice.add_argument(
+            "--continue",
+            dest="continue_recent",
+            action="store_true",
+            help="Resume the most recent session in this workspace",
+        )
+        session_choice.add_argument(
+            "--new",
+            action="store_true",
+            help="Start a new session",
+        )
+        session_choice.add_argument(
+            "--resume",
+            metavar="SESSION_ID",
+            help="Resume a saved session",
+        )
         quick.add_argument("--route", help="Provider route for this task")
         quick.add_argument("--model", help="Model override for this task")
         quick.add_argument("message", nargs="*", help="Task to execute")
@@ -201,6 +218,8 @@ def _run_cli() -> int:
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
             final_only=True,
+            resume_session_id=quick_args.resume,
+            continue_recent=quick_args.continue_recent,
             route_id=requested_route,
             model=quick_args.model,
             thinking_level=quick_args.thinking,
