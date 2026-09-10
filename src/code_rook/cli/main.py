@@ -65,6 +65,7 @@ from code_rook.core.projects import ProjectRegistry
 from code_rook.core.state_migration import migrate_legacy_state
 
 _PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
+_MODEL_TOOL_NAMES = frozenset({"read", "bash", "edit", "write"})
 _TOP_LEVEL_COMMANDS = frozenset({
     "ping", "web", "configure", "config", "config-status", "migrate-project-state",
     "doctor", "provider", "model", "skills", "memory", "cancel", "chat", "sessions",
@@ -124,6 +125,20 @@ def _resolve_requested_route(route_id: str | None, model: str | None) -> str | N
     if active is None:
         raise ValueError("--model requires --route when no active route is configured")
     return active.id
+
+
+# 解析逗号分隔的模型工具集并保留用户给出的稳定顺序
+def _model_tools(value: str) -> list[str]:
+    names = list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
+    if not names:
+        raise argparse.ArgumentTypeError("tools must not be empty; use --no-tools")
+    unknown = sorted(set(names) - _MODEL_TOOL_NAMES)
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            "unknown tools: " + ", ".join(unknown)
+            + "; choose from read,bash,edit,write"
+        )
+    return names
 
 
 # 将会话列表上限校验为 1 到 200，避免 argparse 在帮助页展开两百个候选值
@@ -198,6 +213,15 @@ def _run_cli() -> int:
         )
         quick.add_argument("--route", help="Provider route for this task")
         quick.add_argument("--model", help="Model override for this task")
+        quick_tools = quick.add_mutually_exclusive_group()
+        quick_tools.add_argument(
+            "-t", "--tools", type=_model_tools, metavar="TOOLS",
+            help="Model-visible tools: comma-separated read,bash,edit,write",
+        )
+        quick_tools.add_argument(
+            "-nt", "--no-tools", dest="tools", action="store_const", const=[],
+            help="Disable all model tool calls for this task",
+        )
         quick.add_argument("message", nargs="*", help="Task to execute")
         quick_args = quick.parse_args(sys.argv[1:])
         try:
@@ -236,6 +260,7 @@ def _run_cli() -> int:
             display_content=display_content,
             permission_mode="allow_list",
             allow_tools=["read", "bash", "edit", "write"],
+            model_tools=quick_args.tools,
             output_format="text",
             final_only=True,
             session_mode="one_shot" if quick_args.no_session else "chat",
@@ -529,6 +554,15 @@ def _run_cli() -> int:
         default=[],
         metavar="TOOL",
         help="Tool allowed in allow-list mode; repeat for multiple tools",
+    )
+    run_tools = run_parser.add_mutually_exclusive_group()
+    run_tools.add_argument(
+        "-t", "--tools", type=_model_tools, metavar="TOOLS",
+        help="Model-visible tools: comma-separated read,bash,edit,write",
+    )
+    run_tools.add_argument(
+        "-nt", "--no-tools", dest="tools", action="store_const", const=[],
+        help="Disable all model tool calls for this task",
     )
     run_parser.add_argument(
         "--output-format",
@@ -888,6 +922,7 @@ def _run_cli() -> int:
             display_content=args.goal,
             permission_mode=args.permission_mode.replace("-", "_"),
             allow_tools=args.allow_tool,
+            model_tools=args.tools,
             output_format=args.output_format,
             event_filters=args.event_filter,
             include_partial=args.include_partial,

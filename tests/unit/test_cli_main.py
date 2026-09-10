@@ -245,6 +245,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "display_content": "读取项目 总结结构",
         "permission_mode": "allow_list",
         "allow_tools": ["read", "bash", "edit", "write"],
+        "model_tools": None,
         "output_format": "text",
         "final_only": True,
         "session_mode": "chat",
@@ -310,6 +311,54 @@ def test_print_shorthand_supports_no_session(monkeypatch) -> None:
 
     assert captured["session_mode"] == "one_shot"
     assert captured["delete_session_after"] is True
+
+
+# 功能：快捷打印模式可显式关闭全部模型工具，适合纯文本问答和低开销脚本。
+# 设计：捕获 -nt 分发参数并与权限白名单分开断言，证明工具目录收窄不会改变审批策略。
+def test_print_shorthand_supports_no_tools(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(sys, "argv", ["coderook", "-p", "-nt", "只回答 OK"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["model_tools"] == []
+    assert captured["allow_tools"] == ["read", "bash", "edit", "write"]
+
+
+# 功能：脚本 run 可选择逗号分隔的模型工具并在重复项中保持稳定顺序。
+# 设计：通过公开 argparse 入口传入 read,bash,read，捕获业务调用确认去重后目录与权限参数独立。
+def test_run_command_selects_model_tools(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "run", "--goal", "inspect", "--tools", "read,bash,read"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["model_tools"] == ["read", "bash"]
+    assert captured["allow_tools"] == []
 
 
 # 功能：快捷打印模式将管道正文与任务说明合并后提交给 Agent

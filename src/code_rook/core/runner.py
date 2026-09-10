@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -529,6 +530,7 @@ class AgentRunner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        model_tools: Sequence[str] | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         resolved_route: ResolvedRoute | None = None,
         resolved_route_is_explicit: bool = False,
@@ -918,6 +920,8 @@ class AgentRunner:
                         skill_loader=active_skill_loader,
                     )
                     await extensions.load(registry, bus)
+                    if model_tools is not None:
+                        registry.set_active_tools(frozenset(model_tools))
                     normal_tool_allowlist = task_profile.model_tool_allowlist()
                     normal_action_allowlist = task_profile.model_action_allowlist()
                     plan_gate_active = (

@@ -1164,6 +1164,33 @@ async def test_frozen_route_hides_tools_when_capability_is_disabled(
     assert provider.tool_schemas == []
 
 
+# 功能：显式模型工具选择只暴露选中的原生工具，空列表则完全关闭工具调用。
+# 设计：用两个真实 Runner 和捕获 Provider 对比 read 与空目录，覆盖 CLI 最终落到请求 schema 的核心链路。
+async def test_explicit_model_tools_limit_provider_catalog(tmp_path: Path) -> None:
+    selected_provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    selected_runner = AgentRunner(
+        _config(), provider=selected_provider,
+        runs_dir=tmp_path / "selected-runs", workspace_root=tmp_path,
+    )
+    disabled_provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    disabled_runner = AgentRunner(
+        _config(), provider=disabled_provider,
+        runs_dir=tmp_path / "disabled-runs", workspace_root=tmp_path,
+    )
+
+    selected = await selected_runner.run_and_capture(
+        "检查当前项目", model_tools=["read"],
+    )
+    disabled = await disabled_runner.run_and_capture(
+        "检查当前项目", model_tools=[],
+    )
+
+    assert selected.status == "success"
+    assert {str(schema["name"]) for schema in selected_provider.tool_schemas} == {"read"}
+    assert disabled.status == "success"
+    assert disabled_provider.tool_schemas == []
+
+
 # 功能：验证冻结路由不支持图片时附件请求失败关闭且不会调用模型
 # 设计：给免图片 route 注入初始图片块，断言结构化失败原因而非静默删除附件
 async def test_frozen_route_rejects_images_before_provider_call(tmp_path: Path) -> None:

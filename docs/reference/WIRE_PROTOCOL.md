@@ -208,6 +208,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `display_content` | `string | null` | no |
 | `permission_mode` | `string` | no |
 | `allow_tools` | `array` | no |
+| `tools` | `array | null` | no |
 | `session_mode` | `string` | no |
 | `resume_session_id` | `string | null` | no |
 | `route_id` | `string | null` | no |
@@ -258,6 +259,27 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       },
       "title": "Allow Tools",
       "type": "array"
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "read",
+              "bash",
+              "edit",
+              "write"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tools"
     },
     "session_mode": {
       "default": "one_shot",

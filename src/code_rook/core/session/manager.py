@@ -6,7 +6,7 @@ import inspect
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -1082,6 +1082,7 @@ class SessionManager:
         input_processed: bool = False,
         input_source: Literal["interactive", "rpc", "extension"] = "interactive",
         extension_custom_message: dict[str, Any] | None = None,
+        model_tools: Sequence[str] | None = None,
     ) -> str:
         if not input_processed:
             processed = await self.process_input(sid, content, attachments, source=input_source)
@@ -1101,6 +1102,7 @@ class SessionManager:
                     display_content=display_content,
                     expand_prompt_templates=expand_prompt_templates,
                     extension_custom_message=extension_custom_message,
+                    model_tools=model_tools,
                 )
         finally:
             async with self._turn_reservation_lock:
@@ -1119,6 +1121,7 @@ class SessionManager:
         display_content: str | None = None,
         expand_prompt_templates: bool = True,
         extension_custom_message: dict[str, Any] | None = None,
+        model_tools: Sequence[str] | None = None,
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -1302,6 +1305,7 @@ class SessionManager:
                 self._bind_extension_messages(sid, host, runtime_mode)
                 run_options["extension_host"] = host
                 run_options["skill_loader"] = self._skill_loader_for(sid)
+                run_options["model_tools"] = model_tools
             if persistent_goal_context:
                 run_options["persistent_goal_context"] = persistent_goal_context
             if resolved_route is not None:

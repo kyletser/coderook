@@ -474,6 +474,7 @@ def test_agent_run_headless_permission_protocol() -> None:
         display_content="edit @app.py",
         permission_mode="allow_list",
         allow_tools=["edit_file", "bash"],
+        tools=["read", "bash"],
     )
 
     assert default_command.permission_mode == "fail_fast"
@@ -484,6 +485,11 @@ def test_agent_run_headless_permission_protocol() -> None:
     assert AgentRunCommand.model_validate_json(
         allow_list.model_dump_json()
     ).display_content == "edit @app.py"
+    assert AgentRunCommand.model_validate_json(
+        allow_list.model_dump_json()
+    ).tools == ["read", "bash"]
+    with pytest.raises(ValidationError):
+        AgentRunCommand(goal="inspect", tools=["unknown"])  # type: ignore[list-item]
 
 
 # 功能：验证 session 消息可显式携带 Plan Mode 且默认仍为 Act

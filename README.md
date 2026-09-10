@@ -72,6 +72,8 @@ coderook "fix the failing tests"  # TUI and submit the first task
 coderook -p "explain this repository"  # run once and print the answer
 coderook -c -p "continue the previous task"  # continue the latest saved session
 coderook -p --no-session "answer a temporary question"  # do not keep history
+coderook -p --no-tools "answer without exposing coding tools"  # text-only request
+coderook -p --tools read,bash "inspect with a smaller tool set"  # limit model tools
 coderook -p "@README.md" "summarize this file"  # reference a workspace file on demand
 coderook --route aliyun --model qwen3.8-flash "inspect this project"  # session-only model
 coderook tui      # TUI (explicit)
@@ -86,6 +88,10 @@ events:
 ```powershell
 Get-Content .\build.log | uv run coderook -p "explain the failure"
 ```
+
+`--tools read,bash` controls which native tools are visible to the model; `--no-tools` sends no
+tool schemas. This is separate from `--allow-tool`, which controls non-interactive permission
+approval and cannot make a hidden tool visible.
 
 `--route` and `--model` may also be used with `-p` or `coderook run`; the selection is persisted
 only on that session and does not replace the globally active Provider route.

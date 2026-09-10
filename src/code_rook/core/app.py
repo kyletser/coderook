@@ -1150,6 +1150,7 @@ class CoreApp:
             self._sessions.send_message(
                 session.id, content, run_id=run_id, attachments=attachments, input_processed=True,
                 display_content=cmd.display_content,
+                model_tools=cmd.tools,
             )
         )
         self._running_runs.add(run_task)

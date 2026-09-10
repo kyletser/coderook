@@ -381,10 +381,14 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             attachments: list[Any] | None = None,
             input_processed: bool = False,
             display_content: str | None = None,
+            model_tools: list[str] | None = None,
         ) -> str:
             assert attachments == []
             assert input_processed is True
             displayed_messages.append(display_content)
+            assert model_tools == ["read"]
+
+            # 拒绝测试期间意外进入交互审批入口
             async def emit(_event: dict[str, Any]) -> None:
                 raise AssertionError("headless permission mode must not request input")
 
@@ -409,6 +413,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "display_content": "修改认证逻辑\n\n来自标准输入的补充内容",
         "permission_mode": "allow_list",
         "allow_tools": ["edit_file"],
+        "tools": ["read"],
         "session_mode": "chat",
         "route_id": "route-explicit",
         "model": "model-explicit",
