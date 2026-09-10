@@ -233,6 +233,7 @@ def _run_cli() -> int:
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
             final_only=True,
+            session_mode="chat",
             resume_session_id=quick_args.resume,
             continue_recent=quick_args.continue_recent,
             route_id=requested_route,

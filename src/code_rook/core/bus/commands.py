@@ -94,6 +94,7 @@ class AgentRunCommand(BaseModel):
     display_content: str | None = None
     permission_mode: Literal["deny", "fail_fast", "allow_list"] = "fail_fast"
     allow_tools: list[str] = Field(default_factory=list)
+    session_mode: Literal["chat", "one_shot"] = "one_shot"
     resume_session_id: str | None = None
     route_id: str | None = Field(default=None, min_length=1, max_length=256)
     model: str | None = Field(default=None, min_length=1, max_length=256)

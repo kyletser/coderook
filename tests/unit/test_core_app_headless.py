@@ -337,11 +337,13 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     decisions: list[tuple[bool, str]] = []
     selected_models: list[tuple[str, str]] = []
     created_titles: list[str] = []
+    created_modes: list[str] = []
     displayed_messages: list[str | None] = []
     session = Session("sess-headless", "one_shot", "active", "", "t", "t")
 
     class _Sessions:
         async def create(self, mode: str, title: str = "") -> Session:
+            created_modes.append(mode)
             created_titles.append(title)
             return session
 
@@ -407,6 +409,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "display_content": "修改认证逻辑\n\n来自标准输入的补充内容",
         "permission_mode": "allow_list",
         "allow_tools": ["edit_file"],
+        "session_mode": "chat",
         "route_id": "route-explicit",
         "model": "model-explicit",
     })
@@ -416,6 +419,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert result.run_id
     assert decisions == [(True, "headless_allow_list")]
     assert selected_models == [("route-explicit", "model-explicit")]
+    assert created_modes == ["chat"]
     assert created_titles == ["修改认证逻辑"]
     assert displayed_messages == ["修改认证逻辑\n\n来自标准输入的补充内容"]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]

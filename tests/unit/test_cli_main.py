@@ -247,6 +247,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "allow_tools": ["read", "bash", "edit", "write"],
         "output_format": "text",
         "final_only": True,
+        "session_mode": "chat",
         "resume_session_id": None,
         "continue_recent": False,
         "route_id": None,
@@ -278,6 +279,7 @@ def test_print_shorthand_can_continue_recent_session(monkeypatch) -> None:
     assert cli_main.main() == 0
 
     assert captured["goal"] == "总结上一轮结果"
+    assert captured["session_mode"] == "chat"
     assert captured["continue_recent"] is True
     assert captured["resume_session_id"] is None
 

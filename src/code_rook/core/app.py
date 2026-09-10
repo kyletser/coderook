@@ -1113,7 +1113,7 @@ class CoreApp:
             await self._sessions.resume(cmd.resume_session_id)
             if cmd.resume_session_id is not None
             else await self._sessions.create(
-                mode="one_shot",
+                mode=cmd.session_mode,
                 title=title,
             )
         )
