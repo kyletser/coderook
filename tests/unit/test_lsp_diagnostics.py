@@ -92,6 +92,7 @@ async def test_client_degrades_when_pyright_is_unavailable(
     report = await client.diagnose(["sample.py"])
 
     assert report.status == "unavailable"
+    assert report.tool == "python-diagnostics"
     assert report.diagnostics == ()
 
 

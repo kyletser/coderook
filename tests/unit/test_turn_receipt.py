@@ -461,6 +461,61 @@ def test_receipt_marks_unavailable_facts_explicitly() -> None:
     }
 
 
+# 功能：验证 Bash 中实际执行的测试命令及退出码进入 Receipt，普通探索命令不会冒充验证
+# 设计：并列构造成功 pytest、失败 npm test 与 ls，只让前两者生成忠于退出码的可回放证据
+def test_receipt_tracks_agent_test_command_as_verification_evidence() -> None:
+    turn = TurnRecord(
+        id="turn-bash-test",
+        thread_id="thread-bash-test",
+        status=TurnStatus.COMPLETED,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    items: list[TurnItemRecord] = []
+    for call_id, command, exit_code in (
+        ("test-call", "python -m pytest tests/unit -q", 0),
+        ("failed-test-call", "npm test", 1),
+        ("list-call", "ls -la", 0),
+    ):
+        items.extend(
+            [
+                TurnItemRecord(
+                    id=f"call-{call_id}",
+                    turn_id=turn.id,
+                    kind=TurnItemKind.TOOL_CALL,
+                    tool_call_id=call_id,
+                    payload={"tool_name": "bash", "params": {"command": command}},
+                    created_at=_now(),
+                ),
+                TurnItemRecord(
+                    id=f"result-{call_id}",
+                    turn_id=turn.id,
+                    kind=TurnItemKind.TOOL_RESULT,
+                    tool_call_id=call_id,
+                    payload={
+                        "tool_name": "bash",
+                        "output": "tests complete",
+                        "presentation": {"exit_code": exit_code},
+                        "step": 4,
+                    },
+                    created_at=_now(),
+                ),
+            ]
+        )
+
+    receipt = build_turn_receipt(turn, items, [])
+
+    assert [item["command"] for item in receipt.verification] == [
+        "python -m pytest tests/unit -q",
+        "npm test",
+    ]
+    assert [item["verdict"] for item in receipt.verification] == ["pass", "fail"]
+    assert [item["exit_code"] for item in receipt.verification] == [0, 1]
+    assert all(item["source"] == "agent_command" for item in receipt.verification)
+    assert all(item["verification_eligible"] is False for item in receipt.verification)
+    assert "verification" not in receipt.unavailable
+
+
 # 功能：验证 TurnReceipt 从 durable run.finished 保留结构化终止语义和安全失败分类
 # 设计：让 Turn 状态只能表达 failed，而事件提供 incomplete，断言离线收据仍可恢复精确原因
 def test_receipt_preserves_structured_run_outcome() -> None:

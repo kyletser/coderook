@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Any, cast
 
@@ -38,6 +39,17 @@ _RUN_OUTCOMES = frozenset(
         "cancelled",
         "transport_error",
     }
+)
+_VERIFICATION_COMMAND_RE = re.compile(
+    r"(?ix)^\s*(?:"
+    r"(?:(?:uv|poetry)\s+run\s+)?(?:python(?:3(?:\.\d+)?)?\s+-m\s+)?pytest(?:\s|$)|"
+    r"python(?:3(?:\.\d+)?)?\s+-m\s+unittest(?:\s|$)|"
+    r"(?:npm\s+(?:run\s+)?|pnpm\s+|yarn\s+|bun\s+)test(?:\s|$)|"
+    r"cargo\s+test(?:\s|$)|go\s+test(?:\s|$)|dotnet\s+test(?:\s|$)|"
+    r"(?:mvn|gradle|\.\/?gradlew(?:\.bat)?)\s+test(?:\s|$)|"
+    r"make\s+test(?:\s|$)|ruff\s+check(?:\s|$)|mypy(?:\s|$)|"
+    r"pyright(?:\s|$)|tsc(?:\s|$)"
+    r")"
 )
 
 
@@ -262,6 +274,62 @@ def _process_usage(events: Iterable[RuntimeEventRecord]) -> TurnProcessUsageRece
     )
 
 
+# 从 Bash 工具的真实退出码提取模型主动执行的测试与静态检查证据
+def _command_verifications(
+    items: Iterable[TurnItemRecord],
+    changed_files: list[str],
+) -> list[dict[str, JsonValue]]:
+    records = list(items)
+    calls = {
+        item.tool_call_id: item
+        for item in records
+        if item.kind == TurnItemKind.TOOL_CALL
+    }
+    verifications: list[dict[str, JsonValue]] = []
+    for result in records:
+        if result.kind != TurnItemKind.TOOL_RESULT:
+            continue
+        call = calls.get(result.tool_call_id)
+        if call is None or call.payload.get("tool_name") not in {"bash", "Bash"}:
+            continue
+        params = call.payload.get("params")
+        command = params.get("command") if isinstance(params, dict) else None
+        if not isinstance(command, str) or _VERIFICATION_COMMAND_RE.search(command) is None:
+            continue
+        presentation = result.payload.get("presentation")
+        raw_exit_code = (
+            presentation.get("exit_code") if isinstance(presentation, dict) else None
+        )
+        exit_code = (
+            raw_exit_code
+            if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool)
+            else None
+        )
+        if exit_code is None:
+            continue
+        passed = exit_code == 0
+        raw_step = result.payload.get("step")
+        step = raw_step if isinstance(raw_step, int) and not isinstance(raw_step, bool) else 0
+        verifications.append(
+            {
+                "tool": "bash",
+                "action": "tests",
+                "verdict": "pass" if passed else "fail",
+                "status": "ok" if passed else "failed",
+                "gate_count": 1,
+                "passed": int(passed),
+                "failed": int(not passed),
+                "command": command[:1_000],
+                "exit_code": exit_code,
+                "paths": list(changed_files),
+                "source": "agent_command",
+                "verification_eligible": False,
+                "step": step,
+            }
+        )
+    return verifications
+
+
 # 从持久化 turn、item 和 event 纯函数构建可离线读取的收据
 def build_turn_receipt(
     turn: TurnRecord,
@@ -327,6 +395,7 @@ def build_turn_receipt(
     )
     files_changed = _changed_files(items)
     changes = _file_changes(items, files_changed)
+    verification.extend(_command_verifications(items, files_changed))
     unavailable: list[str] = []
     if turn.route is None:
         unavailable.append("route")

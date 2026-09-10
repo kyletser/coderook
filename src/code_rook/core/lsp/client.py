@@ -123,15 +123,15 @@ class PythonDiagnosticsClient:
         self._max_output_bytes = max_output_bytes
         self._process_supervisor = process_supervisor
 
-    # 返回实际探测到的诊断工具名称，缺失时为空
+    # 返回实际探测到的诊断工具名称，缺失时保留稳定的 Python 诊断标签
     @property
     def tool_name(self) -> str:
-        return Path(self._executable).stem if self._executable else ""
+        return Path(self._executable).stem if self._executable else "python-diagnostics"
 
     # 对修改过的 Python 文件运行有界诊断并把所有失败转换为结构化降级结果
     async def diagnose(self, paths: list[str]) -> DiagnosticsReport:
         if self._executable is None:
-            return DiagnosticsReport(status="unavailable")
+            return DiagnosticsReport(status="unavailable", tool=self.tool_name)
         relative_paths: list[str] = []
         for raw_path in dict.fromkeys(paths):
             if not raw_path.casefold().endswith(".py"):
