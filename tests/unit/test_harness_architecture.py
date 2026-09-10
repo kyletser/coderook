@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from code_rook.core.bus.events import AgentMessageEvent
 from code_rook.core.capabilities import (
     CapabilityContribution,
     CapabilityKernel,
@@ -184,6 +185,35 @@ async def test_session_ledger_bridge_persists_before_broadcast(tmp_path: Path) -
     persisted = store.read_session_events("sess-test")
     assert event.ledger_seq == persisted[0].seq
     assert persisted[0].type == "turn.started"
+
+
+# 功能：验证流式消息只把最终快照写入 Session Ledger，实时开始与更新事件不重复膨胀事实日志。
+# 设计：连续发布同一消息的 start、update、end，断言前两者仍经过总线但磁盘只有唯一终态。
+async def test_session_ledger_bridge_persists_only_final_agent_message(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    bus = EventBus()
+    bridge = SessionLedgerBridge(store, "sess-test", run_id="run-1")
+    bridge.subscribe(bus)
+    events = [
+        AgentMessageEvent(
+            run_id="run-1", message_id="message-1", phase=phase,
+            role="assistant", content=[{"type": "text", "text": text}],
+            backend="python", step=1, ts="2026-08-24T00:00:00Z",
+        )
+        for phase, text in (("start", ""), ("update", "partial"), ("end", "complete"))
+    ]
+
+    for event in events:
+        await bus.publish(event)
+    await bridge.close()
+
+    persisted = store.read_session_events("sess-test")
+    assert [(event.type, event.payload["phase"]) for event in persisted] == [
+        ("agent.message", "end")
+    ]
+    assert events[0].ledger_seq is None
+    assert events[1].ledger_seq is None
+    assert events[2].ledger_seq == persisted[0].seq
 
 
 # 功能：验证 Runtime Doctor 使用的执行账本检查能识别 checksum 合法但请求摘要失配的记录

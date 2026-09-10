@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
@@ -39,6 +40,26 @@ from code_rook.core.turn.watchdog import StreamWatchdogError
 
 if TYPE_CHECKING:
     from code_rook.core.loop import AgentLoop
+
+
+_STREAM_UPDATE_MIN_CHARS = 48
+_STREAM_UPDATE_MAX_INTERVAL_S = 0.08
+
+
+# 判断累计正文是否已达到一次可见刷新，避免每个 token 都持久化完整消息快照。
+def _should_emit_stream_update(
+    *,
+    text: str,
+    thinking: str,
+    previous_chars: int,
+    previous_at: float,
+    now: float,
+) -> bool:
+    current_chars = len(text) + len(thinking)
+    return (
+        current_chars - previous_chars >= _STREAM_UPDATE_MIN_CHARS
+        or now - previous_at >= _STREAM_UPDATE_MAX_INTERVAL_S
+    )
 
 
 # 以 Python 双层循环驱动现有 Provider、权限和持久化能力，不运行外部代理进程。
@@ -206,11 +227,13 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
         partial: Message = {"role": "assistant", "content": [], "stopReason": None}
         text = ""
         thinking = ""
+        emitted_chars = 0
+        emitted_at = time.monotonic()
         await sink({"type": "message_start", "message": partial})
 
         # 捕获文本事件并继续转发用量、重试与审计事件。
         async def forward(event: BaseModel) -> None:
-            nonlocal text, thinking
+            nonlocal text, thinking, emitted_chars, emitted_at
             payload = event.model_dump()
             if payload.get("type") == "llm.token":
                 text += str(payload["token"])
@@ -222,7 +245,18 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
             partial["content"] = ([{"type": "text", "text": text}] if text else []) + (
                 [{"type": "thinking", "thinking": thinking}] if thinking else []
             )
+            now = time.monotonic()
+            if not _should_emit_stream_update(
+                text=text,
+                thinking=thinking,
+                previous_chars=emitted_chars,
+                previous_at=emitted_at,
+                now=now,
+            ):
+                return
             await sink({"type": "message_update", "message": partial})
+            emitted_chars = len(text) + len(thinking)
+            emitted_at = now
 
         provider_bus = EventBus()
         provider_bus.subscribe(forward, critical=True)
@@ -252,6 +286,8 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
                 text = thinking = ""
                 partial["content"] = []
                 await sink({"type": "message_update", "message": partial})
+                emitted_chars = 0
+                emitted_at = time.monotonic()
                 failure_reason = "llm_error"
                 last_response = await runtime._call_provider(context)
         finally:

@@ -197,6 +197,8 @@ def _project_event(
             ("turn.finished", event.run_id, "", payload),
         ]
     if isinstance(event, AgentMessageEvent):
+        if event.phase != "end":
+            return []
         return [("agent.message", event.run_id, step_id, payload)]
     if isinstance(event, StepStartedEvent):
         return [("step.started", event.run_id, step_id, payload)]
