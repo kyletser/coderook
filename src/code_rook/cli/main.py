@@ -80,12 +80,27 @@ def _configure_utf8_stdio() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
+# 优先按现代终端使用的 UTF-8 解码管道字节，再兼容 cmd 等本地代码页输出
+def _decode_piped_bytes(data: bytes, fallback_encoding: str | None) -> str:
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode(fallback_encoding or "utf-8", errors="replace")
+
+
 # 读取显式管道到快捷执行入口的文本，交互式终端不消费标准输入
 def _read_piped_stdin() -> str:
     try:
         if sys.stdin.isatty():
             return ""
-        return sys.stdin.read().strip()
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is not None:
+            data = buffer.read()
+            return _decode_piped_bytes(data, getattr(sys.stdin, "encoding", None)).strip()
+        text = sys.stdin.read()
+        return text.encode("utf-8", errors="replace").decode("utf-8").strip()
     except (OSError, ValueError):
         return ""
 

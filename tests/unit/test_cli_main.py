@@ -286,6 +286,25 @@ def test_print_shorthand_accepts_piped_input(monkeypatch) -> None:
     assert captured["display_content"] == "总结以下内容\n\nalpha\nbeta"
 
 
+# 功能：Windows 管道按实际字节编码读取中文，不把错误解码产生的代理字符送入 JSON
+# 设计：分别模拟 PowerShell 7 的 UTF-8 和 cmd 的 GBK 字节流，覆盖两种常见 Windows Shell
+@pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
+def test_read_piped_stdin_decodes_windows_chinese_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    encoding: str,
+) -> None:
+    from io import BytesIO, TextIOWrapper
+
+    stream = TextIOWrapper(
+        BytesIO("中文 PIPE_OK\n".encode(encoding)),
+        encoding="gbk",
+        errors="surrogateescape",
+    )
+    monkeypatch.setattr(sys, "stdin", stream)
+
+    assert cli_main._read_piped_stdin() == "中文 PIPE_OK"
+
+
 # 功能：快捷打印模式把带空格的 @文件 参数转换为按需读取的工作区引用
 # 设计：保留 argv 的参数边界并检查模型输入，避免 join 后把一个文件名拆成多个无效 token
 def test_print_shorthand_resolves_explicit_file_argument(
