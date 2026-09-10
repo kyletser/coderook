@@ -15,6 +15,7 @@ import {
   resolveWebTheme,
   resultSummaryFor,
   resultStatusIsFailure,
+  summarizeVerification,
   verificationHasFailure,
   workspaceHasUserProject,
   workspacePathIsDirectoryError,
@@ -156,6 +157,26 @@ describe("Web task submission", () => {
   it("treats a failed verification verdict as an unsuccessful task result", () => {
     expect(verificationHasFailure([{ verdict: "fail", status: "ok" }])).toBe(true);
     expect(verificationHasFailure([{ verdict: "pass" }])).toBe(false);
+  });
+
+  it("keeps unavailable verification distinct from passed evidence", () => {
+    expect(summarizeVerification([{ status: "unavailable" }])).toEqual({
+      status: "unknown",
+      passed: 0,
+      total: 0,
+      unknown: 1,
+    });
+    expect(summarizeVerification([{ verdict: "pass", gate_count: 2, passed: 2 }])).toEqual({
+      status: "pass",
+      passed: 2,
+      total: 2,
+      unknown: 0,
+    });
+    expect(summarizeVerification([{ verdict: "failed", gate_count: 1, passed: 0 }]).status).toBe("fail");
+    expect(summarizeVerification([
+      { verdict: "pass", gate_count: 1, passed: 1 },
+      { status: "unavailable" },
+    ])).toEqual({ status: "unknown", passed: 1, total: 1, unknown: 1 });
   });
 
   it("uses the persisted run result while the receipt projection is still loading", () => {

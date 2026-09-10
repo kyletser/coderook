@@ -611,11 +611,47 @@ function eventDetail(event: RuntimeEvent): string {
   return "";
 }
 
+export interface VerificationSummary {
+  status: "pass" | "fail" | "unknown";
+  passed: number;
+  total: number;
+  unknown: number;
+}
+
+// 将验证证据归并为通过、失败或不可用，避免把未知状态误报为通过
+export function summarizeVerification(verification: Array<Record<string, unknown>>): VerificationSummary {
+  let passed = 0;
+  let total = 0;
+  let failed = false;
+  let unknown = 0;
+  for (const item of verification) {
+    const gateCount = Number(item.gate_count || 0);
+    const itemPassed = Number(item.passed || 0);
+    const normalizedGateCount = Number.isFinite(gateCount) ? Math.max(gateCount, 0) : 0;
+    const normalizedPassed = Number.isFinite(itemPassed) ? Math.max(itemPassed, 0) : 0;
+    const verdict = textValue(item.verdict || item.status).trim().toLowerCase();
+    total += Math.max(normalizedGateCount, normalizedPassed);
+    passed += normalizedPassed;
+    if (["fail", "failed", "error"].includes(verdict)) {
+      failed = true;
+    } else if (!["pass", "passed", "ok", "success", "succeeded", "completed"].includes(verdict)) {
+      unknown += 1;
+    } else if (normalizedGateCount === 0 && normalizedPassed === 0) {
+      total += 1;
+      passed += 1;
+    }
+  }
+  return {
+    status: failed ? "fail" : unknown > 0 || verification.length === 0 ? "unknown" : "pass",
+    passed,
+    total,
+    unknown,
+  };
+}
+
+// 判断验证证据中是否存在明确失败
 export function verificationHasFailure(verification: Array<Record<string, unknown>>): boolean {
-  return verification.some((item) =>
-    ["fail", "failed", "error", "timeout", "truncated"].includes(
-      textValue(item.verdict || item.status).trim().toLowerCase(),
-    ));
+  return summarizeVerification(verification).status === "fail";
 }
 
 export function resultStatusIsFailure(status: string, verificationFailed = false): boolean {
@@ -2252,7 +2288,8 @@ function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { eve
       )
     : [];
   const verification = receipt ? receipt.verification : eventVerification;
-  const verificationFailed = verificationHasFailure(verification);
+  const verificationSummary = summarizeVerification(verification);
+  const verificationFailed = verificationSummary.status === "fail";
   const failed = !cancelled && resultStatusIsFailure(status, verificationFailed);
   const model = textValue(receipt?.route?.model);
   const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
@@ -2267,16 +2304,27 @@ function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { eve
       : failed
         ? tr("本轮未完成", "Turn incomplete")
         : tr("本轮完成", "Turn complete");
-  const hasDurableEvidence = changedFiles > 0 || verification.length > 0;
+  const hasDurableEvidence = changedFiles > 0 || verificationSummary.passed > 0 || verificationFailed;
   if (hasAssistantMessage && !failed && !cancelled && !hasDurableEvidence) return null;
-  const copied = [resultTitle, summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verification.length ? tr(`${verification.length} 项验证`, `${verification.length} checks`) : ""].filter(Boolean).join(" · ");
+  const verificationCopy = [
+    verificationSummary.passed > 0
+      ? tr(`${verificationSummary.passed} 项验证通过`, `${verificationSummary.passed} checks passed`)
+      : "",
+    verificationFailed ? tr("验证失败", "Checks failed") : "",
+    verificationSummary.unknown > 0
+      ? tr(`${verificationSummary.unknown} 项验证证据不可用`, `${verificationSummary.unknown} checks unavailable`)
+      : "",
+  ].filter(Boolean).join(" · ");
+  const copied = [resultTitle, summary, changedFiles ? tr(`${changedFiles} 个文件 +${additions}/-${deletions}`, `${changedFiles} files +${additions}/-${deletions}`) : "", verificationCopy].filter(Boolean).join(" · ");
   return (
     <article className={`result-inline ${failed ? "failed" : ""} ${cancelled ? "cancelled" : ""}`}>
       <span>{resultTitle}</span>
       {!hasAssistantMessage && summary && <small>{summary}</small>}
       <div className="result-evidence">
         {changedFiles > 0 && <em>{tr(`${changedFiles} 个文件`, `${changedFiles} files`)} · +{additions} / -{deletions}</em>}
-        {verification.length > 0 && <em className={verificationFailed ? "failed" : ""}>{verificationFailed ? tr("验证失败", "Checks failed") : tr(`${verification.length} 项验证通过`, `${verification.length} checks passed`)}</em>}
+        {verificationSummary.passed > 0 && <em>{tr(`${verificationSummary.passed} 项验证通过`, `${verificationSummary.passed} checks passed`)}</em>}
+        {verificationSummary.status === "fail" && <em className="failed">{tr("验证失败", "Checks failed")}</em>}
+        {verificationSummary.unknown > 0 && <em>{tr(`${verificationSummary.unknown} 项验证证据不可用`, `${verificationSummary.unknown} checks unavailable`)}</em>}
         {model && <em>{model}{cost ? ` · ${cost}` : ""}</em>}
       </div>
       <div className="result-actions"><button onClick={onOpenChanges}>{tr("查看变更", "View changes")}</button><button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>{tr("复制结果", "Copy result")}</button></div>
