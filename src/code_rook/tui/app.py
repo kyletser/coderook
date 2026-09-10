@@ -320,6 +320,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._active_run_id: str | None = None
+        self._active_runtime_mode: RuntimeMode | None = None
         self._active_goal_id: str | None = None
         self._active_goal_status: str = ""
         self._cancel_requested = False
@@ -1802,6 +1803,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         visible_content: str | None = None,
     ) -> None:
         self._busy = True
+        self._active_runtime_mode = runtime_mode
         self._cancel_armed = False
         prompt.text = ""
         prompt.disabled = False
@@ -4399,6 +4401,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._titled = bool(title and title != "Untitled")
         self._first_user_text = ""
         self._active_run_id = None
+        self._active_runtime_mode = None
         self._busy = False
         self._cancel_requested = False
         self._cancel_armed = False
@@ -4484,6 +4487,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._refresh_attachment_strip()
             self._busy = False
             self._active_run_id = None
+            self._active_runtime_mode = None
             self._restore_unsent_draft(
                 shown_content,
                 tr("app.draft.reconnected", self._locale),
@@ -4506,6 +4510,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             if result.get("handled") and self._active_run_id is None:
                 self._busy = False
+                self._active_runtime_mode = None
                 self._update_header("ready")
         except (IpcError, RuntimeError, OSError) as e:
             for attachment in attachments or []:
@@ -4514,6 +4519,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._refresh_attachment_strip()
             self._busy = False
             self._active_run_id = None
+            self._active_runtime_mode = None
             restored = self._restore_unsent_draft(
                 shown_content,
                 tr("app.draft.failed", self._locale),
@@ -5183,8 +5189,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if self._locale == "zh-CN"
                 else "cost unknown"
             )
+        shown_mode = (
+            RuntimeMode.PLAN
+            if self._plan_review_pending
+            else self._active_runtime_mode
+            if self._busy and self._active_runtime_mode is not None
+            else self._input_runtime_mode
+        )
         status_bar.update(
-            f"[blue]{self._input_runtime_mode.value.upper()}[/blue] · "
+            f"[blue]{shown_mode.value.upper()}[/blue] · "
             f"[magenta]{self._authority_preset}[/magenta] · {escape(sandbox_state)} · "
             f"ctx {self._last_context_pct * 100:.0f}% · {cost_state}"
             f"{queue}{extension_status}"

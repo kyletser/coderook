@@ -3453,3 +3453,31 @@ async def test_status_bar_waits_for_sandbox_detection() -> None:
 
     assert "Sandbox 检查中" in status
     assert "Windows 无 OS 沙箱" not in status
+
+
+# 功能：验证单次 Plan 运行及待审阅阶段的状态栏显示 PLAN 而非默认 ACT
+# 设计：直接驱动消息开始和审阅状态，覆盖运行中与运行结束待决策两个用户可见阶段
+async def test_status_bar_tracks_one_shot_plan_mode() -> None:
+    class StatusHarness(CodeRookTuiApp):
+        # 挂载后不连接 Core，只验证本地运行模式投影
+        def on_mount(self) -> None:
+            return
+
+    app = StatusHarness("127.0.0.1", 9999, locale="zh-CN")
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        app._busy = True
+        app._active_runtime_mode = RuntimeMode.PLAN
+        app._update_status_bar()
+        await pilot.pause()
+        running = str(app.query_one("#status-bar", Static).content)
+
+        app._busy = False
+        app._active_runtime_mode = None
+        app._plan_review_pending = True
+        app._update_status_bar()
+        waiting = str(app.query_one("#status-bar", Static).content)
+
+    assert "PLAN" in running
+    assert "PLAN" in waiting
+    assert app._input_runtime_mode == RuntimeMode.ACT

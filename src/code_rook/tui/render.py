@@ -194,6 +194,7 @@ def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
 def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
     if t == "session.waiting_for_input":
         app._busy = False
+        app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
         app._clear_user_question()
@@ -222,6 +223,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "session.interrupted":
         app._busy = False
         app._active_run_id = None
+        app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
         app._clear_user_question()
@@ -235,6 +237,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
 
     elif t == "session.closed":
         app._busy = False
+        app._active_runtime_mode = None
         app._cancel_requested = False
         app._clear_user_question()
         prompt = app._prompt()
@@ -406,6 +409,7 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         ]:
             app._tool_step_groups.pop(group_key, None)
         app._active_run_id = None
+        app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
         result_summary = str(event.get("result_summary") or "").strip()
