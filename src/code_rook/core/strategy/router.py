@@ -81,6 +81,9 @@ _LONG_RE = re.compile(
     r"(?i)(长任务|完整实现|全部完成|不要停止|多轮|恢复|迁移|long.?running|"
     r"complete all|migration|resume)"
 )
+_ANSWER_ONLY_RE = re.compile(
+    r"(?i)^\s*(?:只回答(?:问题)?|直接回答(?:问题)?|just\s+answer|answer\s+only)\s*[：:]"
+)
 _FILE_RE = re.compile(
     r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"
 )
@@ -180,12 +183,20 @@ class TaskStrategyRouter:
         preset_id: str = "standard",
     ) -> TaskProfile:
         signals: list[str] = []
+        answer_only = bool(_ANSWER_ONLY_RE.search(goal))
         read = _has_unnegated_match(_READ_RE, goal)
         action_mutate = _has_unnegated_match(_MUTATE_RE, goal)
         write_output = _has_unnegated_match(_WRITE_OUTPUT_RE, goal)
         mutate = action_mutate or write_output
         shell = _has_unnegated_match(_SHELL_RE, goal)
         external = _has_unnegated_match(_EXTERNAL_RE, goal)
+        if answer_only:
+            read = True
+            action_mutate = False
+            write_output = False
+            mutate = False
+            shell = False
+            external = False
         repository = bool(_REPOSITORY_RE.search(goal))
         parallel = bool(_PARALLEL_RE.search(goal))
         multi = repository or parallel or bool(_MULTI_RE.search(goal))
@@ -197,17 +208,22 @@ class TaskStrategyRouter:
                 if value.casefold().lstrip("(") not in {"i.e", "e.g"}
             }
         )
-        conversational = bool(
-            re.fullmatch(
-                r"\s*(?:你好|您好|你是谁|你是什么模型|什么模型|具体型号呢?|你能做什么|"
-                r"你能干什么|你会什么|你有什么功能|有什么功能|怎么使用|如何使用|"
-                r"who are you|what model(?: are you)?|hello|what can you do)[?？!！。．.\s]*",
-                goal,
-                re.IGNORECASE,
+        conversational = answer_only or (
+            bool(
+                re.fullmatch(
+                    r"\s*(?:你好|您好|你是谁|你是什么模型|什么模型|具体型号呢?|你能做什么|"
+                    r"你能干什么|你会什么|你有什么功能|有什么功能|怎么使用|如何使用|"
+                    r"who are you|what model(?: are you)?|hello|what can you do)[?？!！。．.\s]*",
+                    goal,
+                    re.IGNORECASE,
+                )
             )
-        ) and not (mutate or shell or external or files)
+            and not (mutate or shell or external or files)
+        )
         if conversational:
             signals.append("conversation_answer")
+        if answer_only:
+            signals.append("explicit_answer_only")
         if read:
             signals.append("read_intent")
         if mutate:

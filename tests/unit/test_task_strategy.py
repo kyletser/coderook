@@ -84,6 +84,31 @@ def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) 
     assert profile.confidence >= 0.95
 
 
+# 功能：验证带文件引用的“只回答”请求保持只读，且不会浪费分类模型调用或开放执行工具
+# 设计：复用真实误判措辞并传入可计数 Provider，覆盖文件名和函数名不会被模型升级为多文件修改
+async def test_explicit_answer_only_with_file_reference_stays_read_only() -> None:
+    provider = MagicMock()
+    provider.chat = AsyncMock()
+
+    profile = await TaskStrategyRouter().classify(
+        "只回答：@calculator.py 中 multiply(4, 3) 的结果是多少？",
+        provider=provider,
+    )
+
+    assert profile.intent == TaskIntent.ANSWER
+    assert profile.scope == TaskScope.READ_ONLY
+    assert profile.risk == TaskRisk.READ
+    assert profile.strategy == TaskStrategy.DIRECT
+    assert profile.context_policy.value == "standard"
+    assert profile.model_tool_allowlist() == frozenset()
+    assert "explicit_answer_only" in profile.signals
+    provider.chat.assert_not_called()
+
+    effective = TaskStrategyRouter().for_execution(profile)
+    assert effective.source == "model_led"
+    assert effective.model_tool_allowlist() == frozenset()
+
+
 # 功能：验证混合请求不能因身份关键词覆盖实际操作且普通执行保留核心工具面
 # 设计：交换子句顺序并覆盖中英文、文件查询和编辑，确认关键词画像不会硬关闭执行能力
 @pytest.mark.parametrize(
