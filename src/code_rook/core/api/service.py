@@ -715,6 +715,16 @@ class RuntimeApiService:
         await self._sessions.reload_resources(thread_id)
         return await self.thread_context(thread_id)
 
+    # 手动整理指定会话上下文并返回可直接展示的 Token 节省结果
+    async def compact_thread(
+        self,
+        thread_id: str,
+        *,
+        focus: str = "",
+    ) -> dict[str, object]:
+        result = await self._sessions.compact(thread_id, focus)
+        return cast(dict[str, object], result.model_dump(mode="json"))
+
     # 返回会话的上下文摘要与最近 checkpoint 元数据
     async def thread_context(self, thread_id: str) -> dict[str, object]:
         await self._sessions.prepare_extensions(thread_id)

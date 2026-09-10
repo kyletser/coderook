@@ -78,6 +78,7 @@ class _FakeRuntimeApi:
         self.model_selection: tuple[str, str, str] | None = None
         self.thinking_selection: tuple[str, str] | None = None
         self.session_import: tuple[str, str, str] | None = None
+        self.compaction_focus: tuple[str, str] | None = None
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
@@ -122,6 +123,21 @@ class _FakeRuntimeApi:
     ) -> dict[str, object]:
         self.thinking_selection = (thread_id, thinking_level)
         return {"thread_id": thread_id, "thinking_level": thinking_level}
+
+    # 模拟 Web 手动压缩并记录用户要求保留的重点
+    async def compact_thread(
+        self,
+        thread_id: str,
+        *,
+        focus: str = "",
+    ) -> dict[str, object]:
+        self.compaction_focus = (thread_id, focus)
+        return {
+            "original_tokens": 1200,
+            "compacted_tokens": 500,
+            "saved_tokens": 700,
+            "summary_tokens": 200,
+        }
 
     # 模拟 Core 持久队列接收浏览器后续消息
     async def queue_message(
@@ -380,6 +396,14 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert response.json()["thinking_level"] == "high"
             assert service.thinking_selection == ("thread-1", "high")
+
+            response = await client.post(
+                "/v1/threads/thread-1/compact",
+                json={"focus": "保留失败原因"},
+            )
+            assert response.status_code == 200
+            assert response.json()["saved_tokens"] == 700
+            assert service.compaction_focus == ("thread-1", "保留失败原因")
 
             response = await client.post(
                 "/v1/threads/thread-1/queue",

@@ -20,6 +20,9 @@ export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: 
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<number | null>(null);
   const [summarize, setSummarize] = useState(false);
+  const [focus, setFocus] = useState("");
+  const [compacting, setCompacting] = useState(false);
+  const [compactionResult, setCompactionResult] = useState("");
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
@@ -59,8 +62,33 @@ export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: 
     }
   }
 
+  // 手动整理当前会话上下文并展示真实 Token 节省量
+  async function compact() {
+    setCompacting(true);
+    setCompactionResult("");
+    try {
+      const result = await request<{ original_tokens: number; compacted_tokens: number; saved_tokens: number }>(
+        `/v1/threads/${encodeURIComponent(threadId)}/compact`,
+        { method: "POST", body: JSON.stringify({ focus }) },
+      );
+      setCompactionResult(tr(
+        `已整理上下文：${result.original_tokens} → ${result.compacted_tokens} tokens，节省 ${result.saved_tokens}`,
+        `Context compacted: ${result.original_tokens} → ${result.compacted_tokens} tokens, ${result.saved_tokens} saved`,
+      ));
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setCompacting(false);
+    }
+  }
+
   return <section className="panel-content">
     <p>{tr("切换到历史位置，或新建独立分支。选中用户消息会将原文放回输入框，不自动发送，也不回滚文件。", "Navigate to a history entry or fork a separate session. User messages return to the composer without sending. Files are not reverted.")}</p>
+    <div className="inline-create">
+      <input value={focus} disabled={compacting || pending !== null} onChange={(event) => setFocus(event.target.value)} placeholder={tr("可选：需要重点保留的内容", "Optional: facts that must be preserved")} />
+      <button type="button" disabled={compacting || pending !== null} onClick={() => void compact()}>{compacting ? tr("整理中…", "Compacting…") : tr("整理上下文", "Compact context")}</button>
+    </div>
+    {compactionResult && <p>{compactionResult}</p>}
     <label><input type="checkbox" checked={summarize} disabled={pending !== null} onChange={event => setSummarize(event.target.checked)} />{tr("带上离开分支的摘要（额外调用模型）", "Carry a branch summary (additional model call)")}</label>
     {loading && <p>{tr("正在读取历史…", "Loading history…")}</p>}
     {!loading && !entries.some((entry) => entry.preview) && <p>{tr("还没有可分支的消息", "No messages to branch from yet")}</p>}

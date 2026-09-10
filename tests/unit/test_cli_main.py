@@ -357,6 +357,41 @@ def test_session_command_binds_core_before_dispatch(
     assert calls == ["core:True:None", "rename"]
 
 
+# 功能：验证 session compact 解析会话与保留重点后调用统一 Core 命令
+# 设计：替换压缩入口记录实参，覆盖新增 CLI 表面且不产生真实模型压缩费用
+def test_session_compact_dispatches_focus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = CodeRookConfig()
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "coderook",
+            "session",
+            "compact",
+            "sess-example",
+            "--focus",
+            "preserve failed tests",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_session_compact",
+        lambda session_id, focus, _config: captured.append((session_id, focus)),
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    assert captured == [("sess-example", "preserve failed tests")]
+
+
 # 功能：验证 coderook web 可切换到显式工作区并把 no-open 选项交给 Web 启动器
 # 设计：替换配置与启动器并记录 cwd，覆盖 argparse、路径解析和 Core 启动前工作区绑定
 def test_web_command_dispatches_selected_workspace(monkeypatch, tmp_path: Path) -> None:

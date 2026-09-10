@@ -39,7 +39,7 @@ _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
 _THREAD_QUEUE = re.compile(r"/v1/threads/([^/]+)/queue")
 _THREAD_QUEUE_ITEM = re.compile(r"/v1/threads/([^/]+)/queue/([^/]+)(?:/(retry))?")
 _THREAD_ACTION = re.compile(
-    r"/v1/threads/([^/]+)/(fork|export|context|tree|navigate|reload|command|model|thinking)"
+    r"/v1/threads/([^/]+)/(fork|export|context|tree|navigate|reload|compact|command|model|thinking)"
 )
 _THREAD_PLAN = re.compile(r"/v1/threads/([^/]+)/turns/([^/]+)/plan")
 _THREAD_CHECKPOINT = re.compile(
@@ -540,6 +540,14 @@ class HttpApiServer:
             return HTTPStatus.OK, await self._service.thread_context(match.group(1))
         if match and match.group(2) == "reload" and request.method == "POST":
             return HTTPStatus.OK, await self._service.reload_thread_resources(match.group(1))
+        if match and match.group(2) == "compact" and request.method == "POST":
+            focus = _json_object(request.body).get("focus", "")
+            if not isinstance(focus, str):
+                raise ValueError("focus must be text")
+            return HTTPStatus.OK, await self._service.compact_thread(
+                match.group(1),
+                focus=focus,
+            )
         if match and match.group(2) == "command" and request.method == "POST":
             content = _json_object(request.body).get("content")
             if not isinstance(content, str) or not content.strip():

@@ -36,6 +36,7 @@ from code_rook.cli.commands.provider import (
 from code_rook.cli.commands.review import cmd_review
 from code_rook.cli.commands.run import cmd_run
 from code_rook.cli.commands.session import (
+    cmd_session_compact,
     cmd_session_delete,
     cmd_session_export,
     cmd_session_fork,
@@ -458,6 +459,13 @@ def _run_cli() -> int:
     )
     import_parser.add_argument("path")
     import_parser.add_argument("--title", default="")
+    compact_parser = session_sub.add_parser("compact", help="Compact conversation context")
+    compact_parser.add_argument("session_id")
+    compact_parser.add_argument(
+        "--focus",
+        default="",
+        help="Optional instructions describing facts that must be preserved",
+    )
     delete_parser = session_sub.add_parser("delete", help="Permanently delete a session")
     delete_parser.add_argument("session_id")
     delete_parser.add_argument("--yes", action="store_true", help="Confirm permanent deletion")
@@ -805,6 +813,8 @@ def _run_cli() -> int:
             )
         elif args.session_command == "import":
             cmd_session_import(args.path, args.title, config)
+        elif args.session_command == "compact":
+            cmd_session_compact(args.session_id, args.focus, config)
         elif args.session_command == "delete":
             cmd_session_delete(args.session_id, args.yes, config)
         else:

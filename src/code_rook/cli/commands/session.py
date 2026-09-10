@@ -149,6 +149,22 @@ async def _delete(session_id: str, confirmed: bool, config: CodeRookConfig) -> i
     return code
 
 
+# 请求 Core 手动压缩会话上下文并打印节省量
+async def _compact(session_id: str, focus: str, config: CodeRookConfig) -> int:
+    code, result = await _call(
+        config,
+        "session.compact",
+        {"session_id": session_id, "focus": focus},
+    )
+    if result is not None:
+        print(
+            f"compacted {session_id}  "
+            f"{result['original_tokens']} -> {result['compacted_tokens']} tokens  "
+            f"saved={result['saved_tokens']}"
+        )
+    return code
+
+
 def cmd_session_rename(session_id: str, title: str, config: CodeRookConfig) -> None:
     sys.exit(asyncio.run(_rename(session_id, title, config)))
 
@@ -174,3 +190,8 @@ def cmd_session_import(path: str, title: str, config: CodeRookConfig) -> None:
 
 def cmd_session_delete(session_id: str, confirmed: bool, config: CodeRookConfig) -> None:
     sys.exit(asyncio.run(_delete(session_id, confirmed, config)))
+
+
+# 从脚本入口手动整理指定会话上下文
+def cmd_session_compact(session_id: str, focus: str, config: CodeRookConfig) -> None:
+    sys.exit(asyncio.run(_compact(session_id, focus, config)))
