@@ -716,6 +716,7 @@ async def test_continue_recent_resumes_latest_session() -> None:
             self._titled = False
             self._first_user_text = ""
             self.connected = asyncio.Event()
+            self.cost_refreshes = 0
 
         # 接受连接状态更新
         def _update_header(self, _state: str) -> None:
@@ -724,6 +725,10 @@ async def test_continue_recent_resumes_latest_session() -> None:
         # 模拟 authority 恢复
         async def _refresh_authority(self) -> None:
             return None
+
+        # 记录恢复会话后是否同步了持久成本语义
+        async def _refresh_session_cost(self) -> None:
+            self.cost_refreshes += 1
 
         # 接收恢复的历史消息
         def _append_history(self, _messages: list[dict[str, Any]]) -> None:
@@ -776,6 +781,7 @@ async def test_continue_recent_resumes_latest_session() -> None:
         assert "session.resume" in methods
         assert "session.create" not in methods
         assert app._session_id == "sess-latest"
+        assert app.cost_refreshes == 1
         assert session_notices == [("resumed", "sess-latest", "Latest", 0)]
         resume_index = methods.index("session.resume")
         subscriptions = [params for method, params in calls if method == "event.subscribe"]

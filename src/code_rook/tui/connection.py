@@ -599,6 +599,15 @@ class TuiConnection:
         if inspect.isawaitable(result):
             await result
 
+    # 在首次连接和断线恢复后加载持久会话成本，避免未定价模型显示为零成本
+    async def _refresh_session_cost(self) -> None:
+        callback = getattr(self._app, "_refresh_session_cost", None)
+        if not callable(callback):
+            return
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+
     # 尝试在线程中启动受管 Core，避免同步启动探针阻塞 Textual 事件循环
     async def _recover_core(self) -> tuple[bool, str]:
         callback = getattr(self._app, "_core_recovery", None)
@@ -875,6 +884,7 @@ class TuiConnection:
                 await self._subscribe_legacy_replay(client)
                 await self._app._refresh_authority()
                 await self._refresh_goal_state()
+                await self._refresh_session_cost()
                 self._app._mark_connected()
                 await loop_task
             except (IpcError, KeyError, TypeError, ValueError, OSError) as e:
