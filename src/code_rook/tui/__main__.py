@@ -49,6 +49,16 @@ def _setup_logging(level: str) -> None:
     root.addHandler(handler)
 
 
+# 规范化 TUI 启动时指定的会话名称并拒绝空标题
+def _session_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("session name must not be empty")
+    if len(name) > 200:
+        raise argparse.ArgumentTypeError("session name must be at most 200 characters")
+    return name
+
+
 # 创建并运行 TUI；配置或模型切换动作返回入口处理
 def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     env_file = getattr(args, "env_file", None)
@@ -132,6 +142,7 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
             )
         ),
         initial_prompt=" ".join(getattr(args, "message", [])).strip(),
+        initial_session_name=str(getattr(args, "name", "") or ""),
         initial_route_id=requested_route_id,
         initial_model=requested_model,
         initial_thinking_level=getattr(args, "thinking", None),
@@ -188,6 +199,10 @@ def main() -> None:
     )
     parser.add_argument("--route", help="Provider route for the opened session")
     parser.add_argument("--model", help="Model override for the opened session")
+    parser.add_argument(
+        "-n", "--name", type=_session_name,
+        help="Set the opened session name",
+    )
     parser.add_argument(
         "message",
         nargs="*",

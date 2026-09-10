@@ -415,6 +415,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "allow_tools": ["edit_file"],
         "tools": ["read"],
         "session_mode": "chat",
+        "session_name": "认证修复",
         "route_id": "route-explicit",
         "model": "model-explicit",
     })
@@ -425,7 +426,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert decisions == [(True, "headless_allow_list")]
     assert selected_models == [("route-explicit", "model-explicit")]
     assert created_modes == ["chat"]
-    assert created_titles == ["修改认证逻辑"]
+    assert created_titles == ["认证修复"]
     assert displayed_messages == ["修改认证逻辑\n\n来自标准输入的补充内容"]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]

@@ -665,6 +665,7 @@ uv run coderook trace --follow
 ```powershell
 uv run coderook -p "@README.md" "概括这个文件"
 uv run coderook -c -p "继续上一轮并总结结果"
+uv run coderook -p -n "发布审查" "检查当前改动"
 uv run coderook -p --no-session "临时解释这段报错"
 uv run coderook -p --no-tools "只回答概念问题"
 uv run coderook -p --tools read,bash "只读取项目并运行诊断"
@@ -676,6 +677,7 @@ uv run coderook --route aliyun --model qwen3.8-flash "检查当前项目"
 提交前把整个文件塞入上下文。管道正文和命令行中的任务说明会合并为同一次请求；省略任务说明时，
 管道正文本身就是任务。文本模式始终在结束时输出最终回答，包括不发送流式 token 的 Provider。
 打印模式默认保存可继续的会话；显式使用 `--no-session` 时，结果输出后删除本次临时会话。
+`-n/--name` 可在 TUI、打印模式和 `run` 启动时直接设置会话名称；恢复已有会话时会更新其名称。
 `--route` 与 `--model` 也可用于 TUI 初始任务、`-p` 和 `run`；选择只绑定本次会话，不修改其他会话或
 全局活动 route。只指定 `--model` 时沿用当前活动 route；没有活动 route 时必须同时指定二者。
 `--tools read,bash` 只向模型公开指定的原生工具，支持 `read`、`bash`、`edit`、`write`；

@@ -96,6 +96,7 @@ class AgentRunCommand(BaseModel):
     allow_tools: list[str] = Field(default_factory=list)
     tools: list[Literal["read", "bash", "edit", "write"]] | None = None
     session_mode: Literal["chat", "one_shot"] = "one_shot"
+    session_name: str = Field(default="", max_length=200)
     resume_session_id: str | None = None
     route_id: str | None = Field(default=None, min_length=1, max_length=256)
     model: str | None = Field(default=None, min_length=1, max_length=256)

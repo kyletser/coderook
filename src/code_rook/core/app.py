@@ -1108,15 +1108,16 @@ class CoreApp:
         assert self._permission_manager is not None
         cmd = AgentRunCommand.model_validate(params)
         display_content = cmd.display_content or cmd.goal
-        title = display_content.strip().splitlines()[0][:40]
-        session = (
-            await self._sessions.resume(cmd.resume_session_id)
-            if cmd.resume_session_id is not None
-            else await self._sessions.create(
+        inferred_title = display_content.strip().splitlines()[0][:40]
+        if cmd.resume_session_id is not None:
+            session = await self._sessions.resume(cmd.resume_session_id)
+            if cmd.session_name:
+                session = await self._sessions.rename(session.id, cmd.session_name)
+        else:
+            session = await self._sessions.create(
                 mode=cmd.session_mode,
-                title=title,
+                title=cmd.session_name or inferred_title,
             )
-        )
         if cmd.route_id is not None:
             session = await self._sessions.set_model(
                 session.id,

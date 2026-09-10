@@ -71,6 +71,7 @@ coderook          # TUI (default)
 coderook "fix the failing tests"  # TUI and submit the first task
 coderook -p "explain this repository"  # run once and print the answer
 coderook -c -p "continue the previous task"  # continue the latest saved session
+coderook -p -n "release audit" "review the current diff"  # name the saved session
 coderook -p --no-session "answer a temporary question"  # do not keep history
 coderook -p --no-tools "answer without exposing coding tools"  # text-only request
 coderook -p --tools read,bash "inspect with a smaller tool set"  # limit model tools

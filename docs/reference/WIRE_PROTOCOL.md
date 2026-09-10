@@ -210,6 +210,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `allow_tools` | `array` | no |
 | `tools` | `array | null` | no |
 | `session_mode` | `string` | no |
+| `session_name` | `string` | no |
 | `resume_session_id` | `string | null` | no |
 | `route_id` | `string | null` | no |
 | `model` | `string | null` | no |
@@ -288,6 +289,12 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
         "one_shot"
       ],
       "title": "Session Mode",
+      "type": "string"
+    },
+    "session_name": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Session Name",
       "type": "string"
     },
     "resume_session_id": {

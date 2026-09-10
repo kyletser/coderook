@@ -271,7 +271,10 @@ def test_tui_main_passes_initial_prompt(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["coderook-tui", "--thinking", "medium", "修复登录", "并运行测试"],
+        [
+            "coderook-tui", "--thinking", "medium", "--name", "登录修复",
+            "修复登录", "并运行测试",
+        ],
     )
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
@@ -284,6 +287,7 @@ def test_tui_main_passes_initial_prompt(
     tui_main.main()
 
     assert factory.call_args.kwargs["initial_prompt"] == "修复登录 并运行测试"
+    assert factory.call_args.kwargs["initial_session_name"] == "登录修复"
     assert factory.call_args.kwargs["initial_thinking_level"] == "medium"
     app.run.assert_called_once_with()
 

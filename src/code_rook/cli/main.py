@@ -141,6 +141,16 @@ def _model_tools(value: str) -> list[str]:
     return names
 
 
+# 规范化用户指定的会话名称并拒绝空标题
+def _session_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("session name must not be empty")
+    if len(name) > 200:
+        raise argparse.ArgumentTypeError("session name must be at most 200 characters")
+    return name
+
+
 # 将会话列表上限校验为 1 到 200，避免 argparse 在帮助页展开两百个候选值
 def _session_list_limit(value: str) -> int:
     try:
@@ -170,8 +180,8 @@ def main() -> int:
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
     tui_flags = {
-        "-c", "-r", "--continue", "--new", "--resume", "--replay", "--no-auto-core", "--thinking",
-        "--route", "--model",
+        "-c", "-r", "-n", "--continue", "--new", "--resume", "--replay", "--name",
+        "--no-auto-core", "--thinking", "--route", "--model",
     }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
@@ -213,6 +223,10 @@ def _run_cli() -> int:
         )
         quick.add_argument("--route", help="Provider route for this task")
         quick.add_argument("--model", help="Model override for this task")
+        quick.add_argument(
+            "-n", "--name", type=_session_name,
+            help="Set the saved session name",
+        )
         quick_tools = quick.add_mutually_exclusive_group()
         quick_tools.add_argument(
             "-t", "--tools", type=_model_tools, metavar="TOOLS",
@@ -264,6 +278,7 @@ def _run_cli() -> int:
             output_format="text",
             final_only=True,
             session_mode="one_shot" if quick_args.no_session else "chat",
+            session_name=quick_args.name or "",
             delete_session_after=quick_args.no_session,
             resume_session_id=quick_args.resume,
             continue_recent=quick_args.continue_recent,
@@ -542,6 +557,10 @@ def _run_cli() -> int:
 
     run_parser = subparsers.add_parser("run", help="Run an agent task")
     run_parser.add_argument("--goal", required=True, help="Goal for the agent to accomplish")
+    run_parser.add_argument(
+        "-n", "--name", type=_session_name,
+        help="Set the saved session name",
+    )
     run_parser.add_argument(
         "--permission-mode",
         choices=("fail-fast", "deny", "allow-list"),
@@ -926,6 +945,7 @@ def _run_cli() -> int:
             output_format=args.output_format,
             event_filters=args.event_filter,
             include_partial=args.include_partial,
+            session_name=args.name or "",
             delete_session_after=args.no_session,
             resume_session_id=args.resume,
             route_id=requested_route,

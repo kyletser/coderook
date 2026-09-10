@@ -249,6 +249,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "output_format": "text",
         "final_only": True,
         "session_mode": "chat",
+        "session_name": "",
         "delete_session_after": False,
         "resume_session_id": None,
         "continue_recent": False,
@@ -333,6 +334,30 @@ def test_print_shorthand_supports_no_tools(monkeypatch) -> None:
 
     assert captured["model_tools"] == []
     assert captured["allow_tools"] == ["read", "bash", "edit", "write"]
+
+
+# 功能：快捷打印入口可在首次运行时直接设置可辨识的会话名称。
+# 设计：从公开 -n 参数捕获业务调用，确保名称不依赖运行结束后的二次重命名命令。
+def test_print_shorthand_sets_session_name(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys, "argv", ["coderook", "-p", "-n", "认证修复", "检查登录逻辑"]
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["session_name"] == "认证修复"
+    assert captured["goal"] == "检查登录逻辑"
 
 
 # 功能：脚本 run 可选择逗号分隔的模型工具并在重复项中保持稳定顺序。

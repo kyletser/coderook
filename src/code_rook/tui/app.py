@@ -270,6 +270,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         core_recovery: Callable[[], object] | None = None,
         locale: str | None = None,
         initial_prompt: str = "",
+        initial_session_name: str = "",
         initial_route_id: str = "",
         initial_model: str = "",
         initial_thinking_level: Literal["off", "low", "medium", "high"] | None = None,
@@ -299,6 +300,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._core_recovery = core_recovery
         self._initial_prompt = initial_prompt.strip()
         self._initial_prompt_submitted = False
+        self._initial_session_name = initial_session_name.strip()
+        self._initial_session_name_applied = False
         self._initial_route_id = initial_route_id.strip()
         self._initial_model = initial_model.strip()
         self._initial_model_applied = False

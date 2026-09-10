@@ -821,18 +821,29 @@ class TuiConnection:
                         recent.get("sessions", [])
                     )
                 if resume_session_id is None:
-                    created = await client.send_command("session.create", {"mode": "chat"})
+                    initial_name = str(
+                        getattr(self._app, "_initial_session_name", "") or ""
+                    )
+                    create_params = {"mode": "chat"}
+                    if initial_name:
+                        create_params["title"] = initial_name
+                    created = await client.send_command(
+                        "session.create",
+                        create_params,
+                    )
+                    if initial_name:
+                        self._app._initial_session_name_applied = True
                     self._app._session_id = str(created["session_id"])
                     self._app._resume_session_id = self._app._session_id
                     self._app._history_loaded = True
-                    self._app._session_title = ""
-                    self._app._titled = False
+                    self._app._session_title = initial_name
+                    self._app._titled = bool(initial_name)
                     self._app._first_user_text = ""
                     log.info("session created session_id=%s", self._app._session_id)
                     self._show_session_ready(
                         "created",
                         self._app._session_id,
-                        "",
+                        initial_name,
                         0,
                     )
                 else:
@@ -840,6 +851,20 @@ class TuiConnection:
                         client,
                         resume_session_id,
                     )
+                    initial_name = str(
+                        getattr(self._app, "_initial_session_name", "") or ""
+                    )
+                    if initial_name and not bool(
+                        getattr(self._app, "_initial_session_name_applied", False)
+                    ):
+                        renamed = await client.send_command(
+                            "session.rename",
+                            {"session_id": resume_session_id, "title": initial_name},
+                        )
+                        renamed_session = renamed.get("session")
+                        if isinstance(renamed_session, dict):
+                            resumed_info = renamed_session
+                        self._app._initial_session_name_applied = True
                     resumed_title = str(resumed_info.get("title", ""))
                     self._app._session_id = str(resumed_info["session_id"])
                     self._app._resume_session_id = self._app._session_id

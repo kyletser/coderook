@@ -475,6 +475,7 @@ def test_agent_run_headless_permission_protocol() -> None:
         permission_mode="allow_list",
         allow_tools=["edit_file", "bash"],
         tools=["read", "bash"],
+        session_name="Auth review",
     )
 
     assert default_command.permission_mode == "fail_fast"
@@ -488,6 +489,9 @@ def test_agent_run_headless_permission_protocol() -> None:
     assert AgentRunCommand.model_validate_json(
         allow_list.model_dump_json()
     ).tools == ["read", "bash"]
+    assert AgentRunCommand.model_validate_json(
+        allow_list.model_dump_json()
+    ).session_name == "Auth review"
     with pytest.raises(ValidationError):
         AgentRunCommand(goal="inspect", tools=["unknown"])  # type: ignore[list-item]
 
