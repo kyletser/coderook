@@ -17,6 +17,24 @@ EXIT_PERMISSION_REQUIRED = 3
 OutputFormat = Literal["text", "json", "stream-json"]
 _TERMINAL_TURN_STATUSES = {"completed", "failed", "interrupted"}
 _PARTIAL_EVENT_TYPES = {"llm.token", "llm.reasoning"}
+_SESSION_BUSY = -32012
+
+
+# 等待 run 的会话锁释放后删除显式临时会话，只重试已知的 busy 竞态。
+async def _delete_transient_session(client: SocketClient, session_id: str) -> str | None:
+    last_error: Exception | None = None
+    for _attempt in range(20):
+        try:
+            await client.send_command("session.delete", {"session_id": session_id})
+            return None
+        except IpcError as exc:
+            if exc.code != _SESSION_BUSY:
+                return str(exc)
+            last_error = exc
+            await asyncio.sleep(0.05)
+        except (RuntimeError, OSError, TimeoutError) as exc:
+            return str(exc)
+    return str(last_error or "session remained busy")
 
 
 def _run_finished_exit_code(status: str, reason: str | None) -> int:
@@ -209,6 +227,7 @@ async def _run_async(
     include_partial: bool = False,
     final_only: bool = False,
     session_mode: str = "one_shot",
+    delete_session_after: bool = False,
     resume_session_id: str | None = None,
     continue_recent: bool = False,
     route_id: str | None = None,
@@ -279,6 +298,7 @@ async def _run_async(
     client.on_event(on_event)
     loop_task = asyncio.create_task(client.run_event_loop())
     run_id: str | None = None
+    started_session_id = ""
 
     try:
         if continue_recent and resume_session_id is None:
@@ -335,6 +355,7 @@ async def _run_async(
             },
         )
         run_id = str(started["run_id"])
+        started_session_id = str(started.get("session_id", ""))
         if started.get("handled"):
             payload = {"handled": True, "session_id": str(started.get("session_id", ""))}
             if output_format == "json":
@@ -345,6 +366,13 @@ async def _run_async(
                 ).model_dump_json())
             else:
                 print("Input handled by extension; no model run started.")
+            if delete_session_after and started_session_id:
+                cleanup_error = await _delete_transient_session(client, started_session_id)
+                if cleanup_error is not None:
+                    print(
+                        f"warning: could not remove transient session: {cleanup_error}",
+                        file=sys.stderr,
+                    )
             loop_task.cancel()
             await asyncio.gather(loop_task, return_exceptions=True)
             await client.close()
@@ -383,9 +411,9 @@ async def _run_async(
         await client.close()
         return 130
     if loop_task in done and not finished.is_set():
-        exc = loop_task.exception()
-        if exc is not None:
-            print(f"error: event loop failed: {exc}", file=sys.stderr)
+        loop_error = loop_task.exception()
+        if loop_error is not None:
+            print(f"error: event loop failed: {loop_error}", file=sys.stderr)
         else:
             print("error: connection closed before run finished", file=sys.stderr)
         await client.close()
@@ -403,6 +431,14 @@ async def _run_async(
             stream_printer.write_result(final_result)
     except (IpcError, RuntimeError, OSError, TimeoutError, ValueError) as exc:
         print(f"error: could not read final run result: {exc}", file=sys.stderr)
+
+    if delete_session_after and started_session_id:
+        cleanup_error = await _delete_transient_session(client, started_session_id)
+        if cleanup_error is not None:
+            print(
+                f"warning: could not remove transient session: {cleanup_error}",
+                file=sys.stderr,
+            )
 
     loop_task.cancel()
     wait_task.cancel()
@@ -434,6 +470,7 @@ def cmd_run(
     include_partial: bool = False,
     final_only: bool = False,
     session_mode: str = "one_shot",
+    delete_session_after: bool = False,
     resume_session_id: str | None = None,
     continue_recent: bool = False,
     route_id: str | None = None,
@@ -456,6 +493,7 @@ def cmd_run(
                 include_partial=include_partial,
                 final_only=final_only,
                 session_mode=session_mode,
+                delete_session_after=delete_session_after,
                 resume_session_id=resume_session_id,
                 continue_recent=continue_recent,
                 route_id=route_id,

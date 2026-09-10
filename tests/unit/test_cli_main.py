@@ -248,6 +248,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "output_format": "text",
         "final_only": True,
         "session_mode": "chat",
+        "delete_session_after": False,
         "resume_session_id": None,
         "continue_recent": False,
         "route_id": None,
@@ -280,8 +281,35 @@ def test_print_shorthand_can_continue_recent_session(monkeypatch) -> None:
 
     assert captured["goal"] == "总结上一轮结果"
     assert captured["session_mode"] == "chat"
+    assert captured["delete_session_after"] is False
     assert captured["continue_recent"] is True
     assert captured["resume_session_id"] is None
+
+
+# 功能：快捷打印模式支持显式临时会话，不把一次性任务留在历史列表。
+# 设计：捕获执行参数，确认临时模式仍使用一次性会话并在完成后请求删除。
+def test_print_shorthand_supports_no_session(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "-p", "--no-session", "只回答 TEMP_OK"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["session_mode"] == "one_shot"
+    assert captured["delete_session_after"] is True
 
 
 # 功能：快捷打印模式将管道正文与任务说明合并后提交给 Agent

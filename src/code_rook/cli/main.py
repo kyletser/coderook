@@ -191,6 +191,11 @@ def _run_cli() -> int:
             metavar="SESSION_ID",
             help="Resume a saved session",
         )
+        session_choice.add_argument(
+            "--no-session",
+            action="store_true",
+            help="Run without keeping the session in history",
+        )
         quick.add_argument("--route", help="Provider route for this task")
         quick.add_argument("--model", help="Model override for this task")
         quick.add_argument("message", nargs="*", help="Task to execute")
@@ -233,7 +238,8 @@ def _run_cli() -> int:
             allow_tools=["read", "bash", "edit", "write"],
             output_format="text",
             final_only=True,
-            session_mode="chat",
+            session_mode="one_shot" if quick_args.no_session else "chat",
+            delete_session_after=quick_args.no_session,
             resume_session_id=quick_args.resume,
             continue_recent=quick_args.continue_recent,
             route_id=requested_route,
@@ -542,10 +548,16 @@ def _run_cli() -> int:
         action="store_true",
         help="Include llm.token and llm.reasoning events in stream-json",
     )
-    run_parser.add_argument(
+    run_session = run_parser.add_mutually_exclusive_group()
+    run_session.add_argument(
         "--resume",
         metavar="SESSION_ID",
         help="Append this goal to an existing resumable chat session",
+    )
+    run_session.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Remove the transient session after the run finishes",
     )
     run_parser.add_argument(
         "--thinking",
@@ -879,6 +891,7 @@ def _run_cli() -> int:
             output_format=args.output_format,
             event_filters=args.event_filter,
             include_partial=args.include_partial,
+            delete_session_after=args.no_session,
             resume_session_id=args.resume,
             route_id=requested_route,
             model=args.model,
