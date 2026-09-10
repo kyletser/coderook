@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from code_rook.core.config import CodeRookConfig
@@ -30,6 +31,21 @@ def _display_title(value: object, *, limit: int = 72) -> str:
     if len(title) <= limit:
         return title
     return title[: limit - 1].rstrip() + "…"
+
+
+# 将 Runtime 的 UTC 时间转换为系统本地时间，旧格式无法解析时保留可读文本
+def _display_timestamp(value: object, *, local_timezone: tzinfo | None = None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:19].replace("T", " ")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    localized = parsed.astimezone(local_timezone)
+    return localized.strftime("%Y-%m-%d %H:%M:%S")
 
 
 async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit: int) -> int:
@@ -70,7 +86,7 @@ async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit:
 
     print(f"{'SESSION ID':<20} {'STATUS':<18} {'RUNS':>4}  {'UPDATED':<19}  TITLE")
     for session in sessions:
-        updated = str(session.get("updated_at", ""))[:19].replace("T", " ")
+        updated = _display_timestamp(session.get("updated_at", ""))
         title = _display_title(session.get("title", ""))
         print(
             f"{str(session.get('session_id', '')):<20} "

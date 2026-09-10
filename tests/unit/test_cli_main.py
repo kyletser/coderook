@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,7 +13,11 @@ import pytest
 
 from code_rook.cli import main as cli_main
 from code_rook.cli.commands.run import _event_belongs_to_run
-from code_rook.cli.commands.sessions import _display_title, _visible_sessions
+from code_rook.cli.commands.sessions import (
+    _display_timestamp,
+    _display_title,
+    _visible_sessions,
+)
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.tui import __main__ as tui_main
@@ -143,6 +148,22 @@ def test_session_list_normalizes_title_for_terminal_table() -> None:
     assert _display_title("") == "(untitled)"
     assert _display_title("first\n\nsecond\tpart") == "first second part"
     assert _display_title("abcdefgh", limit=6) == "abcde…"
+
+
+# 功能：验证会话列表把 Runtime UTC 时间转换为用户所在时区
+# 设计：注入固定东八区避免依赖 CI 主机设置，同时覆盖 Z、无时区旧值和损坏值
+def test_session_timestamp_display_uses_local_timezone() -> None:
+    local_timezone = timezone(timedelta(hours=8))
+
+    assert (
+        _display_timestamp("2026-09-10T15:14:04Z", local_timezone=local_timezone)
+        == "2026-09-10 23:14:04"
+    )
+    assert (
+        _display_timestamp("2026-09-10T15:14:04", local_timezone=local_timezone)
+        == "2026-09-10 23:14:04"
+    )
+    assert _display_timestamp("legacy-time", local_timezone=local_timezone) == "legacy-time"
 
 
 # 功能：验证 coderook --continue 直接委托 TUI 的最近会话恢复入口
