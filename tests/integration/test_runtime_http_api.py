@@ -74,6 +74,21 @@ async def test_project_switch_rebinds_workspace_without_restarting_core(
             assert created.status_code == 201
             assert created.json()["workspace"] == str(target.resolve())
             first_thread_id = created.json()["id"]
+            stream_opened = asyncio.Event()
+
+            # 保持旧工作区事件流打开，验证项目切换会正常结束旧流而不影响 Core 进程
+            async def consume_old_workspace_stream() -> None:
+                async with browser.stream(
+                    "GET",
+                    f"/v1/threads/{first_thread_id}/events?after_seq=0&tail=1",
+                ) as response:
+                    assert response.status_code == 200
+                    stream_opened.set()
+                    async for _line in response.aiter_lines():
+                        pass
+
+            stream_task = asyncio.create_task(consume_old_workspace_stream())
+            await asyncio.wait_for(stream_opened.wait(), timeout=2.0)
             second_opened = await browser.post(
                 "/v1/projects/open",
                 json={"path": str(second_target)},
@@ -85,6 +100,7 @@ async def test_project_switch_rebinds_workspace_without_restarting_core(
                 headers=write_headers,
             )
             assert second_activated.status_code == 200
+            await asyncio.wait_for(stream_task, timeout=2.0)
             assert running_daemon.poll() is None
             second_threads = (await browser.get("/v1/threads")).json()
             assert all(item["id"] != first_thread_id for item in second_threads)

@@ -89,6 +89,7 @@ class RuntimeApiService:
         self._sessions = sessions
         self._tasks: set[asyncio.Task[Any]] = set()
         self._event_changed = asyncio.Condition()
+        self._closed = False
         self._permission_manager = permission_manager
         self._workspace_boundary = workspace_boundary
         self._interaction_manager = interaction_manager
@@ -108,6 +109,11 @@ class RuntimeApiService:
     def workspace_root(self) -> str:
         boundary = self._workspace_boundary
         return str(boundary.root) if boundary is not None else ""
+
+    @property
+    # 返回当前工作区 API facade 是否已停止，供长连接在项目切换时正常结束
+    def closed(self) -> bool:
+        return self._closed
 
     # 返回浏览器可展示的内置 Provider Catalog 与能力标签，不包含任何凭据正文
     async def provider_catalog(self) -> dict[str, object]:
@@ -518,7 +524,11 @@ class RuntimeApiService:
 
     # 挂起等待新的 runtime 事件通知，超时自动返回（供 SSE 与 create_turn 使用）
     async def wait_for_change(self, timeout: float) -> None:
+        if self._closed:
+            return
         async with self._event_changed:
+            if self._closed:
+                return
             try:
                 await asyncio.wait_for(self._event_changed.wait(), timeout=timeout)
             except TimeoutError:
@@ -978,5 +988,8 @@ class RuntimeApiService:
 
     # 等待 API 启动的后台 turn 结束，仅用于受控关闭与测试
     async def close(self) -> None:
+        self._closed = True
+        async with self._event_changed:
+            self._event_changed.notify_all()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)

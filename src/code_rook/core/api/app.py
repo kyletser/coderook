@@ -1007,12 +1007,13 @@ class HttpApiServer:
     ) -> None:
         match = _THREAD_EVENTS.fullmatch(urlsplit(request.target).path)
         assert match is not None
+        service = self._service
         query = parse_qs(urlsplit(request.target).query)
         raw_cursor = query.get("after_seq", [request.headers.get("last-event-id", "0")])[0]
         cursor = int(raw_cursor)
         if cursor < 0:
             raise ValueError("after_seq must be non-negative")
-        await self._service.ensure_thread(match.group(1))
+        await service.ensure_thread(match.group(1))
         raw_tail = query.get("tail", [""])[0]
         if raw_tail:
             tail = int(raw_tail)
@@ -1036,8 +1037,12 @@ class HttpApiServer:
         last_heartbeat = time.monotonic()
         disconnected = asyncio.create_task(reader.read(1), name="api-sse-disconnect")
         try:
-            while not writer.is_closing() and not disconnected.done():
-                events = await self._service.list_events(match.group(1), cursor)
+            while (
+                not service.closed
+                and not writer.is_closing()
+                and not disconnected.done()
+            ):
+                events = await service.list_events(match.group(1), cursor)
                 if events:
                     for event in events:
                         data = event.model_dump_json()
@@ -1053,7 +1058,7 @@ class HttpApiServer:
                     await writer.drain()
                     last_heartbeat = time.monotonic()
                 wake = asyncio.create_task(
-                    self._service.wait_for_change(0.5), name="api-sse-wake"
+                    service.wait_for_change(0.5), name="api-sse-wake"
                 )
                 await asyncio.wait(
                     {disconnected, wake}, return_when=asyncio.FIRST_COMPLETED
