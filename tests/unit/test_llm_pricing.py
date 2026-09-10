@@ -154,7 +154,7 @@ async def test_tui_accumulates_cost_from_usage_events() -> None:
         assert app._cost_total == pytest.approx(0.465)
         assert "mystery-model" in app._unpriced_models
         status_text = str(app.query_one("#status-bar").render())
-        assert "0.4650" in status_text
+        assert "$0.4650+" in status_text
 
 # 功能：验证会话切换复位成本累计
 # 设计：先累计一笔成本，调用 _reset_cost_state 后断言全部分解归零
@@ -171,8 +171,39 @@ async def test_tui_resets_cost_on_session_switch() -> None:
         await pilot.pause()
         app._cost_total = 1.23
         app._cost_by_model = {"m": 1.23}
+        app._cost_unknown = True
 
         app._reset_cost_state()
 
         assert app._cost_total == 0.0
         assert app._cost_by_model == {}
+        assert app._cost_unknown is False
+
+
+# 功能：验证只有无定价模型用量时状态栏明确显示成本未知而不是零成本
+# 设计：注入真实 llm.usage 事件并读取渲染文本，覆盖未知价格与零金额容易混淆的场景
+async def test_tui_marks_unpriced_usage_as_unknown_cost() -> None:
+    from code_rook.tui.app import ChatTextArea, CodeRookTuiApp
+
+    class UnknownCostHarness(CodeRookTuiApp):
+        # 只挂载界面骨架并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = UnknownCostHarness("127.0.0.1", 9999, locale="zh-CN")
+    async with app.run_test(size=(120, 24)) as pilot:
+        app._handle_event({
+            "type": "llm.usage",
+            "run_id": "run-unpriced",
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "context_pct": 0.1,
+            "model": "qwen3.8-flash",
+        })
+        await pilot.pause()
+
+        status_text = str(app.query_one("#status-bar").render())
+        assert "成本未知" in status_text
+        assert "$0.0000" not in status_text

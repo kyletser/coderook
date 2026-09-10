@@ -343,6 +343,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._tokens_by_model: dict[str, dict[str, int]] = {}
         self._cache_saved_total: float = 0.0
         self._unpriced_models: set[str] = set()
+        self._cost_unknown = False
         self._pricing_overrides = load_pricing_overrides()
         self._authority_preset = "ask"
         self._input_runtime_mode = RuntimeMode.ACT
@@ -659,6 +660,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 渲染当前语言的启动品牌与快捷入口提示
     def _render_banner(self) -> str:
         hint = escape(tr("shell.banner_hint", self._locale))
+        suggestions: tuple[str, ...]
         if ProjectRegistry().is_welcome_workspace(self._workspace):
             if self._locale == "zh-CN":
                 title = "先选择一个项目"
@@ -4985,6 +4987,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._tokens_by_model = {}
         self._cache_saved_total = 0.0
         self._unpriced_models = set()
+        self._cost_unknown = False
 
     # 把一次 llm.usage 的用量折算为成本并累计到会话分解中
     def _accumulate_cost(self, event: dict[str, Any]) -> None:
@@ -4992,6 +4995,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         pricing = get_pricing(model, self._pricing_overrides)
         if pricing is None:
             self._unpriced_models.add(model)
+            self._cost_unknown = True
             return
         input_tokens = int(event.get("input_tokens", 0) or 0)
         output_tokens = int(event.get("output_tokens", 0) or 0)
@@ -5031,6 +5035,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 if isinstance(known, (int, float)) and not isinstance(known, bool)
                 else 0.0
             )
+            self._cost_unknown = usage.get("cost_status") == "unknown"
             self._update_header(self._header_state)
         except (IpcActionError, ValueError, TypeError):
             log.warning("failed to restore durable session cost", exc_info=True)
@@ -5051,6 +5056,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 else 0.0
             )
             self._cost_total = known_cost
+            self._cost_unknown = usage.get("cost_status") == "unknown"
             models = ", ".join(str(item) for item in usage.get("models", [])) or "none"
             lines = [f"[bold cyan]{tr('app.cost.title', self._locale)}[/bold cyan]"]
             if usage.get("cost_status") == "unknown":
@@ -5168,10 +5174,19 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         working = self._extension_ui.get("working_message")
         if self._extension_ui.get("working_visible", True) and working:
             extension_status += f" · {escape(str(working))}"
+        cost_state = f"${self._cost_total:.4f}"
+        if self._cost_unknown:
+            cost_state = (
+                f"${self._cost_total:.4f}+"
+                if self._cost_total > 0
+                else "成本未知"
+                if self._locale == "zh-CN"
+                else "cost unknown"
+            )
         status_bar.update(
             f"[blue]{self._input_runtime_mode.value.upper()}[/blue] · "
             f"[magenta]{self._authority_preset}[/magenta] · {escape(sandbox_state)} · "
-            f"ctx {self._last_context_pct * 100:.0f}% · ${self._cost_total:.4f}"
+            f"ctx {self._last_context_pct * 100:.0f}% · {cost_state}"
             f"{queue}{extension_status}"
         )
 

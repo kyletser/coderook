@@ -2295,7 +2295,12 @@ function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { eve
   const verificationFailed = verificationSummary.status === "fail";
   const failed = !cancelled && resultStatusIsFailure(status, verificationFailed);
   const model = textValue(receipt?.route?.model);
-  const cost = typeof receipt?.cost === "number" ? `$${receipt.cost.toFixed(4)}` : "";
+  const rawCost = receipt?.cost;
+  const cost = typeof rawCost === "number"
+    ? `$${rawCost.toFixed(4)}`
+    : typeof rawCost === "string" && rawCost.toLowerCase() === "unknown"
+      ? tr("成本未知", "Cost unknown")
+      : "";
   const rawSummary = resultSummaryFor(event.payload, receipt, detail);
   const summary = cancelled && /^(command|tool call) cancelled\.?$/i.test(rawSummary)
     ? tr("已按你的要求停止。", "Stopped at your request.")
