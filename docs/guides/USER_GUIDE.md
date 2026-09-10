@@ -196,6 +196,7 @@ uv run coderook --resume SESSION_ID
 uv run coderook --new
 ```
 
+`-c` 是 `--continue` 的短写，`-r SESSION_ID` 是 `--resume SESSION_ID` 的短写。
 `--new` 或 TUI 内的 `/new` 都会显式创建新会话。
 
 session 与工作区显式绑定。从另一个仓库启动时，空闲的受管 Core 可以原地切换；若旧工作区仍有
@@ -663,6 +664,8 @@ uv run coderook trace --follow
 
 ```powershell
 uv run coderook -p "@README.md" "概括这个文件"
+uv run coderook -c -p "继续上一轮并总结结果"
+uv run coderook -p --no-session "临时解释这段报错"
 Get-Content .\build.log | uv run coderook -p "定位失败原因"
 uv run coderook --route aliyun --model qwen3.8-flash "检查当前项目"
 ```
@@ -670,6 +673,7 @@ uv run coderook --route aliyun --model qwen3.8-flash "检查当前项目"
 `@文件` 只把工作区相对路径和按需读取约束交给 Agent，模型再通过 `read` 读取必要范围，不会在
 提交前把整个文件塞入上下文。管道正文和命令行中的任务说明会合并为同一次请求；省略任务说明时，
 管道正文本身就是任务。文本模式始终在结束时输出最终回答，包括不发送流式 token 的 Provider。
+打印模式默认保存可继续的会话；显式使用 `--no-session` 时，结果输出后删除本次临时会话。
 `--route` 与 `--model` 也可用于 TUI 初始任务、`-p` 和 `run`；选择只绑定本次会话，不修改其他会话或
 全局活动 route。只指定 `--model` 时沿用当前活动 route；没有活动 route 时必须同时指定二者。
 

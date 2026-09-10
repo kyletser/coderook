@@ -70,6 +70,8 @@ Explicit product entries are:
 coderook          # TUI (default)
 coderook "fix the failing tests"  # TUI and submit the first task
 coderook -p "explain this repository"  # run once and print the answer
+coderook -c -p "continue the previous task"  # continue the latest saved session
+coderook -p --no-session "answer a temporary question"  # do not keep history
 coderook -p "@README.md" "summarize this file"  # reference a workspace file on demand
 coderook --route aliyun --model qwen3.8-flash "inspect this project"  # session-only model
 coderook tui      # TUI (explicit)
