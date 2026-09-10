@@ -33,7 +33,11 @@ from code_rook.core.llm.routes import RouteReceipt
 from code_rook.core.runner import RunOutcome
 from code_rook.core.runtime.models import RuntimeEventRecord, ThreadStatus, TurnStatus
 from code_rook.core.runtime.service import RuntimeService
-from code_rook.core.runtime.store import RecordNotFoundError, RuntimeStore
+from code_rook.core.runtime.store import (
+    IncompleteToolCallError,
+    RecordNotFoundError,
+    RuntimeStore,
+)
 from code_rook.core.session.manager import SessionManager
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
@@ -793,3 +797,25 @@ async def test_runtime_write_failure_degrades_audit_health(
     assert health.degraded is True
     assert health.incident is not None
     assert health.incident.source == "runtime_projection"
+
+
+# 功能：验证未配对工具调用属于可恢复的运行状态冲突，不会误伤后续所有写操作
+# 设计：直接穿过统一持久化边界抛出 IncompleteToolCallError，并与真实 OSError 降级用例形成对照
+async def test_runtime_incomplete_tool_call_does_not_degrade_audit_health(
+    tmp_path: Path,
+) -> None:
+    health = AuditHealth()
+    service = RuntimeService(
+        RuntimeStore(tmp_path / "runtime.db"),
+        workspace=tmp_path,
+        audit_health=health,
+    )
+
+    # 模拟取消窗口遗留的未配对工具调用，由恢复流程处理而非升级为磁盘故障
+    def incomplete() -> None:
+        raise IncompleteToolCallError("tool result is pending")
+
+    with pytest.raises(IncompleteToolCallError, match="pending"):
+        await service._run_persistent_write(incomplete)
+
+    assert health.degraded is False

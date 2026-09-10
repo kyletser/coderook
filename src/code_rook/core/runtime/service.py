@@ -34,9 +34,14 @@ from code_rook.core.runtime.models import (
     TurnStatus,
 )
 from code_rook.core.runtime.store import (
+    DuplicateTerminalResultError,
+    IncompleteToolCallError,
+    InvalidTurnTransitionError,
+    QueuedMessageDispatchingError,
     RecordAlreadyExistsError,
     RecordNotFoundError,
     RuntimeStore,
+    ToolCallNotFoundError,
 )
 
 if TYPE_CHECKING:
@@ -97,7 +102,7 @@ class RuntimeService:
         self._pending_writes: set[asyncio.Task[None]] = set()
         self._audit_health = audit_health
 
-    # 在线程执行持久化写操作，并在任何存储异常后进入全局失败关闭状态
+    # 在线程执行持久化写操作，仅在真实存储故障后进入全局失败关闭状态
     async def _run_persistent_write(
         self,
         operation: Callable[_P, _R],
@@ -106,6 +111,16 @@ class RuntimeService:
     ) -> _R:
         try:
             return await asyncio.to_thread(operation, *args, **kwargs)
+        except (
+            DuplicateTerminalResultError,
+            IncompleteToolCallError,
+            InvalidTurnTransitionError,
+            QueuedMessageDispatchingError,
+            RecordAlreadyExistsError,
+            RecordNotFoundError,
+            ToolCallNotFoundError,
+        ):
+            raise
         except Exception as exc:
             if self._audit_health is not None:
                 await self._audit_health.degrade("runtime_projection", exc)

@@ -26,6 +26,7 @@ from code_rook.core.bus.events import (
     AgentMessageEvent,
     LlmRouteSelectedEvent,
     LspDiagnosticsEvent,
+    PermissionDeniedEvent,
     RunFailureCategory,
     RunFinishedEvent,
     RunOutcomeStatus,
@@ -737,6 +738,17 @@ class AgentRunner:
                 )
 
             scoped_handlers.subscribe(publish_runtime_phase)
+
+            # 审计持久化降级会阻断所有修改，立即终止本轮并返回真实失败状态
+            async def stop_on_audit_degraded(event: object) -> None:
+                if (
+                    isinstance(event, PermissionDeniedEvent)
+                    and event.run_id == run_id
+                    and event.decision == "audit_degraded"
+                ):
+                    context.mark_failed("persistence_error")
+
+            scoped_handlers.subscribe(stop_on_audit_degraded)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
             cancelled = False
             plan_approval_pending = False

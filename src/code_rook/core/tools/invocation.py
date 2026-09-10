@@ -201,6 +201,8 @@ def _execution_failure_category(error_class: str) -> str | None:
         return "sandbox_denied"
     if error_class in {"sandbox_runner_failed", "sandbox_unavailable"}:
         return "sandbox_runner_failed"
+    if error_class == "persistence_error":
+        return "persistence_error"
     if error_class in {"runtime_error", "permission_denied", "nonzero_exit"}:
         return "command_failed"
     return None
@@ -473,14 +475,24 @@ async def invoke_tool(
                     )
                 )
             fail_fast = decision == "headless_fail_fast"
+            audit_degraded = decision == "audit_degraded"
             return await _fail(
                 bus, run_id, tool_call,
-                "permission_required" if fail_fast else "permission_denied",
+                (
+                    "permission_required"
+                    if fail_fast
+                    else "persistence_error"
+                    if audit_degraded
+                    else "permission_denied"
+                ),
                 (
                     "Permission approval is required, but this headless run uses fail-fast "
                     "mode. Re-run with --permission-mode allow-list and an explicit "
                     "--allow-tool entry."
                     if fail_fast
+                    else "CodeRook audit persistence is degraded. Mutating tools are paused; "
+                    "run Doctor repair before retrying this task."
+                    if audit_degraded
                     else "Permission denied by policy. You may not execute this command. "
                     "Try an alternative approach or explain what permission is needed."
                 ),

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import BaseModel
 
+from code_rook.core.audit import AuditHealth
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
 from code_rook.core.bus.events import VerificationFailedEvent
 from code_rook.core.config import CodeRookConfig
@@ -122,6 +123,64 @@ class _CapturingProvider:
         self.tool_schemas = [dict(schema) for schema in tool_schemas]
         self.system = system
         return self.response
+
+
+class _WriteOnceProvider:
+    # 初始化只请求一次写入的 provider，用于验证运行时失败能立即终止
+    def __init__(self) -> None:
+        self.calls = 0
+
+    # 首轮请求写文件，若 Core 未终止则次轮伪装正常完成以暴露错误成功语义
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+        thinking: str | None = None,
+    ) -> LlmResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[
+                    ToolCallBlock(
+                        id="write-during-audit-failure",
+                        name="write",
+                        input={"path": "result.txt", "content": "changed"},
+                    )
+                ],
+            )
+        return LlmResponse(stop_reason="end_turn", text="task completed")
+
+
+# 功能：验证审计持久化降级阻断写入时 Run 立即失败，不能让模型把未完成任务包装成成功
+# 设计：首轮强制请求 write，第二轮预置虚假成功；断言 Core 在第二次模型调用前终止并保留工作区
+async def test_audit_degraded_write_stops_run_as_persistence_failure(
+    tmp_path: Path,
+) -> None:
+    health = AuditHealth()
+    await health.degrade("runtime_projection", OSError("disk full"))
+    permissions = PermissionManager(audit_health=health)
+    provider = _WriteOnceProvider()
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        permission_manager=permissions,
+        workspace_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+        audit_health=health,
+    )
+
+    outcome = await runner.run_and_capture("write result.txt")
+
+    assert outcome.status == "failed"
+    assert outcome.reason == "persistence_error"
+    assert provider.calls == 1
+    assert not (tmp_path / "result.txt").exists()
 
 
 class _ForcedPlanWriteProvider:
