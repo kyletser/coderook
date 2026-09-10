@@ -432,6 +432,39 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert app._running_runs == set()  # type: ignore[attr-defined]
 
 
+# 功能：验证交互会话选择的模型工具从 IPC handler 原样进入运行器边界
+# 设计：用最小会话服务捕获参数，分别锁定显式空列表与未指定列表的不同语义
+async def test_session_send_handler_forwards_model_tools() -> None:
+    captured: list[list[str] | None] = []
+
+    class _Sessions:
+        # 捕获会话消息携带的工具选择并返回稳定运行标识
+        async def send_message(
+            self,
+            _session_id: str,
+            _content: str,
+            **kwargs: Any,
+        ) -> str:
+            captured.append(kwargs.get("model_tools"))
+            return "run-tools"
+
+    app = CoreApp()
+    app._sessions = _Sessions()  # type: ignore[assignment]
+
+    selected = await app._session_send_handler(  # type: ignore[attr-defined]
+        {"session_id": "sess-tools", "content": "inspect", "tools": ["read"]}
+    )
+    await app._session_send_handler(  # type: ignore[attr-defined]
+        {"session_id": "sess-tools", "content": "answer", "tools": []}
+    )
+    await app._session_send_handler(  # type: ignore[attr-defined]
+        {"session_id": "sess-tools", "content": "default"}
+    )
+
+    assert selected.run_id == "run-tools"
+    assert captured == [["read"], [], None]
+
+
 # 功能：验证会话 authority 更新只替换 mode/profile，并可由查询命令原样读回
 # 设计：预置收窄的 action scope 后直接调用 Core handler，确保权限切换不会隐式扩大能力
 async def test_session_authority_handlers_preserve_scope() -> None:

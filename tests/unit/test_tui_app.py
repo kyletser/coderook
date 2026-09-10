@@ -2262,7 +2262,7 @@ async def test_plan_command_requires_review_before_act() -> None:
             prompt.text = "/plan inspect authentication"
             prompt.focus()
 
-    app = PlanHarness("127.0.0.1", 9999)
+    app = PlanHarness("127.0.0.1", 9999, initial_model_tools=["read"])
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         prompt = app.query_one("#prompt", ChatTextArea)
@@ -2296,12 +2296,13 @@ async def test_plan_command_requires_review_before_act() -> None:
 
         assert calls[0] == (
             "session.send_message",
-                {
-                    "session_id": "sess-plan",
-                    "content": "inspect authentication",
-                    "runtime_mode": "plan",
-                    "display_content": "inspect authentication",
-                },
+            {
+                "session_id": "sess-plan",
+                "content": "inspect authentication",
+                "runtime_mode": "plan",
+                "display_content": "inspect authentication",
+                "tools": ["read"],
+            },
         )
         app._handle_event(
             {

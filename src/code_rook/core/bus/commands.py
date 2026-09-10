@@ -477,6 +477,7 @@ class SessionSendMessageCommand(BaseModel):
     display_content: str | None = None
     runtime_mode: RuntimeMode = RuntimeMode.ACT
     attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
+    tools: list[Literal["read", "bash", "edit", "write"]] | None = None
 
 
 class SessionSendMessageResult(BaseModel):

@@ -180,8 +180,9 @@ def main() -> int:
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
     tui_flags = {
-        "-c", "-r", "-n", "--continue", "--new", "--resume", "--fork", "--replay",
-        "--name", "--no-auto-core", "--thinking", "--route", "--model",
+        "-c", "-r", "-n", "-t", "-nt", "--continue", "--new", "--resume", "--fork",
+        "--replay", "--name", "--tools", "--no-tools", "--no-auto-core", "--thinking",
+        "--route", "--model",
     }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
@@ -338,6 +339,18 @@ def _run_cli() -> int:
     )
     interactive.add_argument(
         "-r", "--resume", metavar="SESSION_ID", help="Resume a saved session"
+    )
+    interactive.add_argument(
+        "--fork", metavar="SESSION_ID", help="Fork a saved session and continue in a branch"
+    )
+    interactive.add_argument("-n", "--name", help="Set the opened session name")
+    interactive.add_argument(
+        "-t", "--tools", metavar="TOOLS",
+        help="Model-visible tools: comma-separated read,bash,edit,write",
+    )
+    interactive.add_argument(
+        "-nt", "--no-tools", action="store_true",
+        help="Disable all model tool calls in the TUI",
     )
     interactive.add_argument("--route", help="Provider route for the opened session")
     interactive.add_argument("--model", help="Model override for the opened session")

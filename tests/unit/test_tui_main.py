@@ -273,7 +273,7 @@ def test_tui_main_passes_initial_prompt(
         "argv",
         [
             "coderook-tui", "--fork", "sess-source", "--thinking", "medium",
-            "--name", "登录修复",
+            "--name", "登录修复", "--tools", "read,bash,read",
             "修复登录", "并运行测试",
         ],
     )
@@ -292,6 +292,7 @@ def test_tui_main_passes_initial_prompt(
     assert factory.call_args.kwargs["fork_session_id"] == "sess-source"
     assert factory.call_args.kwargs["continue_recent"] is False
     assert factory.call_args.kwargs["initial_thinking_level"] == "medium"
+    assert factory.call_args.kwargs["initial_model_tools"] == ["read", "bash"]
     app.run.assert_called_once_with()
 
 

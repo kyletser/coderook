@@ -6125,6 +6125,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `display_content` | `string | null` | no |
 | `runtime_mode` | `object` | no |
 | `attachments` | `array` | no |
+| `tools` | `array | null` | no |
 
 ```json
 {
@@ -6219,6 +6220,27 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "maxItems": 8,
       "title": "Attachments",
       "type": "array"
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "items": {
+            "enum": [
+              "read",
+              "bash",
+              "edit",
+              "write"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tools"
     }
   },
   "required": [

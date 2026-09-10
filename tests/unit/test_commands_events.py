@@ -502,20 +502,27 @@ def test_agent_run_headless_permission_protocol() -> None:
         )
 
 
-# 功能：验证 session 消息可显式携带 Plan Mode 且默认仍为 Act
-# 设计：分别构造默认和计划命令并做 JSON 往返，固定客户端与 Core 的每轮模式契约
+# 功能：验证 session 消息可显式携带 Plan Mode 和模型工具集且默认仍为 Act
+# 设计：分别构造默认和计划命令并做 JSON 往返，固定客户端与 Core 的每轮模式和工具契约
 def test_session_message_runtime_mode_roundtrip() -> None:
     default = SessionSendMessageCommand(session_id="sess-1", content="implement")
     planned = SessionSendMessageCommand(
         session_id="sess-1",
         content="inspect and plan",
         runtime_mode=RuntimeMode.PLAN,
+        tools=["read"],
     )
 
     assert default.runtime_mode == RuntimeMode.ACT
-    assert SessionSendMessageCommand.model_validate_json(
-        planned.model_dump_json()
-    ).runtime_mode == RuntimeMode.PLAN
+    restored = SessionSendMessageCommand.model_validate_json(planned.model_dump_json())
+    assert restored.runtime_mode == RuntimeMode.PLAN
+    assert restored.tools == ["read"]
+    with pytest.raises(ValidationError):
+        SessionSendMessageCommand(
+            session_id="sess-1",
+            content="inspect",
+            tools=["unknown"],  # type: ignore[list-item]
+        )
 
 
 # 功能：验证会话 authority 更新可独立携带 mode、profile 和 workspace trust

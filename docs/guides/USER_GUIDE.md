@@ -668,6 +668,7 @@ uv run coderook -c -p "继续上一轮并总结结果"
 uv run coderook -p --fork SESSION_ID "从这里尝试另一种实现"
 uv run coderook -p -n "发布审查" "检查当前改动"
 uv run coderook -p --no-session "临时解释这段报错"
+uv run coderook --no-tools "在 TUI 中只回答概念问题"
 uv run coderook -p --no-tools "只回答概念问题"
 uv run coderook -p --tools read,bash "只读取项目并运行诊断"
 Get-Content .\build.log | uv run coderook -p "定位失败原因"
@@ -683,9 +684,10 @@ uv run coderook --route aliyun --model qwen3.8-flash "检查当前项目"
 继续执行；原会话的 Ledger、标题和工作状态保持不变。
 `--route` 与 `--model` 也可用于 TUI 初始任务、`-p` 和 `run`；选择只绑定本次会话，不修改其他会话或
 全局活动 route。只指定 `--model` 时沿用当前活动 route；没有活动 route 时必须同时指定二者。
-`--tools read,bash` 只向模型公开指定的原生工具，支持 `read`、`bash`、`edit`、`write`；
-`--no-tools` 完全关闭本轮工具调用。它与 `--allow-tool` 不同：前者裁剪模型工具目录，后者只决定
-无人值守运行遇到审批时是否允许，二者都不会绕过任务画像和权限边界。
+`--tools read,bash` 可用于 TUI、打印模式和 `run`，只向模型公开指定的原生工具，支持 `read`、
+`bash`、`edit`、`write`；`--no-tools` 完全关闭该进程提交任务时的工具调用。它与 `--allow-tool`
+不同：前者裁剪模型工具目录，后者只决定无人值守运行遇到审批时是否允许，二者都不会绕过任务
+画像和权限边界。
 
 Headless 默认在需要人工审批时 fail-fast。只允许明确工具：
 

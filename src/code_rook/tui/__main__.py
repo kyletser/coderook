@@ -27,6 +27,7 @@ from code_rook.core.transport.auth import IpcTokenError, read_ipc_token
 from code_rook.tui.app import CodeRookTuiApp, ConfigSwitch, ModelSwitch
 
 _DEFAULT_TUI_LOG = "~/.coderook/logs/tui.log"
+_MODEL_TOOL_NAMES = frozenset({"read", "bash", "edit", "write"})
 log = logging.getLogger(__name__)
 
 
@@ -57,6 +58,20 @@ def _session_name(value: str) -> str:
     if len(name) > 200:
         raise argparse.ArgumentTypeError("session name must be at most 200 characters")
     return name
+
+
+# 解析交互会话可见的原生工具列表并拒绝拼写错误
+def _model_tools(value: str) -> list[str]:
+    names = list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
+    if not names:
+        raise argparse.ArgumentTypeError("tools must not be empty; use --no-tools")
+    unknown = sorted(set(names) - _MODEL_TOOL_NAMES)
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            "unknown tools: " + ", ".join(unknown)
+            + "; choose from read,bash,edit,write"
+        )
+    return names
 
 
 # 创建并运行 TUI；配置或模型切换动作返回入口处理
@@ -152,6 +167,7 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         initial_route_id=requested_route_id,
         initial_model=requested_model,
         initial_thinking_level=getattr(args, "thinking", None),
+        initial_model_tools=getattr(args, "tools", None),
     )
     return app.run()
 
@@ -213,6 +229,15 @@ def main() -> None:
     parser.add_argument(
         "-n", "--name", type=_session_name,
         help="Set the opened session name",
+    )
+    tools = parser.add_mutually_exclusive_group()
+    tools.add_argument(
+        "-t", "--tools", type=_model_tools, metavar="TOOLS",
+        help="Model-visible tools: comma-separated read,bash,edit,write",
+    )
+    tools.add_argument(
+        "-nt", "--no-tools", dest="tools", action="store_const", const=[],
+        help="Disable all model tool calls in this TUI process",
     )
     parser.add_argument(
         "message",

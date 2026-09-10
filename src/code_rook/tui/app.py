@@ -275,6 +275,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         initial_route_id: str = "",
         initial_model: str = "",
         initial_thinking_level: Literal["off", "low", "medium", "high"] | None = None,
+        initial_model_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._host = host
@@ -310,6 +311,9 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._initial_model_applied = False
         self._initial_thinking_level = initial_thinking_level
         self._initial_thinking_applied = False
+        self._initial_model_tools = (
+            list(initial_model_tools) if initial_model_tools is not None else None
+        )
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
         self._discovered_config_models: tuple[str, ...] = ()
@@ -4518,6 +4522,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             params["display_content"] = shown_content
             if attachments:
                 params["attachments"] = attachments
+            if self._initial_model_tools is not None:
+                params["tools"] = self._initial_model_tools
             result = await self._client.send_command(
                 "session.send_message",
                 params,
