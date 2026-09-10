@@ -264,7 +264,7 @@ def test_print_shorthand_can_continue_recent_session(monkeypatch) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["coderook", "--continue", "-p", "总结上一轮结果"],
+        ["coderook", "-c", "-p", "总结上一轮结果"],
     )
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
     monkeypatch.setattr(cli_main, "get_config", lambda: config)

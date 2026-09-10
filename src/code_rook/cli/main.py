@@ -155,7 +155,7 @@ def main() -> int:
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
     tui_flags = {
-        "--continue", "--new", "--resume", "--replay", "--no-auto-core", "--thinking",
+        "-c", "-r", "--continue", "--new", "--resume", "--replay", "--no-auto-core", "--thinking",
         "--route", "--model",
     }
     tui_probe = list(sys.argv[1:])
@@ -176,7 +176,7 @@ def _run_cli() -> int:
         )
         session_choice = quick.add_mutually_exclusive_group()
         session_choice.add_argument(
-            "--continue",
+            "-c", "--continue",
             dest="continue_recent",
             action="store_true",
             help="Resume the most recent session in this workspace",
@@ -187,7 +187,7 @@ def _run_cli() -> int:
             help="Start a new session",
         )
         session_choice.add_argument(
-            "--resume",
+            "-r", "--resume",
             metavar="SESSION_ID",
             help="Resume a saved session",
         )
@@ -278,13 +278,15 @@ def _run_cli() -> int:
         "-p", "--print", action="store_true", help="Run once and print only the final answer",
     )
     interactive.add_argument(
-        "--continue", dest="continue_recent", action="store_true",
+        "-c", "--continue", dest="continue_recent", action="store_true",
         help="Resume the most recent session in this workspace",
     )
     interactive.add_argument(
         "--new", action="store_true", help="Start a new interactive session",
     )
-    interactive.add_argument("--resume", metavar="SESSION_ID", help="Resume a saved session")
+    interactive.add_argument(
+        "-r", "--resume", metavar="SESSION_ID", help="Resume a saved session"
+    )
     interactive.add_argument("--route", help="Provider route for the opened session")
     interactive.add_argument("--model", help="Model override for the opened session")
     interactive.add_argument(
@@ -456,7 +458,9 @@ def _run_cli() -> int:
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an active agent run")
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
-    chat_parser.add_argument("--resume", metavar="SESSION_ID", help="Resume a saved session")
+    chat_parser.add_argument(
+        "-r", "--resume", metavar="SESSION_ID", help="Resume a saved session"
+    )
 
     sessions_parser = subparsers.add_parser("sessions", help="List saved sessions")
     sessions_parser.add_argument(

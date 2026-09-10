@@ -159,12 +159,12 @@ def main() -> None:
         help="Replay events from a past run on connect",
     )
     source.add_argument(
-        "--resume",
+        "-r", "--resume",
         metavar="SESSION_ID",
         help="Resume a saved chat session",
     )
     source.add_argument(
-        "--continue",
+        "-c", "--continue",
         dest="continue_recent",
         action="store_true",
         default=True,
@@ -195,7 +195,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     args.reuse_existing = reuse_existing
-    args.continue_explicit = "--continue" in sys.argv[1:]
+    args.continue_explicit = any(flag in sys.argv[1:] for flag in ("-c", "--continue"))
 
     while True:
         action = _run_tui(args)
