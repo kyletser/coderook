@@ -412,6 +412,9 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
+        app._run_phase = "ready"
+        app._run_phase_current = 0
+        app._run_phase_total = 0
         result_summary = str(event.get("result_summary") or "").strip()
         if status == "success" and not has_native_answer and result_summary:
             app._last_assistant_text = result_summary

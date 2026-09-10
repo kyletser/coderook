@@ -1857,6 +1857,9 @@ def test_retry_and_stuck_events_show_bounded_timeline_summaries() -> None:
 def test_run_finished_success_stays_out_of_timeline() -> None:
     app = CodeRookTuiApp("127.0.0.1", 9999)
     app._active_run_id = "r"
+    app._run_phase = "completed"
+    app._run_phase_current = 8
+    app._run_phase_total = 8
     appended: list[Widget] = []
     app._append = lambda w: appended.append(w)  # type: ignore[method-assign]
 
@@ -1865,6 +1868,9 @@ def test_run_finished_success_stays_out_of_timeline() -> None:
     })
 
     assert app._active_run_id is None
+    assert app._run_phase == "ready"
+    assert app._run_phase_current == 0
+    assert app._run_phase_total == 0
     assert appended == []
 
 
