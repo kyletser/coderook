@@ -1063,6 +1063,87 @@ def test_active_turn_authority_is_immutable_until_turn_ends() -> None:
     )
 
 
+# 功能：验证批准计划只在紧接着的一轮自动允许工作区文件修改
+# 设计：依次检查 File.edit、shell 和下一轮 File.edit，证明授权不覆盖命令且不会跨轮残留
+async def test_approved_plan_allows_workspace_edits_for_next_turn_only() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+    snapshot = AuthoritySnapshot(profile=AuthorityProfile.ASK)
+    file_call = _resolved_file_call("edit", "edit_file")
+    mgr.approve_next_turn_workspace_edits("s-plan")
+    mgr.begin_turn("s-plan", snapshot)
+
+    edit_result = await mgr.check_and_wait(
+        tool_use_id="plan-edit",
+        tool_name="File",
+        params={"action": "edit", "path": "x.py"},
+        session_id="s-plan",
+        event_emitter=emitter,
+        resolved_call=file_call,
+    )
+
+    async def deny_shell() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("plan-shell", "deny_once")
+
+    shell_response = asyncio.create_task(deny_shell())
+    shell_result = await mgr.check_and_wait(
+        tool_use_id="plan-shell",
+        tool_name="bash",
+        params={"command": "pytest -q"},
+        session_id="s-plan",
+        event_emitter=emitter,
+        action=ToolAction.SHELL,
+    )
+    await shell_response
+    mgr.end_turn("s-plan")
+    mgr.begin_turn("s-plan", snapshot)
+
+    async def deny_later_edit() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("later-edit", "deny_once")
+
+    later_response = asyncio.create_task(deny_later_edit())
+    later_edit_result = await mgr.check_and_wait(
+        tool_use_id="later-edit",
+        tool_name="File",
+        params={"action": "edit", "path": "y.py"},
+        session_id="s-plan",
+        event_emitter=emitter,
+        resolved_call=file_call,
+    )
+    await later_response
+    mgr.end_turn("s-plan")
+
+    assert edit_result == (True, "approved_plan")
+    assert shell_result == (False, "deny_once")
+    assert later_edit_result == (False, "deny_once")
+    assert [event["tool_use_id"] for event in emitted] == ["plan-shell", "later-edit"]
+
+
+# 功能：验证批准计划也覆盖模型可见的扁平 edit 工具名
+# 设计：使用真实模型请求中的 edit 名称和 MUTATE 动作，防止 family 扁平化后权限映射失效
+async def test_approved_plan_allows_flat_edit_tool_name() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+    snapshot = AuthoritySnapshot(profile=AuthorityProfile.ASK)
+    mgr.approve_next_turn_workspace_edits("s-flat-plan")
+    mgr.begin_turn("s-flat-plan", snapshot)
+
+    result = await mgr.check_and_wait(
+        tool_use_id="flat-edit",
+        tool_name="edit",
+        params={"path": "src/app.py", "edits": []},
+        session_id="s-flat-plan",
+        event_emitter=emitter,
+        action=ToolAction.MUTATE,
+    )
+    mgr.end_turn("s-flat-plan")
+
+    assert result == (True, "approved_plan")
+    assert emitted == []
+
+
 # 功能：子 Agent 的显式 authority override 必须覆盖父 session 的 Full Access
 # 设计：父会话允许全部动作但调用时传 READ-only ceiling，断言写入在询问前直接拒绝
 async def test_authority_override_prevents_child_privilege_inheritance() -> None:

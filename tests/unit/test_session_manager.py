@@ -1662,7 +1662,13 @@ async def test_strategy_plan_requires_user_approval_before_next_turn(
             return RunOutcome(status="success", result="plan proposed", reason=None)
 
     bus.subscribe(collect)  # type: ignore[arg-type]
-    manager = SessionManager(store, lambda: _StrategyPlanRunner(), bus)  # type: ignore[arg-type]
+    approved_sessions: list[str] = []
+    manager = SessionManager(
+        store,
+        lambda: _StrategyPlanRunner(),
+        bus,
+        next_turn_workspace_edit_approver=approved_sessions.append,
+    )  # type: ignore[arg-type]
     session = await manager.create("chat")
 
     run_id = await manager.send_message(session.id, "帮我处理一下")
@@ -1679,6 +1685,7 @@ async def test_strategy_plan_requires_user_approval_before_next_turn(
     resolved = await manager.respond_plan(session.id, run_id, "approve")
 
     assert resolved.plan_ticket == "ticket-123"
+    assert approved_sessions == [session.id]
 
 
 # 功能：验证任务与 context 查询读取最近一次 run，且空目录不会伪造数据

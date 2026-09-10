@@ -63,16 +63,18 @@ class PermissionSelect(Static):
         )
         for decision, key, detail in (
             ("allow_once", "1", "once_detail"),
-            ("always_allow", "2", "remember_allow"),
-            ("deny_once", "3", "deny_detail"),
-            ("always_deny", "4", "remember_deny"),
+            ("session_allow", "2", "session_detail"),
+            ("always_allow", "3", "remember_allow"),
+            ("deny_once", "4", "deny_detail"),
+            ("always_deny", "5", "remember_deny"),
         )
     )
     _KEY_MAP: dict[str, str] = {
-        "y": "allow_once",  "1": "allow_once",
-        "a": "always_allow","2": "always_allow",
-        "n": "deny_once",   "3": "deny_once",
-        "d": "always_deny", "4": "always_deny",
+        "y": "allow_once", "1": "allow_once",
+        "s": "session_allow", "2": "session_allow",
+        "a": "always_allow", "3": "always_allow",
+        "n": "deny_once", "4": "deny_once",
+        "d": "always_deny", "5": "always_deny",
         "p": "always_allow_pattern",
     }
 
@@ -132,7 +134,7 @@ class PermissionSelect(Static):
                 (
                     "always_allow_pattern",
                     tr("permission.choice.always_allow_pattern", self._locale),
-                    "5",
+                    "6",
                     tr("permission.choice.pattern_detail", self._locale),
                 ),
             )
@@ -151,9 +153,10 @@ class PermissionSelect(Static):
             )
             for decision, key, detail in (
                 ("allow_once", "1", "once_detail"),
-                ("always_allow", "2", "remember_allow"),
-                ("deny_once", "3", "deny_detail"),
-                ("always_deny", "4", "remember_deny"),
+                ("session_allow", "2", "session_detail"),
+                ("always_allow", "3", "remember_allow"),
+                ("deny_once", "4", "deny_detail"),
+                ("always_deny", "5", "remember_deny"),
             )
         )
 
@@ -166,7 +169,7 @@ class PermissionSelect(Static):
                 (
                     "always_allow_pattern",
                     tr("permission.choice.always_allow_pattern", locale),
-                    "5",
+                    "6",
                     tr("permission.choice.pattern_detail", locale),
                 ),
             )
@@ -418,7 +421,7 @@ class PermissionSelect(Static):
         selected: list[str] | None = None
         if self._patch_hunks:
             selected = sorted(self._selected_hunks)
-            if decision in {"allow_once", "always_allow"} and not selected:
+            if decision in {"allow_once", "session_allow", "always_allow"} and not selected:
                 decision = "deny_once"
             if decision == "always_allow" and len(selected) != len(self._patch_hunks):
                 decision = "allow_once"
@@ -440,6 +443,7 @@ class PermissionBlock(Static):
         decision: tr(f"permission.decision.{decision}", "en-US")
         for decision in (
             "allow_once",
+            "session_allow",
             "always_allow",
             "always_allow_pattern",
             "deny_once",
@@ -492,7 +496,12 @@ class PermissionBlock(Static):
             return
         self._resolved = True
         self.remove_class("permission-pending")
-        allowed = decision in ("allow_once", "always_allow", "always_allow_pattern")
+        allowed = decision in (
+            "allow_once",
+            "session_allow",
+            "always_allow",
+            "always_allow_pattern",
+        )
         icon = (
             f"[bold green]{tr('permission.allowed', self._locale)}[/bold green]"
             if allowed

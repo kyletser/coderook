@@ -51,6 +51,20 @@ logger = logging.getLogger(__name__)
 
 PermissionRunMode = Literal["interactive", "deny", "fail_fast", "allow_list"]
 
+_WORKSPACE_EDIT_PERMISSION_KEYS = frozenset(
+    {
+        "File.write",
+        "File.edit",
+        "File.patch",
+        "write",
+        "edit",
+        "patch",
+        "write_file",
+        "edit_file",
+        "apply_patch",
+    }
+)
+
 def _now() -> str:
     return datetime.datetime.now(UTC).isoformat()
 
@@ -122,6 +136,9 @@ class PermissionManager:
         self._session_authorities: dict[str, AuthoritySnapshot] = {}
         # active turn 使用独立不可变快照；会话设置只能影响后续 turn
         self._active_turn_authorities: dict[str, AuthoritySnapshot] = {}
+        # 已批准计划只为紧接着的一轮开放工作区文件修改，不扩大 shell 或外部能力
+        self._next_turn_permission_keys: dict[str, frozenset[str]] = {}
+        self._active_turn_permission_keys: dict[str, frozenset[str]] = {}
         self._audit_health = audit_health
 
     # 持久化新会话的默认权限姿态，不修改已有会话或正在运行的 turn
@@ -153,10 +170,18 @@ class PermissionManager:
         if session_id in self._active_turn_authorities:
             raise RuntimeError(f"turn authority already active for session {session_id}")
         self._active_turn_authorities[session_id] = snapshot
+        approved = self._next_turn_permission_keys.pop(session_id, frozenset())
+        if approved:
+            self._active_turn_permission_keys[session_id] = approved
 
     # 清除已结束 turn 的冻结权限快照
     def end_turn(self, session_id: str) -> None:
         self._active_turn_authorities.pop(session_id, None)
+        self._active_turn_permission_keys.pop(session_id, None)
+
+    # 将用户已批准计划中的工作区文件修改授权给紧接着的一轮执行
+    def approve_next_turn_workspace_edits(self, session_id: str) -> None:
+        self._next_turn_permission_keys[session_id] = _WORKSPACE_EDIT_PERMISSION_KEYS
 
     # 返回工具审批和沙箱启动必须共同消费的有效权限快照
     def get_effective_authority_snapshot(self, session_id: str) -> AuthoritySnapshot:
@@ -312,6 +337,13 @@ class PermissionManager:
             is_declared_shell
             and authority_snapshot.sandbox.kind in {"windows_none", "windows_acl"}
         )
+
+        approved_keys = self._active_turn_permission_keys.get(session_id, frozenset())
+        if (
+            effective_action in {ToolAction.MUTATE, ToolAction.MUTATE.value}
+            and bool(set(scope.lookup_keys) & approved_keys)
+        ):
+            return True, "approved_plan"
 
         if (
             session_mode.mode == "interactive"

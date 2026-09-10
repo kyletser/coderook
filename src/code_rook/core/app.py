@@ -985,6 +985,9 @@ class CoreApp:
             hooks=self._hooks,
             goal_service=self._goal_service,
             authority_provider=self._permission_manager.get_authority_snapshot,
+            next_turn_workspace_edit_approver=(
+                self._permission_manager.approve_next_turn_workspace_edits
+            ),
             workspace=boundary.root,
             compaction_config=self._config.compaction,
             summary_retry_policy=self._config.llm.retry,

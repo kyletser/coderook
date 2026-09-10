@@ -338,11 +338,11 @@ async def test_permission_panel_keyboard_navigation_and_escape() -> None:
 
         await pilot.press("down", "enter")
         await pilot.pause()
-        assert app.decisions == ["always_allow"]
+        assert app.decisions == ["session_allow"]
 
         await pilot.press("escape")
         await pilot.pause()
-        assert app.decisions == ["always_allow", "deny_once"]
+        assert app.decisions == ["session_allow", "deny_once"]
 
 
 async def test_session_picker_renders_and_selects_saved_session() -> None:

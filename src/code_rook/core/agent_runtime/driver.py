@@ -91,6 +91,8 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
     lifecycle_started = False
     lifecycle_ended = False
     lifecycle_messages: list[Message] = []
+    permission_denied_mutation = False
+    successful_mutation = False
 
     # 将消息生命周期直接传给双前端，正文和思考使用不同内容块。
     async def emit(event: dict[str, Any]) -> None:
@@ -352,10 +354,17 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
 
     # 工具实现和审批仍使用 Python 的单一调用管线，结果由新循环按顺序入账。
     async def execute(call: dict[str, Any], sink: EventSink) -> dict[str, Any]:
+        nonlocal permission_denied_mutation, successful_mutation
+        tool_call = calls[call_index[call["id"]]]
         result = await runtime._invoke_one(
-            calls[call_index[call["id"]]], context,
+            tool_call, context,
             prepared_arguments=prepared_calls[call["id"]],
         )
+        if runtime._is_mutating_call(tool_call):
+            if result.error_type == "permission_denied":
+                permission_denied_mutation = True
+            elif not result.is_error:
+                successful_mutation = True
         results[call["id"]] = result
         content = result.model_content()
         return {"content": [{"type": "text", "text": content}]
@@ -468,7 +477,14 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
                 for block in final.get("content", [])
                 if block.get("type") == "text"
             )
-            if final.get("stopReason") == "stop" and context.result.strip():
+            task_profile = runtime._request_metadata.get("task_profile", {})
+            mutating_task = (
+                isinstance(task_profile, dict)
+                and task_profile.get("risk") in {"mutate", "write"}
+            )
+            if mutating_task and permission_denied_mutation and not successful_mutation:
+                context.mark_failed("permission_denied")
+            elif final.get("stopReason") == "stop" and context.result.strip():
                 context.mark_success()
             else:
                 context.mark_failed("incomplete")

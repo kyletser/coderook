@@ -728,6 +728,45 @@ class _PermissionRequiredTool(BaseTool):
         return ToolResult(content="denied", is_error=True, error_type="permission_required")
 
 
+class _PermissionDeniedMutationTool(BaseTool):
+    name = "denied_edit"
+    description = "Returns a denied mutation"
+    input_schema: dict[str, object] = {"type": "object", "properties": {}, "required": []}
+
+    # 返回权限拒绝结果，模拟用户未批准修改工具
+    async def invoke(self, params: dict[str, object]) -> ToolResult:
+        return ToolResult(content="denied", is_error=True, error_type="permission_denied")
+
+
+# 功能：验证修改任务的文件操作被拒绝后不会把说明文字误标成任务成功
+# 设计：先返回 permission_denied 再让模型解释失败，断言最终结果保留正文但状态为权限失败
+async def test_permission_denied_mutation_is_not_reported_as_success() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[_tc("denied_edit", {}, "d1")],
+            ),
+            LlmResponse(stop_reason="end_turn", text="需要权限后才能完成修改。"),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(_PermissionDeniedMutationTool())
+    loop = AgentLoop(  # type: ignore[arg-type]
+        provider,
+        registry,
+        EventBus(),
+        request_metadata={"task_profile": {"risk": "mutate"}},
+    )
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "failed"
+    assert ctx.reason == "permission_denied"
+    assert ctx.result == "需要权限后才能完成修改。"
+
+
 # 功能：act 阶段因 permission_required 提前终止时为后续工具补合成 tool_result
 # 设计：同批两个工具，首个返回 permission_required；断言 run 失败且第二个 tool_use 也有配对结果，无孤儿
 async def test_aborted_act_phase_fills_skipped_tool_results() -> None:

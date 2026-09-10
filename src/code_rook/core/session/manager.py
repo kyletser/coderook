@@ -178,6 +178,7 @@ class SessionManager:
         hooks: HookManager | None = None,
         goal_service: GoalService | None = None,
         authority_provider: Callable[[str], AuthoritySnapshot] | None = None,
+        next_turn_workspace_edit_approver: Callable[[str], None] | None = None,
         workspace_mutation_guard: WorkspaceMutationGuard | None = None,
         workspace_mutation_lock: asyncio.Lock | None = None,
         workspace: Path | None = None,
@@ -211,6 +212,7 @@ class SessionManager:
         self._hooks = hooks
         self._goal_service = goal_service
         self._authority_provider = authority_provider
+        self._next_turn_workspace_edit_approver = next_turn_workspace_edit_approver
         self._workspace_mutation_guard = workspace_mutation_guard or WorkspaceMutationGuard(
             workspace_mutation_lock
         )
@@ -829,6 +831,8 @@ class SessionManager:
                     )
             self._pending_plans.pop(sid, None)
             self._pending_plans_loaded.add(sid)
+            if decision == "approve" and self._next_turn_workspace_edit_approver is not None:
+                self._next_turn_workspace_edit_approver(sid)
             return resolved
 
     # 从当前 Turn 的可信 Ledger 提取仍需用户批准的策略计划
