@@ -103,6 +103,14 @@ def test_relative_path_not_outside_cwd() -> None:
     assert not matches_outside_cwd("python -m pytest")
 
 
+# 功能：验证 Bash 空设备重定向不被误判为工作区外路径且相似越界路径仍被拦截
+# 设计：同时覆盖模型常用的静默探测命令和带父级遍历的伪装路径，避免豁免扩大安全边界
+def test_null_device_redirection_is_not_outside_cwd() -> None:
+    assert not matches_outside_cwd("ls -la 2>/dev/null")
+    assert not matches_outside_cwd("cat missing >/dev/null || true")
+    assert matches_outside_cwd("cat /dev/null/../etc/passwd")
+
+
 # 功能：验证 deny_patterns 优先于 OUTSIDE_CWD（deny 在 tier 1，先检查）
 # 设计：命令同时命中 deny_patterns 和 outside-cwd，结果应为 DENY 而非 ASK
 def test_deny_wins_over_outside_cwd() -> None:

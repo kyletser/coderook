@@ -27,11 +27,13 @@ OUTSIDE_CWD_HEURISTICS: list[str] = [
 ]
 
 _OUTSIDE_CWD_RE: list[re.Pattern[str]] = [re.compile(p) for p in OUTSIDE_CWD_HEURISTICS]
+_SAFE_NULL_DEVICE_RE = re.compile(r"(?<![\w./-])/dev/null(?![\w./-])")
 
 
 # 判断 bash 命令是否命中 outside-cwd 启发式规则
 def matches_outside_cwd(command: str) -> bool:
-    return any(pat.search(command) for pat in _OUTSIDE_CWD_RE)
+    command_without_null_device = _SAFE_NULL_DEVICE_RE.sub("NULL_DEVICE", command)
+    return any(pat.search(command_without_null_device) for pat in _OUTSIDE_CWD_RE)
 
 
 @dataclass
