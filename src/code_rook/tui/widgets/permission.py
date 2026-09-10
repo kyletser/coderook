@@ -113,6 +113,7 @@ class PermissionSelect(Static):
         self._param_preview = param_preview
         self._params = params or {}
         self._locale = locale
+        self._single_use_only = bool(self._params.get("_safety_notice")) and tool_name == "bash"
         self._cursor = 0
         context = self._params.get("_approval_context")
         context_dict = context if isinstance(context, dict) else {}
@@ -138,20 +139,19 @@ class PermissionSelect(Static):
                     tr("permission.choice.pattern_detail", self._locale),
                 ),
             )
-            if tool_name == "bash"
+            if tool_name == "bash" and not self._single_use_only
             else self._localized_choices()
         )
 
     # 返回当前语言下的审批决策列表
     def _localized_choices(self) -> tuple[tuple[str, str, str, str], ...]:
-        return tuple(
+        choice_specs = (
             (
-                decision,
-                tr(f"permission.choice.{decision}", self._locale),
-                key,
-                tr(f"permission.choice.{detail}", self._locale),
+                ("allow_once", "1", "once_detail"),
+                ("deny_once", "2", "deny_detail"),
             )
-            for decision, key, detail in (
+            if self._single_use_only
+            else (
                 ("allow_once", "1", "once_detail"),
                 ("session_allow", "2", "session_detail"),
                 ("always_allow", "3", "remember_allow"),
@@ -159,12 +159,21 @@ class PermissionSelect(Static):
                 ("always_deny", "5", "remember_deny"),
             )
         )
+        return tuple(
+            (
+                decision,
+                tr(f"permission.choice.{decision}", self._locale),
+                key,
+                tr(f"permission.choice.{detail}", self._locale),
+            )
+            for decision, key, detail in choice_specs
+        )
 
     # 切换审批面板语言并保留光标和 hunk 选择
     def set_locale(self, locale: str) -> None:
         self._locale = locale
         self._choices = self._localized_choices()
-        if self._tool_name == "bash":
+        if self._tool_name == "bash" and not self._single_use_only:
             self._choices += (
                 (
                     "always_allow_pattern",
@@ -410,8 +419,11 @@ class PermissionSelect(Static):
             event.stop()
             self._pick("deny_once")
         else:
-            decision = self._KEY_MAP.get(key)
-            if decision is not None:
+            decision = (
+                "deny_once" if self._single_use_only and key == "2" else self._KEY_MAP.get(key)
+            )
+            available = {choice[0] for choice in self._choices}
+            if decision is not None and decision in available:
                 event.stop()
                 self._pick(decision)
 

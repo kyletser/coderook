@@ -257,6 +257,62 @@ def test_daemon_startup_locks_backup_before_migration(
     ]
 
 
+# 功能：验证用户按 Ctrl+C 停止前台 daemon 时安静退出并释放单写者锁
+# 设计：让事件循环入口关闭协程后抛出 KeyboardInterrupt，断言异常被消费且 finally 清理仍执行
+def test_daemon_startup_handles_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeLock:
+        # 初始化测试锁替身
+        def __init__(self, _path: Path) -> None:
+            return
+
+        # 记录成功获取入口互斥锁
+        def acquire(self) -> None:
+            calls.append("lock-acquire")
+
+        # 记录中断路径仍释放入口互斥锁
+        def release(self) -> None:
+            calls.append("lock-release")
+
+    class FakeApp:
+        # 初始化可接收入口注入的已持有锁
+        def __init__(self, *, env_file: Path | None = None) -> None:
+            assert env_file is None
+            self._daemon_lock: FakeLock | None = None
+
+        # 提供不会被真实调度的异步主循环
+        async def run(self) -> None:
+            return
+
+    # 模拟 asyncio.run 收到 Ctrl+C，并先关闭尚未调度的协程避免资源警告
+    def interrupt(awaitable: object) -> None:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        calls.append("interrupted")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(core_app, "DaemonLock", FakeLock)
+    monkeypatch.setattr(core_app, "ensure_v1_upgrade_backup", lambda: calls.append("backup"))
+    monkeypatch.setattr(core_app, "migrate_legacy_state", lambda: calls.append("migrate"))
+    monkeypatch.setattr(core_app, "CoreApp", FakeApp)
+    monkeypatch.setattr(core_app.asyncio, "run", interrupt)
+    monkeypatch.setattr(sys, "argv", ["coderook-core"])
+
+    core_app.run()
+
+    assert calls == [
+        "lock-acquire",
+        "backup",
+        "migrate",
+        "interrupted",
+        "lock-release",
+    ]
+
+
 # 功能：验证升级备份失败时不运行任何迁移且必定释放 daemon 单写者锁
 # 设计：令备份抛出异常并用调用序列断言 fail-closed 与 finally 清理语义
 def test_daemon_startup_backup_failure_blocks_migration(

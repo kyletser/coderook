@@ -2205,6 +2205,11 @@ function EventCard({
   };
   const toolId = textValue(event.payload.tool_use_id || event.payload.permission_id);
   const questionId = textValue(event.payload.question_id);
+  const rawPermissionParams = event.payload.params;
+  const permissionParams = rawPermissionParams && typeof rawPermissionParams === "object"
+    ? rawPermissionParams as Record<string, unknown>
+    : {};
+  const singleUsePermission = isPermission && Boolean(permissionParams._safety_notice);
   if (event.type === "agent.message") {
     const parts = Array.isArray(event.payload.content) ? event.payload.content : [];
     return <article className="message assistant pi-message">
@@ -2243,7 +2248,7 @@ function EventCard({
         {!responded && isPermission && toolId && (
           <div className="card-actions">
             <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_once", session_id: threadId }, tr("已允许本次操作", "Allowed once"))}>{tr("本次允许", "Allow once")}</button>
-            <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session", session_id: threadId }, tr("本会话已允许", "Allowed for this session"))}>{tr("本会话允许", "Allow for session")}</button>
+            {!singleUsePermission && <button onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "allow_session", session_id: threadId }, tr("本会话已允许", "Allowed for this session"))}>{tr("本会话允许", "Allow for session")}</button>}
             <button className="danger" onClick={() => void post(`/v1/permissions/${toolId}`, { decision: "deny_once", session_id: threadId }, tr("已拒绝", "Denied"))}>{tr("拒绝", "Deny")}</button>
           </div>
         )}

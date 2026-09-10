@@ -161,6 +161,28 @@ def test_permission_panel_shows_request_context_and_choices() -> None:
     assert "navigate" in plain
 
 
+# 功能：验证 Windows Shell 的逐次审批卡不展示实际不会生效的会话或永久授权
+# 设计：用 Core 注入的安全提示标记构造审批卡，直接检查可见选项和快捷键映射
+def test_permission_panel_limits_unsandboxed_shell_to_single_use_choices() -> None:
+    panel = PermissionSelect(
+        "tool-1",
+        "bash",
+        "command='git status' [NO OS SANDBOX: explicit approval required]",
+        {
+            "command": "git status --short",
+            "_safety_notice": "No OS sandbox is available on Windows.",
+        },
+    )
+
+    plain = render(panel._render_ui()).plain
+
+    assert "Allow once" in plain
+    assert "Deny" in plain
+    assert "Allow for session" not in plain
+    assert "Always allow" not in plain
+    assert [choice[2] for choice in panel._choices] == ["1", "2"]
+
+
 # 功能：统一 agent action 在 TUI 中显示自然的 Worker 动作和目标
 # 设计：直接验证 start 与 wait 文案，覆盖 action-family 不再回退为原始参数摘要
 def test_agent_action_uses_worker_labels() -> None:

@@ -3159,7 +3159,7 @@ class CoreApp:
             loop.add_signal_handler(signal.SIGINT, shutdown.set)
             loop.add_signal_handler(signal.SIGTERM, shutdown.set)
         except NotImplementedError:
-            logger.warning("signal handlers are not supported by this event loop")
+            logger.debug("signal handlers are not supported by this event loop")
 
         await shutdown.wait()
 
@@ -3223,6 +3223,9 @@ def run() -> None:
         migrate_legacy_state()
         app = CoreApp(env_file=args.env_file)
         app._daemon_lock = daemon_lock
-        asyncio.run(app.run())
+        try:
+            asyncio.run(app.run())
+        except KeyboardInterrupt:
+            pass
     finally:
         daemon_lock.release()
