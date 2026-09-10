@@ -64,7 +64,20 @@ def _render_llm_front(app: Any, event: dict[str, Any]) -> bool:
                 if kind == "thinking":
                     block.add_class("collapsed")
                 blocks[key] = block
-                app._append(block)
+                answer_block = next(
+                    (
+                        existing
+                        for existing_key, existing in blocks.items()
+                        if kind == "thinking"
+                        and existing_key[:2] == key[:2]
+                        and existing_key[2] == "text"
+                    ),
+                    None,
+                )
+                if answer_block is not None and hasattr(app, "_insert_before"):
+                    app._insert_before(block, answer_block)
+                else:
+                    app._append(block)
             block.set_content(text, finalized=event.get("phase") == "end")
         if event.get("phase") == "end" and event.get("role") != "custom":
             answer = "\n".join(

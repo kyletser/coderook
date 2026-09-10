@@ -80,6 +80,10 @@ class _FakeApp:
     def _append(self, widget: Any) -> None:
         self._appended.append(widget)
 
+    # 将控件插到已存在的兄弟控件之前，模拟真实时间线的顺序调整
+    def _insert_before(self, widget: Any, sibling: Any) -> None:
+        self._appended.insert(self._appended.index(sibling), widget)
+
     def _break_llm(self) -> None:
         self._current_llm = None
 
@@ -127,8 +131,8 @@ def _new_app() -> _FakeApp:
     return _FakeApp()
 
 
-# 功能：验证 Pi 正文和思考按内容类型分别显示，后到的思考不会折叠最终答案。
-# 设计：以同一消息的更新和完成快照驱动真实控件，断言正文展开、思考折叠且无重复块。
+# 功能：验证正文先流出时，后到的思考仍排列在最终回答之前且不会折叠回答
+# 设计：以同一消息的更新和完成快照驱动真实控件，断言语义顺序、折叠状态和块去重
 def test_pi_message_preserves_visible_answer() -> None:
     app = _new_app()
     event = {
@@ -142,7 +146,7 @@ def test_pi_message_preserves_visible_answer() -> None:
     ])
     render_event(app, event)
     assert len(app._appended) == 2
-    answer, thinking = app._appended
+    thinking, answer = app._appended
     assert answer.text == "Final answer"
     assert "answer" in answer.classes
     assert "collapsed" not in answer.classes

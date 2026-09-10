@@ -4794,6 +4794,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if follow:
             log_view.scroll_end(animate=False)
 
+    # 将后到的消息块插入同一模型回答的现有块之前并保持滚动跟随
+    def _insert_before(self, widget: Widget, sibling: Widget) -> None:
+        log_view = self.query_one("#log-view", VerticalScroll)
+        follow = log_view.is_vertical_scroll_end
+        log_view.mount(widget, before=sibling)
+        if follow:
+            log_view.scroll_end(animate=False)
+
     # 将恢复会话的历史消息与工具结果对账后转换为简洁且状态真实的 TUI 块
     def _append_history(self, messages: list[dict[str, Any]]) -> None:
         if not messages:
