@@ -157,6 +157,12 @@ async def _compact(session_id: str, focus: str, config: CodeRookConfig) -> int:
         {"session_id": session_id, "focus": focus},
     )
     if result is not None:
+        if result.get("status") == "not_needed":
+            print(
+                f"no compaction needed for {session_id}  "
+                f"context={result['original_tokens']} tokens"
+            )
+            return code
         print(
             f"compacted {session_id}  "
             f"{result['original_tokens']} -> {result['compacted_tokens']} tokens  "

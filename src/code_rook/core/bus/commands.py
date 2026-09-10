@@ -724,6 +724,8 @@ class SessionCompactCommand(BaseModel):
 
 
 class SessionCompactResult(BaseModel):
+    status: Literal["compacted", "not_needed"] = "compacted"
+    message: str = ""
     summary_tokens: int
     saved_tokens: int
     original_tokens: int = 0

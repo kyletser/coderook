@@ -2097,6 +2097,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self._session_id,
                 focus,
             )
+            if result.get("status") == "not_needed":
+                self._append(
+                    Static(
+                        f"[dim]{tr('app.compaction.not_needed', self._locale)}[/dim]",
+                        classes="log-line",
+                    )
+                )
+                return
             summary_tokens = result.get("summary_tokens", 0)
             saved_tokens = result.get("saved_tokens", 0)
             retained_messages = result.get("retained_messages", 0)

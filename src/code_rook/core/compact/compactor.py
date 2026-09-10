@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from code_rook.core.agent_runtime.summarization import complete_summary
 from code_rook.core.bus.events import (
@@ -124,6 +124,7 @@ class Compactor:
         if strategy not in {"session", "truncate", "structured", "adaptive_evidence"}:
             raise ValueError(f"unknown compaction strategy: {strategy}")
         self._strategy = strategy
+        self.skip_reason: Literal["not_needed", "not_beneficial"] | None = None
 
     # 将摘要专用请求和失败尝试追加到会话事实日志，保留原始对话不变
     def _audit_summary(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -141,6 +142,7 @@ class Compactor:
         *,
         trigger: str = "auto",
     ) -> CompactionResult | None:
+        self.skip_reason = None
         force = trigger == "overflow"
         reason = "overflow" if force else "manual" if trigger == "manual" else "threshold"
         will_retry = force
@@ -194,7 +196,7 @@ class Compactor:
                 step=context.step,
             )
         if result is None:
-            if self._lifecycle is not None:
+            if self._lifecycle is not None and self.skip_reason is None:
                 await self._lifecycle({
                     "type": "session_compact_failed", "reason": reason,
                     "errorMessage": "compaction failed or was not beneficial",
@@ -334,6 +336,7 @@ class Compactor:
             older, recent = split_recent_window(messages, ratio)
         if not older:
             logger.info("compactor: no old window available; skipping")
+            self.skip_reason = "not_needed"
             return None
 
         original_estimate = estimate_messages_tokens(messages)
@@ -427,6 +430,7 @@ class Compactor:
                 original_estimate,
                 compacted_tokens,
             )
+            self.skip_reason = "not_beneficial"
             return None
         return CompactionResult(
             summary=summary,
@@ -459,6 +463,7 @@ class Compactor:
 
         prepared = prepare_compaction(messages, self._keep_recent_tokens)
         if prepared is None:
+            self.skip_reason = "not_needed"
             return None
         sections: list[str] = []
         output_tokens = 0
@@ -511,6 +516,8 @@ class Compactor:
         before = estimate_messages_tokens(messages)
         after = estimate_messages_tokens(output)
         if not valid or after >= before:
+            if valid:
+                self.skip_reason = "not_beneficial"
             return None
         return CompactionResult(
             summary=summary,

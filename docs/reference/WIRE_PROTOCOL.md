@@ -7678,6 +7678,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 
 | Field | Type | Required |
 |---|---|---|
+| `status` | `string` | no |
+| `message` | `string` | no |
 | `summary_tokens` | `integer` | yes |
 | `saved_tokens` | `integer` | yes |
 | `original_tokens` | `integer` | no |
@@ -7690,6 +7692,20 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 ```json
 {
   "properties": {
+    "status": {
+      "default": "compacted",
+      "enum": [
+        "compacted",
+        "not_needed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "message": {
+      "default": "",
+      "title": "Message",
+      "type": "string"
+    },
     "summary_tokens": {
       "title": "Summary Tokens",
       "type": "integer"

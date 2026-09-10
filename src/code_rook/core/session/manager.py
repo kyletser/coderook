@@ -2612,6 +2612,11 @@ class SessionManager:
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
         host = await self.prepare_extensions(sid)
+        from code_rook.core.bus.commands import SessionCompactResult
+
+        messages = self._store.read_messages(sid)
+        session_dir = self._store.session_dir(sid)
+        config = self._compaction_config
         provider = self._provider
         if self._route_registry is not None or (host is not None and session.route_id):
             from code_rook.core.llm.factory import create_provider_for_resolved_route
@@ -2629,12 +2634,8 @@ class SessionManager:
         if provider is None:
             raise HandlerError(-32020, "provider not available for compaction")
         async with lock:
-            from code_rook.core.bus.commands import SessionCompactResult
             from code_rook.core.compact.compactor import Compactor
             from code_rook.core.context import ExecutionContext
-            messages = self._store.read_messages(sid)
-            session_dir = self._store.session_dir(sid)
-            config = self._compaction_config
             compactor = Compactor(
                 self._bus, session_dir, sid, store=self._store,
                 strategy=config.strategy, retain_ratio=config.retain_ratio,
@@ -2653,7 +2654,23 @@ class SessionManager:
                 compact_context, provider, focus=focus, trigger="manual",
             )
             if result is None:
-                raise HandlerError(-32021, "compaction failed or not beneficial")
+                if compactor.skip_reason in {"not_needed", "not_beneficial"}:
+                    estimated_tokens = estimate_messages_tokens(messages)
+                    return SessionCompactResult(
+                        status="not_needed",
+                        message=(
+                            "context already fits within the retained window"
+                            if compactor.skip_reason == "not_needed"
+                            else "compaction would not reduce the current context"
+                        ),
+                        summary_tokens=0,
+                        saved_tokens=0,
+                        original_tokens=estimated_tokens,
+                        compacted_tokens=estimated_tokens,
+                        retained_tokens=estimated_tokens,
+                        retained_messages=len(messages),
+                    )
+                raise HandlerError(-32021, "compaction failed")
             if self._hooks is not None:
                 await self._hooks.emit(
                     "compaction_completed",

@@ -84,6 +84,23 @@ async def test_manual_compaction_uses_runtime_settings(tmp_path: Path) -> None:
     assert "Keep API stable." in str(store.read_messages(session.id))
 
 
+# 功能：短会话手动压缩返回无需处理，而不是伪装成 Provider 或压缩故障。
+# 设计：不配置 Provider 并保持默认窗口，证明 Core 可仅根据现有上下文安全返回正常状态。
+async def test_manual_compaction_reports_short_context_as_not_needed(tmp_path: Path) -> None:
+    from code_rook.core.session.manager import SessionManager
+
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(store, MagicMock(), EventBus(), provider=MagicMock())
+    session = await manager.create("chat")
+    store.append_message(session.id, "user", "hello")
+
+    result = await manager.compact(session.id)
+
+    assert result.status == "not_needed"
+    assert result.original_tokens == result.compacted_tokens
+    assert result.saved_tokens == 0
+
+
 # 构造长任务和最近工具闭环，令固定窗口在同一任务中部切开。
 def _history() -> list[dict]:
     return [

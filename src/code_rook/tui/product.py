@@ -398,6 +398,7 @@ _TEXT: dict[str, dict[str, str]] = {
             "节省≈{saved} · 质量={quality}"
         ),
         "app.compaction.file": "摘要文件：{path}",
+        "app.compaction.not_needed": "当前上下文尚未达到压缩条件，无需整理。",
         "app.permission.changed": "权限模式 · {label}",
         "app.mode.changed": "工作模式 · {mode}",
         "app.trust.changed": "工作区信任 · {trust}",
@@ -1202,6 +1203,7 @@ _TEXT: dict[str, dict[str, str]] = {
             "saved≈{saved} · quality={quality}"
         ),
         "app.compaction.file": "summary file: {path}",
+        "app.compaction.not_needed": "The current context is already within the retained window.",
         "app.permission.changed": "Permission mode · {label}",
         "app.mode.changed": "Working mode · {mode}",
         "app.trust.changed": "Workspace trust · {trust}",
