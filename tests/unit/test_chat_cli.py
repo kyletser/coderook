@@ -11,6 +11,7 @@ from code_rook.cli.commands.chat import (
     _cancel_interrupted_run,
     _chat_async,
     _is_exit_command,
+    _queued_content,
     _unwrap_runtime_event,
 )
 from code_rook.core.config import CodeRookConfig
@@ -167,6 +168,16 @@ def test_chat_exit_commands_are_local() -> None:
     assert not _is_exit_command("exiting the function")
 
 
+# 功能：文本 Chat 只把显式队列前缀解析为后续消息并保留正文中的普通单词
+# 设计：覆盖中英文冒号、斜杠命令、空参数和相似自然语言，避免模糊匹配误排队
+def test_chat_queue_prefix_is_explicit() -> None:
+    assert _queued_content("queue: next step") == "next step"
+    assert _queued_content("排队：稍后验证") == "稍后验证"
+    assert _queued_content("/queue run tests") == "run tests"
+    assert _queued_content("/queue") == ""
+    assert _queued_content("explain the queue") is None
+
+
 # 功能：持久线程订阅产生的 runtime.event 能恢复为 ChatPrinter 可处理的原始事件。
 # 设计：使用真实 envelope 字段验证事件类型、会话和 Turn 标识都被正确投影。
 def test_chat_unwraps_runtime_event() -> None:
@@ -239,6 +250,69 @@ async def test_chat_starts_turn_without_blocking_input(
     assert ("turn.start", {"thread_id": "sess-1", "content": "hello"}) in calls
     assert ("run.cancel", {"run_id": "run-1"}) in calls
     assert not any(method == "session.send_message" for method, _params in calls)
+
+
+# 功能：文本 Chat 在活动 Turn 中把显式后续消息写入 Core 持久队列而不是当作纠偏
+# 设计：连续输入首条任务、queue 前缀和退出词，断言排队发生在取消前且正文已去除控制前缀
+async def test_chat_queues_follow_up_during_active_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    inputs = iter(["hello", "queue: run tests next", "quit"])
+
+    class _FakeClient:
+        # 接收 ChatPrinter 回调以保持真实客户端接口形状
+        def on_event(self, handler: object) -> None:
+            self.handler = handler
+
+        # 模拟本地 Core 已连接
+        async def connect(self) -> None:
+            return None
+
+        # 记录会话、Turn、持久队列和取消命令
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, Any],
+        ) -> dict[str, Any]:
+            calls.append((method, params))
+            if method == "session.create":
+                return {"session_id": "sess-queue"}
+            if method == "turn.start":
+                return {"turn_id": "run-queue"}
+            if method == "session.queue_message":
+                return {"message": {"id": "queue-1"}, "handled": False}
+            return {}
+
+        # 保持事件循环存活直到 Chat 完成清理
+        async def run_event_loop(self) -> None:
+            await asyncio.Event().wait()
+
+        # 模拟关闭连接且不引入额外副作用
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "code_rook.cli.commands.chat.SocketClient.from_config",
+        lambda _config: _FakeClient(),
+    )
+    monkeypatch.setattr(
+        "code_rook.cli.commands.chat._readline",
+        lambda _prompt: asyncio.sleep(0, result=next(inputs)),
+    )
+
+    assert await _chat_async(CodeRookConfig()) == 0
+
+    assert (
+        "session.queue_message",
+        {"session_id": "sess-queue", "content": "run tests next"},
+    ) in calls
+    assert not any(
+        method == "run.steer" and params.get("content") == "queue: run tests next"
+        for method, params in calls
+    )
+    assert "[queued]" in capsys.readouterr().out
 
 
 # 功能：新建文本 Chat 未提交消息就退出时删除空会话。

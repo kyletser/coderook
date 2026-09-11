@@ -15,11 +15,24 @@ _DECISION_MAP: dict[str, str] = {
     "d": "always_deny",
 }
 _EXIT_COMMANDS = frozenset({"exit", "quit", "/exit", "/quit"})
+_QUEUE_PREFIXES = ("queue:", "queue：", "排队:", "排队：", "/queue ")
 
 
 # 识别文本 REPL 的本地退出指令，避免把常见控制词发送给模型。
 def _is_exit_command(content: str) -> bool:
     return content.strip().casefold() in _EXIT_COMMANDS
+
+
+# 提取文本 Chat 的显式后续消息，未使用队列前缀时返回 None
+def _queued_content(content: str) -> str | None:
+    clean = content.strip()
+    folded = clean.casefold()
+    if folded == "/queue":
+        return ""
+    for prefix in _QUEUE_PREFIXES:
+        if folded.startswith(prefix):
+            return clean[len(prefix):].strip()
+    return None
 
 
 # 将持久线程通道的 runtime.event 恢复为文本 Chat 使用的原始事件形状。
@@ -265,6 +278,19 @@ async def _chat_async(
 
             try:
                 if printer.active_run_id is not None:
+                    queued = _queued_content(content)
+                    if queued is not None or content.startswith("!"):
+                        queued = content if queued is None else queued
+                        if not queued:
+                            print("  enter /queue <message> or queue: <message>")
+                            continue
+                        result = await client.send_command(
+                            "session.queue_message",
+                            {"session_id": session_id, "content": queued},
+                        )
+                        submitted_message = True
+                        print("[handled by extension]" if result.get("handled") else "[queued]")
+                        continue
                     await client.send_command(
                         "run.steer",
                         {"run_id": printer.active_run_id, "content": content},
