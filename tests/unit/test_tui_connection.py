@@ -7,7 +7,17 @@ import pytest
 
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.transport.socket_client import IpcError
-from code_rook.tui.connection import TuiConnection, _select_recent_session
+from code_rook.tui.connection import (
+    _THREAD_TOPICS,
+    TuiConnection,
+    _select_recent_session,
+)
+
+
+# 功能：验证持久会话订阅包含队列生命周期事件
+# 设计：直接检查公开给 Core 的 topic 集，防止消息派发完成后 TUI 的队列数量永久陈旧
+def test_thread_subscription_includes_queue_lifecycle() -> None:
+    assert "queue.*" in _THREAD_TOPICS
 
 
 # 功能：验证连接层用户可见故障文案跟随 App 的中英文 locale

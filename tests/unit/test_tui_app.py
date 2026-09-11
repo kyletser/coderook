@@ -1311,6 +1311,37 @@ async def test_restore_queued_messages_returns_content_to_composer() -> None:
     ]
 
 
+# 功能：验证状态栏只统计真正待处理的队列消息
+# 设计：混合 queued、dispatching 与 blocked 状态，确保当前正在执行的消息不再残留为 queue 1
+async def test_refresh_message_queue_excludes_dispatching_message() -> None:
+    class _Client:
+        # 返回覆盖三种持久状态的队列快照
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, str],
+        ) -> dict[str, Any]:
+            assert method == "session.list_queue"
+            assert params == {"session_id": "sess-queue"}
+            return {
+                "messages": [
+                    {"id": "queued", "status": "queued"},
+                    {"id": "running", "status": "dispatching"},
+                    {"id": "blocked", "status": "blocked"},
+                ]
+            }
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-queue"
+    app._update_status_bar = MagicMock()  # type: ignore[method-assign]
+
+    await app._refresh_message_queue()
+
+    assert app._queued_message_count == 2
+    app._update_status_bar.assert_called_once_with()
+
+
 # 功能：验证 TUI 稳定命令包含常用入口且默认隐藏 Labs 命令
 # 设计：直接读取候选列表，同时断言实验命令不会污染首次使用界面
 def test_tui_builtin_commands_include_model_picker() -> None:
@@ -3299,6 +3330,61 @@ async def test_busy_input_steers_active_run() -> None:
         ]
         assert prompt.text == ""
         assert prompt.border_title == "补充要求已发送"
+
+
+# 功能：验证直接 Shell 运行中的普通输入会排队而不是发送必然失败的纠偏
+# 设计：标记活动 run 为 user_shell，并断言提交走持久队列且不调用 run.steer
+async def test_busy_user_shell_input_queues_follow_up() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 记录 Shell 运行期间的后续消息提交
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {"message": {"id": "queue-1"}}
+
+    class ShellHarness(CodeRookTuiApp):
+        # 跳过 socket 连接并聚焦输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = ShellHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause()
+        scheduled: list[asyncio.Task[None]] = []
+
+        # 用 asyncio task 执行 TUI 队列 worker
+        def schedule(
+            coroutine: Coroutine[Any, Any, None],
+            **_kwargs: object,
+        ) -> asyncio.Task[None]:
+            task = asyncio.create_task(coroutine)
+            scheduled.append(task)
+            return task
+
+        async def refreshed() -> None:
+            return None
+
+        app.run_worker = schedule  # type: ignore[method-assign]
+        app._refresh_message_queue = refreshed  # type: ignore[method-assign]
+        app._client = _FakeClient()  # type: ignore[assignment]
+        app._session_id = "sess-shell"
+        app._active_run_id = "run-shell"
+        app._active_run_kind = "user_shell"
+        app._busy = True
+        prompt = app.query_one("#prompt", ChatTextArea)
+        prompt.text = "命令完成后解释输出"
+
+        await app.on_chat_text_area_submitted(ChatTextArea.Submitted(prompt))
+        await asyncio.gather(*scheduled)
+
+        assert [method for method, _params in calls] == ["session.queue_message"]
+        assert calls[0][1]["content"] == "命令完成后解释输出"
+        assert prompt.text == ""
 
 
 # 功能：验证 run 尚未返回 ID 时提交的纠偏草稿不会被清空

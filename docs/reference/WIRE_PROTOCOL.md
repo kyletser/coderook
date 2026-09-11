@@ -11124,6 +11124,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `goal` | `string` | yes |
+| `run_kind` | `string` | no |
 | `ledger_seq` | `integer | null` | no |
 | `ts` | `string` | yes |
 
@@ -11142,6 +11143,15 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     },
     "goal": {
       "title": "Goal",
+      "type": "string"
+    },
+    "run_kind": {
+      "default": "agent",
+      "enum": [
+        "agent",
+        "user_shell"
+      ],
+      "title": "Run Kind",
       "type": "string"
     },
     "ledger_seq": {

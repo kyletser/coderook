@@ -335,6 +335,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._active_run_id: str | None = None
+        self._active_run_kind: Literal["agent", "user_shell"] = "agent"
         self._active_runtime_mode: RuntimeMode | None = None
         self._active_goal_id: str | None = None
         self._active_goal_status: str = ""
@@ -1598,9 +1599,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             event.text_area.record_history(content)
             event.text_area.text = ""
             queue_prefixes = ("queue:", "queue：", "排队:", "排队：")
-            if parse_user_shell(content) or content.casefold().startswith(queue_prefixes):
-                queued = content if parse_user_shell(content) else (
+            is_user_shell = parse_user_shell(content) is not None
+            has_queue_prefix = content.casefold().startswith(queue_prefixes)
+            if (
+                self._active_run_kind == "user_shell"
+                or is_user_shell
+                or has_queue_prefix
+            ):
+                queued = (
                     content.split(":", 1)[-1].split("：", 1)[-1].strip()
+                    if has_queue_prefix
+                    else content
                 )
                 if queued:
                     attachments = list(self._pending_image_attachments)
@@ -1978,13 +1987,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         visible_content: str | None = None,
     ) -> None:
         self._busy = True
+        self._active_run_kind = (
+            "user_shell" if parse_user_shell(content) is not None else "agent"
+        )
         self._active_runtime_mode = runtime_mode
         self._cancel_armed = False
         prompt.text = ""
         prompt.disabled = False
         prompt.read_only = False
         prompt.border_title = (
-            tr("shell.planning", self._locale)
+            tr("shell.user_shell_running", self._locale)
+            if self._active_run_kind == "user_shell"
+            else tr("shell.planning", self._locale)
             if runtime_mode == RuntimeMode.PLAN
             else tr("shell.running", self._locale)
         )
@@ -4609,6 +4623,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._titled = bool(title and title != "Untitled")
         self._first_user_text = ""
         self._active_run_id = None
+        self._active_run_kind = "agent"
         self._active_runtime_mode = None
         self._busy = False
         self._cancel_requested = False
@@ -4792,7 +4807,15 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         except (IpcError, RuntimeError, OSError):
             return
         messages = result.get("messages", [])
-        self._queued_message_count = len(messages) if isinstance(messages, list) else 0
+        self._queued_message_count = (
+            sum(
+                1
+                for item in messages
+                if isinstance(item, dict) and item.get("status") in {"queued", "blocked"}
+            )
+            if isinstance(messages, list)
+            else 0
+        )
         self._update_status_bar()
 
     # 将用户运行中纠偏发送给当前活动 run

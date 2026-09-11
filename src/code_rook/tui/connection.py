@@ -46,6 +46,7 @@ _THREAD_TOPICS = [
     "plan.*",
     "strategy.*",
     "recovery.*",
+    "queue.*",
     "user_question.*",
     "lsp.*",
     "background.*",

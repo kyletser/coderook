@@ -59,6 +59,7 @@ class RunStartedEvent(BaseModel):
     type: Literal["run.started"] = "run.started"
     run_id: str
     goal: str
+    run_kind: Literal["agent", "user_shell"] = "agent"
     ledger_seq: int | None = Field(default=None, ge=1)
     ts: str  # ISO 8601
 

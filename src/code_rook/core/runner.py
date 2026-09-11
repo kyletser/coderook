@@ -246,7 +246,12 @@ class AgentRunner:
             ):
                 writer.subscribe(bus)
                 bridge.subscribe(bus)
-                await bus.publish(RunStartedEvent(run_id=run_id, goal=request.command, ts=_now()))
+                await bus.publish(RunStartedEvent(
+                    run_id=run_id,
+                    goal=request.command,
+                    run_kind="user_shell",
+                    ts=_now(),
+                ))
                 await bus.publish(RunPhaseChangedEvent(
                     run_id=run_id,
                     phase="executing",

@@ -194,6 +194,7 @@ def _render_llm_tail(app: Any, t: str, event: dict[str, Any]) -> None:
 def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
     if t == "session.waiting_for_input":
         app._busy = False
+        app._active_run_kind = "agent"
         app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
@@ -223,6 +224,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "session.interrupted":
         app._busy = False
         app._active_run_id = None
+        app._active_run_kind = "agent"
         app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
@@ -237,6 +239,7 @@ def _render_session(app: Any, t: str, event: dict[str, Any]) -> None:
 
     elif t == "session.closed":
         app._busy = False
+        app._active_run_kind = "agent"
         app._active_runtime_mode = None
         app._cancel_requested = False
         app._clear_user_question()
@@ -381,12 +384,18 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
     elif t == "run.started":
         run_id = str(event.get("run_id", ""))
         app._active_run_id = run_id
+        app._active_run_kind = (
+            "user_shell" if event.get("run_kind") == "user_shell" else "agent"
+        )
         # daemon 主动发起的 run（队列自动派发/Web 发起/goal 续跑）不经 _begin_message，
         # 必须在此同步 busy 状态，否则状态栏显示 ready 且 Ctrl+C 取消静默无效
         if not app._busy:
             app._busy = True
             app._update_header("running")
             app._update_status_bar()
+        prompt = app._prompt()
+        if prompt is not None and app._active_run_kind == "user_shell":
+            prompt.border_title = tr("shell.user_shell_running", _locale(app))
         app._current_steps.pop(run_id, None)
         app._cancel_requested = False
         app._cancel_armed = False
@@ -409,6 +418,7 @@ def _render_run(app: Any, t: str, event: dict[str, Any]) -> None:
         ]:
             app._tool_step_groups.pop(group_key, None)
         app._active_run_id = None
+        app._active_run_kind = "agent"
         app._active_runtime_mode = None
         app._cancel_requested = False
         app._cancel_armed = False
