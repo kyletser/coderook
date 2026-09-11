@@ -9,6 +9,29 @@ type Entry = {
   preview: string;
 };
 
+export type CompactionResult = {
+  status?: string;
+  original_tokens: number;
+  compacted_tokens: number;
+  saved_tokens: number;
+};
+
+export function compactionResultText(
+  result: CompactionResult,
+  tr: (zh: string, en: string) => string,
+): string {
+  if (result.status === "not_needed" || result.saved_tokens <= 0) {
+    return tr(
+      `无需压缩：当前上下文已经足够精简（${result.original_tokens} tokens）`,
+      `No compaction needed: the current context is already compact (${result.original_tokens} tokens)`,
+    );
+  }
+  return tr(
+    `已整理上下文：${result.original_tokens} → ${result.compacted_tokens} tokens，节省 ${result.saved_tokens}`,
+    `Context compacted: ${result.original_tokens} → ${result.compacted_tokens} tokens, ${result.saved_tokens} saved`,
+  );
+}
+
 export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: {
   threadId: string;
   tr(zh: string, en: string): string;
@@ -67,14 +90,11 @@ export function SessionTreePanel({ threadId, tr, onFork, onNavigate, onError }: 
     setCompacting(true);
     setCompactionResult("");
     try {
-      const result = await request<{ original_tokens: number; compacted_tokens: number; saved_tokens: number }>(
+      const result = await request<CompactionResult>(
         `/v1/threads/${encodeURIComponent(threadId)}/compact`,
         { method: "POST", body: JSON.stringify({ focus }) },
       );
-      setCompactionResult(tr(
-        `已整理上下文：${result.original_tokens} → ${result.compacted_tokens} tokens，节省 ${result.saved_tokens}`,
-        `Context compacted: ${result.original_tokens} → ${result.compacted_tokens} tokens, ${result.saved_tokens} saved`,
-      ));
+      setCompactionResult(compactionResultText(result, tr));
     } catch (error) {
       onError(String(error));
     } finally {
