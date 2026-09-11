@@ -1294,6 +1294,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         log_view = self.query_one("#log-view", VerticalScroll)
         log_view.scroll_end(animate=False)
 
+    # 单次取消当前活动任务并异步通知 Core
     async def action_cancel_run(self) -> None:
         if (
             self._client is None
@@ -1301,15 +1302,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             or not self._busy
             or self._cancel_requested
         ):
-            return
-        if not self._cancel_armed:
-            self._cancel_armed = True
-            self._append(
-                Static(
-                    f"[yellow]{tr('app.cancel.confirm', self._locale)}[/yellow]",
-                    classes="log-line",
-                )
-            )
             return
         run_id = self._active_run_id
         self._cancel_requested = True
@@ -1325,7 +1317,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def action_abort_run(self) -> None:
         if self._active_run_id is None or not self._busy:
             return
-        self._cancel_armed = True
         await self.action_cancel_run()
 
     # 同时写入 Textual OSC 52 和 Windows 系统剪贴板，兼容不同终端

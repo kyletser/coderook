@@ -348,9 +348,9 @@ async def test_tui_adopts_core_workspace_change(tmp_path: Path) -> None:
         create.assert_awaited_once_with()
 
 
-# 功能：验证 Ctrl+C 取消任务需要二次确认，第一次只提示不发送取消
-# 设计：挂载 TUI 并替换取消 worker，连续两次触发绑定动作检查提示与实际取消的先后顺序
-async def test_cancel_run_requires_second_ctrl_c() -> None:
+# 功能：验证 Ctrl+C 在活动任务中单次触发取消请求
+# 设计：挂载 TUI 并替换取消 worker，直接调用一次绑定动作锁定界面提示与实际行为一致
+async def test_cancel_run_immediately_requests_cancellation() -> None:
     cancelled: list[str] = []
 
     class CancelHarness(CodeRookTuiApp):
@@ -368,12 +368,6 @@ async def test_cancel_run_requires_second_ctrl_c() -> None:
         app._client = _FakeClient()
         app._busy = True
         app._active_run_id = "run-1"
-
-        await app.action_cancel_run()
-        await pilot.pause()
-
-        assert cancelled == []
-        assert app._cancel_armed
 
         await app.action_cancel_run()
         await pilot.pause()
