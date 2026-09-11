@@ -2705,6 +2705,7 @@ function DrawerPanel({
 
 function FilesPanel({ initialFile, onReference, onError }: { initialFile: string; onReference(path: string): void; onError(value: string): void }): ReactElement {
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [currentPath, setCurrentPath] = useState(".");
   const [preview, setPreview] = useState<{ path: string; content: string; binary: boolean } | null>(null);
@@ -2724,6 +2725,8 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
   }, [initialFile, onError]);
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(true);
+    setEntries([]);
     const timer = window.setTimeout(() => {
       request<{ entries: WorkspaceEntry[] }>(
         `/v1/workspace/files?path=${encodeURIComponent(currentPath)}&query=${encodeURIComponent(query)}`,
@@ -2734,7 +2737,8 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
           if (!controller.signal.aborted) {
             onError(reason instanceof Error ? reason.message : String(reason));
           }
-        });
+        })
+        .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     }, 150);
     return () => {
       window.clearTimeout(timer);
@@ -2757,7 +2761,11 @@ function FilesPanel({ initialFile, onReference, onError }: { initialFile: string
   return <div className="panel-content">
     {!preview && <div className="file-navigation"><button disabled={currentPath === "."} onClick={() => setCurrentPath(parentWorkspacePath(currentPath))}>←</button><span title={currentPath}>{currentPath === "." ? tr("工作区", "Workspace") : currentPath}</span></div>}
     <input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr("搜索文件…", "Search files…")} />
-    {preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← {tr("返回", "Back")}</button><button onClick={() => onReference(preview.path)}>{tr("引用", "Reference")} @</button></div><b>{preview.path}</b><pre>{preview.binary ? tr("二进制文件暂不显示", "Binary file preview is unavailable") : preview.content}</pre></div> : <div className="file-list">{entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.name}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}</div>}
+    {preview ? <div className="file-preview"><div><button onClick={() => setPreview(null)}>← {tr("返回", "Back")}</button><button onClick={() => onReference(preview.path)}>{tr("引用", "Reference")} @</button></div><b>{preview.path}</b><pre>{preview.binary ? tr("二进制文件暂不显示", "Binary file preview is unavailable") : preview.content}</pre></div> : <div className="file-list">
+      {loading && <p className="empty">{tr("正在读取文件…", "Loading files…")}</p>}
+      {!loading && entries.length === 0 && <p className="empty">{query.trim() ? tr("没有匹配的文件。", "No matching files.") : tr("这个文件夹还是空的。", "This folder is empty.")}</p>}
+      {entries.map((entry) => <button key={entry.path} onClick={() => void open(entry)}><span>{entry.kind === "directory" ? "▸" : "·"} {entry.name}</span><small>{entry.size === null ? "" : `${entry.size} B`}</small></button>)}
+    </div>}
   </div>;
 }
 
