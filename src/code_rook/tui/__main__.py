@@ -16,7 +16,10 @@ from code_rook.cli.commands.core import (
     ensure_core_running,
     validate_core_workspace,
 )
-from code_rook.cli.main import _prepare_file_referenced_input
+from code_rook.cli.main import (
+    _prepare_file_referenced_input,
+    _resolve_requested_route_and_model,
+)
 from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
@@ -81,17 +84,23 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     config = get_config() if env_file is None else get_config(env_file=env_file)
     routes = RouteStore()
     active_route = routes.active()
-    requested_route_id = str(getattr(args, "route", "") or "")
-    requested_model = str(getattr(args, "model", "") or "")
+    raw_route_id = str(getattr(args, "route", "") or "") or None
+    raw_model = str(getattr(args, "model", "") or "") or None
+    try:
+        requested_route, requested_model_value = _resolve_requested_route_and_model(
+            raw_route_id,
+            raw_model,
+            routes,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    requested_route_id = requested_route or ""
+    requested_model = requested_model_value or ""
     if requested_route_id:
         try:
             routes.get(requested_route_id)
         except RouteStoreError as exc:
             raise SystemExit(f"Unknown Provider route: {requested_route_id}") from exc
-    elif requested_model:
-        if active_route is None:
-            raise SystemExit("--model requires --route when no active route is configured")
-        requested_route_id = active_route.id
     _setup_logging(config.logging.level)
     try:
         if args.no_auto_core:

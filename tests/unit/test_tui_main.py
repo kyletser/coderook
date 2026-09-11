@@ -359,6 +359,39 @@ def test_tui_main_passes_initial_model_selection(
     app.run.assert_called_once_with()
 
 
+# 功能：TUI 支持通过 route/model 单参数选择已配置路由及模型
+# 设计：复用启动入口并断言应用收到拆分后的值，覆盖交互模式与打印模式的一致性
+def test_tui_main_accepts_provider_prefixed_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    route = SimpleNamespace(id="aliyun", model="qwen-default", catalog_id="aliyun")
+    route_store = MagicMock()
+    route_store.active.return_value = route
+    route_store.get.return_value = route
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook-tui", "--model", "aliyun/qwen3.8-flash"],
+    )
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: route_store)
+    monkeypatch.setattr(tui_main, "list_models", lambda *_args: ["qwen-default"])
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda _config: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    assert factory.call_args.kwargs["initial_route_id"] == "aliyun"
+    assert factory.call_args.kwargs["initial_model"] == "qwen3.8-flash"
+    app.run.assert_called_once_with()
+
+
 # 功能：TUI 入口把位置参数合并为连接成功后自动提交的一条初始任务。
 # 设计：隔离 Core 与 Textual，仅检查构造参数，避免测试中发起真实模型请求。
 def test_tui_main_passes_initial_prompt(

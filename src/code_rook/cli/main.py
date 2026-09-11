@@ -61,7 +61,7 @@ from code_rook.core.input_context import (
     resolve_file_references,
 )
 from code_rook.core.llm.credentials import CredentialStoreError
-from code_rook.core.llm.route_store import RouteStore
+from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
 from code_rook.core.processes import mark_agent_process_environment
@@ -200,16 +200,30 @@ def _prepare_file_referenced_input(
     )
 
 
-# 为单次模型覆盖补齐活动 route，避免仅有模型 ID 时由 Core 猜测 Provider
-def _resolve_requested_route(route_id: str | None, model: str | None) -> str | None:
+# 解析显式 Route/模型或已配置的 route/model 简写，保留普通含斜杠模型 ID
+def _resolve_requested_route_and_model(
+    route_id: str | None,
+    model: str | None,
+    route_store: RouteStore | None = None,
+) -> tuple[str | None, str | None]:
     if route_id:
-        return route_id
+        return route_id, model
     if not model:
-        return None
-    active = RouteStore().active()
+        return None, None
+    routes = route_store or RouteStore()
+    if "/" in model:
+        candidate_route, candidate_model = model.split("/", 1)
+        if candidate_route and candidate_model:
+            try:
+                routes.get(candidate_route)
+            except RouteStoreError:
+                pass
+            else:
+                return candidate_route, candidate_model
+    active = routes.active()
     if active is None:
         raise ValueError("--model requires --route when no active route is configured")
-    return active.id
+    return active.id, model
 
 
 # 解析逗号分隔的模型工具集并保留用户给出的稳定顺序
@@ -348,7 +362,10 @@ def _run_cli() -> int:
         quick.add_argument("message", nargs="*", help="Task to execute")
         quick_args = quick.parse_args(sys.argv[1:])
         try:
-            requested_route = _resolve_requested_route(quick_args.route, quick_args.model)
+            requested_route, requested_model = _resolve_requested_route_and_model(
+                quick_args.route,
+                quick_args.model,
+            )
         except ValueError as exc:
             quick.error(str(exc))
         visible_goal = " ".join(quick_args.message).strip()
@@ -396,7 +413,7 @@ def _run_cli() -> int:
             fork_session_id=quick_args.fork,
             continue_recent=quick_args.continue_recent,
             route_id=requested_route,
-            model=quick_args.model,
+            model=requested_model,
             thinking_level=quick_args.thinking,
             system_prompt=quick_args.system_prompt,
             append_system_prompt=quick_args.append_system_prompt,
@@ -1083,7 +1100,10 @@ def _run_cli() -> int:
         if args.question_mode == "preset" and not args.answer:
             parser.error("--answer is required in preset question mode")
         try:
-            requested_route = _resolve_requested_route(args.route, args.model)
+            requested_route, requested_model = _resolve_requested_route_and_model(
+                args.route,
+                args.model,
+            )
         except ValueError as exc:
             parser.error(str(exc))
         try:
@@ -1106,7 +1126,7 @@ def _run_cli() -> int:
             resume_session_id=args.resume,
             fork_session_id=args.fork,
             route_id=requested_route,
-            model=args.model,
+            model=requested_model,
             thinking_level=args.thinking,
             system_prompt=args.system_prompt,
             append_system_prompt=args.append_system_prompt,

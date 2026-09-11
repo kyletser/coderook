@@ -540,6 +540,44 @@ def test_print_shorthand_sets_session_name(monkeypatch) -> None:
     assert captured["goal"] == "检查登录逻辑"
 
 
+# 功能：已配置的 route/model 简写会拆成独立 Route 与模型覆盖
+# 设计：使用最小 RouteStore stub 同时覆盖命中分支，避免依赖用户真实 Provider 配置
+def test_resolve_provider_prefixed_model_uses_matching_route() -> None:
+    route = SimpleNamespace(id="aliyun")
+    routes = SimpleNamespace(get=lambda route_id: route, active=lambda: route)
+
+    resolved = cli_main._resolve_requested_route_and_model(
+        None,
+        "aliyun/qwen3.8-flash",
+        routes,
+    )
+
+    assert resolved == ("aliyun", "qwen3.8-flash")
+
+
+# 功能：模型自身带斜杠但前缀不是 Route 时仍由活动 Route 原样承载
+# 设计：让 get 明确抛出 RouteStoreError，验证 OpenRouter 风格模型 ID 不被错误拆分
+def test_resolve_slash_model_preserves_unknown_route_prefix() -> None:
+    active = SimpleNamespace(id="openrouter")
+
+    class _Routes:
+        # 模拟没有与模型前缀同名的已配置 Route
+        def get(self, _route_id: str) -> None:
+            raise cli_main.RouteStoreError("missing")
+
+        # 返回承载完整模型 ID 的活动 Route
+        def active(self) -> SimpleNamespace:
+            return active
+
+    resolved = cli_main._resolve_requested_route_and_model(
+        None,
+        "anthropic/claude-sonnet",
+        _Routes(),
+    )
+
+    assert resolved == ("openrouter", "anthropic/claude-sonnet")
+
+
 # 功能：脚本 run 可选择逗号分隔的模型工具并在重复项中保持稳定顺序。
 # 设计：通过公开 argparse 入口传入 read,bash,read，捕获业务调用确认去重后目录与权限参数独立。
 def test_run_command_selects_model_tools(monkeypatch) -> None:
