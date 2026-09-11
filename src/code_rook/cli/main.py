@@ -129,7 +129,11 @@ def _prepare_file_referenced_input(
 ) -> tuple[str, list[Path]]:
     references = list(standalone_references or [])
     references.extend(extract_file_reference_tokens(content))
-    resolved = resolve_file_references(workspace, dict.fromkeys(references))
+    resolved = resolve_file_references(
+        workspace,
+        dict.fromkeys(references),
+        strict=True,
+    )
     images = [
         workspace / reference
         for reference in resolved
@@ -293,15 +297,18 @@ def _run_cli() -> int:
         goal = _merge_piped_input(visible_goal, piped_input)
         if not goal:
             quick.error("a task or piped input is required")
-        goal, image_paths = _prepare_file_referenced_input(
-            goal,
-            Path.cwd(),
-            standalone_references=[
-                value[1:]
-                for value in quick_args.message
-                if value.startswith("@") and len(value) > 1
-            ],
-        )
+        try:
+            goal, image_paths = _prepare_file_referenced_input(
+                goal,
+                Path.cwd(),
+                standalone_references=[
+                    value[1:]
+                    for value in quick_args.message
+                    if value.startswith("@") and len(value) > 1
+                ],
+            )
+        except ValueError as exc:
+            quick.error(str(exc))
         migrate_legacy_state()
         config = (
             get_config()
@@ -1003,7 +1010,10 @@ def _run_cli() -> int:
             requested_route = _resolve_requested_route(args.route, args.model)
         except ValueError as exc:
             parser.error(str(exc))
-        goal, image_paths = _prepare_file_referenced_input(args.goal, Path.cwd())
+        try:
+            goal, image_paths = _prepare_file_referenced_input(args.goal, Path.cwd())
+        except ValueError as exc:
+            parser.error(str(exc))
         cmd_run(
             goal,
             config,

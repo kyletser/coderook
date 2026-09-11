@@ -52,10 +52,13 @@ def list_workspace_file_references(workspace: Path, *, limit: int = 5000) -> lis
 def resolve_file_references(
     workspace: Path,
     references: Iterable[str],
+    *,
+    strict: bool = False,
 ) -> list[str]:
     root = workspace.resolve()
     resolved: list[str | None] = []
-    pending: list[tuple[int, str, list[str]]] = []
+    pending: list[tuple[int, str, str, list[str]]] = []
+    unresolved: list[str] = []
     for raw_value in references:
         raw = raw_value.strip().removeprefix("@").strip(".,;，。；:：")
         if not raw:
@@ -64,16 +67,18 @@ def resolve_file_references(
         try:
             relative = candidate.relative_to(root)
         except ValueError:
+            unresolved.append(raw)
             continue
         if candidate.is_file():
             resolved.append(relative.as_posix())
             continue
         name = Path(raw).name
         if not name:
+            unresolved.append(raw)
             continue
         slot = len(resolved)
         resolved.append(None)
-        pending.append((slot, name.casefold(), []))
+        pending.append((slot, raw, name.casefold(), []))
 
     if pending:
         for directory, dirnames, filenames in os.walk(root):
@@ -82,7 +87,9 @@ def resolve_file_references(
             )
             for filename in sorted(filenames):
                 folded = filename.casefold()
-                matching = [item for item in pending if len(item[2]) < 2 and item[1] in folded]
+                matching = [
+                    item for item in pending if len(item[3]) < 2 and item[2] in folded
+                ]
                 if not matching:
                     continue
                 path = Path(directory) / filename
@@ -91,13 +98,20 @@ def resolve_file_references(
                     relative_label = target.relative_to(root).as_posix()
                 except ValueError:
                     continue
-                for _slot, _name, matches in matching:
+                for _slot, _raw, _name, matches in matching:
                     matches.append(relative_label)
-            if all(len(matches) >= 2 for _slot, _name, matches in pending):
+            if all(len(matches) >= 2 for _slot, _raw, _name, matches in pending):
                 break
-        for slot, _name, matches in pending:
+        for slot, raw, _name, matches in pending:
             if len(matches) == 1:
                 resolved[slot] = matches[0]
+            else:
+                unresolved.append(raw)
+    if strict and unresolved:
+        labels = ", ".join(f"@{value}" for value in dict.fromkeys(unresolved))
+        raise ValueError(
+            "file reference not found, ambiguous, or outside the workspace: " + labels
+        )
     return list(dict.fromkeys(item for item in resolved if item is not None))[:8]
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from code_rook.core.input_context import (
     augment_file_references,
     extract_file_reference_tokens,
@@ -56,6 +58,23 @@ def test_resolve_file_references_skips_generated_directories(tmp_path: Path) -> 
     assert resolve_file_references(tmp_path, ["authservice"]) == [
         "src/AuthService.py"
     ]
+
+
+# 功能：脚本入口可要求所有显式文件引用唯一解析，避免缺少上下文时仍调用模型。
+# 设计：同时构造重名和缺失引用，断言严格模式给出原始标记而宽松模式保持兼容。
+def test_resolve_file_references_strict_mode_rejects_unresolved_refs(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "shared.py").write_text("a", encoding="utf-8")
+    (tmp_path / "b" / "shared.py").write_text("b", encoding="utf-8")
+
+    assert resolve_file_references(tmp_path, ["shared.py", "missing.py"]) == []
+    with pytest.raises(ValueError, match=r"@shared\.py, @missing\.py"):
+        resolve_file_references(
+            tmp_path,
+            ["shared.py", "missing.py"],
+            strict=True,
+        )
 
 
 # 功能：模型输入追加用户显式引用的文件内容并保留含空格路径
