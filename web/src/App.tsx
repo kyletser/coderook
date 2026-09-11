@@ -761,6 +761,13 @@ export function approvedPlanModelContent(originalRequest: string): string {
     + `\n\nOriginal user request:\n${originalRequest}`;
 }
 
+export function revisedPlanModelContent(originalRequest: string, feedback: string): string {
+  return "Revise the immediately preceding plan according to the user's feedback. "
+    + "Return an updated, actionable plan without modifying files."
+    + `\n\nOriginal user request:\n${originalRequest}`
+    + `\n\nRequested changes:\n${feedback}`;
+}
+
 export function eventBelongsToThread(activeThreadId: string, streamThreadId: string): boolean {
   return Boolean(activeThreadId) && activeThreadId === streamThreadId;
 }
@@ -2399,6 +2406,29 @@ function EventCard({
       onError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const revisePlan = async () => {
+    if (!event.turn_id || !answer.trim()) return;
+    try {
+      const feedback = answer.trim();
+      await request(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "revise", revision: feedback }),
+      });
+      setResponded(true);
+      const originalRequest = textValue(event.payload.request).trim();
+      await request(`/v1/threads/${threadId}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          content: revisedPlanModelContent(originalRequest, feedback),
+          display_content: tr(`修改计划：${feedback}`, `Revise plan: ${feedback}`),
+          mode: "plan",
+        }),
+      });
+      onNotice(tr("修改意见已提交，正在重新规划", "Feedback submitted. Revising the plan."));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
   const toolId = textValue(event.payload.tool_use_id || event.payload.permission_id);
   const questionId = textValue(event.payload.question_id);
   const rawPermissionParams = event.payload.params;
@@ -2449,7 +2479,7 @@ function EventCard({
           </div>
         )}
         {!responded && isPlan && event.turn_id && (
-          <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("可选：说明希望怎样修改计划", "Optional: explain how the plan should change")} /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, tr("已要求修改计划", "Plan revision requested"))}>{tr("要求修改", "Request changes")}</button></div><div className="card-actions">
+          <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("说明希望怎样修改计划", "Explain how the plan should change")} /><button disabled={!answer.trim()} onClick={() => void revisePlan()}>{tr("提交修改", "Submit changes")}</button></div><div className="card-actions">
               <button onClick={() => void approvePlan()}>{tr("批准并执行", "Approve and run")}</button>
               <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, tr("计划已取消", "Plan cancelled"))}>{tr("取消", "Cancel")}</button>
             </div></>

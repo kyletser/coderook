@@ -14,6 +14,7 @@ import {
   parentWorkspacePath,
   providerFormDefaults,
   preferredThreadId,
+  revisedPlanModelContent,
   replacementForMissingThread,
   resolveWebLocale,
   resolveWebTheme,
@@ -33,6 +34,14 @@ describe("Web task submission", () => {
 
     expect(content).toContain("Implement the approved plan");
     expect(content).toContain("Original user request:\n修复登录失败并运行测试");
+  });
+
+  it("starts a new planning turn with the original request and revision", () => {
+    const content = revisedPlanModelContent("重构认证模块", "不要修改公开接口");
+
+    expect(content).toContain("without modifying files");
+    expect(content).toContain("Original user request:\n重构认证模块");
+    expect(content).toContain("Requested changes:\n不要修改公开接口");
   });
 
   it("preserves direct shell commands instead of generating a model instruction", () => {
