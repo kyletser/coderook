@@ -111,6 +111,14 @@ def _read_piped_stdin() -> str:
         return ""
 
 
+# 判断当前标准输入输出是否足以承载全屏交互界面
+def _stdio_supports_tui() -> bool:
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 # 将任务说明与管道正文组合为一次模型请求，纯管道内容可直接作为任务
 def _merge_piped_input(message: str, piped_input: str) -> str:
     if not piped_input:
@@ -229,7 +237,14 @@ def _run_cli() -> int:
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
         tui_probe = tui_probe[2:]
     explicit_tui = bool(tui_probe) and tui_probe[0] == "tui"
-    print_mode = "--print" in tui_probe or "-p" in tui_probe
+    metadata_only = any(flag in tui_probe for flag in {"-h", "--help", "--version"})
+    noninteractive_quick = (
+        not explicit_tui
+        and not metadata_only
+        and not _stdio_supports_tui()
+        and (not tui_probe or tui_probe[0] not in _TOP_LEVEL_COMMANDS)
+    )
+    print_mode = "--print" in tui_probe or "-p" in tui_probe or noninteractive_quick
     if print_mode:
         ProjectRegistry().enter_welcome_workspace_if_protected()
         quick = argparse.ArgumentParser(

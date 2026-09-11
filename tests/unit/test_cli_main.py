@@ -31,6 +31,7 @@ def _keep_cli_test_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
         "enter_welcome_workspace_if_protected",
         lambda _self: Path.cwd(),
     )
+    monkeypatch.setattr(cli_main, "_stdio_supports_tui", lambda: True)
 
 
 # 功能：验证 headless run 只接收自身事件，同时允许无归属的全局状态事件
@@ -228,6 +229,34 @@ def test_positional_prompt_launches_tui(monkeypatch) -> None:
     cli_main.main()
 
     assert launched == [["coderook", "修复登录", "并运行测试"]]
+
+
+# 功能：验证非交互终端中的裸任务自动使用一次性文本执行而不启动全屏 TUI
+# 设计：固定 stdio 为非 TTY 并替换 Core 边界，直接锁定 IDE、管道和子进程调用能执行后退出
+def test_positional_prompt_uses_print_mode_without_tty(monkeypatch) -> None:
+    config = CodeRookConfig()
+    launched: list[bool] = []
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(sys, "argv", ["coderook", "只回答", "NON_TTY_OK"])
+    monkeypatch.setattr(cli_main, "_stdio_supports_tui", lambda: False)
+    monkeypatch.setattr(tui_main, "main", lambda: launched.append(True))
+    monkeypatch.setattr(cli_main, "_read_piped_stdin", lambda: "")
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert launched == []
+    assert captured["goal"] == "只回答 NON_TTY_OK"
+    assert captured["output_format"] == "text"
+    assert captured["final_only"] is True
 
 
 # 功能：-p 以一次性 Python Agent 模式自动启动 Core 并打印任务结果。
