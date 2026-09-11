@@ -9,7 +9,7 @@ from pathlib import Path
 _REFERENCE_FILE_LIMIT = 24 * 1024
 _REFERENCE_TOTAL_LIMIT = 64 * 1024
 _REFERENCE_PATTERN = re.compile(
-    r'(?:^|[\s,;，。；:：、])@(?:"([^"]+)"|([^\s,;，。；:：、@]+))'
+    r'(?:^|[\s,;，。；：、]|:)@(?:"([^"]+)"|([^\s,;，。；：、@]+))'
 )
 _IGNORED_REFERENCE_DIRS = {".git", ".coderook", ".venv", "node_modules", "__pycache__"}
 

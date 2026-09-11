@@ -24,6 +24,17 @@ def test_extract_file_reference_tokens() -> None:
     ]
 
 
+# 功能：Windows 绝对路径中的盘符冒号属于文件名而不是引用终止符
+# 设计：同时覆盖句首盘符路径和正文冒号后的普通引用，确保兼容 Windows 与既有自然文本语法
+def test_extract_file_reference_tokens_preserves_windows_drive() -> None:
+    assert extract_file_reference_tokens(
+        r"@C:\work\screen.png 对比文件:@src/app.py"
+    ) == [
+        r"C:\work\screen.png",
+        "src/app.py",
+    ]
+
+
 # 功能：文件引用只解析工作区内的精确路径或唯一模糊匹配
 # 设计：创建精确文件、唯一模糊文件和越界文件，覆盖正常补全与目录逃逸拒绝
 def test_resolve_file_references_stays_inside_workspace(tmp_path: Path) -> None:

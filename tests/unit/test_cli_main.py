@@ -60,6 +60,22 @@ def test_prepare_file_referenced_input_separates_images(tmp_path: Path) -> None:
     assert images == [tmp_path / "screen.PNG"]
 
 
+# 功能：命令行允许通过 Windows 绝对路径引用当前工作区内的图片
+# 设计：把绝对路径同时放入可见文本和 standalone 候选，复现 argparse 真实输入并排除盘符伪引用
+def test_prepare_file_reference_accepts_windows_absolute_path(tmp_path: Path) -> None:
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"image-placeholder")
+
+    content, images = cli_main._prepare_file_referenced_input(
+        f"@{image} describe",
+        tmp_path,
+        standalone_references=[str(image)],
+    )
+
+    assert content == f"@{image} describe"
+    assert images == [image]
+
+
 # 功能：引号包住整条任务时，CLI 只把 @文件片段识别为引用而不吞掉后续指令。
 # 设计：模拟 PowerShell 将整句作为单个 argv 传入，同时保留对应 standalone 候选。
 def test_prepare_file_reference_does_not_treat_quoted_task_as_path(
