@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput
 from code_rook.core.authority import AuthoritySnapshot, RuntimeMode, WorkspaceTrust
-from code_rook.core.bus.envelope import HandlerError
+from code_rook.core.bus.envelope import INVALID_PARAMS, HandlerError
 from code_rook.core.checkpoints import CheckpointStore
 from code_rook.core.config import LlmConfig
 from code_rook.core.context import ExecutionContext
@@ -1292,6 +1292,71 @@ async def test_cancel_preserves_pending_messages_without_dispatch(tmp_path: Path
         assert all(record.status == "blocked" for record in records)
         assert calls == [run_id]
         assert store.read_meta(session.id).run_ids == [run_id]
+    finally:
+        await manager.cancel_all()
+        await asyncio.gather(sending, return_exceptions=True)
+
+
+# 功能：运行中向纯文本模型追加图片时返回可识别的参数错误，而不是泄漏为内部异常。
+# 设计：用阻塞 Runner 保持 Turn 活动，并让 Runtime 报告冻结路由不支持图片后调用 steer。
+async def test_steer_image_rejected_with_handler_error_for_text_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    bus = EventBus()
+    interaction = InteractionManager(bus)
+    runtime = RuntimeService(RuntimeStore(tmp_path / "runtime.db"), Path.cwd(), bus=bus)
+    store = SessionStore(tmp_path / "sessions")
+
+    class BlockingRunner(_Runner):
+        # 注册交互通道并保持运行，直到测试清理时取消。
+        async def run_and_capture(self, *args: object, **kwargs: object) -> RunOutcome:
+            run_id = str(kwargs["run_id"])
+            interaction.register_run(run_id)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                interaction.unregister_run(run_id)
+            raise AssertionError("unreachable")
+
+    manager = SessionManager(
+        store,
+        lambda: BlockingRunner(),
+        bus,
+        runtime_service=runtime,
+        interaction_manager=interaction,
+    )
+    session = await manager.create("chat")
+    sending = asyncio.create_task(manager.send_message(session.id, "active"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        run_id = store.read_meta(session.id).run_ids[-1]
+        turn = await runtime.get_turn(run_id)
+        assert turn.route is None
+        turn = turn.model_copy(
+            update={"route": get_route_preset("deepseek").receipt("env")}
+        )
+        monkeypatch.setattr(runtime, "get_turn", lambda _run_id: asyncio.sleep(0, result=turn))
+
+        with pytest.raises(HandlerError) as error:
+            await manager.steer_run(
+                run_id,
+                "inspect this image",
+                attachments=[
+                    ImageArtifactInput(
+                        sha256="0" * 64,
+                        media_type="image/png",
+                        size=1,
+                        width=1,
+                        height=1,
+                    )
+                ],
+            )
+
+        assert error.value.code == INVALID_PARAMS
+        assert "image-capable route" in str(error.value)
     finally:
         await manager.cancel_all()
         await asyncio.gather(sending, return_exceptions=True)

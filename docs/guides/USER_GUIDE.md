@@ -195,7 +195,7 @@ localStorage 或普通响应。刷新页面后以 durable event seq 续接，不
 ```bash
 uv run coderook --continue
 uv run coderook --resume
-uv run coderook --resume SESSION_ID
+uv run coderook --session SESSION_ID
 uv run coderook --new
 ```
 

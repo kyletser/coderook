@@ -100,6 +100,42 @@ def test_run_tui_supports_resume_picker_without_session_id(
     assert kwargs["open_session_picker"] is expected_picker
 
 
+# 功能：恢复快捷键不吞掉后续任务文本，精确恢复改由独立 Session 参数表达。
+# 设计：通过真实 argparse 入口覆盖 `-r 任务` 与 `--session ID`，仅替换 Core 和界面边界。
+@pytest.mark.parametrize(
+    ("argv", "expected_session", "expected_picker", "expected_prompt"),
+    [
+        (["coderook-tui", "-r", "继续修复登录"], None, True, "继续修复登录"),
+        (["coderook-tui", "--session", "sess-known"], "sess-known", False, ""),
+    ],
+)
+def test_tui_resume_arguments_are_unambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    argv: list[str],
+    expected_session: str | None,
+    expected_picker: bool,
+    expected_prompt: str,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    kwargs = factory.call_args.kwargs
+    assert kwargs["resume_session_id"] == expected_session
+    assert kwargs["open_session_picker"] is expected_picker
+    assert kwargs["initial_prompt"] == expected_prompt
+
+
 # 功能：验证从受保护目录启动 TUI 时复用已运行 Core 的活动项目
 # 设计：直接向 TUI 装配入口传入 reuse_existing 标志，断言启动器收到该标志且界面仍正常构造
 def test_run_tui_reuses_active_workspace(

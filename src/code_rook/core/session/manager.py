@@ -1837,7 +1837,11 @@ class SessionManager:
             if self._runtime is not None:
                 turn = await self._runtime.get_turn(run_id)
                 if turn.route is not None and not turn.route.supports_images:
-                    raise ValueError("selected Turn route does not support images")
+                    raise HandlerError(
+                        INVALID_PARAMS,
+                        "selected Turn route does not support images; "
+                        "select an image-capable route",
+                    )
             description, images = await self._prepare_image_attachments(attachments)
             admitted = [{"type": "text", "text": f"{expanded}\n\n{description}"}, *images]
         if active.task.done() or not self._interaction_manager.steer(run_id, admitted):

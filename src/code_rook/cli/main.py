@@ -216,7 +216,8 @@ def main() -> int:
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
     tui_flags = {
-        "-c", "-r", "-n", "-t", "-nt", "--continue", "--new", "--resume", "--fork",
+        "-c", "-r", "-n", "-t", "-nt", "--continue", "--new", "--resume", "--session",
+        "--fork",
         "--replay", "--name", "--tools", "--no-tools", "--no-auto-core", "--thinking",
         "--route", "--model",
     }
@@ -374,8 +375,12 @@ def _run_cli() -> int:
         "--new", action="store_true", help="Start a new interactive session",
     )
     interactive.add_argument(
-        "-r", "--resume", nargs="?", const="", metavar="SESSION_ID",
-        help="Choose a saved session, or resume SESSION_ID when provided",
+        "-r", "--resume", action="store_const", const="",
+        help="Choose a saved session to resume",
+    )
+    interactive.add_argument(
+        "--session", metavar="SESSION_ID",
+        help="Resume a specific saved session",
     )
     interactive.add_argument(
         "--fork", metavar="SESSION_ID", help="Fork a saved session and continue in a branch"

@@ -194,10 +194,15 @@ def main() -> None:
     )
     source.add_argument(
         "-r", "--resume",
-        nargs="?",
+        action="store_const",
         const="",
+        help="Choose a saved session to resume",
+    )
+    source.add_argument(
+        "--session",
+        dest="resume",
         metavar="SESSION_ID",
-        help="Choose a saved session, or resume SESSION_ID when provided",
+        help="Resume a specific saved session",
     )
     source.add_argument(
         "--fork",
