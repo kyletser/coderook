@@ -84,6 +84,8 @@ describe("Web task submission", () => {
     ];
 
     expect(preferredThreadId(threads)).toBe("used");
+    expect(preferredThreadId(threads, "empty-new")).toBe("empty-new");
+    expect(preferredThreadId(threads, "missing")).toBe("used");
     expect(preferredThreadId([threads[0]])).toBe("empty-new");
     expect(preferredThreadId([])).toBe("");
   });

@@ -119,6 +119,7 @@ const TURN_PAGE_SIZE = 30;
 const MAX_CACHED_EVENTS = 5000;
 const LOCALE_STORAGE_KEY = "coderook.web.locale";
 const THEME_STORAGE_KEY = "coderook.web.theme";
+const ACTIVE_THREAD_STORAGE_PREFIX = "coderook.web.active-thread:";
 const ProductDialogContext = createContext<ProductDialogController | null>(null);
 const InterfacePreferencesContext = createContext<InterfacePreferences | null>(null);
 
@@ -801,7 +802,13 @@ export function appendRuntimeEvent(
   return next.length > MAX_CACHED_EVENTS ? next.slice(-MAX_CACHED_EVENTS) : next;
 }
 
-export function preferredThreadId(threads: ThreadRecord[]): string {
+export function preferredThreadId(
+  threads: ThreadRecord[],
+  rememberedId = "",
+): string {
+  if (rememberedId && threads.some((thread) => thread.id === rememberedId)) {
+    return rememberedId;
+  }
   return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
 }
 
@@ -928,9 +935,10 @@ function AppShell({
     setThreads(result);
     if (!initializedSelection.current) {
       initializedSelection.current = true;
-      setSelectedId(preferredThreadId(result));
+      const rememberedId = window.localStorage.getItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`) || "";
+      setSelectedId(preferredThreadId(result, rememberedId));
     }
-  }, [projectSelected]);
+  }, [projectSelected, workspace]);
 
   useEffect(() => {
     void refreshThreads()
@@ -1189,9 +1197,10 @@ function AppShell({
     });
     setThreads((current) => [created, ...current]);
     setSelectedId(created.id);
+    window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, created.id);
     previousTimelineSize.current = 0;
     return created.id;
-  }, []);
+  }, [workspace]);
 
   const selectThread = useCallback((threadId: string) => {
     const currentKey = selectedId || "__new__";
@@ -1200,6 +1209,8 @@ function AppShell({
     attachmentDrafts.current[currentKey] = attachments;
     fileReferenceDrafts.current[currentKey] = fileReferences;
     setSelectedId(threadId);
+    if (threadId) window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, threadId);
+    else window.localStorage.removeItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`);
     setQueueMode(false);
     setComposer(composerDrafts.current[nextKey] || "");
     setAttachments(attachmentDrafts.current[nextKey] || []);
@@ -1220,7 +1231,7 @@ function AppShell({
     setNotice("");
     setError("");
     setMobileSidebarOpen(false);
-  }, [attachments, composer, fileReferences, selectedId]);
+  }, [attachments, composer, fileReferences, selectedId, workspace]);
 
   const beginDraft = useCallback(() => {
     selectThread("");
