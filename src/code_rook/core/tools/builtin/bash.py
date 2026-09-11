@@ -278,6 +278,8 @@ class BashTool(BaseTool):
         output = _decode_shell_output(stdout_bytes)
 
         returncode = proc.returncode or 0
+        if process_usage is None:
+            process_usage = {"exit_code": returncode}
         if returncode != 0:
             runner_failed = bool(
                 self._sandbox_plan is not None

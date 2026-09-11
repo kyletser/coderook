@@ -16,7 +16,6 @@ from pydantic import JsonValue
 
 from code_rook.core.agent_runtime.extensions import ExtensionHost
 from code_rook.core.agent_runtime.prompt import build_system_prompt
-from code_rook.core.agent_runtime.shell import CodingShellTool
 from code_rook.core.agent_runtime.user_shell import UserShellCommand, execute_user_shell
 from code_rook.core.agents.loader import AgentProfileLoader
 from code_rook.core.artifacts import ArtifactStore
@@ -90,6 +89,7 @@ from code_rook.core.task.manager import TaskManager
 from code_rook.core.tools.assembly import RuntimeToolAssembly
 from code_rook.core.tools.base import ToolResult
 from code_rook.core.tools.builtin.ask_user_question import AskUserQuestionTool
+from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.families.control import UpdatePlanTool
 from code_rook.core.tools.program import RunToolProgram
 from code_rook.core.tools.registry import ToolRegistry
@@ -296,9 +296,14 @@ class AgentRunner:
                         sandbox = permissions.shell_sandbox_plan(
                             session.id, str(self._workspace_boundary.root),
                         ) if permissions else None
-                        registry.register(CodingShellTool(
-                            self._workspace_boundary.root, sandbox, self._process_supervisor,
-                        ))
+                        registry.register(
+                            BashTool(
+                                self._workspace_boundary.root,
+                                sandbox_plan=sandbox,
+                                process_supervisor=self._process_supervisor,
+                                artifact_store=self._artifact_store,
+                            )
+                        )
                         result = await execute_user_shell(
                             request, registry=registry, bus=bus, run_id=run_id,
                             operation_id=f"{run_id}:user-shell", session_id=session.id,

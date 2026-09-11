@@ -22,7 +22,7 @@ def build_runtime_context(workspace_root: Path, *, command_shell: str | None = N
     if command_shell is not None:
         shell = command_shell
     elif os.name == "nt":
-        shell = "cmd.exe; use Windows cmd syntax such as cd and dir, not POSIX-only pwd or ls"
+        shell = "Git Bash; use Bash syntax such as pwd, ls, and forward-slash paths"
     else:
         shell = "Bash"
     return "\n".join(

@@ -1,10 +1,10 @@
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from code_rook.core.agent_runtime.shell import CodingShellTool, bash_executable
 from code_rook.core.agent_runtime.user_shell import (
     UserShellCommand,
     execute_user_shell,
@@ -20,6 +20,7 @@ from code_rook.core.session.manager import SessionManager
 from code_rook.core.session.model import Session
 from code_rook.core.session.store import SessionStore
 from code_rook.core.tools.base import ToolResult
+from code_rook.core.tools.builtin.bash import BashTool
 from code_rook.core.tools.registry import ToolRegistry
 
 
@@ -39,17 +40,18 @@ def test_user_shell_prefixes() -> None:
 # 功能：用户命令无需二次审批即可通过正式工具管线执行并返回真实非零状态
 # 设计：注入会报错的权限替身并运行真实 Bash，证明显式 ! 命令跳过审批但保留执行语义
 async def test_user_shell_executes_without_provider(tmp_path: Path) -> None:
-    try:
-        bash_executable()
-    except RuntimeError:
-        pytest.skip("Bash unavailable")
     registry = ToolRegistry()
-    registry.register(CodingShellTool(tmp_path, None, None))
+    registry.register(BashTool(tmp_path))
     permissions = Mock()
     permissions.check_and_wait = AsyncMock(
         side_effect=AssertionError("explicit user shell must not request approval")
     )
-    request = parse_user_shell("!printf direct-output; exit 7")
+    command = (
+        "echo|set /p=direct-output & exit /b 7"
+        if os.name == "nt"
+        else "printf direct-output; exit 7"
+    )
+    request = parse_user_shell("!" + command)
     assert request is not None
     result = await execute_user_shell(
         request, registry=registry, bus=EventBus(), run_id="user-shell",
@@ -64,10 +66,6 @@ async def test_user_shell_executes_without_provider(tmp_path: Path) -> None:
 # 功能：直接命令失败时发布失败终态、工具失败类别并返回非零语义
 # 设计：运行真实 Bash exit 7 并收集总线事件，覆盖 CLI 与 Web 共用的最终状态来源
 async def test_user_shell_failure_publishes_terminal_failure(tmp_path: Path) -> None:
-    try:
-        bash_executable()
-    except RuntimeError:
-        pytest.skip("Bash unavailable")
     observed: list[object] = []
 
     # 收集直接命令完整事件序列，验证前端不需要自行推断终态
@@ -84,7 +82,7 @@ async def test_user_shell_failure_publishes_terminal_failure(tmp_path: Path) -> 
     )
 
     outcome = await runner.run_user_shell(
-        UserShellCommand("exit 7"),
+        UserShellCommand("exit /b 7" if os.name == "nt" else "exit 7"),
         run_id="shell-failed",
         session=session,
         store=store,
@@ -117,7 +115,8 @@ async def test_session_shell_history(tmp_path: Path, prefix: str) -> None:
     )
     session = await manager.create("chat")
     try:
-        run_id = await manager.send_message(session.id, prefix + "printf shell-result")
+        command = "echo shell-result"
+        run_id = await manager.send_message(session.id, prefix + command)
         async with asyncio.timeout(15):
             active = manager._active_runs.get(run_id)
             if active is not None:
@@ -127,13 +126,13 @@ async def test_session_shell_history(tmp_path: Path, prefix: str) -> None:
         reopened = SessionStore(tmp_path / "sessions")
         display = reopened.derive_messages(session.id, display=True)
         shell = next(item for item in display if item["role"] == "bashExecution")
-        assert shell["command"] == "printf shell-result"
-        assert shell["output"] == "shell-result"
+        assert shell["command"] == command
+        assert str(shell["output"]).strip() == "shell-result"
         assert shell["exclude_from_context"] == (prefix == "!!")
         assert reopened.read_messages(session.id) == store.read_messages(session.id)
         assert await manager.get_display_history(session.id) == display
         events = (store.runs_dir(session.id) / run_id / "events.jsonl").read_text("utf-8")
-        assert '"shell-result"' in events
+        assert "shell-result" in events
         assert '"status":"success"' in events.replace(" ", "")
         assert '"type":"run.phase_changed"' in events.replace(" ", "")
         assert '"phase":"executing"' in events.replace(" ", "")

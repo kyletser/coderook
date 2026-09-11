@@ -15,8 +15,8 @@ def test_runtime_context_describes_host_and_workspace(tmp_path: Path) -> None:
 
     assert str(tmp_path.resolve()) in context
     if os.name == "nt":
-        assert "Command shell: cmd.exe" in context
-        assert "not POSIX-only pwd or ls" in context
+        assert "Command shell: Git Bash" in context
+        assert "use Bash syntax" in context
     else:
         assert "Command shell: Bash" in context
     assert "bash tool runs host shell commands" in context
