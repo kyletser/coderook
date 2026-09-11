@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -11,6 +12,20 @@ SessionStatus = Literal["active", "waiting_for_input", "interrupted", "closed"]
 SessionMode = Literal["one_shot", "chat"]
 SESSION_SCHEMA_VERSION = 5
 SESSION_ID_PATTERN = re.compile(r"^sess-[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+# 判断会话摘要是否承载用户上下文，覆盖尚未产生新 Turn 的导入、分支和命名会话。
+def session_summary_has_context(summary: Mapping[str, object]) -> bool:
+    run_count = summary.get("run_count", 0)
+    if (
+        isinstance(run_count, int)
+        and not isinstance(run_count, bool)
+        and run_count > 0
+    ):
+        return True
+    if summary.get("last_run_id") or summary.get("parent_session_id"):
+        return True
+    return str(summary.get("title", "")).strip() not in {"", "Untitled"}
 
 
 class UnsupportedSessionSchemaError(ValueError):

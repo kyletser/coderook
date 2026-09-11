@@ -49,6 +49,23 @@ def test_select_recent_session_prefers_nonempty_and_reuses_empty() -> None:
     assert _select_recent_session([]) is None
 
 
+# 功能：继续最近会话不会跳过尚未产生新 Turn 的导入或分支上下文。
+# 设计：把含历史的零 Run 分支排在普通旧会话前，断言优先选择最新用户资产。
+def test_select_recent_session_keeps_zero_run_branch_context() -> None:
+    sessions = [
+        {
+            "session_id": "fork-new",
+            "run_count": 0,
+            "last_run_id": None,
+            "parent_session_id": "source",
+            "title": "Imported branch",
+        },
+        {"session_id": "used-old", "run_count": 1, "last_run_id": "run-1"},
+    ]
+
+    assert _select_recent_session(sessions) == "fork-new"
+
+
 # 功能：验证 TUI 打开一次性 run 会话时会保留历史并转为可继续的 chat 会话
 # 设计：让 fake Core 先返回不可恢复错误，再断言连接层精确调用 session.fork 且返回新会话而非进入重连循环
 async def test_one_shot_session_is_forked_for_interactive_continue() -> None:

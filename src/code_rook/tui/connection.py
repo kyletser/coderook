@@ -17,6 +17,7 @@ from typing import Any, cast
 
 from textual.widgets import Label
 
+from code_rook.core.session.model import session_summary_has_context
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui.product import tr
 
@@ -87,12 +88,7 @@ def _select_recent_session(sessions: object) -> str | None:
     nonempty = [
         item
         for item in candidates
-        if (
-            isinstance(item.get("run_count"), int)
-            and not isinstance(item.get("run_count"), bool)
-            and item.get("run_count", 0) > 0
-        )
-        or item.get("last_run_id")
+        if session_summary_has_context(item)
     ]
     selected = nonempty[0] if nonempty else (candidates[0] if candidates else None)
     if selected is None:

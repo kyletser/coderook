@@ -11,6 +11,7 @@ from typing import Any, Literal
 from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput, inspect_image
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.headless import HeadlessEnvelope, HeadlessRunResult
+from code_rook.core.session.model import session_summary_has_context
 from code_rook.core.transport.auth import IpcTokenError
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 
@@ -342,12 +343,7 @@ async def _run_async(
                 for item in sessions:
                     if not isinstance(item, dict) or item.get("mode", "chat") != "chat":
                         continue
-                    run_count = item.get("run_count", 0)
-                    if not (
-                        isinstance(run_count, int)
-                        and not isinstance(run_count, bool)
-                        and run_count > 0
-                    ) and not item.get("last_run_id"):
+                    if not session_summary_has_context(item):
                         continue
                     candidate = item.get("session_id")
                     if isinstance(candidate, str) and candidate:
