@@ -818,13 +818,14 @@ async def test_continue_recent_resumes_latest_session() -> None:
         await asyncio.gather(task, return_exceptions=True)
 
 
-# 功能：验证受管 TUI 在 Core 拒绝连接后会自动启动服务并恢复连接
-# 设计：首个 fake socket 拒绝连接、恢复回调置位，第二个保持在线，断言无需用户重启即可进入 ready
+# 功能：验证受管 TUI 在 Core 拒绝连接后会自动启动服务并恢复连接，且首次空会话不产生冗余提示
+# 设计：首个 fake socket 拒绝连接、恢复回调置位，第二个保持在线，断言进入 ready 且不显示零历史摘要
 async def test_connection_refusal_recovers_managed_core() -> None:
     block = asyncio.Event()
     recovered = asyncio.Event()
     connected = asyncio.Event()
     problems: list[tuple[str, str]] = []
+    session_notices: list[tuple[str, str, str, int | None]] = []
     attempts = 0
 
     class _FakeSocket:
@@ -883,6 +884,16 @@ async def test_connection_refusal_recovers_managed_core() -> None:
         def _show_connection_problem(self, kind: str, detail: str) -> None:
             problems.append((kind, detail))
 
+        # 捕获会话摘要，首次创建空会话时应保持欢迎页简洁
+        def _show_session_ready(
+            self,
+            action: str,
+            session_id: str,
+            title: str,
+            history_count: int | None,
+        ) -> None:
+            session_notices.append((action, session_id, title, history_count))
+
         # 模拟会话权限恢复
         async def _refresh_authority(self) -> None:
             return None
@@ -928,6 +939,7 @@ async def test_connection_refusal_recovers_managed_core() -> None:
         await asyncio.wait_for(recovered.wait(), timeout=1)
         await asyncio.wait_for(connected.wait(), timeout=1)
         assert attempts == 2
+        assert session_notices == []
         assert app._session_id == "sess-recovered"
         assert problems == [("recovering", "started a new Core")]
     finally:

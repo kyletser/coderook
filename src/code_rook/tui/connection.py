@@ -863,12 +863,6 @@ class TuiConnection:
                     self._app._titled = bool(initial_name)
                     self._app._first_user_text = ""
                     log.info("session created session_id=%s", self._app._session_id)
-                    self._show_session_ready(
-                        "created",
-                        self._app._session_id,
-                        initial_name,
-                        0,
-                    )
                 else:
                     if forked_info is None:
                         resumed_info, attached_active = await self.resume_or_attach_session(
