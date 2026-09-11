@@ -40,6 +40,24 @@ def test_resolve_file_references_stays_inside_workspace(tmp_path: Path) -> None:
     ) == ["README.md", "src/service.py"]
 
 
+# 功能：模糊文件引用忽略依赖与缓存目录，并支持用户不区分大小写地输入文件名。
+# 设计：在源码和依赖目录放置可匹配文件，断言单次用户引用只解析为可见源码。
+def test_resolve_file_references_skips_generated_directories(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "AuthService.py").write_text("source", encoding="utf-8")
+    dependency = tmp_path / "node_modules" / "package"
+    dependency.mkdir(parents=True)
+    (dependency / "authservice.py").write_text("dependency", encoding="utf-8")
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "AuthService.pyc").write_bytes(b"cache")
+
+    assert resolve_file_references(tmp_path, ["authservice"]) == [
+        "src/AuthService.py"
+    ]
+
+
 # 功能：模型输入追加用户显式引用的文件内容并保留含空格路径
 # 设计：以显式参数传入含空格路径，同时断言模型获得正文而界面仍可使用原始输入
 def test_augment_file_references_preserves_explicit_path_with_spaces(

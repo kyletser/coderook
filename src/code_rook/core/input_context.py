@@ -54,7 +54,8 @@ def resolve_file_references(
     references: Iterable[str],
 ) -> list[str]:
     root = workspace.resolve()
-    resolved: list[str] = []
+    resolved: list[str | None] = []
+    pending: list[tuple[int, str, list[str]]] = []
     for raw_value in references:
         raw = raw_value.strip().removeprefix("@").strip(".,;，。；:：")
         if not raw:
@@ -70,21 +71,34 @@ def resolve_file_references(
         name = Path(raw).name
         if not name:
             continue
-        matches: list[Path] = []
-        for path in root.rglob(f"*{name}*"):
-            if ".git" in path.parts or ".coderook" in path.parts or not path.is_file():
-                continue
-            target = path.resolve()
-            try:
-                target.relative_to(root)
-            except ValueError:
-                continue
-            matches.append(path)
-            if len(matches) > 1:
+        slot = len(resolved)
+        resolved.append(None)
+        pending.append((slot, name.casefold(), []))
+
+    if pending:
+        for directory, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(
+                item for item in dirnames if item not in _IGNORED_REFERENCE_DIRS
+            )
+            for filename in sorted(filenames):
+                folded = filename.casefold()
+                matching = [item for item in pending if len(item[2]) < 2 and item[1] in folded]
+                if not matching:
+                    continue
+                path = Path(directory) / filename
+                target = path.resolve()
+                try:
+                    relative_label = target.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                for _slot, _name, matches in matching:
+                    matches.append(relative_label)
+            if all(len(matches) >= 2 for _slot, _name, matches in pending):
                 break
-        if len(matches) == 1:
-            resolved.append(matches[0].relative_to(root).as_posix())
-    return list(dict.fromkeys(resolved))[:8]
+        for slot, _name, matches in pending:
+            if len(matches) == 1:
+                resolved[slot] = matches[0]
+    return list(dict.fromkeys(item for item in resolved if item is not None))[:8]
 
 
 # 读取单个用户显式引用文件的有界内容，并标记截断或二进制状态
