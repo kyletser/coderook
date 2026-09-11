@@ -573,6 +573,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 )
         if (
             not bool(self._sandbox.get("available", False))
+            and str(self._sandbox.get("kind", "none")) != "windows_none"
             and not ProjectRegistry().is_welcome_workspace(self._workspace)
         ):
             kind = escape(str(self._sandbox.get("kind", "none")))

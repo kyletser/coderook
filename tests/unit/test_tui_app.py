@@ -2853,9 +2853,9 @@ def test_windows_acl_sandbox_status_is_rendered_as_partial() -> None:
     assert "读取和网络不隔离" in output
 
 
-# 功能：验证首次连接在无模型与无 OS 沙箱时显示非阻塞的可执行空状态
-# 设计：截获 transcript 输出并重复调用启动状态，断言两类提示各出现一次且不会强制打开配置流程
-def test_startup_state_explains_no_model_and_degraded_sandbox_once(
+# 功能：验证 Windows 预期无 OS 沙箱时只保留状态栏说明而不弹启动故障卡
+# 设计：截获 transcript 输出并重复调用启动状态，断言模型空状态去重且预期平台限制不占用时间线
+def test_startup_state_does_not_treat_windows_none_as_failure(
     tmp_path: Path,
 ) -> None:
     appended: list[Widget] = []
@@ -2878,8 +2878,35 @@ def test_startup_state_explains_no_model_and_degraded_sandbox_once(
     output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
     assert output.count("欢迎使用 CodeRook") == 1
     assert "浏览会话和管理功能已经可用" in output
+    assert "Sandbox DEGRADED" not in output
+    assert "windows_none" not in output
+
+
+# 功能：验证本应可用的沙箱探针异常仍会提供一次可诊断启动提示
+# 设计：模拟 bubblewrap 探针失败并重复刷新，区分真实基础设施故障与 Windows 预期能力边界
+def test_startup_state_reports_unexpected_sandbox_probe_failure_once(
+    tmp_path: Path,
+) -> None:
+    appended: list[Widget] = []
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        route_store=RouteStore(tmp_path / "routes.json"),
+        credential_store=CredentialStore(tmp_path / "credentials.json"),
+    )
+    app._sandbox = {
+        "available": False,
+        "kind": "none",
+        "reason": "bubblewrap probe failed (exit code 1)",
+    }
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+
+    app._show_startup_state()
+    app._show_startup_state()
+
+    output = "\n".join(str(widget.content) for widget in appended if isinstance(widget, Static))
     assert output.count("Sandbox DEGRADED") == 1
-    assert "windows_none" in output
+    assert "bubblewrap probe failed" in output
 
 
 # 功能：验证连接故障提示按类型去重且恢复后允许再次报告
