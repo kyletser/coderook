@@ -130,6 +130,49 @@ def test_branch_switch_preserves_all_history(tmp_path: Path) -> None:
     assert any(not entry["active"] for entry in reopened.session_tree("sess-1"))
 
 
+# 功能：v2 Ledger 的文本回答在创建替代分支后仍可从历史面板恢复。
+# 设计：写入真实 input/llm 事件并切到根创建新回答，再通过旧回答预览节点恢复原路径。
+def test_session_tree_exposes_and_restores_v2_assistant_answer(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    store.append_session_event(
+        "sess-v2",
+        event_type="input.admitted",
+        payload={"role": "user", "content": "Original question"},
+    )
+    question = store.read_session_events("sess-v2")[-1].seq
+    store.append_session_event(
+        "sess-v2",
+        event_type="llm.message",
+        payload={
+            "role": "assistant",
+            "block": {"type": "text", "text": "Original answer"},
+            "message_id": "answer",
+            "block_id": "answer:0",
+            "block_index": 0,
+            "block_count": 1,
+        },
+    )
+    answer = store.read_session_events("sess-v2")[-1].seq
+    store.navigate_tree("sess-v2", question)
+    store.append_session_event(
+        "sess-v2",
+        event_type="input.admitted",
+        payload={"role": "user", "content": "Alternative question"},
+    )
+
+    answer_entry = next(
+        entry for entry in store.session_tree("sess-v2") if entry["seq"] == answer
+    )
+    store.navigate_tree("sess-v2", answer)
+
+    assert answer_entry["preview"] == "Original answer"
+    assert answer_entry["active"] is False
+    assert store.derive_messages("sess-v2") == [
+        {"role": "user", "content": "Original question"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Original answer"}]},
+    ]
+
+
 # 功能：某分支的压缩只在该分支生效，不遮蔽其他分支的原始消息。
 # 设计：在第一分支提交摘要后回到共享前缀创建第二分支，再恢复第一分支摘要。
 def test_compaction_is_scoped_to_selected_branch(tmp_path: Path) -> None:

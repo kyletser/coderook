@@ -694,6 +694,25 @@ class SessionStore:
             }
         return None
 
+    # 提取真正可继续的用户消息、最终回答或 Shell 结果预览。
+    @staticmethod
+    def _session_tree_preview(row: dict[str, Any]) -> str:
+        payload = row.get("payload", row)
+        event_type = row.get("type", "")
+        if event_type == "llm.message":
+            block = payload.get("block")
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))[:240]
+            content = payload.get("content", "")
+            return str(content)[:240] if isinstance(content, str) else ""
+        if event_type in {"input.admitted", "context.compaction.message"} or (
+            row.get("kind") == "message"
+        ):
+            return str(payload.get("display_content", payload.get("content", "")))[:240]
+        if event_type == "user.shell_completed":
+            return str(payload.get("command", ""))[:240]
+        return ""
+
     # 返回可导航的历史节点及父指针，分支外的记录仍可再次选中。
     def session_tree(self, sid: str) -> list[dict[str, Any]]:
         from code_rook.core.agent_runtime.session_tree import build_session_path, entry_parents
@@ -710,17 +729,7 @@ class SessionStore:
                 "active": int(row.get("ledger_seq", line)) in active,
                 "turn_id": row.get("turn_id", row.get("run_id", "")),
                 "label": labels.get(int(row.get("ledger_seq", line))),
-                "preview": str(row.get("payload", {}).get(
-                    "display_content",
-                    row.get("payload", {}).get("content", row.get("content", "")),
-                ))[:240]
-                if row.get("type", "") in {
-                    "input.admitted", "llm.message", "context.compaction.message"
-                }
-                or row.get("kind") == "message"
-                else str(row.get("payload", {}).get("command", ""))[:240]
-                if row.get("type") in {"user.shell_requested", "user.shell_completed"}
-                else "",
+                "preview": self._session_tree_preview(row),
             }
             for line, row in rows
         ]
