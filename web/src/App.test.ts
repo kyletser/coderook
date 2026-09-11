@@ -13,6 +13,7 @@ import {
   parentWorkspacePath,
   providerFormDefaults,
   preferredThreadId,
+  replacementForMissingThread,
   resolveWebLocale,
   resolveWebTheme,
   resultSummaryFor,
@@ -88,6 +89,25 @@ describe("Web task submission", () => {
     expect(preferredThreadId(threads, "missing")).toBe("used");
     expect(preferredThreadId([threads[0]])).toBe("empty-new");
     expect(preferredThreadId([])).toBe("");
+  });
+
+  it("replaces only a selected thread that disappeared from the server", () => {
+    const base = {
+      title: "",
+      workspace: "C:/repo",
+      status: "idle",
+      created_at: "2026-09-11T00:00:00Z",
+      updated_at: "2026-09-11T00:00:00Z",
+    };
+    const threads: ThreadRecord[] = [
+      { ...base, id: "latest", turn_count: 1 },
+      { ...base, id: "older", turn_count: 1 },
+    ];
+
+    expect(replacementForMissingThread(threads, "deleted")).toBe("latest");
+    expect(replacementForMissingThread(threads, "older")).toBeNull();
+    expect(replacementForMissingThread(threads, "")).toBeNull();
+    expect(replacementForMissingThread([], "deleted")).toBe("");
   });
 
   it("hides only untitled zero-turn sessions from the task list", () => {

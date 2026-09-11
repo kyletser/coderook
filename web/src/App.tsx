@@ -812,6 +812,14 @@ export function preferredThreadId(
   return threads.find((thread) => (thread.turn_count || 0) > 0)?.id || threads[0]?.id || "";
 }
 
+export function replacementForMissingThread(
+  threads: ThreadRecord[],
+  selectedId: string,
+): string | null {
+  if (!selectedId || threads.some((thread) => thread.id === selectedId)) return null;
+  return preferredThreadId(threads);
+}
+
 export function displayableThreads(threads: ThreadRecord[]): ThreadRecord[] {
   return threads.filter((thread) => (thread.turn_count || 0) > 0 || Boolean(thread.title.trim()));
 }
@@ -951,8 +959,38 @@ function AppShell({
       const nextSelectedId = preferredThreadId(result, rememberedId);
       setThreadLoading(Boolean(nextSelectedId));
       setSelectedId(nextSelectedId);
+      return;
     }
-  }, [projectSelected, workspace]);
+    const missingId = selectedIdRef.current;
+    const replacementId = replacementForMissingThread(result, missingId);
+    if (replacementId !== null) {
+      delete cursors.current[missingId];
+      delete eventCache.current[missingId];
+      delete composerDrafts.current[missingId];
+      delete attachmentDrafts.current[missingId];
+      delete fileReferenceDrafts.current[missingId];
+      const nextKey = replacementId || "__new__";
+      setThreadLoading(Boolean(replacementId));
+      setSelectedId(replacementId);
+      if (replacementId) {
+        window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, replacementId);
+      } else {
+        window.localStorage.removeItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`);
+      }
+      setComposer(composerDrafts.current[nextKey] || "");
+      setAttachments(attachmentDrafts.current[nextKey] || []);
+      setFileReferences(fileReferenceDrafts.current[nextKey] || []);
+      setQueuedMessages([]);
+      setTurns([]);
+      setItems([]);
+      setEvents(eventCache.current[replacementId] || []);
+      setHasOlderTurns(false);
+      setContextTokens(0);
+      setNotice(replacementId
+        ? tr("当前任务已删除，已切换到最近任务", "The current task was deleted. Switched to the latest task.")
+        : tr("当前任务已删除", "The current task was deleted."));
+    }
+  }, [preferences.locale, projectSelected, workspace]);
 
   useEffect(() => {
     void refreshThreads()
@@ -962,7 +1000,7 @@ function AppShell({
 
   useEffect(() => {
     void refreshActiveModel().catch(() => setActiveModel(tr("模型状态未知", "Model status unavailable")));
-  }, [drawer, refreshActiveModel]);
+  }, [drawer, refreshActiveModel, selectedId]);
 
   useEffect(() => {
     if (!fileMention || fileReferences.length >= 8) {
@@ -1193,6 +1231,10 @@ function AppShell({
         } catch (reason) {
           if (controller.signal.aborted) return;
           const detail = reason instanceof Error ? reason.message : String(reason);
+          if (detail.toLowerCase().includes("thread not found")) {
+            await refreshThreads();
+            return;
+          }
           setNotice(tr(`事件流正在重连：${detail}`, `Event stream reconnecting: ${detail}`));
           await new Promise((resolve) => window.setTimeout(resolve, 900));
         }
