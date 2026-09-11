@@ -119,6 +119,7 @@ def test_top_level_help_exposes_primary_entrypoints(
     output = capsys.readouterr().out
     assert raised.value.code == 0
     assert 'coderook "fix the failing tests"' in output
+    assert "coderook tui" in output
     assert "coderook -p" in output
     assert "coderook web" in output
     assert "coderook run --help" in output

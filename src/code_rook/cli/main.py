@@ -373,6 +373,7 @@ def _run_cli() -> int:
         epilog=(
             "Common starts:\n"
             "  coderook                              Open the TUI\n"
+            "  coderook tui                         Explicitly open the TUI\n"
             "  coderook \"fix the failing tests\"     Open the TUI and submit a task\n"
             "  coderook -p \"explain this project\"    Print one final answer\n"
             "  coderook web                         Open the local Web workspace\n"
@@ -424,6 +425,7 @@ def _run_cli() -> int:
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    subparsers.add_parser("tui", help="Explicitly open the interactive TUI")
     subparsers.add_parser("ping", help="Ping the core daemon")
     web_parser = subparsers.add_parser("web", help="Open the local CodeRook Web workspace")
     web_parser.add_argument(
