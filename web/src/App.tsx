@@ -877,7 +877,7 @@ function AppShell({
   const [queueMode, setQueueMode] = useState(false);
   const [projectHubOpen, setProjectHubOpen] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
-  const [activeModel, setActiveModel] = useState(tr("未配置模型", "No model configured"));
+  const [activeModel, setActiveModel] = useState(tr("正在读取模型…", "Loading model…"));
   const [sessionsReady, setSessionsReady] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
   const [hasOlderTurns, setHasOlderTurns] = useState(false);
@@ -936,7 +936,9 @@ function AppShell({
     if (!initializedSelection.current) {
       initializedSelection.current = true;
       const rememberedId = window.localStorage.getItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`) || "";
-      setSelectedId(preferredThreadId(result, rememberedId));
+      const nextSelectedId = preferredThreadId(result, rememberedId);
+      setThreadLoading(Boolean(nextSelectedId));
+      setSelectedId(nextSelectedId);
     }
   }, [projectSelected, workspace]);
 
@@ -1208,6 +1210,7 @@ function AppShell({
     composerDrafts.current[currentKey] = composer;
     attachmentDrafts.current[currentKey] = attachments;
     fileReferenceDrafts.current[currentKey] = fileReferences;
+    setThreadLoading(Boolean(threadId));
     setSelectedId(threadId);
     if (threadId) window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, threadId);
     else window.localStorage.removeItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`);
@@ -1748,7 +1751,7 @@ function AppShell({
           <button className={drawer === "models" ? "active" : ""} onClick={() => { setDrawer(drawer === "models" ? null : "models"); setMobileSidebarOpen(false); }}><Icon name="models" size={15} /><span>{tr("模型", "Models")}</span></button>
           <button className={drawer === "advanced" ? "active" : ""} onClick={() => { setDrawer(drawer === "advanced" ? null : "advanced"); setMobileSidebarOpen(false); }}><Icon name="settings" size={15} /><span>{tr("设置", "Settings")}</span></button>
         </nav>
-        <div className="section-title"><span>{tr("最近任务", "Recent tasks")}</span><span>{threads.length}</span></div>
+        <div className="section-title"><span>{tr("最近任务", "Recent tasks")}</span><span>{sessionsReady ? threads.length : "…"}</span></div>
         <nav className="sessions">
           {threads.map((thread) => {
             const displayStatus = thread.id === selectedId && activeTurn ? "running" : thread.status;
@@ -1763,9 +1766,11 @@ function AppShell({
             </button>
             );
           })}
-          {!threads.length && <p className="empty">{projectSelected
-            ? tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")
-            : tr("选择项目后，任务会显示在这里。", "Tasks appear here after you choose a project.")}</p>}
+          {!threads.length && <p className="empty">{!sessionsReady
+            ? tr("正在载入任务…", "Loading tasks…")
+            : projectSelected
+              ? tr("还没有会话。直接在右侧描述任务即可。", "No sessions yet. Describe a task on the right to get started.")
+              : tr("选择项目后，任务会显示在这里。", "Tasks appear here after you choose a project.")}</p>}
         </nav>
         <div className="sidebar-foot"><span className="connection-dot" />{tr("本机 Core 已连接", "Local Core connected")}<small>0.2 beta</small></div>
       </aside>
@@ -1773,7 +1778,7 @@ function AppShell({
       <main className="main">
         <header className="topbar">
           <button className="mobile-sidebar-toggle" aria-label={tr("打开导航", "Open navigation")} onClick={() => setMobileSidebarOpen(true)}><Icon name="menu" size={18} /></button>
-          <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || tr("新任务", "New task")}</strong></div>
+          <div className="task-identity"><small title={workspace}>{workspaceName}</small><strong>{selectedThread?.title || (!sessionsReady && projectSelected ? tr("正在载入…", "Loading…") : tr("新任务", "New task"))}</strong></div>
           <button className="active-model" type="button" title={tr("切换模型", "Switch model")} onClick={() => setDrawer("models")}><Icon name="models" size={13} />{activeModel}</button>
           <div className="run-state"><span className={activeTurn ? "pulse" : "dot"} />{activeTurn ? phaseLabel(phase) || tr("正在工作", "Working") : tr("就绪", "Ready")}</div>
           <div className="session-menu">
@@ -1793,7 +1798,12 @@ function AppShell({
               onClick={() => void loadOlderTurns()}
             >{loadingOlderTurns ? tr("正在加载…", "Loading…") : tr("加载更早记录", "Load earlier history")}</button>
           )}
-          {!timelineEntries.length && (
+          {(!sessionsReady || (Boolean(selectedId) && threadLoading)) && (
+            <div className="timeline-loading">{sessionsReady
+              ? tr("正在恢复会话…", "Restoring session…")
+              : tr("正在恢复工作区…", "Restoring workspace…")}</div>
+          )}
+          {sessionsReady && !timelineEntries.length && !threadLoading && (
             <div className="welcome-card">
               <span className="welcome-kicker">CODEROOK · LOCAL AGENT</span>
               <h1>{projectSelected ? tr("今天想完成什么？", "What would you like to accomplish?") : tr("选择一个项目开始", "Choose a project to get started")}</h1>

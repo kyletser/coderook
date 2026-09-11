@@ -107,6 +107,7 @@ button:disabled { cursor: default; opacity: .38; }
 .session-menu .danger-action:hover:not(:disabled) { color: var(--danger); background: rgba(255,155,155,.08); }
 
 .timeline { min-height: 0; overflow: auto; padding: 34px max(28px, calc((100% - 780px) / 2)) 30px; scrollbar-color: #303138 transparent; scrollbar-width: thin; }
+.timeline-loading { width: min(100%, 690px); margin: clamp(42px, 10vh, 96px) auto 0; color: #9698a2; font-size: 14px; }
 .history-loader { display: block; margin: 0 auto 18px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 10.5px; }
 .history-loader:hover:not(:disabled) { border-color: var(--faint); color: var(--text); }
 .welcome-card { width: min(100%, 690px); margin: clamp(42px, 10vh, 96px) auto 0; text-align: left; }
