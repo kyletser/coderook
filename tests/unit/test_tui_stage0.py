@@ -247,6 +247,8 @@ async def test_help_command_renders_keys_and_commands(
         assert "Ctrl+T" in body
         assert "Ctrl+O" in body
         assert "Ctrl+G" in body
+        assert "Alt+Enter" in body
+        assert "Alt+↑" in body
         assert "命令" in body
         assert "/rename" in body
         assert "/fork" in body

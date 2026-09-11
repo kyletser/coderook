@@ -1317,6 +1317,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("Ctrl+T", tr("help.thinking", self._locale)),
             ("Ctrl+O", tr("help.details", self._locale)),
             ("Ctrl+G", tr("help.editor", self._locale)),
+            ("Alt+Enter", tr("help.follow_up", self._locale)),
+            ("Alt+↑", tr("help.dequeue", self._locale)),
             ("Ctrl+Q", tr("help.quit", self._locale)),
         ]
         lines = [f"[bold cyan]{escape(tr('help.keys', self._locale))}[/bold cyan]"]
@@ -1647,6 +1649,105 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._input_runtime_mode,
             visible_content=visible_content,
         )
+
+    # Alt+Enter 在运行中把消息持久排队，空闲时与普通 Enter 保持一致
+    async def on_chat_text_area_follow_up_submitted(
+        self,
+        event: ChatTextArea.FollowUpSubmitted,
+    ) -> None:
+        if not self._busy:
+            await self.on_chat_text_area_submitted(ChatTextArea.Submitted(event.text_area))
+            return
+        content = event.value.strip()
+        if not content or self._client is None or self._session_id is None:
+            return
+        command = match_slash_command(content)
+        if command is not None:
+            await self.on_chat_text_area_submitted(ChatTextArea.Submitted(event.text_area))
+            return
+        event.text_area.record_history(content)
+        event.text_area.text = ""
+        attachments = list(self._pending_image_attachments)
+        self._pending_image_attachments.clear()
+        self._refresh_attachment_strip()
+        self.run_worker(
+            self._do_queue_message(
+                self._prepare_model_content(content),
+                content,
+                self._input_runtime_mode,
+                attachments,
+            ),
+            name="queue_message",
+            exclusive=False,
+        )
+
+    # Alt+↑ 把尚未派发的后续消息和图片取回当前编辑器
+    def on_chat_text_area_restore_queued(
+        self,
+        _event: ChatTextArea.RestoreQueued,
+    ) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        self.run_worker(
+            self._restore_queued_messages(),
+            name="restore_queued_messages",
+            exclusive=False,
+        )
+
+    # 删除 Core 中已成功取回的队列项，并按原顺序回填文本与附件
+    async def _restore_queued_messages(self) -> None:
+        client = self._client
+        session_id = self._session_id
+        prompt = self._prompt()
+        if client is None or session_id is None or prompt is None:
+            return
+        try:
+            result = await client.send_command(
+                "session.list_queue",
+                {"session_id": session_id},
+            )
+            pending = [
+                item
+                for item in result.get("messages", [])
+                if isinstance(item, dict) and item.get("status") == "queued"
+            ]
+            restored: list[dict[str, Any]] = []
+            for item in pending:
+                try:
+                    await client.send_command(
+                        "session.remove_queued_message",
+                        {"session_id": session_id, "message_id": item["id"]},
+                    )
+                except (IpcError, RuntimeError, OSError):
+                    log.debug("queued message became unavailable during restore", exc_info=True)
+                    continue
+                restored.append(item)
+            if not restored:
+                self.notify(tr("app.queue.restore_empty", self._locale))
+                return
+            texts = [
+                str(item.get("display_content") or item.get("content", "")).strip()
+                for item in restored
+            ]
+            prompt.text = "\n\n".join(
+                text for text in [*texts, prompt.text] if text.strip()
+            )
+            prompt.move_cursor(prompt.document.end)
+            for item in restored:
+                for attachment in item.get("attachments", []):
+                    if (
+                        isinstance(attachment, dict)
+                        and attachment not in self._pending_image_attachments
+                    ):
+                        self._pending_image_attachments.append(dict(attachment))
+            self._snapshot_session_composer()
+            self._refresh_attachment_strip()
+            await self._refresh_message_queue()
+            self.notify(
+                tr("app.queue.restored", self._locale, count=len(restored))
+            )
+        except (IpcError, RuntimeError, OSError, KeyError, TypeError) as exc:
+            self._show_safe_error("queue-restore", exc)
 
     # 收到输入框图片粘贴后异步校验并写入内容寻址 ArtifactStore
     async def on_chat_text_area_image_pasted(

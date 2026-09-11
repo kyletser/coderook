@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from rich.markup import render
@@ -1205,6 +1205,111 @@ async def test_partial_slash_command_enter_only_completes() -> None:
         assert app.selected == ["model"]
 
 
+# 功能：验证 Alt+Enter 排队后续消息，Alt+↑ 请求取回尚未执行的队列
+# 设计：驱动真实 ChatTextArea 键盘事件，直接捕获两种语义化消息
+async def test_follow_up_and_dequeue_keyboard_shortcuts() -> None:
+    class QueueHarness(App[None]):
+        # 初始化快捷键消息收集器
+        def __init__(self) -> None:
+            super().__init__()
+            self.follow_ups: list[str] = []
+            self.restore_requests = 0
+
+        # 挂载聊天输入框并预填后续消息
+        def compose(self) -> ComposeResult:
+            yield ChatTextArea("next task", id="prompt", show_line_numbers=False)
+
+        # 将键盘焦点交给输入框
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+        # 捕获 Alt+Enter 发布的后续消息
+        def on_chat_text_area_follow_up_submitted(
+            self,
+            message: ChatTextArea.FollowUpSubmitted,
+        ) -> None:
+            self.follow_ups.append(message.value)
+
+        # 捕获 Alt+↑ 发布的取回请求
+        def on_chat_text_area_restore_queued(
+            self,
+            _message: ChatTextArea.RestoreQueued,
+        ) -> None:
+            self.restore_requests += 1
+
+    app = QueueHarness()
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.press("alt+enter")
+        await pilot.pause()
+        await pilot.press("alt+up")
+        await pilot.pause()
+
+    assert app.follow_ups == ["next task"]
+    assert app.restore_requests == 1
+
+
+# 功能：验证取回操作按原顺序恢复文本、附件并从 Core 删除队列项
+# 设计：使用含两条队列的假 IPC 和最小 composer，覆盖整个可见回填链路
+async def test_restore_queued_messages_returns_content_to_composer() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class _Client:
+        # 返回两条待执行后续消息并记录删除请求
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, str],
+        ) -> dict[str, Any]:
+            calls.append((method, params))
+            if method == "session.list_queue":
+                return {
+                    "messages": [
+                        {
+                            "id": "queue-1",
+                            "status": "queued",
+                            "display_content": "first follow-up",
+                            "attachments": [{"artifact_id": "image-1"}],
+                        },
+                        {
+                            "id": "queue-2",
+                            "status": "queued",
+                            "content": "second follow-up",
+                            "attachments": [],
+                        },
+                    ]
+                }
+            return {}
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    prompt = MagicMock()
+    prompt.text = "draft"
+    prompt.document.end = (0, 0)
+    app._client = _Client()  # type: ignore[assignment]
+    app._session_id = "sess-queue"
+    app._pending_image_attachments = []
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._snapshot_session_composer = MagicMock()  # type: ignore[method-assign]
+    app._refresh_attachment_strip = MagicMock()  # type: ignore[method-assign]
+    app._refresh_message_queue = AsyncMock()  # type: ignore[method-assign]
+    app.notify = MagicMock()  # type: ignore[method-assign]
+
+    await app._restore_queued_messages()
+
+    assert prompt.text == "first follow-up\n\nsecond follow-up\n\ndraft"
+    assert app._pending_image_attachments == [{"artifact_id": "image-1"}]
+    assert calls == [
+        ("session.list_queue", {"session_id": "sess-queue"}),
+        (
+            "session.remove_queued_message",
+            {"session_id": "sess-queue", "message_id": "queue-1"},
+        ),
+        (
+            "session.remove_queued_message",
+            {"session_id": "sess-queue", "message_id": "queue-2"},
+        ),
+    ]
+
+
 # 功能：验证 TUI 稳定命令包含常用入口且默认隐藏 Labs 命令
 # 设计：直接读取候选列表，同时断言实验命令不会污染首次使用界面
 def test_tui_builtin_commands_include_model_picker() -> None:
@@ -1219,7 +1324,8 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     assert items["provider"] == "查看或切换 Provider route"
     assert items["doctor"] == "诊断活动 Provider route"
     assert items["rename"] == "重命名当前会话：/rename <标题>"
-    assert items["fork"] == "复制当前会话为分支：/fork [标题]"
+    assert items["fork"] == "选择历史节点并从这里创建分支"
+    assert items["clone"] == "复制当前完整分支：/clone [标题]"
     assert items["export"] == "导出当前会话：/export [md|json|html]"
     assert items["delete"] == "删除当前会话（需 --yes 确认）"
     assert items["plan"] == "只读规划并审阅后再实施：/plan [任务]"

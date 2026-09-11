@@ -512,7 +512,7 @@ class FileCompleteWidget(Static):
 
 
 class ChatTextArea(TextArea):
-    """支持 Enter 提交、Cmd/Shift/Alt+Enter 换行的多行聊天输入框。"""
+    """支持提交、后续队列、文件补全和多行编辑的聊天输入框。"""
 
     DEFAULT_CSS = """
     ChatTextArea {
@@ -555,6 +555,16 @@ class ChatTextArea(TextArea):
             super().__init__()
 
     class CycleMode(Message):
+        pass
+
+    class FollowUpSubmitted(Message):
+        # 保留触发快捷键时的输入框和文本快照
+        def __init__(self, area: ChatTextArea) -> None:
+            self.text_area = area
+            self.value = area.text
+            super().__init__()
+
+    class RestoreQueued(Message):
         pass
 
     class ImagePasted(Message):
@@ -669,7 +679,7 @@ class ChatTextArea(TextArea):
             self.post_message(ChatTextArea.SlashChanged(query=None))
         self.post_message(ChatTextArea.FileReferenceChanged(_file_reference_query(text)))
 
-    # Enter 提交；↑↓/Tab/Esc 路由到自动补全弹窗；Cmd/Shift/Alt+Enter 插入换行；其余键交回 TextArea
+    # Enter 提交；Alt+Enter 排队；Alt+↑ 取回队列；Shift+Enter/Ctrl+J 换行
     async def _on_key(self, event: events.Key) -> None:
         key = event.key
 
@@ -699,7 +709,18 @@ class ChatTextArea(TextArea):
             if self.text.strip():
                 self.post_message(self.Submitted(self))
             return
-        if key in ("alt+enter", "shift+enter", "ctrl+j", "super+enter"):
+        if key == "alt+enter":
+            event.stop()
+            event.prevent_default()
+            if self.text.strip():
+                self.post_message(self.FollowUpSubmitted(self))
+            return
+        if key == "alt+up":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.RestoreQueued())
+            return
+        if key in ("shift+enter", "ctrl+j", "super+enter"):
             event.stop()
             event.prevent_default()
             if not self.read_only:
