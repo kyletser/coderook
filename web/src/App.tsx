@@ -685,6 +685,17 @@ export function resultStatusIsFailure(status: string, verificationFailed = false
     || !["completed", "success", "succeeded"].includes(status.trim().toLowerCase());
 }
 
+export function resultFollowUpPrompt(kind: "continue" | "verify", locale: WebLocale): string {
+  if (kind === "verify") {
+    return locale === "en-US"
+      ? "Re-run the checks most relevant to the previous changes. If they fail, continue fixing the issue until they pass or report the concrete blocker."
+      : "重新运行与上一轮修改最相关的验证；如果失败，继续修复直到通过，或明确说明具体阻塞原因。";
+  }
+  return locale === "en-US"
+    ? "Continue from the previous incomplete turn. Use the existing evidence to identify the failure, fix it, and re-run the relevant checks."
+    : "继续处理上一轮未完成的问题。根据已有证据定位失败原因，完成修复并重新运行相关验证。";
+}
+
 export function resultSummaryFor(
   eventPayload: Record<string, unknown>,
   receipt: Pick<TurnReceipt, "result_summary" | "failure_category"> | null,
@@ -1938,6 +1949,12 @@ function AppShell({
               onError={setError}
               onNotice={setNotice}
               onOpenChanges={() => setDrawer("changes")}
+              onContinue={(prompt) => {
+                setComposer(prompt);
+                composerDrafts.current[selectedId || "__new__"] = prompt;
+                setNotice(tr("后续指令已放入输入框，可修改后发送", "A follow-up was placed in the composer. Edit it before sending."));
+                window.requestAnimationFrame(() => composerInputRef.current?.focus());
+              }}
             />
           ))}
           {notice && <div className="notice">{notice}<button onClick={() => setNotice("")}>×</button></div>}
@@ -2367,6 +2384,7 @@ function EventCard({
   onError,
   onNotice,
   onOpenChanges,
+  onContinue,
 }: {
   event: RuntimeEvent;
   threadId: string;
@@ -2375,6 +2393,7 @@ function EventCard({
   onError(value: string): void;
   onNotice(value: string): void;
   onOpenChanges(): void;
+  onContinue(value: string): void;
 }): ReactElement {
   const detail = eventDetail(event);
   const isPermission = event.type === "permission.requested";
@@ -2473,7 +2492,7 @@ function EventCard({
     );
   }
   if (isResult) {
-    return <ResultCard event={event} detail={detail} hasAssistantMessage={hasAssistantMessage} onOpenChanges={onOpenChanges} />;
+    return <ResultCard event={event} detail={detail} hasAssistantMessage={hasAssistantMessage} onOpenChanges={onOpenChanges} onContinue={onContinue} />;
   }
   return (
     <article className={`event-card ${event.type.replaceAll(".", "-")}`}>
@@ -2514,7 +2533,8 @@ function EventCard({
   );
 }
 
-function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { event: RuntimeEvent; detail: string; hasAssistantMessage: boolean; onOpenChanges(): void }): ReactElement | null {
+function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges, onContinue }: { event: RuntimeEvent; detail: string; hasAssistantMessage: boolean; onOpenChanges(): void; onContinue(value: string): void }): ReactElement | null {
+  const preferences = useInterfacePreferences();
   const [receipt, setReceipt] = useState<TurnReceipt | null>(null);
   const turnId = event.turn_id || textValue(event.payload.run_id);
   useEffect(() => {
@@ -2582,7 +2602,12 @@ function ResultCard({ event, detail, hasAssistantMessage, onOpenChanges }: { eve
         {verificationSummary.unknown > 0 && <em>{tr(`${verificationSummary.unknown} 项验证证据不可用`, `${verificationSummary.unknown} checks unavailable`)}</em>}
         {model && <em>{model}{cost ? ` · ${cost}` : ""}</em>}
       </div>
-      <div className="result-actions"><button onClick={onOpenChanges}>{tr("查看变更", "View changes")}</button><button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>{tr("复制结果", "Copy result")}</button></div>
+      <div className="result-actions">
+        {failed && <button onClick={() => onContinue(resultFollowUpPrompt("continue", preferences.locale))}>{tr("继续修复", "Continue fixing")}</button>}
+        {changedFiles > 0 && <button onClick={() => onContinue(resultFollowUpPrompt("verify", preferences.locale))}>{tr("重新验证", "Re-run checks")}</button>}
+        <button onClick={onOpenChanges}>{tr("查看变更", "View changes")}</button>
+        <button onClick={() => void browserBridge.copyText(copied || eventTitle(event))}>{tr("复制结果", "Copy result")}</button>
+      </div>
     </article>
   );
 }

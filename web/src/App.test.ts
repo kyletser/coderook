@@ -21,6 +21,7 @@ import {
   resolveWebTheme,
   resultSummaryFor,
   resultStatusIsFailure,
+  resultFollowUpPrompt,
   runKindFromEvents,
   summarizeVerification,
   verificationHasFailure,
@@ -227,6 +228,11 @@ describe("Web task submission", () => {
     expect(resultStatusIsFailure("incomplete")).toBe(true);
     expect(resultStatusIsFailure("length")).toBe(true);
     expect(resultStatusIsFailure("transport_error")).toBe(true);
+  });
+
+  it("creates editable recovery and verification follow-ups", () => {
+    expect(resultFollowUpPrompt("continue", "zh-CN")).toContain("已有证据");
+    expect(resultFollowUpPrompt("verify", "en-US")).toContain("Re-run the checks");
   });
 
   it("treats a failed verification verdict as an unsuccessful task result", () => {
