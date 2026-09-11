@@ -844,7 +844,10 @@ class TuiConnection:
                     resume_session_id = _select_recent_session(
                         recent.get("sessions", [])
                     )
-                if resume_session_id is None:
+                defer_session_creation = bool(
+                    getattr(self._app, "_open_session_picker", False)
+                )
+                if resume_session_id is None and not defer_session_creation:
                     initial_name = str(
                         getattr(self._app, "_initial_session_name", "") or ""
                     )
@@ -864,7 +867,7 @@ class TuiConnection:
                     self._app._titled = bool(initial_name)
                     self._app._first_user_text = ""
                     log.info("session created session_id=%s", self._app._session_id)
-                else:
+                elif resume_session_id is not None:
                     if forked_info is None:
                         resumed_info, attached_active = await self.resume_or_attach_session(
                             client,
@@ -928,7 +931,7 @@ class TuiConnection:
                         resumed_title,
                         history_count,
                     )
-                else:
+                elif self._app._session_id is not None:
                     await self.subscribe_session(self._app._session_id)
                 await self._subscribe_legacy_replay(client)
                 await self._app._refresh_authority()

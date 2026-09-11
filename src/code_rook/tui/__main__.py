@@ -125,7 +125,8 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         continue_recent=(
             False
             if (
-                bool(getattr(args, "fork", None))
+                args.resume == ""
+                or bool(getattr(args, "fork", None))
                 or (
                     ProjectRegistry().is_welcome_workspace(Path.cwd())
                     and not bool(getattr(args, "continue_explicit", False))

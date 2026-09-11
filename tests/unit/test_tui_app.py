@@ -1696,6 +1696,32 @@ async def test_startup_session_picker_submits_initial_prompt_after_selection() -
     assert prompt.text == "修复登录失败"
 
 
+# 功能：验证启动会话选择器被关闭后才按需创建空白会话
+# 设计：替换创建和 composer 边界，断言选择器仍打开时不会产生的会话在关闭后补建一次
+async def test_startup_session_picker_creates_blank_session_only_after_dismiss() -> None:
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        open_session_picker=True,
+    )
+
+    class PickerStub:
+        # 记录选择器已经从界面移除
+        def remove(self) -> None:
+            return None
+
+    create = AsyncMock()
+    app._create_and_switch_session = create  # type: ignore[method-assign]
+    app._restore_ready_prompt = MagicMock()  # type: ignore[method-assign]
+    app._apply_initial_prompt = MagicMock()  # type: ignore[method-assign]
+    message = SessionPicker.Dismissed(PickerStub())  # type: ignore[arg-type]
+
+    await app.on_session_picker_dismissed(message)
+
+    create.assert_awaited_once_with()
+    assert app._open_session_picker is False
+
+
 # 功能：验证 _preview 超出长度时截断并追加省略号
 # 设计：不依赖任何 TUI 组件，纯函数测试
 def test_preview_truncates() -> None:

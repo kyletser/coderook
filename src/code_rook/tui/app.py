@@ -3781,6 +3781,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def on_session_picker_dismissed(self, message: SessionPicker.Dismissed) -> None:
         message.picker.remove()
         self._open_session_picker = False
+        if self._session_id is None:
+            await self._create_and_switch_session()
         self._restore_ready_prompt()
         self._apply_initial_prompt(submit=False)
 

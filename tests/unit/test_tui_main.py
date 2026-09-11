@@ -58,8 +58,8 @@ def test_tui_main_auto_starts_core_before_reading_token(
 # 功能：验证不带 ID 的 -r 请求启动会话选择器，带 ID 时仍精确恢复。
 # 设计：分别调用 TUI 装配入口并捕获构造参数，避免启动真实 Textual 终端。
 @pytest.mark.parametrize(
-    ("resume", "expected_session", "expected_picker"),
-    [("", None, True), ("sess-known", "sess-known", False)],
+    ("resume", "expected_session", "expected_picker", "expected_continue"),
+    [("", None, True, False), ("sess-known", "sess-known", False, True)],
 )
 def test_run_tui_supports_resume_picker_without_session_id(
     monkeypatch: pytest.MonkeyPatch,
@@ -67,6 +67,7 @@ def test_run_tui_supports_resume_picker_without_session_id(
     resume: str,
     expected_session: str | None,
     expected_picker: bool,
+    expected_continue: bool,
 ) -> None:
     config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
     args = SimpleNamespace(
@@ -98,15 +99,28 @@ def test_run_tui_supports_resume_picker_without_session_id(
     kwargs = tui_main.CodeRookTuiApp.call_args.kwargs
     assert kwargs["resume_session_id"] == expected_session
     assert kwargs["open_session_picker"] is expected_picker
+    assert kwargs["continue_recent"] is expected_continue
 
 
 # 功能：恢复快捷键不吞掉后续任务文本，精确恢复改由独立 Session 参数表达。
 # 设计：通过真实 argparse 入口覆盖 `-r 任务` 与 `--session ID`，仅替换 Core 和界面边界。
 @pytest.mark.parametrize(
-    ("argv", "expected_session", "expected_picker", "expected_prompt"),
+    (
+        "argv",
+        "expected_session",
+        "expected_picker",
+        "expected_prompt",
+        "expected_continue",
+    ),
     [
-        (["coderook-tui", "-r", "继续修复登录"], None, True, "继续修复登录"),
-        (["coderook-tui", "--session", "sess-known"], "sess-known", False, ""),
+        (["coderook-tui", "-r", "继续修复登录"], None, True, "继续修复登录", False),
+        (
+            ["coderook-tui", "--session", "sess-known"],
+            "sess-known",
+            False,
+            "",
+            True,
+        ),
     ],
 )
 def test_tui_resume_arguments_are_unambiguous(
@@ -116,6 +130,7 @@ def test_tui_resume_arguments_are_unambiguous(
     expected_session: str | None,
     expected_picker: bool,
     expected_prompt: str,
+    expected_continue: bool,
 ) -> None:
     config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
     monkeypatch.setattr(sys, "argv", argv)
@@ -134,6 +149,7 @@ def test_tui_resume_arguments_are_unambiguous(
     assert kwargs["resume_session_id"] == expected_session
     assert kwargs["open_session_picker"] is expected_picker
     assert kwargs["initial_prompt"] == expected_prompt
+    assert kwargs["continue_recent"] is expected_continue
 
 
 # 功能：验证从受保护目录启动 TUI 时复用已运行 Core 的活动项目
