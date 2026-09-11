@@ -632,6 +632,15 @@ class TuiConnection:
         if callable(callback):
             callback(action, session_id, title, history_count)
 
+    # 在不额外显示会话通知时刷新新会话的扩展命令与界面贡献
+    async def _refresh_input_commands(self, session_id: str) -> None:
+        callback = getattr(self._app, "_refresh_input_commands", None)
+        if not callable(callback):
+            return
+        result = callback(session_id)
+        if inspect.isawaitable(result):
+            await result
+
     # 恢复空闲会话；活动会话附着投影，一次性任务则复制为可继续会话
     async def resume_or_attach_session(
         self,
@@ -933,6 +942,7 @@ class TuiConnection:
                     )
                 elif self._app._session_id is not None:
                     await self.subscribe_session(self._app._session_id)
+                    await self._refresh_input_commands(self._app._session_id)
                 if self._app._session_id is not None:
                     await self._app._apply_initial_session_settings(
                         self._app._session_id,

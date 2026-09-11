@@ -112,7 +112,8 @@ async def test_direct_shell_through_daemon(
     try:
         sid = (await ipc.send_command("session.create", {"mode": "chat"}))["session_id"]
         sending = asyncio.create_task(ipc.send_command("session.send_message", {
-            "session_id": sid, "content": "!!printf direct-daemon-result",
+            "session_id": sid,
+            "content": "!!python -c \"print('direct-daemon-result', end='')\"",
         }))
         records = []
         async with httpx.AsyncClient(
