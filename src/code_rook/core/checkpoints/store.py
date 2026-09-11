@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -22,6 +23,7 @@ _CHECKPOINT_ID_RE = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}\Z")
 _BLOB_RE = re.compile(r"[0-9a-f]{64}\Z")
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MANIFEST_VERSION = 1
+_REVIEW_DIFF_LIMIT = 200_000
 
 
 class CheckpointError(RuntimeError):
@@ -160,6 +162,113 @@ class CheckpointStore:
             )
         checkpoints.sort(key=lambda item: item.created_at, reverse=True)
         return checkpoints
+
+    # 从本轮恢复点重建非 Git 工作区的可见变更，保留真实初始内容与当前内容差异
+    def review_changes(self) -> dict[str, object]:
+        manifests = [
+            self._load_manifest(info.checkpoint_id)
+            for info in reversed(self.list_checkpoints())
+            if info.status == "ready"
+        ]
+        baselines: dict[str, tuple[_FileState, bytes | None]] = {}
+        expected_after: dict[str, _FileState] = {}
+        chain_complete: dict[str, bool] = {}
+        checkpoint_ids: dict[str, list[str]] = {}
+        for manifest in manifests:
+            checkpoint_id = str(manifest["checkpoint_id"])
+            for entry in _manifest_files(manifest):
+                relative = str(entry["path"])
+                before = _entry_state(entry, "before")
+                after = _entry_state(entry, "after")
+                if relative not in baselines:
+                    before_content = self._read_before_blob(entry) if before.exists else None
+                    baselines[relative] = (before, before_content)
+                    chain_complete[relative] = True
+                    checkpoint_ids[relative] = []
+                elif not _same_state(expected_after[relative], before):
+                    chain_complete[relative] = False
+                expected_after[relative] = after
+                checkpoint_ids[relative].append(checkpoint_id)
+
+        files: list[dict[str, object]] = []
+        patches: list[str] = []
+        additions_total = 0
+        deletions_total = 0
+        remaining = _REVIEW_DIFF_LIMIT
+        diff_truncated = False
+        for relative in sorted(baselines, key=lambda value: (value.casefold(), value)):
+            current = _read_state(self._boundary.resolve(relative))
+            before, before_content = baselines[relative]
+            if _same_state(current, before):
+                continue
+            complete = chain_complete[relative] and _same_state(
+                current,
+                expected_after[relative],
+            )
+            patch, additions, deletions, review_status = _checkpoint_diff(
+                relative,
+                before_content,
+                current.content,
+            )
+            encoded = patch.encode("utf-8")
+            visible_patch = patch
+            if len(encoded) > remaining:
+                visible_patch = encoded[:remaining].decode("utf-8", errors="ignore")
+                complete = False
+                diff_truncated = True
+            remaining = max(0, remaining - len(visible_patch.encode("utf-8")))
+            patches.append(visible_patch)
+            additions_total += additions or 0
+            deletions_total += deletions or 0
+            status = "A" if not before.exists else ("D" if not current.exists else "M")
+            files.append(
+                {
+                    "path": relative,
+                    "index_status": " ",
+                    "worktree_status": status,
+                    "staged": False,
+                    "unstaged": True,
+                    "untracked": not before.exists,
+                    "additions": additions,
+                    "deletions": deletions,
+                    "review_status": review_status,
+                    "review_complete": complete,
+                    "review_note": (
+                        "Complete checkpoint-backed review"
+                        if complete
+                        else "Workspace changed outside the recorded checkpoint chain"
+                    ),
+                    "content_size": len(current.content) if current.content is not None else 0,
+                    "content_sha256": (
+                        current.digest.removeprefix("sha256:") if current.digest else None
+                    ),
+                    "patch": visible_patch,
+                    "checkpoint_ids": checkpoint_ids[relative],
+                }
+            )
+        payload: dict[str, object] = {
+            "repository": ".",
+            "source": "checkpoints",
+            "scope": "all",
+            "path": ".",
+            "has_head": False,
+            "supports_stage": False,
+            "supports_commit": False,
+            "files": files,
+            "file_count": len(files),
+            "additions": additions_total,
+            "deletions": deletions_total,
+            "diff": "".join(patches),
+            "diff_truncated": diff_truncated,
+        }
+        material = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        payload["state_digest"] = hashlib.sha256(material).hexdigest()
+        return payload
 
     # 只读取 checkpoint 与当前文件状态，返回恢复范围、冲突和可重验摘要
     def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPreview:
@@ -429,3 +538,35 @@ def _entry_state(entry: dict[str, Any], prefix: str) -> _FileState:
     if not exists and digest is not None:
         raise CheckpointError("manifest_invalid", f"checkpoint {prefix} hash must be null")
     return _FileState(exists=exists, digest=digest, content=None)
+
+
+# 为 checkpoint 的前后文本生成统一补丁，二进制内容只返回可审查元数据状态
+def _checkpoint_diff(
+    relative: str,
+    before: bytes | None,
+    after: bytes | None,
+) -> tuple[str, int | None, int | None, str]:
+    if (before is not None and b"\0" in before) or (
+        after is not None and b"\0" in after
+    ):
+        return "", None, None, "binary"
+    try:
+        before_text = "" if before is None else before.decode("utf-8")
+        after_text = "" if after is None else after.decode("utf-8")
+    except UnicodeDecodeError:
+        return "", None, None, "binary"
+    patch_lines = list(
+        difflib.unified_diff(
+            before_text.splitlines(keepends=True),
+            after_text.splitlines(keepends=True),
+            fromfile=(f"a/{relative}" if before is not None else "/dev/null"),
+            tofile=(f"b/{relative}" if after is not None else "/dev/null"),
+        )
+    )
+    additions = sum(
+        1 for line in patch_lines if line.startswith("+") and not line.startswith("+++")
+    )
+    deletions = sum(
+        1 for line in patch_lines if line.startswith("-") and not line.startswith("---")
+    )
+    return "".join(patch_lines), additions, deletions, "text"

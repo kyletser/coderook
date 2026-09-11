@@ -108,6 +108,25 @@ _MAX_RESERVED_GOAL_WAITS = 50
 logger = logging.getLogger(__name__)
 
 
+# 返回没有可用恢复点时的非 Git 工作区空审查载荷
+def _empty_checkpoint_review() -> dict[str, object]:
+    return {
+        "repository": ".",
+        "source": "checkpoints",
+        "scope": "all",
+        "path": ".",
+        "has_head": False,
+        "supports_stage": False,
+        "supports_commit": False,
+        "files": [],
+        "file_count": 0,
+        "additions": 0,
+        "deletions": 0,
+        "diff": "",
+        "diff_truncated": False,
+    }
+
+
 @dataclass
 class _ActiveRun:
     session_id: str
@@ -2809,6 +2828,25 @@ class SessionManager:
             for item in store.list_checkpoints()
         ]
         return run_id, checkpoints
+
+    # 从指定会话最近一轮 checkpoint 重建非 Git 工作区的可审查变更
+    def review_checkpoint_changes(
+        self,
+        sid: str,
+        run_id: str | None = None,
+    ) -> dict[str, object]:
+        session = self._get_session(sid)
+        resolved_run_id = self._resolve_run_id(session, run_id)
+        if resolved_run_id is None:
+            return _empty_checkpoint_review()
+        root = self._store.runs_dir(sid) / resolved_run_id / ".checkpoints"
+        if not root.is_dir():
+            return _empty_checkpoint_review()
+        return CheckpointStore(
+            root,
+            WorkspaceBoundary.current(),
+            create=False,
+        ).review_changes()
 
     # 读取指定 checkpoint 的恢复范围、冲突和当前状态摘要，不修改任何文件
     def preview_rewind(

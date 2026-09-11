@@ -3387,14 +3387,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._change_state_digest = ""
         self._change_review_scope = ""
         try:
-            diff_result = await ipc_actions.get_diff(self._client)
+            diff_result = await ipc_actions.get_diff(
+                self._client,
+                self._session_id or "",
+            )
             payload = dict(diff_result.get("payload", {}))
             if "error" in payload:
                 error = dict(payload["error"])
                 raise ValueError(str(error.get("message", "workspace diff unavailable")))
             state_digest = str(payload.get("state_digest", ""))
             scope = str(payload.get("scope", ""))
-            if len(state_digest) == 64 and scope == "all":
+            if (
+                len(state_digest) == 64
+                and scope == "all"
+                and payload.get("supports_stage") is not False
+            ):
                 self._change_state_digest = state_digest
                 self._change_review_scope = scope
             receipt_result = await self._latest_change_receipt()

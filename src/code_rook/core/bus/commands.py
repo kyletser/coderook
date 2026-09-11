@@ -916,6 +916,7 @@ class WorkspaceDiffCommand(BaseModel):
     type: Literal["workspace.diff"] = "workspace.diff"
     scope: Literal["all", "staged", "unstaged"] = "all"
     path: str = "."
+    session_id: str = ""
 
 
 class WorkspaceDiffResult(BaseModel):

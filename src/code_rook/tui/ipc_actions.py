@@ -286,11 +286,11 @@ async def start_workflow(
 
 
 # 读取当前工作区统一 diff（scope=all, path=.）
-async def get_diff(client: SocketClient) -> dict[str, Any]:
+async def get_diff(client: SocketClient, session_id: str = "") -> dict[str, Any]:
     return await send(
         client,
         "workspace.diff",
-        {"scope": "all", "path": "."},
+        {"scope": "all", "path": ".", "session_id": session_id},
     )
 
 

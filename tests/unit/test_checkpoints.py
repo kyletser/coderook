@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -148,6 +149,67 @@ def test_checkpoint_read_only_open_does_not_create_directories(tmp_path: Path) -
 
     assert store.list_checkpoints() == []
     assert not root.exists()
+
+
+# 功能：验证非 Git 项目可由 checkpoint 重建新增文件的真实可见 Diff
+# 设计：创建一次文件写入恢复点并落盘，断言审查载荷包含补丁、统计且明确禁用 Git 操作
+def test_checkpoint_review_reconstructs_created_file_diff(tmp_path: Path) -> None:
+    target = tmp_path / "created.txt"
+    mutation = FileMutation(target, None, b"created\n")
+    store = _store(tmp_path)
+    checkpoint_id = store.create([mutation], label="write_file")
+    apply_file_transaction(tmp_path, [mutation])
+
+    review = store.review_changes()
+    files = review["files"]
+
+    assert isinstance(files, list)
+    assert review["source"] == "checkpoints"
+    assert review["supports_stage"] is False
+    assert review["file_count"] == 1
+    assert review["additions"] == 1
+    assert review["deletions"] == 0
+    assert "+created" in str(review["diff"])
+    assert files == [
+        {
+            "path": "created.txt",
+            "index_status": " ",
+            "worktree_status": "A",
+            "staged": False,
+            "unstaged": True,
+            "untracked": True,
+            "additions": 1,
+            "deletions": 0,
+            "review_status": "text",
+            "review_complete": True,
+            "review_note": "Complete checkpoint-backed review",
+            "content_size": 8,
+            "content_sha256": hashlib.sha256(b"created\n").hexdigest(),
+            "patch": str(review["diff"]),
+            "checkpoint_ids": [checkpoint_id],
+        }
+    ]
+
+
+# 功能：验证 checkpoint 审查发现记录后又被外部改写的文件并拒绝声称完整
+# 设计：在恢复点落盘后直接覆写同一路径，断言仍可见当前差异但 review_complete 为假
+def test_checkpoint_review_marks_external_change_incomplete(tmp_path: Path) -> None:
+    target = tmp_path / "value.txt"
+    target.write_bytes(b"before\n")
+    mutation = FileMutation(target, b"before\n", b"after\n")
+    store = _store(tmp_path)
+    store.create([mutation], label="edit_file")
+    apply_file_transaction(tmp_path, [mutation])
+    target.write_bytes(b"outside\n")
+
+    review = store.review_changes()
+    files = review["files"]
+
+    assert isinstance(files, list)
+    file_info = files[0]
+    assert file_info["review_complete"] is False
+    assert "-before" in str(file_info["patch"])
+    assert "+outside" in str(file_info["patch"])
 
 
 def test_checkpoint_handles_partially_applied_crash_state(tmp_path: Path) -> None:

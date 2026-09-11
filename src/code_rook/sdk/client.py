@@ -239,11 +239,12 @@ class AsyncCodeRookClient:
         *,
         scope: str = "all",
         path: str = ".",
+        thread_id: str = "",
     ) -> dict[str, Any]:
         payload = await self._request(
             "GET",
             "/v1/workspace/diff",
-            params={"scope": scope, "path": path},
+            params={"scope": scope, "path": path, "thread_id": thread_id},
         )
         return dict(payload)
 
@@ -454,11 +455,12 @@ class CodeRookClient:
         *,
         scope: str = "all",
         path: str = ".",
+        thread_id: str = "",
     ) -> dict[str, Any]:
         payload = self._request(
             "GET",
             "/v1/workspace/diff",
-            params={"scope": scope, "path": path},
+            params={"scope": scope, "path": path, "thread_id": thread_id},
         )
         return dict(payload)
 

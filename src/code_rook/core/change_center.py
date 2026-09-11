@@ -87,6 +87,17 @@ class ChangeCenterService:
         async with self._operation_lock:
             return await self._diff_locked(scope)
 
+    # 探测当前工作区是否属于 Git 仓库，供非 Git 项目切换到 checkpoint 审查
+    async def is_git_repository(self) -> bool:
+        if self._git is None:
+            return False
+        result = await self._run(
+            "rev-parse",
+            "--is-inside-work-tree",
+            allowed_returncodes=frozenset({0, 128}),
+        )
+        return result.code == 0 and result.output.strip() == "true"
+
     # 用完整状态摘要夹住可见审查，任一侧不同都拒绝返回混合快照
     async def _diff_locked(self, scope: str) -> dict[str, object]:
         return (await self._review_locked(scope)).payload

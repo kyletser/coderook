@@ -308,7 +308,14 @@ class _FakeRuntimeApi:
         return {"tool_use_id": tool_use_id, "accepted": True}
 
     # 返回最小结构化 diff 供 HTTP 路由测试
-    async def workspace_diff(self, *, scope: str, path: str) -> dict[str, object]:
+    async def workspace_diff(
+        self,
+        *,
+        scope: str,
+        path: str,
+        thread_id: str = "",
+    ) -> dict[str, object]:
+        assert thread_id in {"", "thread-1"}
         return {"scope": scope, "path": path, "files": []}
 
 

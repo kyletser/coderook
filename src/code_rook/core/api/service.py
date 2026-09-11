@@ -449,6 +449,7 @@ class RuntimeApiService:
         *,
         scope: str = "all",
         path: str = ".",
+        thread_id: str = "",
     ) -> dict[str, object]:
         if (
             self._git_diff is None
@@ -457,7 +458,27 @@ class RuntimeApiService:
         ):
             raise ValueError("workspace diff is unavailable")
         if path == ".":
-            return await self._change_center.diff(scope)
+            if await self._change_center.is_git_repository():
+                return await self._change_center.diff(scope)
+            if scope != "all":
+                raise ValueError("staged and unstaged views require a Git repository")
+            if thread_id:
+                return self._sessions.review_checkpoint_changes(thread_id)
+            return {
+                "repository": ".",
+                "source": "checkpoints",
+                "scope": "all",
+                "path": ".",
+                "has_head": False,
+                "supports_stage": False,
+                "supports_commit": False,
+                "files": [],
+                "file_count": 0,
+                "additions": 0,
+                "deletions": 0,
+                "diff": "",
+                "diff_truncated": False,
+            }
         result = await self._git_diff.invoke({"scope": scope, "path": path})
         payload = json.loads(result.content)
         if not isinstance(payload, dict):

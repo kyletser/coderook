@@ -2563,10 +2563,36 @@ class CoreApp:
             )
             payload = json.loads(result.content)
             return WorkspaceDiffResult(payload=payload)
-        payload = await ChangeCenterService(
+        service = ChangeCenterService(
             WorkspaceBoundary.current(),
             self._process_supervisor,
-        ).diff(cmd.scope)
+        )
+        if await service.is_git_repository():
+            payload = await service.diff(cmd.scope)
+        elif cmd.scope != "all":
+            raise HandlerError(
+                INVALID_PARAMS,
+                "staged and unstaged views require a Git repository",
+            )
+        elif cmd.session_id:
+            assert self._sessions is not None
+            payload = self._sessions.review_checkpoint_changes(cmd.session_id)
+        else:
+            payload = {
+                "repository": ".",
+                "source": "checkpoints",
+                "scope": "all",
+                "path": ".",
+                "has_head": False,
+                "supports_stage": False,
+                "supports_commit": False,
+                "files": [],
+                "file_count": 0,
+                "additions": 0,
+                "deletions": 0,
+                "diff": "",
+                "diff_truncated": False,
+            }
         return WorkspaceDiffResult(payload=payload)
 
     # 验证 Change Center 写动作的显式确认、会话空闲、审计健康和工作区信任

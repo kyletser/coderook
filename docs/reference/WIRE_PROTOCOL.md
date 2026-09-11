@@ -9038,6 +9038,7 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `type` | `string` | no |
 | `scope` | `string` | no |
 | `path` | `string` | no |
+| `session_id` | `string` | no |
 
 ```json
 {
@@ -9061,6 +9062,11 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
     "path": {
       "default": ".",
       "title": "Path",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
       "type": "string"
     }
   },

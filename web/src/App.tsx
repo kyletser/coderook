@@ -2781,7 +2781,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
     setLoading(true);
     setLoadError("");
     Promise.all([
-      request<DiffPayload>("/v1/workspace/diff?scope=all", { signal }),
+      request<DiffPayload>(`/v1/workspace/diff?scope=all&thread_id=${encodeURIComponent(threadId)}`, { signal }),
       threadId ? request<Record<string, unknown>>(`/v1/threads/${threadId}/context`, { signal }) : Promise.resolve({}),
     ])
       .then(([nextDiff, nextContext]) => {
@@ -2843,7 +2843,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
   return <div className="panel-content">
-    <div className="panel-toolbar"><span>{loading ? tr("正在读取…", "Loading…") : tr(`${files.length} 个变更文件`, `${files.length} changed files`)}</span><button disabled={loading} onClick={() => load()}>{tr("刷新", "Refresh")}</button><button disabled={!selectedPaths.length || !threadId || loading} onClick={() => void stageSelected()}>{tr("Stage 选中", "Stage selected")}{selectedPaths.length ? ` (${selectedPaths.length})` : ""}</button></div>
+    <div className="panel-toolbar"><span>{loading ? tr("正在读取…", "Loading…") : tr(`${files.length} 个变更文件`, `${files.length} changed files`)}</span><button disabled={loading} onClick={() => load()}>{tr("刷新", "Refresh")}</button>{diff?.supports_stage !== false && <button disabled={!selectedPaths.length || !threadId || loading} onClick={() => void stageSelected()}>{tr("Stage 选中", "Stage selected")}{selectedPaths.length ? ` (${selectedPaths.length})` : ""}</button>}</div>
     {loadError && <div className="panel-error"><b>{tr("无法读取变更", "Unable to load changes")}</b><p>{loadError}</p><button onClick={() => load()}>{tr("重试", "Retry")}</button></div>}
     {!loadError && !files.length && !loading ? <p className="empty">{tr("工作区没有未提交变更。", "The workspace has no uncommitted changes.")}</p> : files.map((file, index) => {
       const path = textValue(file.path);

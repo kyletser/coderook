@@ -218,10 +218,13 @@ async def test_start_workflow_success() -> None:
 # 设计：diff 的 scope 语义固定为 all，. 表示整个工作区
 async def test_get_diff_success() -> None:
     client = _FakeClient({"workspace.diff": {"payload": {"files": []}}})
-    result = await ipc_actions.get_diff(client)
+    result = await ipc_actions.get_diff(client, "sess-1")
     assert result["payload"]["files"] == []
     assert client.calls == [
-        ("workspace.diff", {"scope": "all", "path": "."})
+        (
+            "workspace.diff",
+            {"scope": "all", "path": ".", "session_id": "sess-1"},
+        )
     ]
 
 

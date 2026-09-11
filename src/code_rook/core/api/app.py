@@ -962,6 +962,7 @@ class HttpApiServer:
             return HTTPStatus.OK, await self._service.workspace_diff(
                 scope=scope,
                 path=query.get("path", ["."])[0],
+                thread_id=query.get("thread_id", [""])[0],
             )
         if request.method == "POST" and path == "/v1/workspace/stage":
             body = _json_object(request.body)
