@@ -29,6 +29,7 @@ from code_rook.core.compatibility import HTTP_API_VERSION
 from code_rook.core.configuration import ConfigurationValidationError
 from code_rook.core.review import build_review_goal
 from code_rook.core.runtime.store import RecordNotFoundError
+from code_rook.core.workspace import WorkspaceBoundaryError
 
 logger = logging.getLogger(__name__)
 _MAX_HEADERS = 64 * 1024
@@ -227,6 +228,11 @@ class HttpApiServer:
             await self._send_json(writer, status, payload)
         except asyncio.IncompleteReadError:
             return
+        except WorkspaceBoundaryError as exc:
+            failed = True
+            await self._send_json_guarded(
+                writer, headers_sent, HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+            )
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError, KeyError) as exc:
             failed = True
             await self._send_json_guarded(

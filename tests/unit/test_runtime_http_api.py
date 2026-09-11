@@ -23,6 +23,7 @@ from code_rook.core.runtime.models import (
     TurnRecord,
     TurnStatus,
 )
+from code_rook.core.workspace import WorkspaceBoundaryError
 
 
 # 返回 HTTP API 测试使用的稳定时间
@@ -877,6 +878,28 @@ async def test_web_static_shell_rejects_untrusted_host(tmp_path: Path) -> None:
             assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
             rejected = await client.get("/", headers={"Host": "attacker.example"})
             assert rejected.status_code == 400
+    finally:
+        await server.stop()
+
+
+# 功能：验证工作区文件路径越界返回可理解的 400 而不是通用 500
+# 设计：让文件服务抛出真实边界异常，经完整 HTTP 请求断言状态码和原始诊断正文
+async def test_workspace_boundary_error_is_a_bad_request(tmp_path: Path) -> None:
+    server, service, base_url = await _start_server(tmp_path)
+
+    # 模拟工作区解析器拒绝浏览器提交的上级路径
+    async def reject_path(**_kwargs: object) -> dict[str, object]:
+        raise WorkspaceBoundaryError("path is outside workspace: ..")
+
+    service.list_workspace_files = reject_path  # type: ignore[attr-defined]
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=2.0) as client:
+            response = await client.get(
+                "/v1/workspace/files?path=..",
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert response.status_code == 400
+        assert response.json() == {"error": "path is outside workspace: .."}
     finally:
         await server.stop()
 
