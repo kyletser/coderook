@@ -7,8 +7,10 @@ import pytest
 
 from code_rook.tui.commands import (
     BUILTIN_SLASH_COMMANDS,
+    _cmd_clone,
     _cmd_compact,
     _cmd_delivery,
+    _cmd_fork,
     _cmd_goal,
     _cmd_workers,
     _parse_goal_create_args,
@@ -57,6 +59,88 @@ async def test_compact_command_preserves_focus() -> None:
     assert app.focuses == ["保留失败原因和下一步"]
 
 
+# 功能：验证无参数 /fork 进入以分支为默认动作的历史选择器
+# 设计：捕获应用层协程并显式等待，确认不再直接复制当前末尾
+async def test_fork_command_opens_history_picker() -> None:
+    class _TextArea:
+        text = "/fork"
+
+    class _App:
+        # 初始化可用会话与协程捕获槽
+        def __init__(self) -> None:
+            self._client = object()
+            self._session_id = "sess-fork"
+            self._busy = False
+            self.actions: list[str] = []
+            self.pending: list[Coroutine[Any, Any, None]] = []
+
+        # 记录历史选择器收到的默认动作
+        async def _do_session_tree(self, *, default_action: str = "navigate") -> None:
+            self.actions.append(default_action)
+
+        # 收集 Textual worker 交给测试驱动
+        def run_worker(
+            self,
+            coroutine: Coroutine[Any, Any, None],
+            *,
+            name: str,
+            exclusive: bool,
+        ) -> None:
+            del name, exclusive
+            self.pending.append(coroutine)
+
+    app = _App()
+    area = _TextArea()
+    await _cmd_fork(app, area, area.text)  # type: ignore[arg-type]
+    await app.pending[0]
+
+    assert area.text == ""
+    assert app.actions == ["fork"]
+
+
+# 功能：验证 /clone 直接复制当前完整分支并保留标题
+# 设计：用最小 App 替身捕获既有 fork 动作，避免重复实现会话复制逻辑
+async def test_clone_command_copies_current_branch() -> None:
+    class _TextArea:
+        text = "/clone 实验分支"
+        disabled = False
+        border_title = ""
+
+    class _App:
+        # 初始化命令依赖与标题捕获槽
+        def __init__(self) -> None:
+            self._client = object()
+            self._session_id = "sess-clone"
+            self._busy = False
+            self._locale = "zh-CN"
+            self.titles: list[str] = []
+            self.pending: list[Coroutine[Any, Any, None]] = []
+
+        # 记录复制操作的会话标题
+        async def _do_fork_session(self, title: str) -> None:
+            self.titles.append(title)
+
+        # 收集 Textual worker 交给测试驱动
+        def run_worker(
+            self,
+            coroutine: Coroutine[Any, Any, None],
+            *,
+            name: str,
+            exclusive: bool,
+        ) -> None:
+            del name, exclusive
+            self.pending.append(coroutine)
+
+    app = _App()
+    area = _TextArea()
+    await _cmd_clone(app, area, area.text)  # type: ignore[arg-type]
+    await app.pending[0]
+
+    assert area.text == ""
+    assert area.disabled is True
+    assert app.titles == ["实验分支"]
+
+
 # 功能：Worker start 命令解析角色、route、模型、预算和显式写入范围
 # 设计：混合引号 prompt 与重复 scope 参数，断言默认只读只会被真实写 claim 关闭
 def test_parse_worker_start_contract() -> None:
@@ -103,7 +187,8 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
         ("sessions", "打开会话选择器（输入即过滤）"),
         ("new", "新建会话"),
         ("rename", "重命名当前会话：/rename <标题>"),
-        ("fork", "复制当前会话为分支：/fork [标题]"),
+        ("fork", "选择历史节点并从这里创建分支"),
+        ("clone", "复制当前完整分支：/clone [标题]"),
         ("export", "导出当前会话：/export [md|json|html]"),
         ("delete", "删除当前会话（需 --yes 确认）"),
         ("provider", "查看或切换 Provider route"),

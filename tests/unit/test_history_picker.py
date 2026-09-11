@@ -55,3 +55,22 @@ async def test_history_picker_forks_entry() -> None:
         await pilot.press("ctrl+f")
         await pilot.pause()
     assert selected == [("fork", 7)]
+
+
+# 功能：验证分支模式下 Enter 直接从选中节点创建新会话
+# 设计：仅切换选择器默认动作，确认同一键位不会意外导航原会话
+async def test_history_picker_defaults_to_fork_when_requested() -> None:
+    selected: list[tuple[str, int] | None] = []
+    app: App[None] = App()
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.push_screen(
+            HistoryPicker(
+                [{"seq": 7, "active": True, "preview": "Fix login"}],
+                default_action="fork",
+            ),
+            selected.append,
+        )
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert selected == [("fork", 7)]

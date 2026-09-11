@@ -4080,7 +4080,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 self._restore_ready_prompt()
 
     # 从同一 Core 获取历史节点并打开键盘选择器。
-    async def _do_session_tree(self) -> None:
+    async def _do_session_tree(
+        self,
+        *,
+        default_action: Literal["navigate", "fork"] = "navigate",
+    ) -> None:
         from code_rook.tui.widgets.history import HistoryPicker
 
         if self._client is None or self._session_id is None:
@@ -4102,7 +4106,14 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     )
                     self.run_worker(operation)
 
-            self.push_screen(HistoryPicker(result.get("entries", []), self._locale), selected)
+            self.push_screen(
+                HistoryPicker(
+                    result.get("entries", []),
+                    self._locale,
+                    default_action=default_action,
+                ),
+                selected,
+            )
         except (IpcError, RuntimeError, OSError, ValueError) as exc:
             self._show_safe_error("session-tree", exc, action="session")
 

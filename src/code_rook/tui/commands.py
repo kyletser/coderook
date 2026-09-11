@@ -57,6 +57,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "new": "session",
     "rename": "session",
     "fork": "session",
+    "clone": "session",
     "tree": "session",
     "preset": "session",
     "export": "session",
@@ -237,9 +238,28 @@ async def _cmd_fork(app: Any, ta: ChatTextArea, content: str) -> None:
         _warn(app, "cmd.core_busy")
         return
     title = content.removeprefix("/fork").strip()
+    if not title:
+        app.run_worker(
+            app._do_session_tree(default_action="fork"),
+            name="session_fork_picker",
+            exclusive=False,
+        )
+        return
     ta.disabled = True
     _progress(app, ta, "cmd.session.forking")
     app.run_worker(app._do_fork_session(title), name="fork_session", exclusive=False)
+
+
+# 复制当前活动分支的完整历史，不要求用户再进入历史选择器
+async def _cmd_clone(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None or app._session_id is None or app._busy:
+        _warn(app, "cmd.core_busy")
+        return
+    title = content.removeprefix("/clone").strip()
+    ta.disabled = True
+    _progress(app, ta, "cmd.session.forking")
+    app.run_worker(app._do_fork_session(title), name="clone_session", exclusive=False)
 
 
 # 通过创建关联 fork 切换冻结 Preset，避免非空会话的工具集合发生漂移
@@ -1327,7 +1347,8 @@ BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
         arg_candidates=("standard", "minimal", "tool-program"),
     ),
     SlashCommand("rename", "重命名当前会话：/rename <标题>", True, _cmd_rename),
-    SlashCommand("fork", "复制当前会话为分支：/fork [标题]", True, _cmd_fork),
+    SlashCommand("fork", "选择历史节点并从这里创建分支", True, _cmd_fork),
+    SlashCommand("clone", "复制当前完整分支：/clone [标题]", True, _cmd_clone),
     SlashCommand("tree", "选择历史节点并从这里继续", True, _cmd_tree),
     SlashCommand("reload", "重新加载扩展、提示模板与 Skills", True, _cmd_reload),
     SlashCommand(

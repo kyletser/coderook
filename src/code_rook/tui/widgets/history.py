@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -19,18 +19,33 @@ class HistoryPicker(ModalScreen[tuple[str, int] | None]):
     """
 
     # 保存历史节点，只展示有可读消息预览的条目。
-    def __init__(self, entries: list[dict[str, Any]], locale: str = "zh-CN") -> None:
+    def __init__(
+        self,
+        entries: list[dict[str, Any]],
+        locale: str = "zh-CN",
+        *,
+        default_action: Literal["navigate", "fork"] = "navigate",
+    ) -> None:
         super().__init__()
         self._entries = [entry for entry in entries if entry.get("preview")]
         self._locale = locale
+        self._default_action = default_action
 
     # 构建键盘可选历史列表，条目按原日志顺序保留分支标识。
     def compose(self) -> ComposeResult:
         zh = self._locale == "zh-CN"
-        yield Label(
-            "Enter 切换 · Ctrl+S 带摘要切换（调用模型） · Ctrl+F 分支 · Esc 取消"
-            if zh else "Enter navigate · Ctrl+S summarize (model call) · Ctrl+F fork · Esc close"
-        )
+        if self._default_action == "fork":
+            label = (
+                "Enter 从此处创建分支 · Esc 取消"
+                if zh else "Enter fork from here · Esc close"
+            )
+        else:
+            label = (
+                "Enter 切换 · Ctrl+S 带摘要切换（调用模型） · Ctrl+F 分支 · Esc 取消"
+                if zh
+                else "Enter navigate · Ctrl+S summarize (model call) · Ctrl+F fork · Esc close"
+            )
+        yield Label(label)
         yield OptionList(*[
             Option(
                 Text(f"{'●' if entry['active'] else '○'} #{entry['seq']}  {entry['preview']}"),
@@ -42,7 +57,7 @@ class HistoryPicker(ModalScreen[tuple[str, int] | None]):
     # 提交所选 Ledger 节点，在同一会话内导航。
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id is not None:
-            self.dismiss(("navigate", int(event.option.id)))
+            self.dismiss((self._default_action, int(event.option.id)))
 
     # 显式请求模型总结离开的分支后再导航，不改变默认操作的零调用行为。
     def action_summarize_entry(self) -> None:
