@@ -158,8 +158,35 @@ async def _cancel_active_run(client: SocketClient, printer: ChatPrinter) -> bool
     return True
 
 
+# 主 Chat 事件循环被终端信号打断后，用独立连接完成仍在 Core 中运行的取消请求。
+async def _cancel_interrupted_run(config: CodeRookConfig, run_id: str) -> bool:
+    try:
+        client = SocketClient.from_config(config)
+        await client.connect()
+    except (ConnectionRefusedError, OSError, IpcTokenError, IpcError) as exc:
+        print(f"\n[cancel error: {exc}]", file=sys.stderr)
+        return False
+    loop_task = asyncio.create_task(client.run_event_loop())
+    printer = ChatPrinter()
+    printer.active_run_id = run_id
+    try:
+        return await _cancel_active_run(client, printer)
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+        await client.close()
+
+
 # 异步核心：创建或恢复 chat session，循环读取用户输入并处理权限审批
-async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = None) -> int:
+async def _chat_async(
+    config: CodeRookConfig,
+    resume_session_id: str | None = None,
+    *,
+    printer: ChatPrinter | None = None,
+) -> int:
     try:
         client = SocketClient.from_config(config)
         await client.connect()
@@ -170,7 +197,7 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
         print(f"error: IPC authentication failed: {exc}", file=sys.stderr)
         return 1
 
-    printer = ChatPrinter()
+    printer = printer or ChatPrinter()
     client.on_event(printer.handle)
     loop_task = asyncio.create_task(client.run_event_loop())
 
@@ -292,8 +319,18 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
 
 # 执行 coderook chat 命令
 def cmd_chat(config: CodeRookConfig, resume_session_id: str | None = None) -> None:
+    printer = ChatPrinter()
     try:
-        exit_code = asyncio.run(_chat_async(config, resume_session_id))
+        exit_code = asyncio.run(
+            _chat_async(config, resume_session_id, printer=printer)
+        )
     except KeyboardInterrupt:
+        run_id = printer.active_run_id
+        if run_id is not None:
+            try:
+                if asyncio.run(_cancel_interrupted_run(config, run_id)):
+                    print("\n[current run cancelled]")
+            except KeyboardInterrupt:
+                pass
         sys.exit(130)
     sys.exit(exit_code)

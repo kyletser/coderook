@@ -8,6 +8,7 @@ import pytest
 from code_rook.cli.commands.chat import (
     ChatPrinter,
     _cancel_active_run,
+    _cancel_interrupted_run,
     _chat_async,
     _is_exit_command,
     _unwrap_runtime_event,
@@ -116,6 +117,47 @@ async def test_chat_cancel_sends_run_cancel() -> None:
     assert cancelled
     assert calls == [("run.cancel", {"run_id": "run-1"})]
     assert printer.active_run_id is None
+
+
+# 功能：主 Chat 事件循环被 Ctrl+C 打断后可用新连接取消 Core 中仍活动的 Run。
+# 设计：模拟完整连接、读循环和取消响应，断言独立连接被关闭且只取消目标 Run。
+async def test_chat_cancels_interrupted_run_with_fresh_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _FakeClient:
+        # 模拟成功建立补偿取消连接。
+        async def connect(self) -> None:
+            return None
+
+        # 记录精确 Run 取消请求。
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, Any],
+        ) -> dict[str, Any]:
+            calls.append((method, params))
+            return {"status": "cancelled"}
+
+        # 保持响应读取循环，直到补偿逻辑完成并取消它。
+        async def run_event_loop(self) -> None:
+            await asyncio.Event().wait()
+
+        # 标记连接已完成有序关闭。
+        async def close(self) -> None:
+            calls.append(("close", {}))
+
+    monkeypatch.setattr(
+        "code_rook.cli.commands.chat.SocketClient.from_config",
+        lambda _config: _FakeClient(),
+    )
+
+    assert await _cancel_interrupted_run(CodeRookConfig(), "run-interrupted")
+    assert calls == [
+        ("run.cancel", {"run_id": "run-interrupted"}),
+        ("close", {}),
+    ]
 
 
 # 功能：常见退出词由文本 REPL 本地消费，不进入模型上下文。
