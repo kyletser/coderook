@@ -1574,6 +1574,65 @@ async def test_tui_configured_provider_binds_current_session(tmp_path: Path) -> 
     assert app._model == "deepseek-chat"
 
 
+# 功能：验证启动参数中的模型与思考级别在首次会话建立后持久应用
+# 设计：运行两次统一入口并断言 model/thinking IPC 均只发送一次，覆盖重连不重复写入
+async def test_initial_session_settings_apply_model_and_thinking_once() -> None:
+    class _Client:
+        # 初始化会话设置命令记录
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        # 返回与设置命令一致的最小 Core 响应
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            if method == "session.set_model":
+                return {
+                    "session": {
+                        "route_id": params["route_id"],
+                        "model": params["model"],
+                    }
+                }
+            return {}
+
+    client = _Client()
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        initial_route_id="aliyun",
+        initial_model="qwen-plus",
+        initial_thinking_level="high",
+    )
+    app._client = client  # type: ignore[assignment]
+
+    await app._apply_initial_session_settings("sess-startup")
+    await app._apply_initial_session_settings("sess-startup")
+
+    assert client.calls == [
+        (
+            "session.set_model",
+            {
+                "session_id": "sess-startup",
+                "route_id": "aliyun",
+                "model": "qwen-plus",
+            },
+        ),
+        (
+            "session.set_thinking",
+            {
+                "session_id": "sess-startup",
+                "thinking_level": "high",
+            },
+        ),
+    ]
+    assert app._route == "aliyun"
+    assert app._model == "qwen-plus"
+    assert app._thinking_level == "high"
+
+
 # 功能：验证 TUI doctor 显示分类和凭据来源，但不显示任何 API key 正文
 # 设计：注入固定诊断器与凭据 stub，调用真实展示方法并检查渲染文本和输入恢复
 async def test_tui_doctor_renders_redacted_result(tmp_path: Path) -> None:

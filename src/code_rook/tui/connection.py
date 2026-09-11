@@ -933,6 +933,10 @@ class TuiConnection:
                     )
                 elif self._app._session_id is not None:
                     await self.subscribe_session(self._app._session_id)
+                if self._app._session_id is not None:
+                    await self._app._apply_initial_session_settings(
+                        self._app._session_id,
+                    )
                 await self._subscribe_legacy_replay(client)
                 await self._app._refresh_authority()
                 await self._refresh_goal_state()

@@ -918,9 +918,21 @@ function AppShell({
   }, [extensionUi.title]);
 
   const refreshActiveModel = useCallback(async () => {
+    const threadId = selectedIdRef.current;
+    if (threadId) {
+      const context = await request<ThreadContext>(
+        `/v1/threads/${encodeURIComponent(threadId)}/context`,
+      );
+      if (selectedIdRef.current === threadId) {
+        setActiveModel(textValue(context.model) || tr("未配置模型", "No model configured"));
+      }
+      return;
+    }
     const catalog = await request<ProviderCatalog>("/v1/providers");
     const active = catalog.routes.find((route) => route.id === catalog.active_route_id);
-    setActiveModel(textValue(active?.model) || tr("未配置模型", "No model configured"));
+    if (!selectedIdRef.current) {
+      setActiveModel(textValue(active?.model) || tr("未配置模型", "No model configured"));
+    }
   }, [preferences.locale]);
 
   const refreshThreads = useCallback(async () => {
@@ -1014,6 +1026,7 @@ function AppShell({
       setQueuedMessages(loadedQueue);
       setHasOlderTurns(turnPage.length > TURN_PAGE_SIZE);
       setContextTokens(Number(loadedContext.estimated_tokens || 0));
+      setActiveModel(textValue(loadedContext.model) || tr("未配置模型", "No model configured"));
       setNavigation(loadedContext.navigation || null);
       setInputCommands([
             { name: "reload", description: tr("重新加载扩展、模板与 Skills", "Reload extensions, templates and Skills"), kind: "builtin" },
@@ -1028,7 +1041,7 @@ function AppShell({
         version,
       )) setThreadLoading(false);
     }
-  }, []);
+  }, [preferences.locale]);
 
   const loadQueue = useCallback(async (threadId: string) => {
     const version = (queueLoadVersions.current[threadId] || 0) + 1;

@@ -4548,13 +4548,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             title or "",
             len(history_messages),
         )
-        await self._apply_initial_model_selection(session_id)
-        if self._initial_thinking_level is not None and not self._initial_thinking_applied:
-            await ipc_actions.set_session_thinking(
-                self._client, session_id, self._initial_thinking_level,
-            )
-            self._thinking_level = self._initial_thinking_level
-            self._initial_thinking_applied = True
+        await self._apply_initial_session_settings(session_id)
         await self._refresh_authority()
         await self._refresh_goal_state()
         await self._refresh_session_cost()
@@ -4594,6 +4588,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._model = str(session.get("model") or self._initial_model)
         if self._model and self._model not in self._models:
             self._models.append(self._model)
+
+    # 首次会话建立后统一应用命令行指定的模型与思考级别，保证新建、恢复和界面切换语义一致
+    async def _apply_initial_session_settings(self, session_id: str) -> None:
+        await self._apply_initial_model_selection(session_id)
+        if self._initial_thinking_level is None or self._initial_thinking_applied:
+            return
+        if self._client is None:
+            return
+        await ipc_actions.set_session_thinking(
+            self._client,
+            session_id,
+            self._initial_thinking_level,
+        )
+        self._thinking_level = self._initial_thinking_level
+        self._initial_thinking_applied = True
 
     # 保存离开会话时的草稿与待发送图片，避免 composer 跨会话污染
     def _snapshot_session_composer(self) -> None:

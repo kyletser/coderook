@@ -284,6 +284,10 @@ async def test_reconnect_resumes_same_session() -> None:
         async def _refresh_authority(self) -> None:
             return None
 
+        # 模拟首次连接后应用命令行会话设置
+        async def _apply_initial_session_settings(self, _session_id: str) -> None:
+            return None
+
         def _break_llm(self) -> None:
             self.break_llm += 1
 
@@ -469,6 +473,10 @@ async def test_busy_active_turn_reconnect_recovers_interactions_without_cross_se
         async def _refresh_authority(self) -> None:
             return None
 
+        # 模拟重连后检查一次性会话设置
+        async def _apply_initial_session_settings(self, _session_id: str) -> None:
+            return None
+
         # 标记重连链路已完成全部恢复动作
         def _mark_connected(self) -> None:
             connected.set()
@@ -627,12 +635,18 @@ async def test_first_connect_creates_then_reconnect_resumes() -> None:
             self._input_runtime_mode = RuntimeMode.ACT
             self.mark_connected = 0
             self.history: list[list[dict[str, Any]]] = []
+            self.initial_settings: list[str] = []
 
         def _update_header(self, _state: str) -> None:
             return None
 
         async def _refresh_authority(self) -> None:
             return None
+
+        # 记录首次会话真正进入连接流程后应用的启动设置
+        async def _apply_initial_session_settings(self, session_id: str) -> None:
+            if not self.initial_settings:
+                self.initial_settings.append(session_id)
 
         def _break_llm(self) -> None:
             return None
@@ -679,6 +693,7 @@ async def test_first_connect_creates_then_reconnect_resumes() -> None:
         assert created == 1
         assert resumed == ["sess-auto"]
         assert app._session_id == "sess-auto"
+        assert app.initial_settings == ["sess-auto"]
         # 重连必须重新拉取权威 transcript，确保断线期间完成的 assistant 正文可见
         assert app.history == [[]]
         assert app._history_loaded is True
@@ -751,6 +766,10 @@ async def test_continue_recent_resumes_latest_session() -> None:
 
         # 模拟 authority 恢复
         async def _refresh_authority(self) -> None:
+            return None
+
+        # 模拟恢复最近会话后应用一次性启动设置
+        async def _apply_initial_session_settings(self, _session_id: str) -> None:
             return None
 
         # 记录恢复会话后是否同步了持久成本语义
@@ -908,6 +927,10 @@ async def test_connection_refusal_recovers_managed_core() -> None:
         async def _refresh_authority(self) -> None:
             return None
 
+        # 模拟 Core 自动恢复后的会话设置同步
+        async def _apply_initial_session_settings(self, _session_id: str) -> None:
+            return None
+
         # 标记连接已经恢复
         def _mark_connected(self) -> None:
             connected.set()
@@ -1021,6 +1044,10 @@ async def test_connection_delivers_events_to_app_callback() -> None:
             return None
 
         async def _refresh_authority(self) -> None:
+            return None
+
+        # 模拟事件测试首次会话的启动设置同步
+        async def _apply_initial_session_settings(self, _session_id: str) -> None:
             return None
 
         def _break_llm(self) -> None:
