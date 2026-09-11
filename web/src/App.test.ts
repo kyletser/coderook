@@ -176,7 +176,11 @@ describe("Web task submission", () => {
     expect(summarizeVerification([
       { verdict: "pass", gate_count: 1, passed: 1 },
       { status: "unavailable" },
-    ])).toEqual({ status: "unknown", passed: 1, total: 1, unknown: 1 });
+    ])).toEqual({ status: "pass", passed: 1, total: 1, unknown: 0 });
+    expect(summarizeVerification([
+      { verdict: "pass", gate_count: 1, passed: 1 },
+      { status: "unavailable", gate_count: 1 },
+    ])).toEqual({ status: "unknown", passed: 1, total: 2, unknown: 1 });
   });
 
   it("uses the persisted run result while the receipt projection is still loading", () => {

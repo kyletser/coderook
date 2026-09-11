@@ -627,6 +627,7 @@ export function summarizeVerification(verification: Array<Record<string, unknown
   let total = 0;
   let failed = false;
   let unknown = 0;
+  let zeroGateUnknown = 0;
   for (const item of verification) {
     const gateCount = Number(item.gate_count || 0);
     const itemPassed = Number(item.passed || 0);
@@ -638,17 +639,16 @@ export function summarizeVerification(verification: Array<Record<string, unknown
     if (["fail", "failed", "error"].includes(verdict)) {
       failed = true;
     } else if (!["pass", "passed", "ok", "success", "succeeded", "completed"].includes(verdict)) {
-      unknown += 1;
-    } else if (normalizedGateCount === 0 && normalizedPassed === 0) {
-      total += 1;
-      passed += 1;
+      if (Math.max(normalizedGateCount, normalizedPassed) > 0) unknown += 1;
+      else zeroGateUnknown += 1;
     }
   }
+  const effectiveUnknown = total === 0 ? zeroGateUnknown : unknown;
   return {
-    status: failed ? "fail" : unknown > 0 || verification.length === 0 ? "unknown" : "pass",
+    status: failed ? "fail" : effectiveUnknown > 0 || total === 0 ? "unknown" : "pass",
     passed,
     total,
-    unknown,
+    unknown: effectiveUnknown,
   };
 }
 
