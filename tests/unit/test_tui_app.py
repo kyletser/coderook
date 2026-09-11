@@ -1709,6 +1709,17 @@ def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
     assert items["quit"] == "退出 CodeRook"
 
 
+# 功能：验证中英文斜杠命令目录不会向用户泄漏内部本地化键名
+# 设计：遍历稳定命令而非枚举个别入口，确保新增命令缺翻译时测试立即失败
+def test_tui_builtin_command_descriptions_are_localized() -> None:
+    for locale in ("zh-CN", "en-US"):
+        app = CodeRookTuiApp("127.0.0.1", 9999, locale=locale)
+        items = app._build_slash_items()  # type: ignore[attr-defined]
+
+        for item in items:
+            assert item.description != f"command.{item.name}"
+
+
 # 功能：验证启动恢复选择器只在首次连接完成后打开一次，重连不会重复覆盖输入区。
 # 设计：替换 Textual 挂载边界并关闭捕获的协程，直接检查一次性调度状态。
 def test_startup_session_picker_opens_once_after_connection() -> None:
