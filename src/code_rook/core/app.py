@@ -1967,8 +1967,9 @@ class CoreApp:
     async def _session_delete_handler(self, params: dict[str, Any]) -> SessionDeleteResult:
         assert self._sessions is not None
         cmd = SessionDeleteCommand.model_validate(params)
-        await self._sessions.delete(cmd.session_id)
-        return SessionDeleteResult(session_id=cmd.session_id)
+        session_id = await self._sessions.resolve_session_reference(cmd.session_id)
+        await self._sessions.delete(session_id)
+        return SessionDeleteResult(session_id=session_id)
 
     # 接收客户端权限审批响应，resolve 对应挂起的 Future
     async def _permission_respond_handler(self, params: dict[str, Any]) -> PermissionRespondResult:

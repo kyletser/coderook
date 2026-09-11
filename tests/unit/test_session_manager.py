@@ -651,6 +651,24 @@ async def test_resume_closed_chat_continues_existing_thread(tmp_path: Path) -> N
     ]
 
 
+# 功能：公开会话操作接受唯一部分 ID 和 thread.jsonl 路径，并拒绝歧义前缀
+# 设计：创建两个真实持久会话，分别通过导出、恢复和解析入口验证三类引用，不只单测字符串匹配函数
+async def test_session_operations_resolve_partial_ids_and_paths(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    first = await manager.create("chat", "first")
+    await manager.create("chat", "second")
+    short_id = first.id.removeprefix("sess-")
+
+    filename, _media_type, _content = await manager.export(short_id, "json")
+    resumed = await manager.resume(str(store.session_dir(first.id) / "thread.jsonl"))
+
+    assert filename.startswith(first.id)
+    assert resumed.id == first.id
+    with pytest.raises(HandlerError, match="ambiguous"):
+        await manager.resolve_session_reference("sess-")
+
+
 # 功能：one-shot session 不可伪装成可继续聊天的 session
 # 设计：恢复接口只接受 chat，避免一次性任务状态机被重复执行
 async def test_resume_rejects_one_shot_session(tmp_path: Path) -> None:

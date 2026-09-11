@@ -2650,7 +2650,7 @@ class SessionManager:
 
     # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
     async def compact(self, sid: str, focus: str = "") -> Any:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -2742,13 +2742,13 @@ class SessionManager:
 
     # 读取指定 session 的完整 thread 历史
     async def get_history(self, sid: str) -> list[dict[str, Any]]:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         self._get_session(sid)
         return self._store.read_messages(sid)
 
     # 返回界面历史，包含不进入模型上下文的用户 Shell 记录
     async def get_display_history(self, sid: str) -> list[dict[str, Any]]:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         self._get_session(sid)
         return self._store.derive_messages(sid, display=True)
 
@@ -2941,11 +2941,26 @@ class SessionManager:
             sessions = [session for session in sessions if session.status != "closed"]
         return sessions[:limit]
 
-    # 将扩展传入的会话 ID 或 thread.jsonl 路径解析为当前工作区会话 ID。
+    # 将会话完整 ID、唯一前缀或 thread.jsonl 路径解析为当前工作区会话 ID
     def _session_id_from_reference(self, reference: str) -> str:
         normalized = reference.strip()
+        if not normalized:
+            raise HandlerError(INVALID_PARAMS, "session reference must not be blank")
         if normalized in self._sessions:
             return normalized
+        prefix_matches = [
+            session_id
+            for session_id in self._sessions
+            if session_id.startswith(normalized)
+            or session_id.removeprefix("sess-").startswith(normalized)
+        ]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+        if len(prefix_matches) > 1:
+            raise HandlerError(
+                INVALID_PARAMS,
+                "session reference is ambiguous; provide more ID characters",
+            )
         candidate = Path(normalized).expanduser()
         for session_id in self._sessions:
             directory = self._store.session_dir(session_id)
@@ -2960,11 +2975,16 @@ class SessionManager:
                     return session_id
             except OSError:
                 continue
-        raise HandlerError(INVALID_PARAMS, "session reference does not exist")
+        raise HandlerError(SESSION_NOT_FOUND, "session not found")
+
+    # 将用户输入的完整 ID、唯一前缀或会话文件路径解析为当前工作区会话 ID
+    async def resolve_session_reference(self, reference: str) -> str:
+        await self._ensure_runtime_sessions()
+        return self._session_id_from_reference(reference)
 
     # 重新打开一个持久化 chat session，使后续消息沿用原 thread
     async def resume(self, sid: str) -> Session:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -3029,7 +3049,7 @@ class SessionManager:
         return session
 
     async def rename(self, sid: str, title: str) -> Session:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -3059,7 +3079,7 @@ class SessionManager:
 
     # 读取会话分支树供 TUI 和 Web 选择历史继续点。
     async def tree(self, sid: str) -> list[dict[str, Any]]:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         self._get_session(sid)
         return self._store.session_tree(sid)
 
@@ -3068,7 +3088,7 @@ class SessionManager:
         self, sid: str, target_seq: int, *, summarize: bool = False, focus: str = "",
         label: str = "",
     ) -> dict[str, Any]:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -3204,7 +3224,7 @@ class SessionManager:
         leaf_seq: int | None = None,
         position: str = "at",
     ) -> Session:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         source = self._get_session(sid)
         source_lock = self._locks[sid]
         if source_lock.locked():
@@ -3281,7 +3301,7 @@ class SessionManager:
         sid: str,
         export_format: SessionExportFormat,
     ) -> tuple[str, str, str]:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
@@ -3343,7 +3363,7 @@ class SessionManager:
         return session, len(imported.messages), imported.source_format
 
     async def delete(self, sid: str) -> None:
-        await self._ensure_runtime_sessions()
+        sid = await self.resolve_session_reference(sid)
         self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
