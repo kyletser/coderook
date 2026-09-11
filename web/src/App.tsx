@@ -755,6 +755,12 @@ export function modelContentFor(visibleContent: string, fileReferences: string[]
   return `${base}\n\nBounded file references selected by the user: ${JSON.stringify(selected)}. Read only the ranges needed for this task; do not inject entire files by default.`;
 }
 
+export function approvedPlanModelContent(originalRequest: string): string {
+  return "Implement the approved plan from the immediately preceding planning turn. "
+    + "Re-check repository state before editing and report any required deviation."
+    + `\n\nOriginal user request:\n${originalRequest}`;
+}
+
 export function eventBelongsToThread(activeThreadId: string, streamThreadId: string): boolean {
   return Boolean(activeThreadId) && activeThreadId === streamThreadId;
 }
@@ -2371,6 +2377,28 @@ function EventCard({
       onError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const approvePlan = async () => {
+    if (!event.turn_id) return;
+    try {
+      await request(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, {
+        method: "POST",
+        body: JSON.stringify({ decision: "approve" }),
+      });
+      setResponded(true);
+      const originalRequest = textValue(event.payload.request).trim();
+      await request(`/v1/threads/${threadId}/turns`, {
+        method: "POST",
+        body: JSON.stringify({
+          content: approvedPlanModelContent(originalRequest),
+          display_content: tr("执行已批准的计划", "Implement approved plan"),
+          mode: "act",
+        }),
+      });
+      onNotice(tr("计划已批准，正在开始执行", "Plan approved. Execution started."));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
   const toolId = textValue(event.payload.tool_use_id || event.payload.permission_id);
   const questionId = textValue(event.payload.question_id);
   const rawPermissionParams = event.payload.params;
@@ -2422,7 +2450,7 @@ function EventCard({
         )}
         {!responded && isPlan && event.turn_id && (
           <><div className="answer-row"><input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("可选：说明希望怎样修改计划", "Optional: explain how the plan should change")} /><button disabled={!answer.trim()} onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "revise", revision: answer }, tr("已要求修改计划", "Plan revision requested"))}>{tr("要求修改", "Request changes")}</button></div><div className="card-actions">
-              <button onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "approve" }, tr("计划已批准", "Plan approved"))}>{tr("批准计划", "Approve plan")}</button>
+              <button onClick={() => void approvePlan()}>{tr("批准并执行", "Approve and run")}</button>
               <button className="danger" onClick={() => void post(`/v1/threads/${threadId}/turns/${event.turn_id}/plan`, { decision: "cancel" }, tr("计划已取消", "Plan cancelled"))}>{tr("取消", "Cancel")}</button>
             </div></>
         )}

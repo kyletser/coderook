@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeFileMention,
+  approvedPlanModelContent,
   applyExtensionUiUpdate,
   appendRuntimeEvent,
   displayableThreads,
@@ -27,6 +28,13 @@ import {
 import type { RuntimeEvent, ThreadRecord } from "./types";
 
 describe("Web task submission", () => {
+  it("continues an approved plan with the original request", () => {
+    const content = approvedPlanModelContent("修复登录失败并运行测试");
+
+    expect(content).toContain("Implement the approved plan");
+    expect(content).toContain("Original user request:\n修复登录失败并运行测试");
+  });
+
   it("preserves direct shell commands instead of generating a model instruction", () => {
     const content = modelContentFor("!pytest -q", []);
 
