@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from code_rook.core.agent_runtime.shell import CodingShellTool
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.config import CodeRookConfig
@@ -17,6 +18,7 @@ from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.openai_compatible import _to_openai_tools
 from code_rook.core.llm.types import ToolCallBlock
 from code_rook.core.permissions.manager import PermissionManager
+from code_rook.core.presets import MINIMAL_PRESET
 from code_rook.core.repository import (
     command_candidate_id,
     discover_test_commands,
@@ -122,6 +124,24 @@ def test_runner_tool_assembly_keeps_default_surface_bounded(tmp_path: Path) -> N
 
     assert len(schemas) <= registry.model_tool_limit
     assert names == {"bash", "edit", "read", "write"}
+
+
+# 功能：验证 Minimal 预设与默认模式共享同一组原生编码工具和 Git Bash 实现
+# 设计：使用现有 legacy allowlist 构建真实目录，防止精简模式重新退回 Windows 默认 shell
+def test_minimal_preset_uses_native_coding_tool_surface(tmp_path: Path) -> None:
+    runner = AgentRunner(CodeRookConfig(), workspace_root=tmp_path)
+    registry = runner._build_registry(
+        TaskManager(tmp_path / ".tasks"),
+        tool_whitelist=sorted(MINIMAL_PRESET.tool_allowlist or ()),
+    )
+
+    assert {str(schema["name"]) for schema in registry.tool_schemas()} == {
+        "bash",
+        "edit",
+        "read",
+        "write",
+    }
+    assert isinstance(registry.get("bash"), CodingShellTool)
 
 
 # 功能：验证默认小工具面隐藏 Git family，但显式选择后仍保留五个只读 action

@@ -366,22 +366,32 @@ class RuntimeToolAssembly:
         search_tool = ToolSearchTool(registry)
         if _ok(search_tool):
             registry.register(search_tool)
-        if allowed is None and runtime_mode == RuntimeMode.ACT:
+        if runtime_mode == RuntimeMode.ACT:
             from code_rook.core.agent_runtime.shell import CodingShellTool
             from code_rook.core.agent_runtime.tools import EditTool, ReadTool, WriteTool
 
-            resource_roots = tuple(dict.fromkeys(
-                Path(skill.path).parent
-                for skill in active_skill_loader.list_for_execution(
-                    workspace_trusted=workspace_trusted,
-                )
-            ))
-            registry.register(ReadTool(
-                self._boundary, supports_images, resource_roots=resource_roots,
-                auto_resize=self._image_auto_resize,
-            ))
-            registry.register(EditTool(self._boundary, checkpoint_store))
-            registry.register(WriteTool(self._boundary, checkpoint_store=checkpoint_store))
+            canonical_tools: set[str] = set()
+
+            if _name_allowed("read"):
+                resource_roots = tuple(dict.fromkeys(
+                    Path(skill.path).parent
+                    for skill in active_skill_loader.list_for_execution(
+                        workspace_trusted=workspace_trusted,
+                    )
+                ))
+                registry.register(ReadTool(
+                    self._boundary, supports_images, resource_roots=resource_roots,
+                    auto_resize=self._image_auto_resize,
+                ))
+                canonical_tools.add("read")
+            if _name_allowed("edit"):
+                registry.register(EditTool(self._boundary, checkpoint_store))
+                canonical_tools.add("edit")
+            if _name_allowed("write"):
+                registry.register(WriteTool(
+                    self._boundary, checkpoint_store=checkpoint_store,
+                ))
+                canonical_tools.add("write")
             active_session_id = session.id if session is not None else session_id
             active_route = route_binding.route if route_binding is not None else None
             session_environment = {
@@ -403,21 +413,24 @@ class RuntimeToolAssembly:
                     active_route.thinking if active_route is not None else "off"
                 ),
             }
-            registry.register(
-                CodingShellTool(
-                    self._boundary.root,
-                    sandbox_plan,
-                    self._process_supervisor,
-                    session_environment=session_environment,
+            if _name_allowed("bash"):
+                registry.register(
+                    CodingShellTool(
+                        self._boundary.root,
+                        sandbox_plan,
+                        self._process_supervisor,
+                        session_environment=session_environment,
+                    )
                 )
-            )
+                canonical_tools.add("bash")
             custom = (
                 {tool.name for tool in self._mcp_manager.get_tools()}
                 if self._mcp_manager
                 else set()
             )
             active_control = {"update_goal"} if registry.get("update_goal") is not None else set()
-            registry.set_model_surface(
-                frozenset({"read", "bash", "edit", "write", *custom, *active_control})
-            )
+            if canonical_tools:
+                registry.set_model_surface(
+                    frozenset({*canonical_tools, *custom, *active_control})
+                )
         return registry

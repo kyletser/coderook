@@ -61,9 +61,7 @@ MINIMAL_PRESET = AgentPreset(
     id="minimal",
     name="Minimal",
     stability=CapabilityStability.STABLE,
-    tool_allowlist=frozenset(
-        {"file", "read_file", "edit_file", "str_replace_editor", "bash"}
-    ),
+    tool_allowlist=frozenset({"read", "edit", "write", "bash"}),
 )
 
 TOOL_PROGRAM_PRESET = AgentPreset(
