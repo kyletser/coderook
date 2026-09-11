@@ -56,7 +56,7 @@ from code_rook.cli.commands.version import cmd_version
 from code_rook.cli.commands.web import cmd_web
 from code_rook.core.config import get_config
 from code_rook.core.input_context import (
-    augment_file_references,
+    augment_explicit_file_paths,
     extract_file_reference_tokens,
     resolve_file_references,
 )
@@ -159,27 +159,42 @@ def _prepare_file_referenced_input(
     for reference in references:
         inline_content = inline_content.replace(f"@{reference}", "", 1)
     references.extend(extract_file_reference_tokens(inline_content))
-    resolved = resolve_file_references(
-        workspace,
-        dict.fromkeys(references),
-        strict=True,
-    )
+    selected_paths: list[Path] = []
+    unresolved: list[str] = []
+    for reference in dict.fromkeys(references):
+        raw = reference.strip().removeprefix("@").strip(".,;，。；:：")
+        candidate = Path(raw).expanduser()
+        candidate = (candidate if candidate.is_absolute() else workspace / candidate).resolve()
+        if candidate.is_file():
+            selected_paths.append(candidate)
+            continue
+        try:
+            matched = resolve_file_references(workspace, [raw], strict=True)
+        except ValueError:
+            unresolved.append(raw)
+            continue
+        selected_paths.extend(workspace / item for item in matched)
+    if unresolved:
+        labels = ", ".join(f"@{value}" for value in unresolved)
+        raise ValueError(
+            "file reference not found or ambiguous: " + labels
+        )
+    selected_paths = list(dict.fromkeys(selected_paths))[:8]
     images = [
-        workspace / reference
-        for reference in resolved
-        if Path(reference).suffix.casefold() in _IMAGE_REFERENCE_SUFFIXES
+        path
+        for path in selected_paths
+        if path.suffix.casefold() in _IMAGE_REFERENCE_SUFFIXES
     ]
-    text_references = [
-        reference
-        for reference in resolved
-        if Path(reference).suffix.casefold() not in _IMAGE_REFERENCE_SUFFIXES
+    text_paths = [
+        path
+        for path in selected_paths
+        if path.suffix.casefold() not in _IMAGE_REFERENCE_SUFFIXES
     ]
     return (
-        augment_file_references(
+        augment_explicit_file_paths(
             content,
-            content,
-            workspace,
-            explicit_references=text_references,
+            text_paths,
+            workspace=workspace,
         ),
         images[:8],
     )

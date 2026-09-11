@@ -78,6 +78,24 @@ def test_prepare_file_reference_accepts_windows_absolute_path(tmp_path: Path) ->
     assert images == [image]
 
 
+# 功能：命令行绝对图片路径可由用户显式选择而不要求位于当前项目
+# 设计：将项目与图片放在同级目录，确认解析返回外部原路径且不扩大模型工具工作区
+def test_prepare_file_reference_accepts_explicit_external_image(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = tmp_path / "outside image.png"
+    image.write_bytes(b"image-placeholder")
+
+    content, images = cli_main._prepare_file_referenced_input(
+        f"@{image} describe",
+        workspace,
+        standalone_references=[str(image)],
+    )
+
+    assert content == f"@{image} describe"
+    assert images == [image]
+
+
 # 功能：引号包住整条任务时，CLI 只把 @文件片段识别为引用而不吞掉后续指令。
 # 设计：模拟 PowerShell 将整句作为单个 argv 传入，同时保留对应 standalone 候选。
 def test_prepare_file_reference_does_not_treat_quoted_task_as_path(

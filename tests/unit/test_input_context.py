@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from code_rook.core.input_context import (
+    augment_explicit_file_paths,
     augment_file_references,
     extract_file_reference_tokens,
     list_workspace_file_references,
@@ -107,6 +109,28 @@ def test_augment_file_references_preserves_explicit_path_with_spaces(
     assert "PRIVATE FULL CONTENT" in result
     assert "truncated=\"false\"" in result
     assert "reference data" in result
+
+
+# 功能：命令行显式选择的工作区外文件仍以有界正文进入模型上下文
+# 设计：同时传入工作区内外文件，核对标签与内容并证明该能力不依赖模型工具越界读取
+def test_augment_explicit_file_paths_accepts_external_selection(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    internal = workspace / "inside.txt"
+    internal.write_text("INSIDE", encoding="utf-8")
+    external = tmp_path / "outside.txt"
+    external.write_text("OUTSIDE", encoding="utf-8")
+
+    result = augment_explicit_file_paths(
+        "compare",
+        [internal, external],
+        workspace=workspace,
+    )
+
+    assert '<file path="inside.txt"' in result
+    assert f'<file path={json.dumps(str(external), ensure_ascii=False)}' in result
+    assert "INSIDE" in result
+    assert "OUTSIDE" in result
 
 
 # 功能：超大文件引用只进入有界摘要并明确告知模型已截断
