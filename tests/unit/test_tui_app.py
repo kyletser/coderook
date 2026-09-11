@@ -1402,6 +1402,25 @@ def test_welcome_workspace_banner_guides_project_selection(
     assert not any("Sandbox DEGRADED" in str(widget) for widget in appended)
 
 
+# 功能：验证普通工作区启动卡不会在 Core 连接前提前宣称已就绪
+# 设计：切换客户端存在状态并直接渲染文本，覆盖连接中与就绪两个用户可见阶段
+def test_workspace_banner_tracks_core_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    app = CodeRookTuiApp("127.0.0.1", 9999, locale="zh-CN")
+
+    connecting = render(app._render_banner()).plain
+    app._client = object()  # type: ignore[assignment]
+    ready = render(app._render_banner()).plain
+
+    assert "正在连接本机 Core" in connecting
+    assert "已就绪" not in connecting
+    assert "CodeRook 已就绪" in ready
+    assert "解释这个仓库" in ready
+
+
 # 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录
 # 设计：直接调用本地命令 handler 并收集 Static，避免 socket 干扰文件确认语义
 def test_tui_skills_install_requires_explicit_confirmation(

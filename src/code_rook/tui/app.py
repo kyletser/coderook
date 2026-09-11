@@ -428,6 +428,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 连接建立并完成会话恢复后：还原输入框状态与顶栏
     def _mark_connected(self) -> None:
         self._clear_connection_problems()
+        self._refresh_banner()
         prompt = self._prompt()
         if prompt is not None:
             prompt.disabled = self._plan_review_pending
@@ -464,6 +465,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
 
     # 连接断开后：禁用输入框并提示正在重试
     def _mark_disconnected(self) -> None:
+        self._refresh_banner()
         prompt = self._prompt()
         if prompt is not None:
             prompt.disabled = True
@@ -707,7 +709,10 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             lines = [f"[bold cyan]{title}[/bold cyan]", f"[dim]{hint}[/dim]"]
             lines.extend(f"  [cyan]›[/cyan] {escape(item)}" for item in suggestions)
             return "\n".join(lines)
-        if self._locale == "zh-CN":
+        if self._client is None:
+            title = tr("shell.banner_connecting_title", self._locale)
+            suggestions = ()
+        elif self._locale == "zh-CN":
             title = "CodeRook 已就绪"
             suggestions = (
                 "解释这个仓库的核心架构",
@@ -724,6 +729,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         lines = [f"[bold cyan]{title}[/bold cyan]", f"[dim]{hint}[/dim]"]
         lines.extend(f"  [cyan]›[/cyan] {escape(item)}" for item in suggestions)
         return "\n".join(lines)
+
+    # 刷新仍在时间线中的启动卡，使连接状态与输入框保持一致
+    def _refresh_banner(self) -> None:
+        try:
+            self.query_one("#banner", Static).update(self._render_banner())
+        except Exception:
+            log.debug("could not refresh connection banner", exc_info=True)
 
     # 根据当前运行状态选择 composer 的即时本地化标题
     def _localized_prompt_title(self) -> str:
@@ -750,10 +762,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     # 语言切换后刷新顶栏、composer、补全、品牌、附件条及已打开 overlay
     def _refresh_locale_ui(self) -> None:
         self._slash_items = self._build_slash_items()
-        try:
-            self.query_one("#banner", Static).update(self._render_banner())
-        except Exception:
-            log.debug("could not refresh localized banner", exc_info=True)
+        self._refresh_banner()
         prompt = self._prompt()
         if prompt is not None:
             prompt.border_title = self._localized_prompt_title()
