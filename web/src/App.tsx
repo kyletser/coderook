@@ -1646,15 +1646,12 @@ function AppShell({
         return;
       }
       if (action === "export") {
-        const exported = await request<{ filename: string; media_type: string; content: string }>(
-          `/v1/threads/${encodeURIComponent(selectedId)}/export?format=html`,
-        );
-        const blob = new Blob([exported.content], { type: exported.media_type });
         const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        link.download = exported.filename;
+        link.href = `/v1/threads/${encodeURIComponent(selectedId)}/export?format=html&download=1`;
+        link.style.display = "none";
+        document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(link.href);
+        link.remove();
         return;
       }
       if (!await dialog({

@@ -81,6 +81,16 @@ class _FakeRuntimeApi:
         self.compaction_focus: tuple[str, str] | None = None
         self.readiness_refreshed = False
 
+    # 返回包含非 ASCII 文件名的导出正文，覆盖浏览器下载响应头编码
+    async def export_thread(self, thread_id: str, export_format: str) -> dict[str, str]:
+        assert thread_id == self.thread.id
+        assert export_format in {"markdown", "json", "html"}
+        return {
+            "filename": f"会话-{thread_id}.{export_format}",
+            "media_type": "text/html; charset=utf-8",
+            "content": "<!doctype html><title>CodeRook export</title>",
+        }
+
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
     def workspace_root(self) -> str:
@@ -525,6 +535,30 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             response = await client.post("/v1/turns/turn-1/interrupt")
             assert response.status_code == 200
             assert response.json()["status"] == "interrupted"
+    finally:
+        await server.stop()
+
+
+# 功能：验证 Web 会话导出可作为同源附件直接下载，同时保留 UTF-8 文件名
+# 设计：通过真实 HTTP 响应检查正文、媒体类型和 Content-Disposition，避免只验证 JSON facade
+async def test_http_thread_export_supports_direct_browser_download(tmp_path: Path) -> None:
+    server, _service, base_url = await _start_server(tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            timeout=2.0,
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            response = await client.get(
+                "/v1/threads/thread-1/export?format=html&download=1"
+            )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "text/html; charset=utf-8"
+        assert response.headers["cache-control"] == "no-store"
+        assert "filename*=UTF-8''%E4%BC%9A%E8%AF%9D-thread-1.html" in (
+            response.headers["content-disposition"]
+        )
+        assert response.text == "<!doctype html><title>CodeRook export</title>"
     finally:
         await server.stop()
 

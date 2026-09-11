@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -205,6 +205,19 @@ class HttpApiServer:
                 return
             if web_session is not None and not bearer:
                 self._validate_web_request(request, web_session)
+            export_match = _THREAD_ACTION.fullmatch(path)
+            if (
+                request.method == "GET"
+                and export_match is not None
+                and export_match.group(2) == "export"
+                and parse_qs(urlsplit(request.target).query).get("download") == ["1"]
+            ):
+                await self._send_thread_export_download(
+                    writer,
+                    export_match.group(1),
+                    parse_qs(urlsplit(request.target).query).get("format", ["html"])[0],
+                )
+                return
             if request.method == "GET" and _THREAD_EVENTS.fullmatch(path):
                 streaming = True
                 await self._stream_events(reader, writer, request, headers_sent)
@@ -971,6 +984,38 @@ class HttpApiServer:
             body,
             content_type="application/json; charset=utf-8",
             extra_headers=extra_headers,
+        )
+
+    # 直接返回浏览器可下载的会话正文，避免异步 Blob 点击被浏览器壳拦截
+    async def _send_thread_export_download(
+        self,
+        writer: asyncio.StreamWriter,
+        thread_id: str,
+        export_format: str,
+    ) -> None:
+        if export_format not in {"markdown", "json", "html"}:
+            raise ValueError("format must be markdown, json, or html")
+        exported = await self._service.export_thread(thread_id, cast(Any, export_format))
+        filename = str(exported.get("filename", "")).replace("\r", "").replace("\n", "")
+        encoded_filename = quote(filename or f"coderook-session.{export_format}", safe="")
+        content = str(exported.get("content", "")).encode("utf-8")
+        content_type = {
+            "markdown": "text/markdown; charset=utf-8",
+            "json": "application/json; charset=utf-8",
+            "html": "text/html; charset=utf-8",
+        }[export_format]
+        await self._send_response(
+            writer,
+            HTTPStatus.OK,
+            content,
+            content_type=content_type,
+            extra_headers={
+                "Content-Disposition": (
+                    "attachment; filename=\"coderook-session."
+                    f"{export_format}\"; filename*=UTF-8''{encoded_filename}"
+                ),
+                "Cache-Control": "no-store",
+            },
         )
 
     # 发送带安全响应头和明确长度的普通 HTTP body
