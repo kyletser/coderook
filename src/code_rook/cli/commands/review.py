@@ -8,6 +8,7 @@ from code_rook.core.config import CodeRookConfig
 ReviewOutputFormat = Literal["text", "json", "stream-json"]
 
 _READ_ONLY_TOOLS = ["read_file", "list_dir", "glob", "grep", "git_diff", "Repository"]
+_READ_ONLY_MODEL_TOOLS = ["read"]
 _REVIEW_CONTRACT = """
 
 Read-only review contract:
@@ -38,6 +39,7 @@ def cmd_review(
         config,
         permission_mode="allow_list",
         allow_tools=list(_READ_ONLY_TOOLS),
+        model_tools=list(_READ_ONLY_MODEL_TOOLS),
         output_format=output_format,
         question_mode="preset",
         preset_answers=["保持只读；基于当前仓库证据完成审查。"],

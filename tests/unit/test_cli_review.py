@@ -41,5 +41,6 @@ def test_cmd_review_uses_read_only_allow_list(monkeypatch) -> None:
         "git_diff",
         "Repository",
     ]
+    assert captured["model_tools"] == ["read"]
     assert "write_file" not in captured["allow_tools"]
     assert "Findings ordered by P0-P3" in captured["goal"]
