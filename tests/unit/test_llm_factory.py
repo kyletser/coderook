@@ -16,6 +16,7 @@ from code_rook.core.llm.routes import ProviderRoute
     ("provider", "use_max_completion_tokens"),
     [
         ("deepseek", False),
+        ("aliyun", False),
         ("openai", True),
         ("siliconflow", False),
     ],
@@ -37,6 +38,7 @@ def test_factory_routes_builtin_openai_compatible_providers(
 
     assert isinstance(result, OpenAICompatibleProvider)
     assert result._use_max_completion_tokens is use_max_completion_tokens
+    assert result._provider_id == provider
 
 
 # 功能：验证 Anthropic 内置接入仍使用原生 Messages API Provider

@@ -486,6 +486,42 @@ async def test_openai_official_uses_max_completion_tokens() -> None:
     assert "max_tokens" not in captured[0]
 
 
+# 功能：验证阿里云混合思考模型在关闭思考时显式发送关闭参数。
+# 设计：捕获真实 HTTP JSON，锁定默认开启思考的 Qwen3.8 不会忽略会话级 off 设置。
+async def test_aliyun_explicitly_disables_thinking_for_hybrid_models() -> None:
+    captured: list[dict[str, object]] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OpenAICompatibleProvider(
+            "qwen3.8-flash",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            api_key_env="DASHSCOPE_API_KEY",
+            api_key="test-key",
+            provider_id="aliyun",
+            thinking="off",
+            client=client,
+        )
+        await provider.chat(
+            messages=[],
+            tool_schemas=[],
+            bus=EventBus(),
+            run_id="r-aliyun-thinking-off",
+        )
+
+    assert captured[0]["enable_thinking"] is False
+    assert "reasoning_effort" not in captured[0]
+
+
 # 功能：验证 DeepSeek thinking 模式单独发布英文 reasoning 且工具前正文不冒充思考
 # 设计：同时注入 reasoning、中文 content 和工具调用，检查请求开关、事件类型及后续上下文回填
 async def test_deepseek_reasoning_is_separate_and_preserved() -> None:

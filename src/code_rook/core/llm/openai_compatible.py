@@ -83,6 +83,7 @@ class OpenAICompatibleProvider:
         context_window: int | None = None,
         thinking: str = "off",
         temperature: float | None = None,
+        provider_id: str = "",
         headers: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -98,6 +99,7 @@ class OpenAICompatibleProvider:
         self._context_window = context_window
         self._thinking = thinking
         self._temperature = temperature
+        self._provider_id = provider_id
         self._headers = dict(headers or {})
         self._client = client
 
@@ -151,6 +153,8 @@ class OpenAICompatibleProvider:
         }
         if self._temperature is not None:
             payload["temperature"] = self._temperature
+        if self._provider_id == "aliyun":
+            payload["enable_thinking"] = effective_thinking != "off"
         if effective_thinking in {"low", "medium", "high"}:
             payload["reasoning_effort"] = effective_thinking
             if is_deepseek:

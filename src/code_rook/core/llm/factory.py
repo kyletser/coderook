@@ -47,6 +47,7 @@ def create_provider_for_route(
             context_window=route.context_window,
             thinking=route.thinking,
             temperature=route.temperature,
+            provider_id=route.catalog_id or route.provider,
             headers=request_headers,
         )
     elif route.wire_format == "openai_responses":
@@ -102,6 +103,7 @@ def create_llm_provider(config: LlmConfig) -> LLMProvider:
             api_key=api_key or "",
             api_key_required=credential_required,
             use_max_completion_tokens=provider == "openai",
+            provider_id=provider,
         )
     else:
         raise SystemExit(f"Unsupported LLM provider: {config.provider}")
