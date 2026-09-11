@@ -264,10 +264,13 @@ button:disabled { cursor: default; opacity: .38; }
 .project-hub > nav button.active { background: #e6e5fb; color: #4442b7; font-weight: 650; }
 .project-hub-content { min-height: 0; overflow: auto; padding: 17px 20px; }
 .project-list { display: grid; gap: 5px; }
-.project-list > button { width: 100%; display: grid; grid-template-columns: 36px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; }
-.project-list > button:hover:not(:disabled) { border-color: #ddddda; background: #fff; box-shadow: 0 1px 3px rgba(24,25,28,.05); }
-.project-list > button.active { background: #efefeb; }
-.project-list > button:disabled { opacity: 1; cursor: default; }
+.project-row { display: grid; grid-template-columns: minmax(0,1fr) 34px; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 10px; }
+.project-row:hover { border-color: #ddddda; background: #fff; box-shadow: 0 1px 3px rgba(24,25,28,.05); }
+.project-row.active { grid-template-columns: minmax(0,1fr); background: #efefeb; }
+.project-open { width: 100%; display: grid; grid-template-columns: 36px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; }
+.project-open:disabled { opacity: 1; cursor: default; }
+.project-forget { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #aaa9a3; }
+.project-forget:hover:not(:disabled) { background: #f4e8e7; color: #a44c46; }
 .project-avatar { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; background: #e4e3f7; color: #4b49b5; font-size: 13px; font-weight: 700; }
 .project-list b, .directory-picker b { display: block; overflow: hidden; color: #313237; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .project-list small { display: block; overflow: hidden; margin-top: 3px; color: #8a8a85; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }

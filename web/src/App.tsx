@@ -2193,6 +2193,20 @@ function ProjectHub({
       onError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const forgetProject = async (project: Pick<ProjectRecord, "id" | "name">) => {
+    setBusy(true);
+    try {
+      await request<{ forgotten: boolean }>("/v1/projects", {
+        method: "DELETE",
+        body: JSON.stringify({ project_id: project.id }),
+      });
+      await loadCatalog();
+    } catch (reason: unknown) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return <div className="project-hub-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section className="project-hub" role="dialog" aria-modal="true" aria-label={tr("项目", "Projects")}>
@@ -2201,7 +2215,7 @@ function ProjectHub({
       <div className="project-hub-content">
         {switching && <div className="project-switching"><span className="pulse" />{tr("正在打开项目…", "Opening project…")}<small>{switching}</small></div>}
         {!switching && tab === "projects" && <div className="project-list">
-          {catalog?.projects.map((project) => <button type="button" key={project.id} className={project.active ? "active" : ""} disabled={busy || project.active} onClick={() => void activate(project)}><span className="project-avatar">{project.name.slice(0, 1).toUpperCase()}</span><span><b>{project.name}</b><small>{project.root}</small></span>{project.active ? <em>{tr("当前", "Current")}</em> : <Icon name="arrow" size={15} />}</button>)}
+          {catalog?.projects.map((project) => <div key={project.id} className={`project-row ${project.active ? "active" : ""}`}><button type="button" className="project-open" disabled={busy || project.active} onClick={() => void activate(project)}><span className="project-avatar">{project.name.slice(0, 1).toUpperCase()}</span><span><b>{project.name}</b><small>{project.root}</small></span>{project.active ? <em>{tr("当前", "Current")}</em> : <Icon name="arrow" size={15} />}</button>{!project.active && <button type="button" className="project-forget" disabled={busy} aria-label={tr(`从最近项目移除 ${project.name}`, `Remove ${project.name} from recent projects`)} title={tr("从最近项目移除，不删除文件", "Remove from recent projects without deleting files")} onClick={() => void forgetProject(project)}><Icon name="trash" size={14} /></button>}</div>)}
           {!catalog?.projects.length && <p className="empty">{tr("还没有项目。创建空白项目或打开电脑上的文件夹。", "No projects yet. Create a blank project or open a folder on this computer.")}</p>}
         </div>}
         {!switching && tab === "create" && <form className="project-create" onSubmit={(event) => void createProject(event)}><h3>{tr("创建空白项目", "Create a blank project")}</h3><p>{tr("CodeRook 会创建一个独立文件夹，并把它作为 Agent 唯一可访问的工作区。", "CodeRook creates an independent folder and uses it as the agent's workspace.")}</p><label>{tr("项目名称", "Project name")}<input value={name} autoFocus placeholder="my-project" onChange={(event) => setName(event.target.value)} /></label><label>{tr("保存位置", "Location")}<input value={parent} onChange={(event) => setParent(event.target.value)} /></label><small>{tr("默认位置", "Default")}: {catalog?.default_projects_root}</small><button className="primary" disabled={busy || !name.trim()}>{tr("创建并打开", "Create and open")}</button></form>}
