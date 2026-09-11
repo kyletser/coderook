@@ -340,6 +340,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     created_titles: list[str] = []
     created_modes: list[str] = []
     displayed_messages: list[str | None] = []
+    system_prompts: list[tuple[str | None, str]] = []
     image = ImageArtifactInput(
         sha256="a" * 64,
         media_type="image/png",
@@ -392,11 +393,14 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             input_processed: bool = False,
             display_content: str | None = None,
             model_tools: list[str] | None = None,
+            system_prompt_override: str | None = None,
+            system_prompt_append: str = "",
         ) -> str:
             assert attachments == [image]
             assert input_processed is True
             displayed_messages.append(display_content)
             assert model_tools == ["read"]
+            system_prompts.append((system_prompt_override, system_prompt_append))
 
             # 拒绝测试期间意外进入交互审批入口
             async def emit(_event: dict[str, Any]) -> None:
@@ -428,6 +432,8 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "session_name": "认证修复",
         "route_id": "route-explicit",
         "model": "model-explicit",
+        "system_prompt": "You are a release reviewer.",
+        "append_system_prompt": "Only report verified facts.",
         "attachments": [image.model_dump(mode="json")],
     })
     await asyncio.wait_for(checked.wait(), timeout=1)
@@ -439,6 +445,9 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert created_modes == ["chat"]
     assert created_titles == ["认证修复"]
     assert displayed_messages == ["修改认证逻辑\n\n来自标准输入的补充内容"]
+    assert system_prompts == [
+        ("You are a release reviewer.", "Only report verified facts.")
+    ]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]
 

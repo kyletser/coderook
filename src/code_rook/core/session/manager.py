@@ -1086,6 +1086,8 @@ class SessionManager:
         input_source: Literal["interactive", "rpc", "extension"] = "interactive",
         extension_custom_message: dict[str, Any] | None = None,
         model_tools: Sequence[str] | None = None,
+        system_prompt_override: str | None = None,
+        system_prompt_append: str = "",
     ) -> str:
         if not input_processed:
             processed = await self.process_input(sid, content, attachments, source=input_source)
@@ -1106,6 +1108,8 @@ class SessionManager:
                     expand_prompt_templates=expand_prompt_templates,
                     extension_custom_message=extension_custom_message,
                     model_tools=model_tools,
+                    system_prompt_override=system_prompt_override,
+                    system_prompt_append=system_prompt_append,
                 )
         finally:
             async with self._turn_reservation_lock:
@@ -1125,6 +1129,8 @@ class SessionManager:
         expand_prompt_templates: bool = True,
         extension_custom_message: dict[str, Any] | None = None,
         model_tools: Sequence[str] | None = None,
+        system_prompt_override: str | None = None,
+        system_prompt_append: str = "",
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -1294,6 +1300,10 @@ class SessionManager:
                 "store": self._store,
                 "runtime_mode": runtime_mode,
             }
+            if system_prompt_override is not None:
+                run_options["system_prompt_override"] = system_prompt_override
+            if system_prompt_append:
+                run_options["system_prompt_append"] = system_prompt_append
             from code_rook.core.runner import AgentRunner
 
             if isinstance(runner, AgentRunner):

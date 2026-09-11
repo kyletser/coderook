@@ -1162,6 +1162,8 @@ class CoreApp:
                 session.id, content, run_id=run_id, attachments=attachments, input_processed=True,
                 display_content=cmd.display_content,
                 model_tools=cmd.tools,
+                system_prompt_override=cmd.system_prompt,
+                system_prompt_append=cmd.append_system_prompt,
             )
         )
         self._running_runs.add(run_task)

@@ -298,6 +298,15 @@ def _run_cli() -> int:
             "-nt", "--no-tools", dest="tools", action="store_const", const=[],
             help="Disable all model tool calls for this task",
         )
+        quick.add_argument(
+            "--system-prompt",
+            help="Replace the default agent role prompt for this task",
+        )
+        quick.add_argument(
+            "--append-system-prompt",
+            default="",
+            help="Append task-specific instructions to the agent prompt",
+        )
         quick.add_argument("message", nargs="*", help="Task to execute")
         quick_args = quick.parse_args(sys.argv[1:])
         try:
@@ -351,6 +360,8 @@ def _run_cli() -> int:
             route_id=requested_route,
             model=quick_args.model,
             thinking_level=quick_args.thinking,
+            system_prompt=quick_args.system_prompt,
+            append_system_prompt=quick_args.append_system_prompt,
         )
         return 0
     prompt_tui = bool(tui_probe) and (
@@ -710,6 +721,15 @@ def _run_cli() -> int:
     run_parser.add_argument("--route", help="Provider route for this run")
     run_parser.add_argument("--model", help="Model override for this run")
     run_parser.add_argument(
+        "--system-prompt",
+        help="Replace the default agent role prompt for this task",
+    )
+    run_parser.add_argument(
+        "--append-system-prompt",
+        default="",
+        help="Append task-specific instructions to the agent prompt",
+    )
+    run_parser.add_argument(
         "--question-mode",
         choices=("fail-fast", "timeout", "preset"),
         default="fail-fast",
@@ -1049,6 +1069,8 @@ def _run_cli() -> int:
             route_id=requested_route,
             model=args.model,
             thinking_level=args.thinking,
+            system_prompt=args.system_prompt,
+            append_system_prompt=args.append_system_prompt,
             question_mode=args.question_mode.replace("-", "_"),
             question_timeout_s=args.question_timeout,
             preset_answers=args.answer,

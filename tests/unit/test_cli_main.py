@@ -266,7 +266,20 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
     config = CodeRookConfig()
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        sys, "argv", ["coderook", "-p", "--thinking", "high", "读取项目", "总结结构"]
+        sys,
+        "argv",
+        [
+            "coderook",
+            "-p",
+            "--thinking",
+            "high",
+            "--system-prompt",
+            "You are a release reviewer.",
+            "--append-system-prompt",
+            "Only report verified facts.",
+            "读取项目",
+            "总结结构",
+        ],
     )
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
     monkeypatch.setattr(cli_main, "get_config", lambda: config)
@@ -304,7 +317,45 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "route_id": None,
         "model": None,
         "thinking_level": "high",
+        "system_prompt": "You are a release reviewer.",
+        "append_system_prompt": "Only report verified facts.",
     }
+
+
+# 功能：常规 run 命令支持为单次自动化任务替换并追加系统指令
+# 设计：捕获 CLI 到 cmd_run 的参数，证明两个提示参数不会混入用户目标或只在快捷入口生效
+def test_run_command_forwards_task_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "coderook",
+            "run",
+            "--goal",
+            "检查发布状态",
+            "--system-prompt",
+            "You are a release reviewer.",
+            "--append-system-prompt",
+            "Only report verified facts.",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_run",
+        lambda goal, _config, **kwargs: captured.update({"goal": goal, **kwargs}),
+    )
+
+    assert cli_main.main() == 0
+
+    assert captured["goal"] == "检查发布状态"
+    assert captured["system_prompt"] == "You are a release reviewer."
+    assert captured["append_system_prompt"] == "Only report verified facts."
 
 
 # 功能：快捷打印模式支持继续当前工作区最近的非空会话

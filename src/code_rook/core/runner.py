@@ -529,6 +529,7 @@ class AgentRunner:
         session: Session | None = None,
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
+        system_prompt_append: str = "",
         tool_whitelist: list[str] | None = None,
         model_tools: Sequence[str] | None = None,
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
@@ -627,7 +628,11 @@ class AgentRunner:
             system_prompt_override=(
                 system_prompt_override if system_prompt_override is not None else file_system_prompt
             ),
-            system_prompt_append=append_system_prompt,
+            system_prompt_append="\n\n".join(
+                part.strip()
+                for part in (append_system_prompt, system_prompt_append)
+                if part.strip()
+            ),
             runtime_mode=runtime_mode,
         )
         if initial_images:

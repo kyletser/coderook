@@ -102,6 +102,8 @@ class AgentRunCommand(BaseModel):
     route_id: str | None = Field(default=None, min_length=1, max_length=256)
     model: str | None = Field(default=None, min_length=1, max_length=256)
     thinking_level: ThinkingLevel | None = None
+    system_prompt: str | None = Field(default=None, max_length=256 * 1_024)
+    append_system_prompt: str = Field(default="", max_length=256 * 1_024)
     question_mode: Literal["fail_fast", "timeout", "preset"] = "fail_fast"
     question_timeout_s: float | None = Field(default=None, gt=0, le=3600)
     preset_answers: list[str] = Field(default_factory=list, max_length=100)

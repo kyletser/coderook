@@ -58,6 +58,16 @@ async def test_system_prompt_files_reach_provider(
     assert provider.system.startswith("Explicit role")
     assert "Append second" in provider.system
     assert "Append first" not in provider.system
+    outcome = await runner.run_and_capture(
+        "explain with task policy",
+        system_prompt_override="Explicit role",
+        system_prompt_append="Use concise evidence",
+    )
+    assert outcome.status == "success"
+    assert provider.system.startswith("Explicit role")
+    assert "Append second" in provider.system
+    assert "Use concise evidence" in provider.system
+    assert provider.system.index("Append second") < provider.system.index("Use concise evidence")
 
 
 class _EndTurnProvider:

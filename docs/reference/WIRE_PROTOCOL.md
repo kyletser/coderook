@@ -216,6 +216,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `route_id` | `string | null` | no |
 | `model` | `string | null` | no |
 | `thinking_level` | `string | null` | no |
+| `system_prompt` | `string | null` | no |
+| `append_system_prompt` | `string` | no |
 | `question_mode` | `string` | no |
 | `question_timeout_s` | `number | null` | no |
 | `preset_answers` | `array` | no |
@@ -412,6 +414,25 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       ],
       "default": null,
       "title": "Thinking Level"
+    },
+    "system_prompt": {
+      "anyOf": [
+        {
+          "maxLength": 262144,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "System Prompt"
+    },
+    "append_system_prompt": {
+      "default": "",
+      "maxLength": 262144,
+      "title": "Append System Prompt",
+      "type": "string"
     },
     "question_mode": {
       "default": "fail_fast",
