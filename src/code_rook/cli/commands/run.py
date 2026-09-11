@@ -447,6 +447,13 @@ async def _run_async(
                 print(f"\n[run] cancelled {run_id}", file=sys.stderr)
             except (IpcError, RuntimeError, OSError, TimeoutError):
                 print(f"\nwarning: could not confirm cancellation for {run_id}", file=sys.stderr)
+        if delete_session_after and started_session_id:
+            cleanup_error = await _delete_transient_session(client, started_session_id)
+            if cleanup_error is not None:
+                print(
+                    f"warning: could not remove transient session: {cleanup_error}",
+                    file=sys.stderr,
+                )
         loop_task.cancel()
         wait_task.cancel()
         await client.close()
