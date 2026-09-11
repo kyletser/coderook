@@ -64,6 +64,7 @@ from code_rook.tui.commands import (
     command_palette_priority,
     complete_command_arg_text,
     match_slash_command,
+    slash_command_aliases,
     visible_slash_commands,
 )
 from code_rook.tui.connection import TuiConnection, _select_recent_session
@@ -826,6 +827,18 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
             for cmd in visible_slash_commands(labs_enabled=self._labs_enabled)
         ]
+        by_name = {
+            command.name: command
+            for command in visible_slash_commands(labs_enabled=self._labs_enabled)
+        }
+        for alias, target in slash_command_aliases().items():
+            command = by_name.get(target)
+            if command is not None:
+                items.append(CompletionItem(
+                    alias,
+                    tr(f"command.{alias}", self._locale),
+                    self._command_usage(alias, command.usage),
+                ))
         for command in getattr(self, "_input_commands", []):
             items.append(CompletionItem(
                 command["name"], command.get("description", ""),

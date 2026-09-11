@@ -179,6 +179,14 @@ def test_match_slash_command_matches_name_and_args() -> None:
     assert match_slash_command("") is None
 
 
+# 功能：常见会话和帮助别名命中原有处理器，并保留别名参数补全前缀
+# 设计：比较别名与权威命令对象身份，并让带参数的 /name 仍命中原重命名处理器
+def test_common_command_aliases_reuse_builtin_handlers() -> None:
+    assert match_slash_command("/resume") is match_slash_command("/sessions")
+    assert match_slash_command("/hotkeys") is match_slash_command("/help")
+    assert match_slash_command("/name new title") is match_slash_command("/rename old title")
+
+
 # 功能：验证内建命令注册表覆盖补全弹窗所需的全部历史命令，补全列表与现状逐条一致
 # 设计：把旧版硬编码补全列表与注册表比对，杜绝"补全与分发两处维护"回退为不一致
 def test_builtin_commands_cover_previous_completion_list() -> None:

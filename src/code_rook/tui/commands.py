@@ -47,6 +47,7 @@ class SlashCommand:
 
 _COMMAND_CATEGORIES: dict[str, str] = {
     "help": "task",
+    "quit": "task",
     "copy": "task",
     "compact": "task",
     "plan": "task",
@@ -97,6 +98,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
 
 _DIRECT_PALETTE_COMMANDS = {
     "help",
+    "quit",
     "sessions",
     "new",
     "config",
@@ -114,6 +116,12 @@ _DIRECT_PALETTE_COMMANDS = {
     "delivery",
     "mcp",
     "jobs",
+}
+
+_SLASH_COMMAND_ALIASES: dict[str, str] = {
+    "hotkeys": "help",
+    "resume": "sessions",
+    "name": "rename",
 }
 
 _COMMON_PALETTE_PRIORITY = {
@@ -166,6 +174,12 @@ async def _cmd_help(app: Any, ta: ChatTextArea, content: str) -> None:
     app._show_help()
 
 
+# 允许用户通过斜杠命令退出，复用 Ctrl+Q 的同一清理路径
+async def _cmd_quit(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    await app.action_quit()
+
+
 async def _cmd_sessions(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
     if app._client is not None and not app._busy:
@@ -207,9 +221,10 @@ async def _cmd_new(app: Any, ta: ChatTextArea, content: str) -> None:
 
 async def _cmd_rename(app: Any, ta: ChatTextArea, content: str) -> None:
     ta.text = ""
-    title = content.removeprefix("/rename").strip()
+    command_name, _, argument = content.partition(" ")
+    title = argument.strip()
     if not title:
-        _warn(app, "cmd.usage", usage="/rename <new-title>")
+        _warn(app, "cmd.usage", usage=f"{command_name} <new-title>")
     elif app._client is not None and app._session_id is not None and not app._busy:
         ta.disabled = True
         _progress(app, ta, "cmd.session.renaming")
@@ -1353,6 +1368,7 @@ async def _cmd_commit(app: Any, ta: ChatTextArea, content: str) -> None:
 # 内建命令的唯一事实来源；顺序即补全弹窗展示顺序
 BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("help", "显示键位与全部命令", False, _cmd_help),
+    SlashCommand("quit", "退出 CodeRook", False, _cmd_quit),
     SlashCommand("sessions", "打开会话选择器（输入即过滤）", True, _cmd_sessions),
     SlashCommand("session", "查看当前会话、模型与用量", True, _cmd_session),
     SlashCommand(
@@ -1629,10 +1645,19 @@ def visible_slash_commands(*, labs_enabled: bool = False) -> list[SlashCommand]:
     ]
 
 
+# 返回只影响输入兼容性的常用命令别名，命令面板仍只展示一个权威入口
+def slash_command_aliases() -> dict[str, str]:
+    return dict(_SLASH_COMMAND_ALIASES)
+
+
+# 按命令名或常用别名精确匹配，避免未知斜杠输入被内建分发器吞掉
 def match_slash_command(content: str) -> SlashCommand | None:
-    """按 `/name` 或 `/name <args>` 精确匹配单个命令；未知前缀返回 None。"""
+    raw_name = content.partition(" ")[0].removeprefix("/")
+    resolved_name = _SLASH_COMMAND_ALIASES.get(raw_name, raw_name)
     for cmd in BUILTIN_SLASH_COMMANDS:
-        if content == f"/{cmd.name}" or content.startswith(f"/{cmd.name} "):
+        if resolved_name == cmd.name and (
+            content == f"/{raw_name}" or content.startswith(f"/{raw_name} ")
+        ):
             return cmd
     return None
 
@@ -1645,7 +1670,7 @@ def complete_command_arg_text(text: str) -> str | None:
     if cmd is None or not cmd.arg_candidates:
         return None
     candidates = cmd.arg_candidates
-    cmd_prefix = f"/{cmd.name} "
+    cmd_prefix = text.partition(" ")[0] + " "
     partial = text[len(cmd_prefix):]
     # 已精确命中某个候选时循环进位到下一候选，实现多次 Tab 环绕
     for i, cand in enumerate(candidates):

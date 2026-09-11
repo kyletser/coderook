@@ -416,8 +416,8 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 
 | 类别 | 命令 |
 |---|---|
-| 帮助与输入 | `/help`、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]` |
-| 会话 | `/sessions`、`/new`、`/rename`、`/fork`、`/export`、`/import`、`/delete --yes`、`/delivery` |
+| 帮助与输入 | `/help`（兼容 `/hotkeys`）、`/copy`、`/history status\|on\|off\|clear`、`/attachments [remove N\|clear]`、`/quit` |
+| 会话 | `/resume`（兼容 `/sessions`）、`/new`、`/name`（兼容 `/rename`）、`/fork`、`/export`、`/import`、`/delete --yes`、`/delivery` |
 | 模型 | `/config`、`/provider`、`/model`、`/thinking off\|low\|medium\|high`、`/doctor` |
 | 执行 | `/plan`、`/goal`、`/mode`、`/permissions`、`/trust`、`/sandbox` |
 | 审查 | `/changes`（`/diff`）、`/review`、`/rewind`、`/turn`、`/context`、`/compact`、`/cost` |

@@ -1684,6 +1684,10 @@ def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
 
     assert items["sessions"] == "打开会话选择器（输入即过滤）"
     assert items["new"] == "新建会话"
+    assert items["resume"].startswith("打开会话选择器")
+    assert items["name"].startswith("重命名当前会话")
+    assert items["hotkeys"].startswith("显示键位")
+    assert items["quit"] == "退出 CodeRook"
 
 
 # 功能：验证启动恢复选择器只在首次连接完成后打开一次，重连不会重复覆盖输入区。
