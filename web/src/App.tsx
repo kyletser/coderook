@@ -991,6 +991,7 @@ function AppShell({
     if (!projectSelected) {
       initializedSelection.current = true;
       setThreads([]);
+      selectedIdRef.current = "";
       setSelectedId("");
       return;
     }
@@ -1002,6 +1003,7 @@ function AppShell({
       const rememberedId = window.localStorage.getItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`) || "";
       const nextSelectedId = preferredThreadId(result, rememberedId);
       setThreadLoading(Boolean(nextSelectedId));
+      selectedIdRef.current = nextSelectedId;
       setSelectedId(nextSelectedId);
       return;
     }
@@ -1015,6 +1017,7 @@ function AppShell({
       delete fileReferenceDrafts.current[missingId];
       const nextKey = replacementId || "__new__";
       setThreadLoading(Boolean(replacementId));
+      selectedIdRef.current = replacementId;
       setSelectedId(replacementId);
       if (replacementId) {
         window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, replacementId);
@@ -1298,6 +1301,7 @@ function AppShell({
       body: JSON.stringify({ title: "", mode: "chat" }),
     });
     setThreads((current) => [created, ...current]);
+    selectedIdRef.current = created.id;
     setSelectedId(created.id);
     window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, created.id);
     previousTimelineSize.current = 0;
@@ -1311,6 +1315,7 @@ function AppShell({
     attachmentDrafts.current[currentKey] = attachments;
     fileReferenceDrafts.current[currentKey] = fileReferences;
     setThreadLoading(Boolean(threadId));
+    selectedIdRef.current = threadId;
     setSelectedId(threadId);
     if (threadId) window.localStorage.setItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`, threadId);
     else window.localStorage.removeItem(`${ACTIVE_THREAD_STORAGE_PREFIX}${workspace}`);
@@ -1337,6 +1342,7 @@ function AppShell({
   }, [attachments, composer, fileReferences, selectedId, workspace]);
 
   const beginDraft = useCallback(() => {
+    initializedSelection.current = true;
     selectThread("");
     setAttachments([]);
     setDrawer(null);
@@ -1346,12 +1352,13 @@ function AppShell({
     event.preventDefault();
     const content = composer.trim();
     if (!content || sending || !sessionsReady || threadLoading) return;
+    const submittedThreadId = selectedIdRef.current;
     setSending(true);
     setError("");
     try {
       const submitted = modelContentFor(content, fileReferences);
       if (content === "/reload") {
-        const threadId = selectedId;
+        const threadId = submittedThreadId;
         const context = await request<ThreadContext>(threadId
           ? `/v1/threads/${encodeURIComponent(threadId)}/reload`
           : "/v1/workspace/input-commands", threadId ? { method: "POST" } : undefined);
@@ -1369,8 +1376,8 @@ function AppShell({
       }
       const extensionCommand = content.startsWith("/") && inputCommands.find((entry) =>
         entry.kind === "extension" && entry.name === content.slice(1).split(/\s/, 1)[0]);
-      if (extensionCommand && selectedId) {
-        const commandThreadId = selectedId;
+      if (extensionCommand && submittedThreadId) {
+        const commandThreadId = submittedThreadId;
         const result = await request<{ message: string }>(
           `/v1/threads/${encodeURIComponent(commandThreadId)}/command`,
           { method: "POST", body: JSON.stringify({ content }) },
@@ -1382,10 +1389,10 @@ function AppShell({
         }
         return;
       }
-      if (activeTurn) {
+      if (submittedThreadId && activeTurn) {
         if (followUpUsesQueue(activeRunKind, queueMode, content)) {
           const queued = await request<QueuedMessage & { handled?: boolean }>(
-            `/v1/threads/${encodeURIComponent(selectedId)}/queue`,
+            `/v1/threads/${encodeURIComponent(submittedThreadId)}/queue`,
             {
               method: "POST",
               body: JSON.stringify({
@@ -1396,9 +1403,9 @@ function AppShell({
               }),
             },
           );
-          await loadQueue(selectedId);
+          await loadQueue(submittedThreadId);
           setComposer("");
-          composerDrafts.current[selectedId || "__new__"] = "";
+          composerDrafts.current[submittedThreadId] = "";
           setAttachments([]);
           setFileReferences([]);
           setNotice(queued.handled
@@ -1436,7 +1443,7 @@ function AppShell({
             return;
           }
         }
-        const threadId = selectedId || (await createThread());
+        const threadId = submittedThreadId || (await createThread());
         const started = await request<TurnRecord & { handled?: boolean }>(
           `/v1/threads/${encodeURIComponent(threadId)}/turns`,
           {
@@ -1459,7 +1466,7 @@ function AppShell({
         void loadThread(threadId);
       }
       setComposer("");
-      composerDrafts.current[selectedId || "__new__"] = "";
+      composerDrafts.current[selectedIdRef.current || "__new__"] = "";
       setAttachments([]);
       setFileReferences([]);
     } catch (reason) {

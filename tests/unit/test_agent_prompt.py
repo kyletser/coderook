@@ -39,3 +39,39 @@ def test_custom_tool_prompt_metadata() -> None:
     assert prompt.count("Use once.") == 1
     assert "Check result." in prompt
     assert tools[0]["description"] == "Long schema description"
+
+
+# 功能：验证 action family 的提示只描述当前 Schema 中实际可调用的动作
+# 设计：构造 Plan 风格的 Bash/File 裁剪目录，断言系统提示不再暗示运行命令或写文件
+def test_prompt_describes_filtered_family_actions() -> None:
+    tools = [
+        {
+            "name": "Bash",
+            "description": "Execute shell commands",
+            "input_schema": {
+                "oneOf": [
+                    {
+                        "properties": {"action": {"enum": ["wait"]}},
+                    }
+                ]
+            },
+        },
+        {
+            "name": "File",
+            "description": "Read and write files",
+            "input_schema": {
+                "oneOf": [
+                    {"properties": {"action": {"enum": ["read"]}}},
+                    {"properties": {"action": {"enum": ["list"]}}},
+                ]
+            },
+        },
+    ]
+
+    prompt = build_system_prompt(tools)
+
+    assert "Bash: Available actions: wait. Use only these actions." in prompt
+    assert "File: Available actions: read, list. Use only these actions." in prompt
+    assert "Execute shell commands" not in prompt
+    assert "Read and write files" not in prompt
+    assert "Use the available shell" not in prompt

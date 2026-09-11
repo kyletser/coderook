@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from code_rook.core.agents.loader import AgentProfile
@@ -13,8 +14,11 @@ def test_runtime_context_describes_host_and_workspace(tmp_path: Path) -> None:
     context = build_runtime_context(tmp_path)
 
     assert str(tmp_path.resolve()) in context
-    assert "Command shell: Bash" in context
-    assert "Command shell: cmd.exe" not in context
+    if os.name == "nt":
+        assert "Command shell: cmd.exe" in context
+        assert "not POSIX-only pwd or ls" in context
+    else:
+        assert "Command shell: Bash" in context
     assert "bash tool runs host shell commands" in context
     assert "operating-system utilities" in context
     assert "approval" in context

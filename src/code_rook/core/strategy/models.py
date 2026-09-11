@@ -160,7 +160,6 @@ class TaskProfile(BaseModel):
                 "read_file",
                 "read_image",
                 "repository",
-                "skill",
                 "task_get",
                 "task_list",
                 "tasks",

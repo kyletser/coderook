@@ -938,6 +938,7 @@ class AgentRunner:
                         task_profile.strategy == TaskStrategy.PLAN_FIRST
                         and runtime_mode == RuntimeMode.ACT
                     )
+                    planning_surface = runtime_mode == RuntimeMode.PLAN or plan_gate_active
                     question_tool = registry.get("ask_user_question")
                     clarification_gate_active = (
                         task_profile.confidence < 0.75
@@ -951,12 +952,12 @@ class AgentRunner:
                     else:
                         registry.set_model_tool_allowlist(
                             task_profile.planning_tool_allowlist()
-                            if plan_gate_active
+                            if planning_surface
                             else normal_tool_allowlist
                         )
                         registry.set_model_action_allowlist(
                             task_profile.planning_action_allowlist()
-                            if plan_gate_active
+                            if planning_surface
                             else normal_action_allowlist
                         )
                     plan_tool = registry.get("update_plan")

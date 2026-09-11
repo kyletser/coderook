@@ -369,6 +369,7 @@ def test_read_profile_filters_family_actions_fail_closed() -> None:
 # 设计：使用明确跨文件修改画像应用 planning allowlist，直接尝试 File.write 证明 Core 门禁独立于风险字段
 def test_plan_gate_filters_mutating_family_actions() -> None:
     profile = TaskStrategyRouter().classify_rules("修改整个仓库的多个模块")
+    assert "skill" not in profile.planning_tool_allowlist()
     registry = ToolRegistry()
     registry.register(_FileFamily())
     registry.set_model_tool_allowlist(profile.planning_tool_allowlist())
