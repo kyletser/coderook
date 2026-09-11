@@ -14,6 +14,7 @@ import {
   parentWorkspacePath,
   providerFormDefaults,
   preferredThreadId,
+  questionOptions,
   revisedPlanModelContent,
   replacementForMissingThread,
   resolveWebLocale,
@@ -168,6 +169,19 @@ describe("Web task submission", () => {
     };
 
     expect(appendRuntimeEvent(appendRuntimeEvent([], event), event)).toEqual([event]);
+  });
+
+  it("normalizes structured question choices before custom input", () => {
+    const event: RuntimeEvent = {
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      seq: 4,
+      type: "user_question.asked",
+      payload: { options: ["SQLite", " PostgreSQL ", "SQLite", ""] },
+      ts: "2026-09-11T00:00:00Z",
+    };
+
+    expect(questionOptions(event)).toEqual(["SQLite", "PostgreSQL"]);
   });
 
   it("applies extension UI contributions without discarding unrelated state", () => {

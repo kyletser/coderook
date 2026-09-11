@@ -816,6 +816,16 @@ export function appendRuntimeEvent(
   return next.length > MAX_CACHED_EVENTS ? next.slice(-MAX_CACHED_EVENTS) : next;
 }
 
+export function questionOptions(event: RuntimeEvent): string[] {
+  if (!Array.isArray(event.payload.options)) return [];
+  return [...new Set(
+    event.payload.options
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )];
+}
+
 export function preferredThreadId(
   threads: ThreadRecord[],
   rememberedId = "",
@@ -2431,6 +2441,7 @@ function EventCard({
   };
   const toolId = textValue(event.payload.tool_use_id || event.payload.permission_id);
   const questionId = textValue(event.payload.question_id);
+  const choices = questionOptions(event);
   const rawPermissionParams = event.payload.params;
   const permissionParams = rawPermissionParams && typeof rawPermissionParams === "object"
     ? rawPermissionParams as Record<string, unknown>
@@ -2485,10 +2496,15 @@ function EventCard({
             </div></>
         )}
         {!responded && isQuestion && questionId && (
-          <div className="answer-row">
-            <input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={tr("输入回答", "Enter your answer")} />
-            <button disabled={!answer.trim()} onClick={() => void post(`/v1/questions/${questionId}`, { answer }, tr("回答已送达", "Answer sent"))}>{tr("回答", "Answer")}</button>
-          </div>
+          <>
+            {choices.length > 0 && <div className="card-actions question-options">
+              {choices.map((choice) => <button key={choice} onClick={() => void post(`/v1/questions/${questionId}`, { answer: choice }, tr(`已选择：${choice}`, `Selected: ${choice}`))}>{choice}</button>)}
+            </div>}
+            <div className="answer-row">
+              <input value={answer} onChange={(input) => setAnswer(input.target.value)} placeholder={choices.length ? tr("或输入自定义回答", "Or enter a custom answer") : tr("输入回答", "Enter your answer")} />
+              <button disabled={!answer.trim()} onClick={() => void post(`/v1/questions/${questionId}`, { answer }, tr("回答已送达", "Answer sent"))}>{tr("回答", "Answer")}</button>
+            </div>
+          </>
         )}
         {!responded && isRecovery && (
           <div className="card-actions"><button onClick={() => void post(`/v1/threads/${threadId}/turns`, { content: "Continue from the last durable recovery point. Re-check uncertain file or command state before making any modification.", mode: "act" }, tr("已从安全位置继续", "Continuing from the safe recovery point"))}>{tr("从安全位置继续", "Continue safely")}</button><button onClick={onOpenChanges}>{tr("查看中断前变更", "View pre-interruption changes")}</button></div>
