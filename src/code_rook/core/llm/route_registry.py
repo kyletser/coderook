@@ -260,11 +260,33 @@ class RouteRegistry:
             )
         configuration = ConfigurationService(self._routes, self._credentials)
         readiness = configuration.readiness(route)
-        if not readiness.local_ready:
-            raise RouteResolutionError(
-                f"route is not ready: {route.id} ({readiness.status})"
-            )
-        probed = await configuration.probe_readiness(route)
+        try:
+            persisted = self._routes.get(route.id)
+        except RouteStoreError:
+            persisted = None
+        matches_persisted = (
+            persisted is not None
+            and persisted.validation_digest() == route.validation_digest()
+        )
+        if readiness.local_ready or matches_persisted:
+            probed = await configuration.probe_readiness(route)
+            if matches_persisted and probed.local_ready:
+                route = self.route(route.id)
+        else:
+            result = await configuration.validate_route(route)
+            if result.status != "ok":
+                raise RouteResolutionError(
+                    f"route validation failed: {route.id} ({result.category})"
+                )
+            try:
+                route = route.model_copy(
+                    update={"doctor_receipt": result.to_receipt(route)}
+                )
+            except ValueError as exc:
+                raise RouteResolutionError(
+                    f"route validation receipt is invalid: {route.id}"
+                ) from exc
+            probed = configuration.readiness(route)
         if not probed.local_ready:
             raise RouteResolutionError(
                 f"route is unavailable: {route.id} ({probed.status})"

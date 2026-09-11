@@ -8,6 +8,7 @@ import pytest
 
 from code_rook.core.config import LlmConfig, get_config
 from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.doctor import ProviderDoctor, ProviderDoctorCheck, ProviderDoctorResult
 from code_rook.core.llm.migration_receipt import (
     ProviderCatalogMigrationReceiptError,
     ProviderCatalogMigrationReceiptStore,
@@ -18,7 +19,7 @@ from code_rook.core.llm.route_registry import (
     legacy_config_route,
 )
 from code_rook.core.llm.route_store import RouteStore
-from code_rook.core.llm.routes import get_route_preset
+from code_rook.core.llm.routes import ProviderRoute, get_route_preset
 
 
 class _UnavailableBackend:
@@ -48,6 +49,25 @@ def _registry(tmp_path: Path) -> tuple[RouteRegistry, RouteStore, CredentialStor
         credential_store=credentials,
     )
     return registry, routes, credentials
+
+
+# 构造覆盖远程 Worker 必需能力的成功 Doctor 结果
+def _verified_doctor_result(route: ProviderRoute) -> ProviderDoctorResult:
+    return ProviderDoctorResult(
+        status="ok",
+        category="ok",
+        route_id=route.id,
+        message="route is ready",
+        credential_source="file",
+        readiness="verified",
+        route_digest=route.validation_digest(),
+        checked_at="2026-09-11T00:00:00+00:00",
+        basic=ProviderDoctorCheck(status="passed", message="basic probe passed"),
+        capabilities={
+            "streaming": ProviderDoctorCheck(status="passed", message="streaming passed"),
+            "termination": ProviderDoctorCheck(status="passed", message="termination passed"),
+        },
+    )
 
 
 # 功能：验证活动 route 解析得到真实凭据与敏感信息隔离的 receipt
@@ -165,19 +185,82 @@ def test_registry_resolves_credential_free_local_route(tmp_path: Path) -> None:
     assert resolved.receipt.credential_source == "missing"
 
 
-# 功能：后台 Worker 路由不能把仅有凭据但未通过 Doctor 的远端配置当成 ready
-# 设计：保存有真实 file credential 但无 receipt 的远端 route，断言 resolve_ready 在网络调用前失败关闭
+# 功能：后台 Worker 会刷新仅缺少 Doctor 收据但凭据完整的远程路由
+# 设计：替换真实网络 Doctor 为确定成功结果，核对收据被持久化且 Worker 得到已验证路由
 @pytest.mark.asyncio
-async def test_resolve_ready_rejects_unverified_remote_route(tmp_path: Path) -> None:
+async def test_resolve_ready_refreshes_unverified_remote_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry, routes, credentials = _registry(tmp_path)
     reference = credentials.save("remote", "secret")
-    route = get_route_preset("openai").model_copy(
-        update={"id": "remote", "credential_ref": reference}
+    route = ProviderRoute(
+        id="remote",
+        provider="openai-compatible",
+        wire_format="openai_chat",
+        base_url="https://example.com/v1/chat/completions",
+        model="base-model",
+        credential_ref=reference,
+        supports_tools=False,
+        supports_parallel_tools=False,
     )
     routes.add(route, activate=True)
 
-    with pytest.raises(RouteResolutionError, match="provider_unverified"):
-        await registry.resolve_ready()
+    # 返回可生成持久收据的完整成功探测，避免测试访问外部 Provider
+    async def check(
+        _doctor: ProviderDoctor,
+        selected: ProviderRoute,
+        _credential: object,
+    ) -> ProviderDoctorResult:
+        return _verified_doctor_result(selected)
+
+    monkeypatch.setattr(ProviderDoctor, "check", check)
+
+    resolved = await registry.resolve_ready()
+
+    assert resolved.route.has_current_doctor_receipt()
+    assert routes.get("remote").has_current_doctor_receipt()
+
+
+# 功能：Worker 临时模型覆盖执行 Doctor 时不能改写共享 Provider 路由
+# 设计：对未验证基础路由解析另一模型，断言返回路由携带收据而持久配置仍保持原模型和空收据
+@pytest.mark.asyncio
+async def test_resolve_ready_keeps_model_override_ephemeral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, routes, credentials = _registry(tmp_path)
+    reference = credentials.save("remote", "secret")
+    routes.add(
+        ProviderRoute(
+            id="remote",
+            provider="openai-compatible",
+            wire_format="openai_chat",
+            base_url="https://example.com/v1/chat/completions",
+            model="base-model",
+            credential_ref=reference,
+            supports_tools=False,
+            supports_parallel_tools=False,
+        ),
+        activate=True,
+    )
+
+    # 返回与临时模型摘要一致的成功结果，证明无需修改 RouteStore 也能启动 Worker
+    async def check(
+        _doctor: ProviderDoctor,
+        selected: ProviderRoute,
+        _credential: object,
+    ) -> ProviderDoctorResult:
+        return _verified_doctor_result(selected)
+
+    monkeypatch.setattr(ProviderDoctor, "check", check)
+
+    resolved = await registry.resolve_ready(model="worker-model")
+
+    assert resolved.route.model == "worker-model"
+    assert resolved.route.has_current_doctor_receipt()
+    assert routes.get("remote").model == "base-model"
+    assert routes.get("remote").doctor_receipt is None
 
 
 # 功能：Worker retry 的原 route 摘要变化必须在 endpoint 探测前被拒绝
