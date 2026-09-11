@@ -20,6 +20,7 @@ from code_rook.cli.commands.sessions import (
 )
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
+from code_rook.core.llm.route_store import RouteStoreError
 from code_rook.tui import __main__ as tui_main
 
 
@@ -1175,6 +1176,30 @@ def test_runtime_doctor_exit_code_is_preserved(monkeypatch) -> None:
     assert captured == {"repair": True, "as_json": True}
 
 
+# 功能：验证 doctor system 显式入口与无参数系统诊断使用同一实现。
+# 设计：经完整 argparse 分发捕获调用参数，避免 system 被误当成 Provider 路由并抛出 traceback。
+def test_system_doctor_alias_dispatches_system_report(monkeypatch) -> None:
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(sys, "argv", ["coderook", "doctor", "system", "--json"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_system_doctor",
+        lambda passed, *, as_json: captured.update({
+            "config": passed,
+            "as_json": as_json,
+        }),
+    )
+
+    result = cli_main.main()
+
+    assert result == 0
+    assert captured == {"config": config, "as_json": True}
+
+
 # 功能：验证 Doctor 支持与其他模型命令一致的 --route 参数形式
 # 设计：替换真实网络探针并经完整 argparse 分发，固定选项别名传入同一个诊断入口
 def test_provider_doctor_accepts_route_option(monkeypatch) -> None:
@@ -1202,6 +1227,34 @@ def test_provider_doctor_accepts_route_option(monkeypatch) -> None:
 
     assert result == 0
     assert captured == {"config": config, "route_id": "aliyun", "as_json": True}
+
+
+# 功能：验证模型与 Provider 命令中的路由错误会在 CLI 边界转成稳定非零结果。
+# 设计：让模型列表分发目标抛出真实 RouteStoreError，断言 stderr 可读且不出现 traceback。
+def test_cli_route_error_is_safe_and_nonzero(monkeypatch, capsys) -> None:
+    config = CodeRookConfig()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "model", "list", "--route", "missing"],
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_model_list",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RouteStoreError("route not found: missing")
+        ),
+    )
+
+    result = cli_main.main()
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.err == "route error: route not found: missing\n"
+    assert "Traceback" not in captured.err
 
 
 # 功能：验证 CLI 边界把损坏凭据文档转成脱敏非零结果而不泄露原始正文

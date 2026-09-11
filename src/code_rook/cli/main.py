@@ -61,6 +61,7 @@ from code_rook.core.input_context import (
     resolve_file_references,
 )
 from code_rook.core.llm.credentials import CredentialStoreError
+from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.llm.route_store import RouteStore, RouteStoreError
 from code_rook.core.llm.routes import list_route_presets
 from code_rook.core.logging_setup import setup_logging
@@ -274,6 +275,9 @@ def main() -> int:
         # ensure_core_running 的失败消息面向用户，避免裸 traceback 直接抛给调用方
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except (RouteStoreError, RouteResolutionError) as exc:
+        print(f"route error: {exc}", file=sys.stderr)
+        return 2
 
 
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
@@ -538,8 +542,14 @@ def _run_cli() -> int:
         action="store_true",
         help="Confirm the workspace-scoped migration",
     )
-    doctor_parser = subparsers.add_parser("doctor", help="Diagnose a provider route")
-    doctor_parser.add_argument("route_id", nargs="?", help="Configured route ID")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Diagnose the system, runtime, or a provider route"
+    )
+    doctor_parser.add_argument(
+        "route_id",
+        nargs="?",
+        help="Configured route ID, or system/runtime/bundle",
+    )
     doctor_parser.add_argument(
         "--route",
         dest="route_option",
@@ -933,7 +943,7 @@ def _run_cli() -> int:
         doctor_route_id = args.route_option or args.route_id
         if doctor_route_id == "runtime":
             return cmd_runtime_doctor(repair=args.repair, as_json=args.json)
-        elif doctor_route_id in {None, "all"}:
+        elif doctor_route_id in {None, "all", "system"}:
             if args.repair:
                 parser.error("--repair requires 'coderook doctor runtime'")
             cmd_system_doctor(config, as_json=args.json)

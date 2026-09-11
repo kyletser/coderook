@@ -21,6 +21,7 @@ from code_rook.core.config import CodeRookConfig, LlmConfig
 from code_rook.core.daemon_lock import DaemonLock
 from code_rook.core.llm.credentials import CredentialResolution, CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctorCheck, ProviderDoctorResult
+from code_rook.core.llm.route_registry import RouteResolutionError
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.llm.routes import ProviderRoute, get_route_preset
 from code_rook.core.upgrade import UpgradeStateLockError
@@ -473,6 +474,34 @@ def test_doctor_json_is_redacted(monkeypatch: object, capsys: object) -> None:
     assert payload["category"] == "credential"
     assert "secret" not in output.casefold()
     assert exit_code == 1
+
+
+# 功能：验证不存在的 Provider 路由只返回可操作错误而不泄露 Python traceback。
+# 设计：让异步诊断抛出真实路由解析异常，分别核对稳定退出码、错误类别和用户可读消息。
+def test_doctor_reports_missing_route_without_traceback(
+    monkeypatch: object,
+    capsys: object,
+) -> None:
+    async def missing_route(
+        _config: CodeRookConfig,
+        _route_id: str | None,
+    ) -> ProviderDoctorResult:
+        raise RouteResolutionError("profile route is not configured: missing")
+
+    monkeypatch.setattr(doctor_command, "diagnose_route", missing_route)  # type: ignore[attr-defined]
+
+    exit_code = doctor_command.cmd_doctor(CodeRookConfig(), "missing", as_json=True)
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.out)
+    assert exit_code == 2
+    assert payload == {
+        "status": "error",
+        "category": "configuration",
+        "route_id": "missing",
+        "message": "profile route is not configured: missing",
+    }
+    assert captured.err == ""
 
 
 # 功能：验证 argparse 的 provider list 路径分发到新的 route 管理命令

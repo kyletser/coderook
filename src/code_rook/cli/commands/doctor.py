@@ -16,7 +16,7 @@ from code_rook.core.authority import detect_sandbox_capability
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctor, ProviderDoctorResult
-from code_rook.core.llm.route_registry import RouteRegistry
+from code_rook.core.llm.route_registry import RouteRegistry, RouteResolutionError
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.runtime.reconcile import RuntimeReconciler, RuntimeReconcileReport
 from code_rook.core.runtime.store import RuntimeStore
@@ -175,7 +175,19 @@ def cmd_doctor(
     *,
     as_json: bool = False,
 ) -> int:
-    result = asyncio.run(diagnose_route(config, route_id))
+    try:
+        result = asyncio.run(diagnose_route(config, route_id))
+    except RouteResolutionError as exc:
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "category": "configuration",
+                "route_id": route_id or "",
+                "message": str(exc),
+            }, ensure_ascii=False, indent=2))
+        else:
+            print(f"doctor error: {exc}", file=sys.stderr)
+        return 2
     if as_json:
         print(result.model_dump_json(indent=2))
     else:
