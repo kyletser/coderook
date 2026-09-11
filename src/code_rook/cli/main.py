@@ -155,7 +155,10 @@ def _prepare_file_referenced_input(
         if not any(character.isspace() for character in reference)
         or (workspace / reference.removeprefix("@")).is_file()
     ]
-    references.extend(extract_file_reference_tokens(content))
+    inline_content = content
+    for reference in references:
+        inline_content = inline_content.replace(f"@{reference}", "", 1)
+    references.extend(extract_file_reference_tokens(inline_content))
     resolved = resolve_file_references(
         workspace,
         dict.fromkeys(references),
