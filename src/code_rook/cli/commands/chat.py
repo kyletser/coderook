@@ -14,6 +14,31 @@ _DECISION_MAP: dict[str, str] = {
     "n": "deny_once",
     "d": "always_deny",
 }
+_EXIT_COMMANDS = frozenset({"exit", "quit", "/exit", "/quit"})
+
+
+# 识别文本 REPL 的本地退出指令，避免把常见控制词发送给模型。
+def _is_exit_command(content: str) -> bool:
+    return content.strip().casefold() in _EXIT_COMMANDS
+
+
+# 将持久线程通道的 runtime.event 恢复为文本 Chat 使用的原始事件形状。
+def _unwrap_runtime_event(event: dict[str, Any]) -> dict[str, Any]:
+    if event.get("type") != "runtime.event":
+        return event
+    payload = event.get("payload")
+    event_type = event.get("event_type")
+    if not isinstance(payload, dict) or not isinstance(event_type, str) or not event_type:
+        return event
+    unwrapped = dict(payload)
+    unwrapped["type"] = event_type
+    thread_id = event.get("thread_id")
+    if isinstance(thread_id, str) and thread_id:
+        unwrapped.setdefault("session_id", thread_id)
+    turn_id = event.get("turn_id")
+    if isinstance(turn_id, str) and turn_id:
+        unwrapped.setdefault("run_id", turn_id)
+    return unwrapped
 
 
 class ChatPrinter:
@@ -21,6 +46,7 @@ class ChatPrinter:
     def __init__(self) -> None:
         self._inline = False
         self._streamed_runs: set[str] = set()
+        self.session_id: str | None = None
         self.pending_permission_id: str | None = None
         self.active_run_id: str | None = None
 
@@ -32,8 +58,15 @@ class ChatPrinter:
 
     # 按事件类型打印 chat 输出、等待提示和权限审批请求
     async def handle(self, event: dict[str, Any]) -> None:
+        event = _unwrap_runtime_event(event)
         t = event.get("type", "")
+        if t.startswith("session.") and (
+            self.session_id is not None and event.get("session_id") != self.session_id
+        ):
+            return
         if t == "llm.token":
+            if event.get("run_id") != self.active_run_id:
+                return
             print(event.get("token", ""), end="", flush=True)
             self._inline = True
             run_id = str(event.get("run_id", ""))
@@ -121,6 +154,7 @@ async def _cancel_active_run(client: SocketClient, printer: ChatPrinter) -> bool
     except (IpcError, RuntimeError, OSError, TimeoutError) as exc:
         print(f"\n[cancel error: {exc}]", file=sys.stderr)
         return False
+    printer.active_run_id = None
     return True
 
 
@@ -141,21 +175,9 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
     loop_task = asyncio.create_task(client.run_event_loop())
 
     try:
-        await client.send_command(
-            "event.subscribe",
-            {
-                "topics": [
-                    "session.*",
-                    "run.*",
-                    "agent.*",
-                    "tool.*",
-                    "llm.token",
-                    "permission.*",
-                ],
-                "scope": "global",
-            },
-        )
-        if resume_session_id is None:
+        created_session = resume_session_id is None
+        submitted_message = False
+        if created_session:
             created = await client.send_command("session.create", {"mode": "chat"})
             session_id = str(created["session_id"])
             print(f"[session: {session_id}]")
@@ -166,6 +188,23 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
             session = resumed["session"]
             session_id = str(session["session_id"])
             print(f"[resumed: {session_id}] {session.get('title', '')}")
+        printer.session_id = session_id
+        await client.send_command(
+            "event.subscribe",
+            {
+                "topics": [
+                    "run.*",
+                    "agent.*",
+                    "tool.*",
+                    "permission.*",
+                ],
+                "scope": f"thread:{session_id}",
+            },
+        )
+        await client.send_command(
+            "event.subscribe",
+            {"topics": ["session.*", "llm.token"], "scope": "global"},
+        )
 
         while True:
             try:
@@ -175,6 +214,8 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
             content = line.strip()
             if not content:
                 continue
+            if _is_exit_command(content):
+                break
 
             # 有待审批的权限请求时，将用户输入解释为决策而非聊天消息
             if printer.pending_permission_id:
@@ -196,10 +237,20 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
                 continue
 
             try:
-                await client.send_command(
-                    "session.send_message",
-                    {"session_id": session_id, "content": content},
+                if printer.active_run_id is not None:
+                    await client.send_command(
+                        "run.steer",
+                        {"run_id": printer.active_run_id, "content": content},
+                    )
+                    continue
+                started = await client.send_command(
+                    "turn.start",
+                    {"thread_id": session_id, "content": content},
                 )
+                run_id = str(started.get("turn_id", ""))
+                if run_id:
+                    printer.active_run_id = run_id
+                    submitted_message = True
             except asyncio.CancelledError:
                 current = asyncio.current_task()
                 if current is not None:
@@ -213,7 +264,19 @@ async def _chat_async(config: CodeRookConfig, resume_session_id: str | None = No
                 print(f"error: connection lost: {send_error}", file=sys.stderr)
                 return 1
 
-        print(f"\n[session saved: resume with `coderook chat --resume {session_id}`]")
+        if printer.active_run_id is not None:
+            await _cancel_active_run(client, printer)
+        if created_session and not submitted_message:
+            try:
+                await client.send_command("session.delete", {"session_id": session_id})
+            except (IpcError, RuntimeError, OSError):
+                print(
+                    f"\n[session saved: resume with `coderook chat --session {session_id}`]"
+                )
+            else:
+                print("\n[empty session discarded]")
+        else:
+            print(f"\n[session saved: resume with `coderook chat --session {session_id}`]")
     except IpcError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
