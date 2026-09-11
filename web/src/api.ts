@@ -78,6 +78,7 @@ export async function streamEvents(
   signal: AbortSignal,
   onEvent: (event: RuntimeEvent) => void,
   tail?: number,
+  onOpen?: () => void,
 ): Promise<number> {
   const tailQuery = tail && afterSeq === 0 ? `&tail=${tail}` : "";
   const url = `/v1/threads/${encodeURIComponent(threadId)}/events?after_seq=${afterSeq}${tailQuery}`;
@@ -88,6 +89,7 @@ export async function streamEvents(
     response = await connect();
   }
   if (!response.ok || !response.body) throw new Error(await decodeError(response));
+  onOpen?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

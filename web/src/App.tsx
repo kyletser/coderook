@@ -1159,11 +1159,18 @@ function AppShell({
               }
             },
             cursors.current[selectedId] ? undefined : MAX_CACHED_EVENTS,
+            () => setNotice((current) => (
+              current.startsWith("事件流正在重连：")
+                || current.startsWith("Event stream reconnecting:")
+                ? ""
+                : current
+            )),
           );
           cursors.current[selectedId] = cursor;
         } catch (reason) {
           if (controller.signal.aborted) return;
-          setNotice(`事件流正在重连：${reason instanceof Error ? reason.message : String(reason)}`);
+          const detail = reason instanceof Error ? reason.message : String(reason);
+          setNotice(tr(`事件流正在重连：${detail}`, `Event stream reconnecting: ${detail}`));
           await new Promise((resolve) => window.setTimeout(resolve, 900));
         }
       }
