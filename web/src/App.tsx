@@ -18,6 +18,7 @@ import type {
 } from "./types";
 
 type Drawer = "files" | "changes" | "models" | "advanced" | "history" | null;
+type RunKind = "agent" | "user_shell";
 type ImageAttachment = {
   sha256: string;
   media_type: string;
@@ -706,6 +707,22 @@ function isUserShell(value: string): boolean {
   return value.startsWith("!") && Boolean(value.slice(value.startsWith("!!") ? 2 : 1).trim());
 }
 
+export function runKindFromEvents(events: RuntimeEvent[]): RunKind {
+  let runKind: RunKind = "agent";
+  for (const event of events) {
+    if (event.type === "run.started") {
+      runKind = event.payload.run_kind === "user_shell" ? "user_shell" : "agent";
+    } else if (["run.finished", "turn.finished", "turn.completed", "turn.failed", "turn.interrupted"].includes(event.type)) {
+      runKind = "agent";
+    }
+  }
+  return runKind;
+}
+
+export function followUpUsesQueue(runKind: RunKind, queueMode: boolean, content: string): boolean {
+  return runKind === "user_shell" || queueMode || isUserShell(content);
+}
+
 export function modelContentFor(visibleContent: string, fileReferences: string[]): string {
   if (isUserShell(visibleContent)) return visibleContent;
   const base = visibleContent;
@@ -822,6 +839,7 @@ function AppShell({
   const [mode, setMode] = useState<RunMode>("act");
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [phase, setPhase] = useState("idle");
+  const [activeRunKind, setActiveRunKind] = useState<RunKind>("agent");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
@@ -859,6 +877,7 @@ function AppShell({
   const activeTurn = [...turns].reverse().find((turn) =>
     ["running", "waiting", "waiting_permission", "waiting_input"].includes(turn.status),
   );
+  const pendingQueueCount = queuedMessages.filter((message) => message.status !== "dispatching").length;
   const fileMention = useMemo(
     () => activeFileMention(composer, composerCaret),
     [composer, composerCaret],
@@ -1018,6 +1037,7 @@ function AppShell({
       setEvents([]);
       setQueuedMessages([]);
       setPhase("idle");
+      setActiveRunKind("agent");
       setThreadLoading(false);
       setHasOlderTurns(false);
       setContextTokens(0);
@@ -1045,6 +1065,7 @@ function AppShell({
     setExtensionUi({});
     const cachedEvents = eventCache.current[selectedId] || [];
     setEvents(cachedEvents);
+    setActiveRunKind(runKindFromEvents(cachedEvents));
     setQueuedMessages([]);
     const cachedPhase = [...cachedEvents].reverse().find(
       (event) => event.type === "run.phase_changed",
@@ -1080,7 +1101,11 @@ function AppShell({
               });
               if (event.type === "session.navigated") {
                 setPhase("idle");
+                setActiveRunKind("agent");
                 void loadThread(selectedId);
+              }
+              if (event.type === "run.started") {
+                setActiveRunKind(event.payload.run_kind === "user_shell" ? "user_shell" : "agent");
               }
               if (event.type === "run.phase_changed") {
                 setPhase(textValue(event.payload.phase) || "working");
@@ -1102,6 +1127,9 @@ function AppShell({
                 }
               }
               if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.outcome", "run.finished"].includes(event.type)) {
+                if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.finished"].includes(event.type)) {
+                  setActiveRunKind("agent");
+                }
                 void refreshThreads();
                 void loadThread(selectedId);
                 if (event.turn_id && event.type.startsWith("turn.")) {
@@ -1156,6 +1184,7 @@ function AppShell({
     setContextTokens(0);
     const cachedEvents = eventCache.current[threadId] || [];
     setEvents(cachedEvents);
+    setActiveRunKind(runKindFromEvents(cachedEvents));
     const cachedPhase = [...cachedEvents].reverse().find(
       (event) => event.type === "run.phase_changed",
     );
@@ -1213,7 +1242,7 @@ function AppShell({
         return;
       }
       if (activeTurn) {
-        if (queueMode || isUserShell(content)) {
+        if (followUpUsesQueue(activeRunKind, queueMode, content)) {
           const queued = await request<QueuedMessage & { handled?: boolean }>(
             `/v1/threads/${encodeURIComponent(selectedId)}/queue`,
             {
@@ -1268,6 +1297,7 @@ function AppShell({
         );
         if (started.handled) setNotice(tr("输入已由扩展处理", "Input handled by extension"));
         else {
+          setActiveRunKind(isUserShell(content) ? "user_shell" : "agent");
           setTurns((current) => [...current, started]);
           setPhase(isUserShell(content) ? "executing" : "understanding");
         }
@@ -1375,6 +1405,7 @@ function AppShell({
         setTurns((current) => current.map((turn) =>
           turn.id === interrupted.id ? interrupted : turn));
         setPhase("idle");
+        setActiveRunKind("agent");
       }
       void refreshThreads();
       setNotice(tr("已请求停止当前任务", "Stop requested for the active task."));
@@ -1856,7 +1887,13 @@ function AppShell({
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={threadLoading ? tr("正在恢复会话…", "Restoring session…") : activeTurn ? tr("输入纠偏消息…", "Steer the active task…") : tr("向 CodeRook 提问或描述任务", "Ask CodeRook or describe a task")}
+            placeholder={threadLoading
+              ? tr("正在恢复会话…", "Restoring session…")
+              : activeTurn
+                ? activeRunKind === "user_shell" || queueMode
+                  ? tr("输入后续消息，当前任务结束后发送…", "Enter a follow-up to send after the current task…")
+                  : tr("输入纠偏消息…", "Steer the active task…")
+                : tr("向 CodeRook 提问或描述任务", "Ask CodeRook or describe a task")}
             rows={1}
           />
           <div className="composer-bar">
@@ -1864,12 +1901,12 @@ function AppShell({
               <button type="button" className="context-button" onClick={() => setDrawer("files")} title={tr("添加文件上下文", "Add file context")}><Icon name="plus" size={16} /></button>
               <label className="mode-select"><select aria-label={tr("运行模式", "Run mode")} value={mode} onChange={(event) => setMode(event.target.value as RunMode)}><option value="act">{tr("执行", "Act")}</option><option value="plan">{tr("规划", "Plan")}</option><option value="review">{tr("审查", "Review")}</option></select></label>
               <label className="attach-button" title={tr("添加图片", "Attach images")}><Icon name="image" size={15} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
-              {activeTurn && <button type="button" className={`queue-toggle ${queueMode ? "active" : ""}`} onClick={() => setQueueMode((current) => !current)}>{queueMode ? tr(`排队 ${queuedMessages.length}`, `Queue ${queuedMessages.length}`) : tr("纠偏", "Steer")}</button>}
+              {activeTurn && <button type="button" className={`queue-toggle ${queueMode || activeRunKind === "user_shell" ? "active" : ""}`} disabled={activeRunKind === "user_shell"} onClick={() => setQueueMode((current) => !current)}>{activeRunKind === "user_shell" || queueMode ? tr(`排队 ${pendingQueueCount}`, `Queue ${pendingQueueCount}`) : tr("纠偏", "Steer")}</button>}
             </div>
             <div className="composer-meta">
               <span>{tr("上下文", "Context")} {tokenUsage ? `${Math.round(tokenUsage / 1000)}k` : "—"}</span>
               {activeTurn && <button type="button" className="stop" onClick={() => void cancel()}><Icon name="stop" size={13} />{tr("停止", "Stop")}</button>}
-              <button className="send" aria-label={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} title={activeTurn ? tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
+              <button className="send" aria-label={activeTurn ? activeRunKind === "user_shell" || queueMode ? tr("加入队列", "Queue follow-up") : tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} title={activeTurn ? activeRunKind === "user_shell" || queueMode ? tr("加入队列", "Queue follow-up") : tr("发送纠偏", "Send steer") : tr("发送任务", "Send task")} disabled={!composer.trim() || sending || !sessionsReady || threadLoading}><Icon name="arrowUp" size={16} /></button>
             </div>
           </div>
           {extensionWidgets.filter((widget) => widget.placement === "below").map((widget, index) => <div className="extension-widget below" key={`below-${index}`}>{widget.content}</div>)}

@@ -7,6 +7,7 @@ import {
   displayableThreads,
   eventBelongsToThread,
   finishesCurrentThreadLoad,
+  followUpUsesQueue,
   isSimpleProductQuestion,
   modelContentFor,
   parentWorkspacePath,
@@ -15,6 +16,7 @@ import {
   resolveWebTheme,
   resultSummaryFor,
   resultStatusIsFailure,
+  runKindFromEvents,
   summarizeVerification,
   verificationHasFailure,
   workspaceHasUserProject,
@@ -28,6 +30,25 @@ describe("Web task submission", () => {
 
     expect(content).toBe("!pytest -q");
     expect(modelContentFor('!!printf "%s" "$VALUE"', ["VALUE"])).toBe('!!printf "%s" "$VALUE"');
+  });
+
+  it("queues follow-ups while a direct user shell command is active", () => {
+    const started: RuntimeEvent = {
+      thread_id: "thread-1",
+      turn_id: "turn-shell",
+      seq: 1,
+      type: "run.started",
+      payload: { run_kind: "user_shell" },
+      ts: "2026-09-11T00:00:00Z",
+    };
+
+    expect(runKindFromEvents([started])).toBe("user_shell");
+    expect(followUpUsesQueue("user_shell", false, "解释命令输出")).toBe(true);
+    expect(followUpUsesQueue("agent", false, "补充检查 tests")).toBe(false);
+    expect(runKindFromEvents([
+      started,
+      { ...started, seq: 2, type: "run.finished", payload: {} },
+    ])).toBe("agent");
   });
 
   it("adds only selected file references still present in the composer", () => {
