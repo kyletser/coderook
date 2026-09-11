@@ -37,6 +37,8 @@ def test_builtin_provider_presets_have_expected_endpoints() -> None:
     assert presets["aliyun"].api_key_env == "DASHSCOPE_API_KEY"
     assert presets["aliyun"].wire_format == "openai_chat"
     assert presets["aliyun"].credential_required is True
+    assert presets["aliyun"].supports_images_for_model("qwen3.8-flash") is True
+    assert presets["aliyun"].supports_images_for_model("qwen-plus") is False
     assert get_provider_preset("dashscope") is presets["aliyun"]
     assert presets["openai"].chat_url == "https://api.openai.com/v1/chat/completions"
     assert presets["anthropic"].models_url == "https://api.anthropic.com/v1/models"

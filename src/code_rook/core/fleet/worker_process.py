@@ -34,7 +34,7 @@ def _resolve_route(request: LocalWorkerRequest) -> ResolvedRoute:
     resolved = registry.resolve(request.step.route or None)
     if not request.step.model or request.step.model == resolved.route.model:
         return resolved
-    route = resolved.route.model_copy(update={"model": request.step.model})
+    route = resolved.route.with_model(request.step.model)
     return ResolvedRoute(
         route=route,
         receipt=route.receipt(resolved.receipt.credential_source),

@@ -131,7 +131,7 @@ class RuntimeApiService:
                 "capabilities": {
                     "tools": preset.supports_tools,
                     "parallel_tools": preset.supports_parallel_tools,
-                    "images": preset.supports_images,
+                    "images": preset.supports_images_for_model(preset.default_model),
                     "prompt_cache": preset.supports_prompt_cache,
                 },
             }

@@ -824,7 +824,7 @@ class SpawnAgentTool(BaseTool):
                     selected = self._route_registry.resolve(target_route_id)
                     pinned = selected.route
                     if target_model is not None and target_model != pinned.model:
-                        pinned = pinned.model_copy(update={"model": target_model})
+                        pinned = pinned.with_model(target_model)
                     effective_route = ResolvedRoute(
                         route=pinned,
                         receipt=pinned.receipt(selected.receipt.credential_source),
@@ -872,7 +872,7 @@ class SpawnAgentTool(BaseTool):
                     selected = self._route_registry.resolve(profile.route)
                     pinned = selected.route
                     if profile.model and profile.model != pinned.model:
-                        pinned = pinned.model_copy(update={"model": profile.model})
+                        pinned = pinned.with_model(profile.model)
                     effective_route = ResolvedRoute(
                         route=pinned,
                         receipt=pinned.receipt(selected.receipt.credential_source),

@@ -8,7 +8,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
-from code_rook.core.llm.provider_presets import PROVIDER_PRESETS, ProviderPreset
+from code_rook.core.llm.provider_presets import (
+    PROVIDER_PRESETS,
+    ProviderPreset,
+    get_provider_preset,
+)
 
 ProviderKind = Literal[
     "anthropic",
@@ -109,6 +113,24 @@ class ProviderRoute(BaseModel):
         )
         return payload
 
+    @model_validator(mode="before")
+    @classmethod
+    # 按内建 Catalog 的模型级声明刷新能力，避免切换模型后沿用错误的 Provider 级标签。
+    def _normalize_catalog_model_capabilities(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        catalog_id = value.get("catalog_id")
+        model = value.get("model")
+        if not isinstance(catalog_id, str) or not isinstance(model, str):
+            return value
+        try:
+            preset = get_provider_preset(catalog_id)
+        except ValueError:
+            return value
+        payload = dict(value)
+        payload["supports_images"] = preset.supports_images_for_model(model)
+        return payload
+
     @model_validator(mode="after")
     # 拒绝 URL 内嵌凭据及非 loopback 明文 HTTP，防止密钥被发送到不安全端点
     def _validate_endpoint_security(self) -> ProviderRoute:
@@ -143,6 +165,19 @@ class ProviderRoute(BaseModel):
             credential_source=credential_source,
             supports_images=self.supports_images,
             temperature=self.temperature,
+        )
+
+    # 重新校验模型切换并同步模型级能力，同时使旧 Doctor 收据失效。
+    def with_model(self, model: str) -> ProviderRoute:
+        selected = model.strip()
+        if not selected:
+            raise ValueError("model cannot be empty")
+        return ProviderRoute.model_validate(
+            {
+                **self.model_dump(mode="python"),
+                "model": selected,
+                "doctor_receipt": None if selected != self.model else self.doctor_receipt,
+            }
         )
 
     # 计算不含凭据正文与 Doctor 收据的稳定执行路由摘要
@@ -198,7 +233,7 @@ def _route_from_provider_preset(preset: ProviderPreset) -> ProviderRoute:
             "supports_tools": preset.supports_tools,
             "supports_parallel_tools": preset.supports_parallel_tools,
             "supports_prompt_cache": preset.supports_prompt_cache,
-            "supports_images": preset.supports_images,
+            "supports_images": preset.supports_images_for_model(preset.default_model),
         }
     )
 
@@ -248,7 +283,7 @@ def get_route_preset(route_id: str, *, model: str | None = None) -> ProviderRout
     selected = model.strip()
     if not selected:
         raise ValueError("model cannot be empty")
-    return route.model_copy(update={"model": selected}, deep=True)
+    return route.with_model(selected)
 
 
 # 返回所有内置路由，保持用户界面展示顺序稳定

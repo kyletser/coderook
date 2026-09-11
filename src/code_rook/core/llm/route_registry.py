@@ -232,7 +232,7 @@ class RouteRegistry:
             selected = model.strip()
             if not selected:
                 raise RouteResolutionError("model cannot be empty")
-            route = route.model_copy(update={"model": selected})
+            route = route.with_model(selected)
         credential: CredentialResolution = self._credentials.resolve(route.credential_ref)
         if credential.value is None and route.credential_required:
             raise RouteResolutionError(f"credential is missing for route: {route.id}")
@@ -252,7 +252,7 @@ class RouteRegistry:
     ) -> ResolvedRoute:
         route = self.route(route_id)
         if model is not None and model != route.model:
-            route = route.model_copy(update={"model": model})
+            route = route.with_model(model)
         digest = route.validation_digest()
         if expected_digest and expected_digest != digest:
             raise RouteResolutionError(

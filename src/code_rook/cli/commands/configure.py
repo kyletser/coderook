@@ -315,13 +315,11 @@ def _prompt_catalog_route(
     )
     default_model = existing.model if existing is not None else preset.default_model
     model = input_fn(f"模型 ID (默认 {default_model}): ").strip() or default_model
-    route = get_route_preset(preset.id).model_copy(
-        update={
-            "model": model,
-            **({"credential_ref": existing.credential_ref} if existing is not None else {}),
-            "doctor_receipt": None,
-        }
-    )
+    route_payload = get_route_preset(preset.id).with_model(model).model_dump(mode="python")
+    if existing is not None:
+        route_payload["credential_ref"] = existing.credential_ref
+    route_payload["doctor_receipt"] = None
+    route = ProviderRoute.model_validate(route_payload)
     secret: str | None = None
     if preset.credential_required:
         existing_credential = configuration.credentials.resolve(route.credential_ref)

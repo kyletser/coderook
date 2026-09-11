@@ -28,6 +28,7 @@ class ProviderPreset:
     supports_tools: bool = True
     supports_parallel_tools: bool = False
     supports_images: bool = False
+    image_model_prefixes: tuple[str, ...] = ()
     local_probe: bool = False
     aliases: tuple[str, ...] = ()
 
@@ -35,6 +36,13 @@ class ProviderPreset:
     # 返回创建 route 时使用的首选默认模型
     def default_model(self) -> str:
         return self.preferred_models[0]
+
+    # 根据当前模型而非 Provider 品牌返回图片输入能力。
+    def supports_images_for_model(self, model: str) -> bool:
+        normalized = model.strip().casefold()
+        return self.supports_images or any(
+            normalized.startswith(prefix.casefold()) for prefix in self.image_model_prefixes
+        )
 
 
 @dataclass(frozen=True)
@@ -67,6 +75,7 @@ PROVIDER_PRESETS = (
         models_url="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
         api_key_env="DASHSCOPE_API_KEY",
         preferred_models=("qwen3.8-flash", "qwen-plus", "qwen-flash"),
+        image_model_prefixes=("qwen3.8-",),
         aliases=("dashscope", "bailian", "alibaba"),
     ),
     ProviderPreset(

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
+import struct
 
 import httpx
 import pytest
 from pydantic import AnyHttpUrl
 
 from code_rook.core.llm.credentials import CredentialResolution
-from code_rook.core.llm.doctor import ProviderDoctor
+from code_rook.core.llm.doctor import _TINY_PNG, ProviderDoctor
 from code_rook.core.llm.routes import ProviderRoute
 
 _TOOL_ONE = "coderook_doctor_echo_one"
@@ -275,6 +277,16 @@ async def test_provider_doctor_probes_declared_images(wire_format: str) -> None:
     assert "image" in request_bodies[1]
     assert result.status == "ok"
     assert result.capabilities["images"].status == "passed"
+
+
+# 功能：验证 Doctor 内存图片满足视觉模型的最小边长要求。
+# 设计：直接解析 PNG IHDR 尺寸，避免 1x1 探针被真实 Provider 拒绝却在 Mock 中通过。
+def test_provider_doctor_image_probe_has_usable_dimensions() -> None:
+    image = base64.b64decode(_TINY_PNG)
+    width, height = struct.unpack(">II", image[16:24])
+
+    assert width > 10
+    assert height > 10
 
 
 # 功能：验证缺失正常终止或非流式响应都不能生成可提交收据

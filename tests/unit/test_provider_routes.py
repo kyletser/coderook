@@ -185,6 +185,22 @@ def test_provider_route_normalizes_openai_base_url(url: str, expected: str) -> N
     assert str(route.base_url).rstrip("/") == expected
 
 
+# 功能：验证阿里云图片能力随模型切换，而不是错误套用到整个 Provider。
+# 设计：从同一 Catalog 路由切换视觉与文本模型，并确认旧 Doctor 收据不会跨模型复用。
+def test_catalog_route_recomputes_model_specific_image_capability() -> None:
+    route = get_route_preset("aliyun")
+
+    assert route.model == "qwen3.8-flash"
+    assert route.supports_images is True
+
+    text_route = route.with_model("qwen-plus")
+    restored = text_route.with_model("qwen3.8-flash")
+
+    assert text_route.supports_images is False
+    assert restored.supports_images is True
+    assert text_route.doctor_receipt is None
+
+
 # 功能：验证 route 温度进入脱敏 receipt，并拒绝 Anthropic 不支持的范围与 thinking 组合
 # 设计：先检查合法 temperature=0 往返，再用两个非法配置锁定 provider 原生约束
 def test_provider_route_validates_and_receipts_temperature() -> None:
