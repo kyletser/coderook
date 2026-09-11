@@ -113,7 +113,7 @@ _RISK_RANK = {
 class TaskStrategyRouter:
     # 将普通执行画像降为提示，不用关键词判断关闭工具或强迫规划
     def for_execution(self, profile: TaskProfile) -> TaskProfile:
-        if "explicit_plan_mode" in profile.signals:
+        if {"explicit_plan_mode", "explicit_review_mode"} & set(profile.signals):
             return profile
         return profile.model_copy(
             update={
@@ -183,6 +183,25 @@ class TaskStrategyRouter:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         preset_id: str = "standard",
     ) -> TaskProfile:
+        if runtime_mode == RuntimeMode.REVIEW:
+            return TaskProfile(
+                intent=TaskIntent.INSPECT,
+                scope=TaskScope.READ_ONLY,
+                risk=TaskRisk.READ,
+                strategy=TaskStrategy.DIRECT,
+                context_policy=ContextPolicy.STANDARD,
+                confidence=1.0,
+                signals=("explicit_review_mode",),
+                source="rules",
+                delegation_allowed=False,
+                deliverable="基于代码证据的只读审查结论",
+                success_criteria=(
+                    "结论引用实际代码证据",
+                    "不修改文件或外部状态",
+                    "没有明确缺陷时直接说明",
+                ),
+                user_summary="只读检查相关实现，并基于实际证据报告问题。",
+            ).with_digest()
         signals: list[str] = []
         answer_only = bool(_ANSWER_ONLY_RE.search(goal))
         read = _has_unnegated_match(_READ_RE, goal)
@@ -311,7 +330,7 @@ class TaskStrategyRouter:
             and mutate
             and parallel
             and not coupled
-            and runtime_mode != RuntimeMode.PLAN
+            and runtime_mode not in {RuntimeMode.PLAN, RuntimeMode.REVIEW}
             and preset_id != "minimal"
         )
         if runtime_mode == RuntimeMode.PLAN or not clear:

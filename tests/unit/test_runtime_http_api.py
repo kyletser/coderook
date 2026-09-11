@@ -72,6 +72,7 @@ class _FakeRuntimeApi:
         ]
         self.steering = ""
         self.display_content: str | None = None
+        self.turn_content = ""
         self.permission_response: tuple[str, str, str] | None = None
         self.queue: list[dict[str, object]] = []
         self.turn_query: tuple[int | None, str | None] | None = None
@@ -232,7 +233,7 @@ class _FakeRuntimeApi:
         display_content: str | None = None,
     ) -> TurnRecord:
         assert thread_id == self.thread.id
-        assert content == "work"
+        self.turn_content = content
         self.display_content = display_content
         self.turn = self.turn.model_copy(update={"mode": mode})
         return self.turn
@@ -466,7 +467,22 @@ async def test_http_json_routes_share_runtime_service(tmp_path: Path) -> None:
             )
             assert response.status_code == 202
             assert response.json()["mode"] == "plan"
+            assert service.turn_content == "work"
             assert service.display_content == "!pytest"
+
+            response = await client.post(
+                "/v1/threads/thread-1/turns",
+                json={
+                    "content": "review calculator.py",
+                    "display_content": "审查 calculator.py",
+                    "mode": "review",
+                },
+            )
+            assert response.status_code == 202
+            assert response.json()["mode"] == "review"
+            assert service.turn_content.startswith("review calculator.py")
+            assert "Read-only review contract" in service.turn_content
+            assert service.display_content == "审查 calculator.py"
 
             response = await client.get(
                 "/v1/threads/thread-1/turns?limit=31&before=turn-cursor"

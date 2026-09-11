@@ -173,10 +173,11 @@ class RuntimeToolAssembly:
         def _name_allowed(name: str) -> bool:
             return allowed is None or name in allowed
 
-        # Plan Mode 只向模型暴露明确声明为纯读的工具
+        # Plan 与 Review Mode 只向模型暴露明确声明为纯读的工具
         def _ok(tool: BaseTool) -> bool:
             return _name_allowed(tool.name) and (
-                runtime_mode != RuntimeMode.PLAN or tool.is_read_only
+                runtime_mode not in {RuntimeMode.PLAN, RuntimeMode.REVIEW}
+                or tool.is_read_only
             )
 
         frozen_authority = authority_snapshot or AuthoritySnapshot(mode=runtime_mode)
@@ -277,7 +278,12 @@ class RuntimeToolAssembly:
                 MemorySaveTool(self._memory_store, session_id, run_id or ""),
             )
         register_memory_family(registry, memory_tools, allowed_names=allowed)
-        if bus is not None and run_id is not None and _name_allowed("update_plan"):
+        if (
+            runtime_mode != RuntimeMode.REVIEW
+            and bus is not None
+            and run_id is not None
+            and _name_allowed("update_plan")
+        ):
             registry.register(UpdatePlanTool(bus, run_id))
         if self._goal_service is not None and session_id and run_id:
             active_goal = self._goal_service.current(session_id)

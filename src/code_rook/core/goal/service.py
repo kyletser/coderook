@@ -24,6 +24,7 @@ from code_rook.core.goal.store import GoalStore
 _NONTERMINAL_STATUSES: set[GoalStatus] = {"active", "paused", "blocked"}
 _MODE_RANK = {
     RuntimeMode.PLAN: 0,
+    RuntimeMode.REVIEW: 0,
     RuntimeMode.ACT: 1,
     RuntimeMode.OPERATE: 2,
 }

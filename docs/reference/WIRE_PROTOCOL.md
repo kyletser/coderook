@@ -969,7 +969,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -1410,7 +1411,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -1866,7 +1868,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -2595,7 +2598,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -2996,7 +3000,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -4397,7 +4402,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -4579,7 +4585,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -4891,7 +4898,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -5207,7 +5215,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -5527,7 +5536,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -5918,7 +5928,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -6250,7 +6261,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -6436,7 +6448,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -6555,7 +6568,8 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"
@@ -15946,7 +15960,8 @@ The following command and event models are discovered directly from the typed di
       "enum": [
         "plan",
         "act",
-        "operate"
+        "operate",
+        "review"
       ],
       "title": "RuntimeMode",
       "type": "string"

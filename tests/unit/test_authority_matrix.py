@@ -23,6 +23,8 @@ from code_rook.core.permissions.manager import PermissionManager
         (RuntimeMode.PLAN, AuthorityProfile.ASK, ToolAction.READ, AuthorityDecision.ALLOW),
         (RuntimeMode.PLAN, AuthorityProfile.FULL_ACCESS, ToolAction.MUTATE, AuthorityDecision.DENY),
         (RuntimeMode.PLAN, AuthorityProfile.FULL_ACCESS, ToolAction.SHELL, AuthorityDecision.DENY),
+        (RuntimeMode.REVIEW, AuthorityProfile.FULL_ACCESS, ToolAction.MUTATE, AuthorityDecision.DENY),
+        (RuntimeMode.REVIEW, AuthorityProfile.FULL_ACCESS, ToolAction.SHELL, AuthorityDecision.DENY),
         (RuntimeMode.ACT, AuthorityProfile.ASK, ToolAction.MUTATE, AuthorityDecision.ASK),
         (RuntimeMode.OPERATE, AuthorityProfile.ASK, ToolAction.MUTATE, AuthorityDecision.ASK),
         (

@@ -50,10 +50,10 @@ def evaluate_action(
             decision=AuthorityDecision.DENY,
             reason=f"action outside authority scope: {known_action.value}",
         )
-    if snapshot.mode == RuntimeMode.PLAN and known_action != ToolAction.READ:
+    if snapshot.mode in {RuntimeMode.PLAN, RuntimeMode.REVIEW} and known_action != ToolAction.READ:
         return AuthorityEvaluation(
             decision=AuthorityDecision.DENY,
-            reason=f"plan mode denies {known_action.value}",
+            reason=f"{snapshot.mode.value} mode denies {known_action.value}",
         )
     if known_action == ToolAction.READ:
         return AuthorityEvaluation(
@@ -98,8 +98,8 @@ def narrow_child_authority(
         key=_PROFILE_RANK.__getitem__,
     )
     mode = requested_mode or parent.mode
-    if parent.mode == RuntimeMode.PLAN:
-        mode = RuntimeMode.PLAN
+    if parent.mode in {RuntimeMode.PLAN, RuntimeMode.REVIEW}:
+        mode = parent.mode
     trust = requested_trust or parent.workspace_trust
     if parent.workspace_trust == WorkspaceTrust.UNTRUSTED:
         trust = WorkspaceTrust.UNTRUSTED

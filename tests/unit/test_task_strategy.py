@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from code_rook.core.authority import RuntimeMode
 from code_rook.core.llm.types import LlmResponse, UsageStats
 from code_rook.core.strategy import (
     TaskIntent,
@@ -67,6 +68,26 @@ async def test_hybrid_router_skips_model_for_clear_shell_risk() -> None:
     assert profile.risk == TaskRisk.SHELL
     assert profile.confidence >= 0.75
     provider.chat.assert_not_called()
+
+
+# 功能：验证显式审查模式始终形成直接只读策略并关闭委派
+# 设计：使用同时含修改措辞的请求，证明运行模式而非关键词决定最终权限上限
+def test_review_mode_forces_direct_read_only_strategy() -> None:
+    router = TaskStrategyRouter()
+    profile = router.classify_rules(
+        "审查 calculator.py 并修复发现的问题",
+        runtime_mode=RuntimeMode.REVIEW,
+    )
+    effective = router.for_execution(profile)
+
+    assert profile.intent == TaskIntent.INSPECT
+    assert profile.scope == TaskScope.READ_ONLY
+    assert profile.risk == TaskRisk.READ
+    assert profile.strategy == TaskStrategy.DIRECT
+    assert profile.delegation_allowed is False
+    assert "explicit_review_mode" in profile.signals
+    assert profile.signals == ("explicit_review_mode",)
+    assert effective == profile
 
 
 # 功能：验证普通产品问答会直接响应且不会暴露任何代码执行工具

@@ -234,7 +234,7 @@ class ToolSpec(BaseModel):
 
     # 返回指定 Mode 下允许暴露给模型的 action
     def visible_actions(self, mode: RuntimeMode) -> tuple[ToolActionSpec, ...]:
-        if mode != RuntimeMode.PLAN:
+        if mode not in {RuntimeMode.PLAN, RuntimeMode.REVIEW}:
             return self.actions
         return tuple(action for action in self.actions if not action.is_mutating)
 

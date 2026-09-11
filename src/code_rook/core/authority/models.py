@@ -10,6 +10,7 @@ class RuntimeMode(StrEnum):
     PLAN = "plan"
     ACT = "act"
     OPERATE = "operate"
+    REVIEW = "review"
 
 
 class AuthorityProfile(StrEnum):

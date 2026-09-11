@@ -107,6 +107,14 @@ class ExecutionContext:
                 "decisions, risks, and verification steps. The user must explicitly approve "
                 "before a later Act turn may implement it."
             )
+        elif self.runtime_mode == RuntimeMode.REVIEW:
+            parts.append(
+                "\n\n## Review Mode\n"
+                "Inspect and report without changing files, memory, tasks, processes, "
+                "external systems, or repository state. Only read-only tools are available. "
+                "Base every finding on repository evidence and do not create an implementation "
+                "plan or ask for approval to modify anything."
+            )
         if self.runtime_context.strip():
             parts.append("\n\n## Runtime Environment\n" + self.runtime_context.strip())
         if self.capability_context.strip():

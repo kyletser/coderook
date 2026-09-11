@@ -27,6 +27,7 @@ from code_rook.core.authority import RuntimeMode
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.compatibility import HTTP_API_VERSION
 from code_rook.core.configuration import ConfigurationValidationError
+from code_rook.core.review import build_review_goal
 from code_rook.core.runtime.store import RecordNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -612,10 +613,14 @@ class HttpApiServer:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("content must be a non-empty string")
             raw_mode = str(body.get("mode", RuntimeMode.ACT.value))
-            try:
-                mode = RuntimeMode(raw_mode)
-            except ValueError as exc:
-                raise ValueError("invalid runtime mode") from exc
+            if raw_mode == "review":
+                content = build_review_goal(content)
+                mode = RuntimeMode.REVIEW
+            else:
+                try:
+                    mode = RuntimeMode(raw_mode)
+                except ValueError as exc:
+                    raise ValueError("invalid runtime mode") from exc
             raw_attachments = body.get("attachments", [])
             if not isinstance(raw_attachments, list):
                 raise ValueError("attachments must be a list")
@@ -722,7 +727,15 @@ class HttpApiServer:
                 not isinstance(display_content, str) or not display_content.strip()
             ):
                 raise ValueError("display_content must be a non-empty string")
-            mode = RuntimeMode(str(body.get("mode", RuntimeMode.ACT.value)))
+            raw_mode = str(body.get("mode", RuntimeMode.ACT.value))
+            if raw_mode == "review":
+                content = build_review_goal(content)
+                mode = RuntimeMode.REVIEW
+            else:
+                try:
+                    mode = RuntimeMode(raw_mode)
+                except ValueError as exc:
+                    raise ValueError("invalid runtime mode") from exc
             raw_attachments = body.get("attachments", [])
             if not isinstance(raw_attachments, list):
                 raise ValueError("attachments must be a list")

@@ -570,7 +570,7 @@ async def _cmd_review(app: Any, ta: ChatTextArea, content: str) -> None:
     app._begin_message(
         ta,
         request,
-        RuntimeMode.PLAN,
+        RuntimeMode.REVIEW,
         visible_content=tr("review.visible", _locale(app))
         + (f" · {focus}" if focus else ""),
     )
