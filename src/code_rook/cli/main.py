@@ -525,7 +525,7 @@ def _run_cli() -> int:
     web_parser.add_argument(
         "--no-open",
         action="store_true",
-        help="Print the one-time launch URL instead of opening a browser",
+        help="Print the local Web URL instead of opening a browser",
     )
     subparsers.add_parser("configure", aliases=["config"], help="Configure the LLM connection")
     subparsers.add_parser("config-status", help="Show the active LLM configuration")
