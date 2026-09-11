@@ -68,7 +68,13 @@ class ReadTool(BaseTool):
                 raise
         if path.is_dir():
             relative = path.relative_to(boundary.root).as_posix() or "."
-            return await ListDirTool(boundary).invoke({"path": relative, "max_depth": 2})
+            directory_result = await ListDirTool(boundary).invoke(
+                {"path": relative, "max_depth": 2}
+            )
+            directory_result.details = {
+                **(directory_result.details or {}), "content_kind": "directory"
+            }
+            return directory_result
         if path.suffix.lower() in {
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
         }:

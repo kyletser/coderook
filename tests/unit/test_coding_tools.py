@@ -10,7 +10,9 @@ from code_rook.core.context import ExecutionContext
 from code_rook.core.events.bus import EventBus
 from code_rook.core.llm.types import LlmResponse, ToolCallBlock
 from code_rook.core.loop import AgentLoop
+from code_rook.core.tools.presentation import build_tool_presentation
 from code_rook.core.tools.registry import ToolRegistry
+from code_rook.core.tools.spec import ToolPresentationAction
 from code_rook.core.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 
 
@@ -192,6 +194,21 @@ async def test_read_lists_workspace_directories(tmp_path: Path) -> None:
     assert not result.is_error
     assert ".hidden/" in result.content
     assert "README.md" in result.content
+    assert result.details == {"content_kind": "directory"}
+
+
+# 功能：目录读取完成后向 Web 与 TUI 暴露“浏览文件”而不是“读取文件”的展示语义。
+# 设计：让原生 read 执行真实目录分支，再经统一 Presentation 转换，覆盖用户时间线中的错误动作标签。
+async def test_directory_read_presents_as_file_browsing(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    tool = ReadTool(WorkspaceBoundary(tmp_path))
+    registry.register(tool)
+    params: dict[str, object] = {"path": "."}
+
+    result = await tool.invoke(params)
+    presentation = build_tool_presentation(registry.resolve_call("read", params), params, result)
+
+    assert presentation.action == ToolPresentationAction.BROWSE_FILES
 
 
 # 功能：Unicode/尾空格模糊匹配不会改写未触及的行。

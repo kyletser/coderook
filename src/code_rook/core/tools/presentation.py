@@ -101,6 +101,13 @@ def build_tool_presentation(
 ) -> ToolPresentation:
     spec = resolved.action.presentation
     action = _presentation_action(resolved)
+    if (
+        resolved.spec.name.casefold() == "read"
+        and result is not None
+        and result.details is not None
+        and result.details.get("content_kind") == "directory"
+    ):
+        action = ToolPresentationAction.BROWSE_FILES
     kind = _presentation_kind(spec.kind, action)
     subject = next(
         (
