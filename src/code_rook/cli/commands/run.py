@@ -157,16 +157,22 @@ class StreamJsonPrinter:
         self._include_partial = include_partial
         self._sequence = 0
 
-    # 判断事件是否应进入机器流，默认排除 token/reasoning 增量
-    def accepts(self, event_type: str) -> bool:
-        if event_type in _PARTIAL_EVENT_TYPES and not self._include_partial:
+    # 判断事件是否应进入机器流，默认排除模型正文的增量状态
+    def accepts(self, event_type: str, *, phase: str = "") -> bool:
+        is_message_partial = event_type == "agent.message" and phase in {
+            "start",
+            "update",
+        }
+        if (
+            event_type in _PARTIAL_EVENT_TYPES or is_message_partial
+        ) and not self._include_partial:
             return False
         return any(fnmatch.fnmatchcase(event_type, pattern) for pattern in self._filters)
 
     # 将单个领域事件编码为一行 JSON，stdout 不混入其他文字
     async def handle(self, event: dict[str, Any]) -> None:
         event_type = str(event.get("type", ""))
-        if not self.accepts(event_type):
+        if not self.accepts(event_type, phase=str(event.get("phase", ""))):
             return
         self._sequence += 1
         envelope = HeadlessEnvelope(

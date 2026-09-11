@@ -165,8 +165,8 @@ def test_permission_required_has_scriptable_exit_code() -> None:
     assert _run_finished_exit_code("success", None) == 0
 
 
-# 功能：验证 stream-json 默认过滤 partial 事件并输出版本化单行 envelope
-# 设计：依次发送 token 与终态事件，通过逐行 JSON 解析确认过滤和 schema 字段
+# 功能：验证 stream-json 默认过滤 token 和累计消息等 partial 事件并保留最终消息
+# 设计：模拟真实 start/update/end 消息序列，确认默认输出不会随正文长度重复膨胀
 async def test_stream_json_filters_partial_events_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -174,14 +174,63 @@ async def test_stream_json_filters_partial_events_by_default(
 
     await printer.handle({"type": "llm.token", "run_id": "run-1", "token": "x"})
     await printer.handle(
+        {
+            "type": "agent.message",
+            "run_id": "run-1",
+            "phase": "start",
+            "content": [],
+        }
+    )
+    await printer.handle(
+        {
+            "type": "agent.message",
+            "run_id": "run-1",
+            "phase": "update",
+            "content": [{"type": "text", "text": "partial"}],
+        }
+    )
+    await printer.handle(
+        {
+            "type": "agent.message",
+            "run_id": "run-1",
+            "phase": "end",
+            "content": [{"type": "text", "text": "final"}],
+        }
+    )
+    await printer.handle(
         {"type": "run.finished", "run_id": "run-1", "status": "success", "steps": 1}
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2
+    message = __import__("json").loads(lines[0])
+    assert message["type"] == "agent.message"
+    assert message["payload"]["phase"] == "end"
+    payload = __import__("json").loads(lines[1])
+    assert payload["schema_version"] == 1
+    assert payload["type"] == "run.finished"
+
+
+# 功能：验证显式 include-partial 会恢复累计消息事件
+# 设计：直接发送 update 事件并解析输出，确保调试消费者仍可选择完整增量轨迹
+async def test_stream_json_can_include_partial_message_events(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    printer = StreamJsonPrinter(include_partial=True)
+
+    await printer.handle(
+        {
+            "type": "agent.message",
+            "run_id": "run-1",
+            "phase": "update",
+            "content": [{"type": "text", "text": "partial"}],
+        }
     )
 
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 1
     payload = __import__("json").loads(lines[0])
-    assert payload["schema_version"] == 1
-    assert payload["type"] == "run.finished"
+    assert payload["payload"]["phase"] == "update"
 
 
 # 功能：验证 stream-json 结果 envelope 携带最终正文、usage 和连续序号

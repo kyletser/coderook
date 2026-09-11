@@ -782,7 +782,7 @@ def _run_cli() -> int:
     run_parser.add_argument(
         "--include-partial",
         action="store_true",
-        help="Include llm.token and llm.reasoning events in stream-json",
+        help="Include incremental model messages, tokens, and reasoning in stream-json",
     )
     run_session = run_parser.add_mutually_exclusive_group()
     run_session.add_argument(
