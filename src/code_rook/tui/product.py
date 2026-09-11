@@ -455,6 +455,12 @@ _TEXT: dict[str, dict[str, str]] = {
         "app.session.continued": "一次性任务已转为可继续会话",
         "app.session.reconnected": "会话已重连",
         "app.session.ready": "会话已就绪",
+        "app.session.info_title": "当前会话",
+        "app.session.untitled": "未命名会话",
+        "app.session.info_identity": "{id} · {status}",
+        "app.session.info_model": "{route}/{model} · 思考 {thinking}",
+        "app.session.info_usage": "{messages} 条消息 · {runs} 次运行 · 约 {tokens} tokens · {cost}",
+        "app.session.info_parent": "来自 {id}",
         "app.session.history": "{count} 条历史消息",
         "app.session.history_divider": "历史会话",
         "app.session.export_exists": (
@@ -728,6 +734,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "attachments.usage": "用法：/attachments [remove <序号>|clear]",
         "command.help": "显示键位与全部命令",
         "command.sessions": "打开会话选择器（输入即过滤）",
+        "command.session": "查看当前会话、模型与用量",
         "command.new": "新建会话",
         "command.rename": "重命名当前会话：/rename <标题>",
         "command.fork": "选择历史节点并从这里创建分支",
@@ -1270,6 +1277,14 @@ _TEXT: dict[str, dict[str, str]] = {
         "app.session.continued": "One-shot run continued as a chat session",
         "app.session.reconnected": "Session reconnected",
         "app.session.ready": "Session ready",
+        "app.session.info_title": "Current session",
+        "app.session.untitled": "Untitled session",
+        "app.session.info_identity": "{id} · {status}",
+        "app.session.info_model": "{route}/{model} · thinking {thinking}",
+        "app.session.info_usage": (
+            "{messages} messages · {runs} runs · about {tokens} tokens · {cost}"
+        ),
+        "app.session.info_parent": "Forked from {id}",
         "app.session.history": "{count} history message(s)",
         "app.session.history_divider": "Conversation history",
         "app.session.export_exists": (
@@ -1565,6 +1580,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "attachments.usage": "Usage: /attachments [remove <number>|clear]",
         "command.help": "Show shortcuts and commands",
         "command.sessions": "Open the searchable session picker",
+        "command.session": "Show the current session, model, and usage",
         "command.new": "Create a session",
         "command.rename": "Rename the current session",
         "command.fork": "Choose a history point and fork from there",

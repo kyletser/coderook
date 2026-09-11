@@ -54,6 +54,7 @@ _COMMAND_CATEGORIES: dict[str, str] = {
     "mode": "task",
     "tasks": "task",
     "sessions": "session",
+    "session": "session",
     "new": "session",
     "rename": "session",
     "fork": "session",
@@ -171,6 +172,21 @@ async def _cmd_sessions(app: Any, ta: ChatTextArea, content: str) -> None:
         ta.disabled = True
         _progress(app, ta, "cmd.loading", target=tr("selector.sessions.title", _locale(app)))
         app.run_worker(app._show_session_picker(), name="session_picker", exclusive=False)
+
+
+# 汇总当前会话标识、模型、用量和上下文状态
+async def _cmd_session(app: Any, ta: ChatTextArea, content: str) -> None:
+    ta.text = ""
+    if app._client is None or app._session_id is None:
+        _warn(app, "cmd.core_disconnected")
+        return
+    ta.disabled = True
+    _progress(app, ta, "cmd.loading", target="session")
+    app.run_worker(
+        app._show_session_info(),
+        name="view_session",
+        exclusive=False,
+    )
 
 
 async def _cmd_new(app: Any, ta: ChatTextArea, content: str) -> None:
@@ -1338,6 +1354,7 @@ async def _cmd_commit(app: Any, ta: ChatTextArea, content: str) -> None:
 BUILTIN_SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("help", "显示键位与全部命令", False, _cmd_help),
     SlashCommand("sessions", "打开会话选择器（输入即过滤）", True, _cmd_sessions),
+    SlashCommand("session", "查看当前会话、模型与用量", True, _cmd_session),
     SlashCommand(
         "new",
         "新建会话",

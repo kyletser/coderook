@@ -5255,6 +5255,85 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         finally:
             self._restore_ready_prompt()
 
+    # 从 Core 汇总当前会话元数据与上下文用量，生成一张可读状态卡
+    async def _show_session_info(self) -> None:
+        if self._client is None or self._session_id is None:
+            return
+        session_id = self._session_id
+        try:
+            listed = await self._client.send_command(
+                "session.list",
+                {"include_closed": True, "limit": 200},
+            )
+            session = next(
+                (
+                    item
+                    for item in listed.get("sessions", [])
+                    if isinstance(item, dict) and item.get("session_id") == session_id
+                ),
+                None,
+            )
+            if session is None:
+                raise ValueError("current session is missing from Core")
+            context = await ipc_actions.get_context(self._client, session_id)
+            usage = context.get("session_usage", {})
+            if not isinstance(usage, dict):
+                usage = {}
+            known_cost = usage.get("known_estimated_cost_usd", 0.0)
+            cost = format_cost(
+                float(known_cost)
+                if isinstance(known_cost, (int, float))
+                and not isinstance(known_cost, bool)
+                else 0.0
+            )
+            if usage.get("cost_status") == "unknown":
+                cost = f"{cost}+"
+            route = str(session.get("route_id") or self._route or "-")
+            model = str(session.get("model") or self._model or "-")
+            title = str(session.get("title") or tr("app.session.untitled", self._locale))
+            lines = [
+                f"[bold cyan]{tr('app.session.info_title', self._locale)}[/bold cyan]",
+                f"  [bold]{escape(title)}[/bold]",
+                "  [dim]"
+                + tr(
+                    "app.session.info_identity",
+                    self._locale,
+                    id=escape(session_id),
+                    status=escape(str(session.get("status") or "-")),
+                )
+                + "[/dim]",
+                "  "
+                + tr(
+                    "app.session.info_model",
+                    self._locale,
+                    route=escape(route),
+                    model=escape(model),
+                    thinking=escape(str(session.get("thinking_level") or "off")),
+                ),
+                "  "
+                + tr(
+                    "app.session.info_usage",
+                    self._locale,
+                    messages=int(context.get("message_count", 0)),
+                    runs=int(context.get("run_count", 0)),
+                    tokens=int(context.get("estimated_tokens", 0)),
+                    cost=cost,
+                ),
+                f"  [dim]{escape(str(session.get('workspace') or self._workspace))}[/dim]",
+            ]
+            parent = str(session.get("parent_session_id") or "")
+            if parent:
+                lines.append(
+                    "  [dim]"
+                    + tr("app.session.info_parent", self._locale, id=escape(parent))
+                    + "[/dim]"
+                )
+            self._append(Static("\n".join(lines), classes="log-line"))
+        except (IpcError, IpcActionError, RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._show_safe_error("session-info", exc, action="session")
+        finally:
+            self._restore_ready_prompt()
+
     # 按 80/100/140 列产品门槛生成主动收缩而非依赖终端硬截断的顶栏
     def _render_responsive_header(self, state: str, width: int) -> str:
         color = {

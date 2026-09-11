@@ -1320,6 +1320,7 @@ def test_tui_builtin_commands_include_model_picker() -> None:
     }
 
     assert items["help"] == "显示键位与全部命令"
+    assert items["session"] == "查看当前会话、模型与用量"
     assert items["model"] == "查看或切换模型"
     assert items["provider"] == "查看或切换 Provider route"
     assert items["doctor"] == "诊断活动 Provider route"
@@ -3014,9 +3015,70 @@ async def test_high_frequency_views_render_core_results() -> None:
     assert "改动中心" in rendered
 
 
+# 功能：验证当前会话卡汇总标识、模型、消息、运行、Token 和成本
+# 设计：复用真实 session.list 与 session.context 返回形状，确认不需要额外协议
+async def test_session_info_combines_metadata_and_context() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 返回固定会话元数据和用量快照
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            if method == "session.list":
+                return {
+                    "sessions": [
+                        {
+                            "session_id": "sess-info",
+                            "title": "Fix login",
+                            "status": "waiting_for_input",
+                            "route_id": "aliyun",
+                            "model": "qwen3.8-flash",
+                            "thinking_level": "medium",
+                            "workspace": "C:/work/project",
+                            "parent_session_id": "sess-parent",
+                        }
+                    ]
+                }
+            if method == "session.context":
+                return {
+                    "message_count": 9,
+                    "run_count": 3,
+                    "estimated_tokens": 4096,
+                    "session_usage": {
+                        "known_estimated_cost_usd": 0.125,
+                        "cost_status": "known",
+                    },
+                }
+            raise AssertionError(method)
+
+    app = CodeRookTuiApp("127.0.0.1", 9999)
+    appended: list[Widget] = []
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-info"
+    app._append = lambda widget: appended.append(widget)  # type: ignore[method-assign]
+    app._restore_ready_prompt = lambda: None  # type: ignore[method-assign]
+
+    await app._show_session_info()
+
+    body = render(str(getattr(appended[-1], "content", ""))).plain
+    assert calls == [
+        ("session.list", {"include_closed": True, "limit": 200}),
+        ("session.context", {"session_id": "sess-info"}),
+    ]
+    assert "Fix login" in body
+    assert "sess-info · waiting_for_input" in body
+    assert "aliyun/qwen3.8-flash · 思考 medium" in body
+    assert "9 条消息 · 3 次运行 · 约 4096 tokens · $0.1250" in body
+    assert "来自 sess-parent" in body
+
+
 @pytest.mark.parametrize(
     "command",
-    ["/tasks", "/changes", "/diff", "/rewind", "/context", "/turn"],
+    ["/session", "/tasks", "/changes", "/diff", "/rewind", "/context", "/turn"],
 )
 # 功能：验证五个高频视图命令第一次 Enter 就直接执行
 # 设计：提交完整命令并截获 worker coroutine，检查输入清空、禁用和单次调度，防止回车两次回归

@@ -185,6 +185,7 @@ def test_builtin_commands_cover_previous_completion_list() -> None:
     previous = [
         ("help", "显示键位与全部命令"),
         ("sessions", "打开会话选择器（输入即过滤）"),
+        ("session", "查看当前会话、模型与用量"),
         ("new", "新建会话"),
         ("rename", "重命名当前会话：/rename <标题>"),
         ("fork", "选择历史节点并从这里创建分支"),
