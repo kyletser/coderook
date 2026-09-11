@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,6 +16,23 @@ from code_rook.core.config import CodeRookConfig
 def test_pid_exists_detects_current_process_and_missing_pid() -> None:
     assert core._pid_exists(os.getpid())
     assert not core._pid_exists(2_147_483_647)
+
+
+# 功能：验证 Windows 探测连接被 Core 主动重置时仍判定端口已打开
+# 设计：让 wait_closed 抛出真实 WinError 对应异常，确认关闭阶段不打断 restart 流程
+def test_port_open_ignores_reset_while_closing_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock(side_effect=ConnectionResetError(10054, "reset"))
+    monkeypatch.setattr(
+        core.asyncio,
+        "open_connection",
+        AsyncMock(return_value=(object(), writer)),
+    )
+
+    assert asyncio.run(core._port_open(CodeRookConfig())) is True
+    writer.close.assert_called_once_with()
 
 
 # 功能：验证后台 Core 启动器不把用户项目目录保留为 Windows 进程工作目录。

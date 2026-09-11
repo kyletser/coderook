@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 from code_rook.core.config import CodeRookConfig
@@ -341,7 +342,8 @@ async def _port_open(config: CodeRookConfig) -> bool:
     except (ConnectionRefusedError, OSError):
         return False
     writer.close()
-    await writer.wait_closed()
+    with suppress(ConnectionResetError, OSError):
+        await writer.wait_closed()
     return True
 
 
