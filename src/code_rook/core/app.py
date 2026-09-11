@@ -1955,11 +1955,14 @@ class CoreApp:
     async def _session_import_handler(self, params: dict[str, Any]) -> SessionImportResult:
         assert self._sessions is not None
         cmd = SessionImportCommand.model_validate(params)
-        session, count, source_format = await self._sessions.import_session(
-            cmd.content,
-            filename=cmd.filename,
-            title=cmd.title,
-        )
+        try:
+            session, count, source_format = await self._sessions.import_session(
+                cmd.content,
+                filename=cmd.filename,
+                title=cmd.title,
+            )
+        except ValueError as exc:
+            raise HandlerError(INVALID_PARAMS, f"invalid session import: {exc}") from exc
         return SessionImportResult(
             session=self._session_info(session),
             imported_messages=count,

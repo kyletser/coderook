@@ -55,6 +55,26 @@ async def test_core_run_tears_down_after_startup_failure() -> None:
     assert teardown_calls == [None]
 
 
+# 功能：验证损坏的会话导入会返回明确的参数错误而不是通用 Internal error。
+# 设计：用仅在解析阶段抛 ValueError 的 SessionManager 替身直达 IPC handler，锁定错误边界。
+async def test_session_import_handler_reports_invalid_content() -> None:
+    class InvalidImportSessions:
+        # 模拟会话解析器拒绝损坏 JSONL。
+        async def import_session(self, *_args: object, **_kwargs: object) -> object:
+            raise ValueError("session JSONL contains invalid JSON")
+
+    app = CoreApp()
+    app._sessions = InvalidImportSessions()  # type: ignore[assignment]
+
+    with pytest.raises(HandlerError, match="invalid session import: session JSONL") as error:
+        await app._session_import_handler({  # type: ignore[attr-defined]
+            "content": "{bad",
+            "filename": "broken.json",
+        })
+
+    assert error.value.code == -32602
+
+
 # 功能：验证 Core 把通过验证事件关联到当前 Goal，形成只能由 daemon 产生的可信完成证据
 # 设计：直接向生产事件处理器发送 typed 事件，核对 run 绑定、证据类型和稳定引用
 async def test_goal_event_handler_records_verification(tmp_path: Path) -> None:
