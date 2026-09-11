@@ -5,7 +5,14 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from code_rook.core.bus.events import PlanStepState, PlanUpdatedEvent
 from code_rook.core.events.bus import EventBus
@@ -265,6 +272,17 @@ class UpdatePlanParams(BaseModel):
 
     explanation: str = Field(default="", max_length=2_000)
     plan: list[PlanStepState] = Field(min_length=1, max_length=50)
+
+    @field_validator("plan", mode="before")
+    @classmethod
+    # 兼容部分 OpenAI-compatible 模型把嵌套数组序列化为完整 JSON 字符串
+    def decode_json_plan(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
 
     @model_validator(mode="after")
     # 限制同一计划最多只有一个正在执行的步骤

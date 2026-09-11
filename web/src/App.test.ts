@@ -7,6 +7,7 @@ import {
   appendRuntimeEvent,
   displayableThreads,
   eventBelongsToThread,
+  eventDetail,
   fileSuggestionDetail,
   finishesCurrentThreadLoad,
   followUpUsesQueue,
@@ -78,6 +79,25 @@ describe("Web task submission", () => {
 
     expect(content).toBe("检查 @src/app.py");
     expect(content).not.toContain("src/old.py");
+  });
+
+  it("shows the requested action and parameter preview before permission controls", () => {
+    const detail = eventDetail({
+      thread_id: "thread-1",
+      turn_id: "turn-1",
+      seq: 1,
+      type: "permission.requested",
+      payload: {
+        tool_use_id: "tool-1",
+        tool_name: "Bash",
+        params: { command: "pytest -q" },
+        param_preview: "command='pytest -q'",
+      },
+      ts: "2026-09-11T00:00:00Z",
+    });
+
+    expect(detail).toContain("运行验证");
+    expect(detail).toContain("command='pytest -q'");
   });
 
   it("rejects events emitted by a previously selected thread", () => {

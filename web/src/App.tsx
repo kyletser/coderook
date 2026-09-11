@@ -602,7 +602,7 @@ function groupToolEntries(entries: TimelineEntry[]): TimelineEntry[] {
   return grouped;
 }
 
-function eventDetail(event: RuntimeEvent): string {
+export function eventDetail(event: RuntimeEvent): string {
   const payload = event.payload;
   if (event.type === "llm.retry") {
     const delay = (Number(payload.delay_ms || 0) / 1000).toFixed(1);
@@ -616,6 +616,27 @@ function eventDetail(event: RuntimeEvent): string {
       `${payload.tool_name} 连续同参调用 ${payload.repeat_count} 次，已提醒模型重新分析，不阻止继续执行。`,
       `${payload.tool_name} called ${payload.repeat_count} times with the same arguments. Advisory sent; execution continues.`,
     );
+  }
+  if (event.type === "permission.requested") {
+    const params = payload.params && typeof payload.params === "object"
+      ? payload.params as Record<string, unknown>
+      : {};
+    const action = inferToolAction(textValue(payload.tool_name), params, {});
+    const labels: Record<string, string> = {
+      run_command: tr("运行命令", "Run command"),
+      run_tests: tr("运行验证", "Run checks"),
+      read_file: tr("读取文件", "Read file"),
+      browse_files: tr("浏览文件", "Browse files"),
+      search_code: tr("搜索代码", "Search code"),
+      edit_code: tr("修改文件", "Edit files"),
+      git: tr("执行 Git 操作", "Run Git operation"),
+      web: tr("访问网络", "Access the network"),
+      worker: tr("启动 Agent", "Start an agent"),
+    };
+    return [
+      labels[action] || textValue(payload.tool_name),
+      textValue(payload.param_preview),
+    ].filter(Boolean).join("\n");
   }
   const presentation = payload.presentation as Record<string, unknown> | undefined;
   for (const candidate of [

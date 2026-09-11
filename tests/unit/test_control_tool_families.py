@@ -130,8 +130,8 @@ async def test_control_families_dispatch_to_real_backends(tmp_path: Path) -> Non
     assert not listed.is_error and "Verify family" in listed.content
 
 
-# 功能：update_plan 发布类型化计划事件并拒绝两个同时进行的步骤
-# 设计：经统一 invoke_tool 路径收集 EventBus，分别验证成功事件和 Pydantic schema fail-closed
+# 功能：update_plan 发布类型化计划事件、兼容 JSON 字符串数组并拒绝两个同时进行的步骤
+# 设计：经统一 invoke_tool 路径收集 EventBus，覆盖标准参数、常见 Provider 序列化和 schema fail-closed
 async def test_update_plan_is_typed_and_fail_closed(tmp_path: Path) -> None:
     events: list[BaseModel] = []
     bus = EventBus()
@@ -178,9 +178,26 @@ async def test_update_plan_is_typed_and_fail_closed(tmp_path: Path) -> None:
         bus,
         "run-update-plan",
     )
+    encoded = await invoke_tool(
+        registry,
+        ToolCallBlock(
+            id="plan-3",
+            name="update_plan",
+            input={
+                "plan": json.dumps(
+                    [{"step": "Verify", "status": "completed"}],
+                    ensure_ascii=False,
+                )
+            },
+        ),
+        bus,
+        "run-update-plan",
+    )
 
     plan_events = [event for event in events if event.type == "plan.updated"]  # type: ignore[attr-defined]
     assert not valid.is_error
-    assert len(plan_events) == 1
+    assert not encoded.is_error
+    assert len(plan_events) == 2
     assert plan_events[0].plan[1].step == "Implement"  # type: ignore[attr-defined]
+    assert plan_events[1].plan[0].step == "Verify"  # type: ignore[attr-defined]
     assert invalid.is_error and invalid.error_type == "schema_error"
