@@ -119,7 +119,8 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
         config.host,
         config.port,
         replay_run_id=args.replay,
-        resume_session_id=args.resume,
+        resume_session_id=args.resume or None,
+        open_session_picker=args.resume == "",
         fork_session_id=getattr(args, "fork", None),
         continue_recent=(
             False
@@ -193,8 +194,10 @@ def main() -> None:
     )
     source.add_argument(
         "-r", "--resume",
+        nargs="?",
+        const="",
         metavar="SESSION_ID",
-        help="Resume a saved chat session",
+        help="Choose a saved session, or resume SESSION_ID when provided",
     )
     source.add_argument(
         "--fork",

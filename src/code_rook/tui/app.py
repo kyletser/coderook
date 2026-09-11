@@ -276,6 +276,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         initial_model: str = "",
         initial_thinking_level: Literal["off", "low", "medium", "high"] | None = None,
         initial_model_tools: list[str] | None = None,
+        open_session_picker: bool = False,
     ) -> None:
         super().__init__()
         self._host = host
@@ -314,6 +315,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._initial_model_tools = (
             list(initial_model_tools) if initial_model_tools is not None else None
         )
+        self._open_session_picker = open_session_picker
+        self._session_picker_opened = False
         self._config_provider: ProviderPreset | None = None
         self._pending_config_key: str | None = None
         self._discovered_config_models: tuple[str, ...] = ()
@@ -435,13 +438,25 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 prompt.focus()
         self._update_header("plan ready" if self._plan_review_pending else "ready")
         self._show_startup_state()
-        if (
-            prompt is not None
-            and self._initial_prompt
-            and not self._initial_prompt_submitted
-        ):
+        picker_pending = self._open_session_picker
+        if self._open_session_picker and not self._session_picker_opened:
+            self._session_picker_opened = True
+            self.run_worker(
+                self._show_session_picker(),
+                name="startup_session_picker",
+                exclusive=False,
+            )
+        if not picker_pending:
+            self._apply_initial_prompt(submit=True)
+
+    # 将命令行初始任务放入输入框，并在目标会话确定后按需自动提交
+    def _apply_initial_prompt(self, *, submit: bool) -> None:
+        prompt = self._prompt()
+        if prompt is None or not self._initial_prompt or self._initial_prompt_submitted:
+            return
+        prompt.text = self._initial_prompt
+        if submit:
             self._initial_prompt_submitted = True
-            prompt.text = self._initial_prompt
             prompt.post_message(ChatTextArea.Submitted(prompt))
 
     # 连接断开后：禁用输入框并提示正在重试
@@ -3594,16 +3609,22 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 before="#prompt",
             )
         except (IpcError, RuntimeError, OSError) as exc:
+            self._open_session_picker = False
             self._show_safe_error("session", exc, action="session")
             self._restore_ready_prompt()
+            self._apply_initial_prompt(submit=False)
 
     async def on_session_picker_dismissed(self, message: SessionPicker.Dismissed) -> None:
         message.picker.remove()
+        self._open_session_picker = False
         self._restore_ready_prompt()
+        self._apply_initial_prompt(submit=False)
 
     async def on_session_picker_selected(self, message: SessionPicker.Selected) -> None:
         message.picker.remove()
+        self._open_session_picker = False
         await self._switch_session(message.session_id)
+        self._apply_initial_prompt(submit=True)
 
     # 在 transcript 中展示用户级 route 列表和活动项，不显示 endpoint 路径或凭据正文
     def _show_provider_routes(self) -> None:

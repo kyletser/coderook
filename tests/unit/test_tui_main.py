@@ -51,7 +51,53 @@ def test_tui_main_auto_starts_core_before_reading_token(
     assert calls == ["core", "token"]
     assert callable(tui_main.CodeRookTuiApp.call_args.kwargs["core_recovery"])
     assert tui_main.CodeRookTuiApp.call_args.kwargs["continue_recent"] is True
+    assert tui_main.CodeRookTuiApp.call_args.kwargs["open_session_picker"] is False
     app.run.assert_called_once_with()
+
+
+# 功能：验证不带 ID 的 -r 请求启动会话选择器，带 ID 时仍精确恢复。
+# 设计：分别调用 TUI 装配入口并捕获构造参数，避免启动真实 Textual 终端。
+@pytest.mark.parametrize(
+    ("resume", "expected_session", "expected_picker"),
+    [("", None, True), ("sess-known", "sess-known", False)],
+)
+def test_run_tui_supports_resume_picker_without_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resume: str,
+    expected_session: str | None,
+    expected_picker: bool,
+) -> None:
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    args = SimpleNamespace(
+        env_file=None,
+        no_auto_core=False,
+        reuse_existing=False,
+        replay=None,
+        resume=resume,
+        fork=None,
+        continue_recent=True,
+        continue_explicit=False,
+        message=[],
+        name=None,
+        route=None,
+        model=None,
+        thinking=None,
+        tools=None,
+    )
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", MagicMock(return_value=app))
+
+    tui_main._run_tui(args)
+
+    kwargs = tui_main.CodeRookTuiApp.call_args.kwargs
+    assert kwargs["resume_session_id"] == expected_session
+    assert kwargs["open_session_picker"] is expected_picker
 
 
 # 功能：验证从受保护目录启动 TUI 时复用已运行 Core 的活动项目

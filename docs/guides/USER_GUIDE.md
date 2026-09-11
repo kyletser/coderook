@@ -194,11 +194,13 @@ localStorage 或普通响应。刷新页面后以 durable event seq 续接，不
 
 ```bash
 uv run coderook --continue
+uv run coderook --resume
 uv run coderook --resume SESSION_ID
 uv run coderook --new
 ```
 
-`-c` 是 `--continue` 的短写，`-r SESSION_ID` 是 `--resume SESSION_ID` 的短写。
+`-c` 是 `--continue` 的短写。`-r`/`--resume` 不带参数时直接打开可搜索的会话选择器；附加
+`SESSION_ID` 时精确恢复该会话。打印模式没有交互选择器，因此 `coderook -p -r` 仍需提供 ID。
 `--new` 或 TUI 内的 `/new` 都会显式创建新会话。
 
 session 与工作区显式绑定。从另一个仓库启动时，空闲的受管 Core 可以原地切换；若旧工作区仍有

@@ -1469,6 +1469,94 @@ def test_tui_builtin_commands_include_session_picker_and_new_session() -> None:
     assert items["new"] == "新建会话"
 
 
+# 功能：验证启动恢复选择器只在首次连接完成后打开一次，重连不会重复覆盖输入区。
+# 设计：替换 Textual 挂载边界并关闭捕获的协程，直接检查一次性调度状态。
+def test_startup_session_picker_opens_once_after_connection() -> None:
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        open_session_picker=True,
+        initial_prompt="修复登录失败",
+    )
+    scheduled: list[str] = []
+    submitted: list[object] = []
+
+    class PromptStub:
+        disabled = False
+        read_only = False
+        border_title = ""
+        text = ""
+
+        # 模拟输入框聚焦，避免测试依赖 Textual 挂载状态
+        def focus(self) -> None:
+            return
+
+        # 记录初始任务是否在用户选定会话前被错误提交
+        def post_message(self, message: object) -> None:
+            submitted.append(message)
+
+    prompt = PromptStub()
+    app._clear_connection_problems = lambda: None  # type: ignore[method-assign]
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._update_header = lambda _state: None  # type: ignore[method-assign]
+    app._show_startup_state = lambda: None  # type: ignore[method-assign]
+
+    # 捕获并关闭未交给 Textual worker 的协程，避免测试产生未等待告警。
+    def capture(coro: object, *, name: str, exclusive: bool) -> None:
+        scheduled.append(name)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+
+    app.run_worker = capture  # type: ignore[method-assign]
+
+    app._mark_connected()
+    app._mark_connected()
+
+    assert scheduled == ["startup_session_picker"]
+    assert submitted == []
+    assert prompt.text == ""
+
+
+# 功能：验证会话选择完成后初始任务才会自动提交到选定会话。
+# 设计：替换会话切换与输入框边界，断言调用顺序和仅一次提交，避免真实 socket 干扰。
+async def test_startup_session_picker_submits_initial_prompt_after_selection() -> None:
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        open_session_picker=True,
+        initial_prompt="修复登录失败",
+    )
+    calls: list[str] = []
+
+    class PromptStub:
+        text = ""
+
+        # 记录选定会话后触发的输入提交
+        def post_message(self, _message: object) -> None:
+            calls.append("submit")
+
+    class PickerStub:
+        # 记录选择器关闭，确保切换发生前先退出选择状态
+        def remove(self) -> None:
+            calls.append("remove")
+
+    prompt = PromptStub()
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+
+    # 模拟完成目标会话切换，并保留真实 handler 的调用顺序
+    async def switch(session_id: str) -> None:
+        calls.append(f"switch:{session_id}")
+
+    app._switch_session = switch  # type: ignore[method-assign]
+    message = SessionPicker.Selected(PickerStub(), "sess-target")  # type: ignore[arg-type]
+
+    await app.on_session_picker_selected(message)
+
+    assert calls == ["remove", "switch:sess-target", "submit"]
+    assert prompt.text == "修复登录失败"
+
+
 # 功能：验证 _preview 超出长度时截断并追加省略号
 # 设计：不依赖任何 TUI 组件，纯函数测试
 def test_preview_truncates() -> None:
