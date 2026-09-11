@@ -1774,6 +1774,32 @@ async def test_startup_session_picker_submits_initial_prompt_after_selection() -
     assert prompt.text == "修复登录失败"
 
 
+# 功能：命令行初始图片在自动提交前完成暂存，并让首条请求使用已经准备好的模型内容
+# 设计：替换图片持久化边界并直接运行准备协程，断言附件准备、单次提交和模型文本消费顺序
+async def test_initial_image_is_prepared_before_prompt_submission(tmp_path: Path) -> None:
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"image-placeholder")
+    app = CodeRookTuiApp(
+        "127.0.0.1",
+        9999,
+        initial_prompt="分析 @screen.png",
+        initial_model_content="prepared image task",
+        initial_image_paths=[image_path],
+    )
+    prompt = MagicMock()
+    prompt.disabled = True
+    app._prompt = lambda: prompt  # type: ignore[method-assign]
+    app._stage_pasted_image = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    app._initial_attachments_preparing = True
+
+    await app._prepare_initial_attachments()  # type: ignore[attr-defined]
+
+    app._stage_pasted_image.assert_awaited_once_with(image_path)
+    prompt.post_message.assert_called_once()
+    assert prompt.disabled is False
+    assert app._prepare_model_content("分析 @screen.png") == "prepared image task"
+
+
 # 功能：验证启动会话选择器被关闭后才按需创建空白会话
 # 设计：替换创建和 composer 边界，断言选择器仍打开时不会产生的会话在关闭后补建一次
 async def test_startup_session_picker_creates_blank_session_only_after_dismiss() -> None:

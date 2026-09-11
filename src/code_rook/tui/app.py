@@ -273,6 +273,8 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         core_recovery: Callable[[], object] | None = None,
         locale: str | None = None,
         initial_prompt: str = "",
+        initial_model_content: str | None = None,
+        initial_image_paths: list[Path] | None = None,
         initial_session_name: str = "",
         initial_route_id: str = "",
         initial_model: str = "",
@@ -306,6 +308,11 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._provider_doctor = provider_doctor or ProviderDoctor()
         self._core_recovery = core_recovery
         self._initial_prompt = initial_prompt.strip()
+        self._initial_model_content = initial_model_content
+        self._initial_model_content_consumed = False
+        self._initial_image_paths = list(initial_image_paths or [])
+        self._initial_attachments_ready = not self._initial_image_paths
+        self._initial_attachments_preparing = False
         self._initial_prompt_submitted = False
         self._initial_session_name = initial_session_name.strip()
         self._initial_session_name_applied = False
@@ -460,8 +467,38 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             return
         prompt.text = self._initial_prompt
         if submit:
+            if not self._initial_attachments_ready:
+                prompt.disabled = True
+                if not self._initial_attachments_preparing:
+                    self._initial_attachments_preparing = True
+                    self.run_worker(
+                        self._prepare_initial_attachments(),
+                        name="prepare_initial_attachments",
+                        exclusive=False,
+                    )
+                return
+            prompt.disabled = False
             self._initial_prompt_submitted = True
             prompt.post_message(ChatTextArea.Submitted(prompt))
+
+    # 在自动提交命令行任务前复用粘贴图片链路，确保附件已持久化且只提交一次
+    async def _prepare_initial_attachments(self) -> None:
+        succeeded = True
+        try:
+            for path in self._initial_image_paths:
+                succeeded = await self._stage_pasted_image(path) and succeeded
+        finally:
+            self._initial_image_paths.clear()
+            self._initial_attachments_ready = True
+            self._initial_attachments_preparing = False
+        if succeeded:
+            self._apply_initial_prompt(submit=True)
+            return
+        self._initial_prompt_submitted = True
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.disabled = False
+            prompt.focus()
 
     # 连接断开后：禁用输入框并提示正在重试
     def _mark_disconnected(self) -> None:
@@ -1812,13 +1849,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
 
     # 读取图片头、落 artifact 并显示尺寸、类型和短 hash
-    async def _stage_pasted_image(self, path: Path) -> None:
+    async def _stage_pasted_image(self, path: Path) -> bool:
         try:
             data = await asyncio.to_thread(path.read_bytes)
         except OSError as exc:
             self._show_safe_error("attachment", exc)
-            return
-        await self._stage_image_bytes(data, source_name=path.name)
+            return False
+        return await self._stage_image_bytes(data, source_name=path.name)
 
     # 读取系统剪贴板中的截图并沿用普通图片附件的验证、存储和展示链路
     async def _stage_clipboard_image(self) -> None:
@@ -1832,7 +1869,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
 
     # 校验图片数据、写入内容寻址 Artifact，并将引用加入当前消息附件
-    async def _stage_image_bytes(self, data: bytes, *, source_name: str) -> None:
+    async def _stage_image_bytes(self, data: bytes, *, source_name: str) -> bool:
         try:
             if len(data) > 2 * 1024 * 1024:
                 raise ValueError(tr("attachments.too_large", self._locale))
@@ -1843,7 +1880,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             )
         except (ArtifactError, OSError, ValueError) as exc:
             self._show_safe_error("attachment", exc)
-            return
+            return False
         attachment: dict[str, object] = {
             "sha256": reference.sha256,
             "media_type": metadata.media_type,
@@ -1873,6 +1910,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                 classes="log-line",
             )
         )
+        return True
 
     # 把附件字节数格式化为 composer 附件条使用的紧凑单位
     @staticmethod
@@ -1974,6 +2012,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         content = visible_content
         if parse_user_shell(visible_content) is not None:
             return visible_content
+        if (
+            not self._initial_model_content_consumed
+            and self._initial_model_content is not None
+            and visible_content == self._initial_prompt
+        ):
+            self._initial_model_content_consumed = True
+            return self._initial_model_content
         return self._augment_file_references(content, visible_content)
 
     # 在 Core 完成自动派发后刷新持久队列数量

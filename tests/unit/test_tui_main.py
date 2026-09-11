@@ -394,6 +394,41 @@ def test_tui_main_passes_initial_prompt(
     app.run.assert_called_once_with()
 
 
+# 功能：TUI 启动参数中的显式文件和图片引用会分别进入有界模型上下文与图片附件
+# 设计：用临时文本和图片文件隔离真实 Core，只核对入口传给界面的原始展示文本、模型文本和附件路径
+def test_tui_main_prepares_initial_file_and_image_references(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    text_path = tmp_path / "notes.txt"
+    image_path = tmp_path / "screen.png"
+    text_path.write_text("external context marker", encoding="utf-8")
+    image_path.write_bytes(b"image-placeholder")
+    config = CodeRookConfig(ipc_token_file=str(tmp_path / "ipc-token"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook-tui", "@notes.txt", "@screen.png", "比较两个附件"],
+    )
+    monkeypatch.setattr(tui_main, "get_config", lambda: config)
+    monkeypatch.setattr(tui_main, "RouteStore", lambda: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(tui_main, "_setup_logging", lambda _level: None)
+    monkeypatch.setattr(tui_main, "ensure_core_running", lambda _config: False)
+    monkeypatch.setattr(tui_main, "read_ipc_token", lambda _path: "x" * 32)
+    app = MagicMock()
+    factory = MagicMock(return_value=app)
+    monkeypatch.setattr(tui_main, "CodeRookTuiApp", factory)
+
+    tui_main.main()
+
+    kwargs = factory.call_args.kwargs
+    assert kwargs["initial_prompt"] == "@notes.txt @screen.png 比较两个附件"
+    assert "external context marker" in kwargs["initial_model_content"]
+    assert kwargs["initial_image_paths"] == [image_path]
+    app.run.assert_called_once_with()
+
+
 # 功能：验证 --new 是裸启动自动恢复的显式退出开关
 # 设计：隔离 daemon、token 和 Textual 边界，断言参数只改变会话选择策略
 def test_tui_main_new_forces_fresh_session(

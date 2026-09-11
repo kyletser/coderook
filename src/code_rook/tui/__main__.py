@@ -16,6 +16,7 @@ from code_rook.cli.commands.core import (
     ensure_core_running,
     validate_core_workspace,
 )
+from code_rook.cli.main import _prepare_file_referenced_input
 from code_rook.core.config import get_config
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.model_catalog import add_model, add_models, list_models
@@ -115,6 +116,20 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
     except IpcTokenError as exc:
         log.error("IPC authentication failed: %s", exc)
         raise SystemExit("IPC authentication failed; restart Core and retry.") from exc
+    initial_prompt = " ".join(getattr(args, "message", [])).strip()
+    standalone_references = [
+        value[1:]
+        for value in getattr(args, "message", [])
+        if value.startswith("@") and len(value) > 1
+    ]
+    try:
+        initial_model_content, initial_image_paths = _prepare_file_referenced_input(
+            initial_prompt,
+            Path.cwd(),
+            standalone_references=standalone_references,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     app = CodeRookTuiApp(
         config.host,
         config.port,
@@ -164,7 +179,9 @@ def _run_tui(args: argparse.Namespace) -> ModelSwitch | ConfigSwitch | None:
                 )
             )
         ),
-        initial_prompt=" ".join(getattr(args, "message", [])).strip(),
+        initial_prompt=initial_prompt,
+        initial_model_content=initial_model_content,
+        initial_image_paths=initial_image_paths,
         initial_session_name=str(getattr(args, "name", "") or ""),
         initial_route_id=requested_route_id,
         initial_model=requested_model,
