@@ -843,6 +843,27 @@ def test_core_start_uses_welcome_workspace_for_protected_source(
     }
 
 
+# 功能：验证顶层 status 快捷命令查看 Core 状态而不会作为提示词调用模型
+# 设计：替换状态处理器并执行完整 CLI 分发，锁定曾真实产生无意义模型会话的歧义入口
+def test_status_shortcut_dispatches_to_core_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = CodeRookConfig()
+    captured: list[CodeRookConfig] = []
+    monkeypatch.setattr(sys, "argv", ["coderook", "status"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "cmd_core_status", captured.append)
+
+    assert cli_main.main() == 0
+    assert captured == [config]
+
+
+# 功能：验证显式打印模式中的单词 status 仍可作为普通用户提示词
+# 设计：直接检查参数预处理边界，防止快捷命令破坏 `coderook -p status` 的既有一次性任务语义
+def test_core_shortcut_does_not_capture_explicit_print_prompt() -> None:
+    assert cli_main._expand_core_shortcut(["-p", "status"]) == ["-p", "status"]
+
+
 # 功能：验证带参数的 coderook 仍由原 CLI 分发器处理
 # 设计：使用无配置依赖的 --version 路径，断言旧迁移和版本命令各执行一次且不会启动 TUI
 def test_explicit_arguments_keep_cli_dispatch(

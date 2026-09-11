@@ -76,6 +76,7 @@ _TOP_LEVEL_COMMANDS = frozenset({
     "doctor", "provider", "model", "skills", "memory", "cancel", "chat", "sessions",
     "session", "run", "review", "trace", "artifacts", "core", "tui",
 })
+_CORE_SHORTCUTS = frozenset({"start", "stop", "restart", "status"})
 
 
 # 将 CLI 标准输出统一为 UTF-8，避免 Windows 管道和脚本模式把中文编码为 GBK
@@ -117,6 +118,19 @@ def _stdio_supports_tui() -> bool:
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
     except (AttributeError, OSError, ValueError):
         return False
+
+
+# 将常用 Core 管理词扩展为正式子命令，避免误当提示词调用模型
+def _expand_core_shortcut(arguments: list[str]) -> list[str]:
+    command_index = 2 if arguments[:1] == ["--env-file"] and len(arguments) >= 3 else 0
+    if command_index < len(arguments) and arguments[command_index] in _CORE_SHORTCUTS:
+        return [
+            *arguments[:command_index],
+            "core",
+            arguments[command_index],
+            *arguments[command_index + 1 :],
+        ]
+    return arguments
 
 
 # 将任务说明与管道正文组合为一次模型请求，纯管道内容可直接作为任务
@@ -232,6 +246,7 @@ def main() -> int:
 
 # CLI 主分发器：无参数启动 TUI，其余参数分发到现有子命令
 def _run_cli() -> int:
+    sys.argv[1:] = _expand_core_shortcut(list(sys.argv[1:]))
     tui_flags = {
         "-c", "-r", "-n", "-t", "-nt", "--continue", "--new", "--resume", "--session",
         "--fork",
@@ -393,6 +408,7 @@ def _run_cli() -> int:
             "  coderook \"fix the failing tests\"     Open the TUI and submit a task\n"
             "  coderook -p \"explain this project\"    Print one final answer\n"
             "  coderook web                         Open the local Web workspace\n"
+            "  coderook status                      Show daemon status\n"
             "  coderook run --help                   Show automation options"
         ),
     )
