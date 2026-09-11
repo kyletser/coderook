@@ -7,6 +7,7 @@ import {
   appendRuntimeEvent,
   displayableThreads,
   eventBelongsToThread,
+  fileSuggestionDetail,
   finishesCurrentThreadLoad,
   followUpUsesQueue,
   isSimpleProductQuestion,
@@ -158,6 +159,11 @@ describe("Web task submission", () => {
     expect(mention?.query).toBe("src/code_ro");
     expect(value.slice(mention?.start, mention?.end)).toBe("@src/code_ro");
     expect(activeFileMention(`${value} 继续`, `${value} 继续`.length)).toBeNull();
+  });
+
+  it("does not repeat root file names in mention suggestions", () => {
+    expect(fileSuggestionDetail({ name: "calculator.py", path: "calculator.py" })).toBe("");
+    expect(fileSuggestionDetail({ name: "app.py", path: "src/app.py" })).toBe("src/app.py");
   });
 
   it("keeps a per-thread event cache free of duplicate replay rows", () => {

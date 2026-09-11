@@ -813,6 +813,10 @@ export function activeFileMention(value: string, caret: number): ActiveFileMenti
   return { query, start: safeCaret - query.length - 1, end: safeCaret };
 }
 
+export function fileSuggestionDetail(entry: Pick<WorkspaceEntry, "name" | "path">): string {
+  return entry.path === entry.name ? "" : entry.path;
+}
+
 export function workspacePathIsDirectoryError(reason: unknown): boolean {
   const message = reason instanceof Error ? reason.message : String(reason);
   return message.toLowerCase().includes("workspace path is not a file");
@@ -1989,7 +1993,7 @@ function AppShell({
               key={entry.path}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => chooseFileSuggestion(entry)}
-            ><b>{entry.name}</b><small>{entry.path}</small></button>)}
+            ><b>{entry.name}</b><small>{fileSuggestionDetail(entry)}</small></button>)}
           </div>}
           {/^(\/[^\s]*)$/.test(composer) && !threadLoading && <div className="file-mention-menu" role="listbox" aria-label={tr("输入命令", "Input commands")}>
             {inputCommands.filter((entry) => entry.name.startsWith(composer.slice(1))).slice(0, 8).map((entry, index) => <button
