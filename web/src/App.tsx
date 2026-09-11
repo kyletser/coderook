@@ -1887,9 +1887,11 @@ function AppShell({
                   setCommandIndex((current) => (current + (event.key === "ArrowDown" ? 1 : commands.length - 1)) % commands.length);
                   return;
                 }
-                if (["Tab", "Enter"].includes(event.key)) {
+                const selectedCommand = commands[commandIndex % commands.length];
+                const exactCommand = composer === `/${selectedCommand.name}`;
+                if (event.key === "Tab" || (event.key === "Enter" && !exactCommand)) {
                   event.preventDefault();
-                  setComposer(`/${commands[commandIndex % commands.length].name} `);
+                  setComposer(`/${selectedCommand.name} `);
                   return;
                 }
               }
