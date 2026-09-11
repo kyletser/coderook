@@ -15,6 +15,19 @@ def build_system_prompt(tools: list[dict[str, Any]]) -> str:
         "Be concise in your responses.",
         "Show file paths clearly when working with files.",
     ]
+    role = (
+        "You are an expert coding assistant operating inside CodeRook, a local coding agent. "
+        "You help users by reading files, executing commands, editing code, and writing new files."
+    )
+    if not names:
+        role = (
+            "You are an expert coding assistant operating inside CodeRook, a local coding agent. "
+            "Answer directly from the user's request and any context already provided."
+        )
+        guidelines.append(
+            "No tools are available. Do not emit tool calls or tool-call markup; explain any "
+            "missing information plainly."
+        )
     if "read" in names:
         guidelines.append("Use read to examine files instead of cat or sed.")
     if "edit" in names:
@@ -30,8 +43,6 @@ def build_system_prompt(tools: list[dict[str, Any]]) -> str:
             if normalized and normalized not in guidelines:
                 guidelines.append(normalized)
     return (
-        "You are an expert coding assistant operating inside CodeRook, a local coding agent. "
-        "You help users by reading files, executing commands, editing code, and writing new files."
-        "\n\nAvailable tools:\n" + ("\n".join(snippets) or "(none)")
+        role + "\n\nAvailable tools:\n" + ("\n".join(snippets) or "(none)")
         + "\n\nGuidelines:\n" + "\n".join(f"- {item}" for item in guidelines)
     )

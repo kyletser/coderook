@@ -10,7 +10,11 @@ def test_prompt_tracks_actual_tool_catalog() -> None:
     assert "note_save" not in prompt
     assert "tasks" not in prompt
     assert "Do not emit progress" not in prompt
-    assert "Available tools:\n(none)" in build_system_prompt([])
+    no_tools_prompt = build_system_prompt([])
+    assert "Available tools:\n(none)" in no_tools_prompt
+    assert "Answer directly from the user's request" in no_tools_prompt
+    assert "Do not emit tool calls or tool-call markup" in no_tools_prompt
+    assert "executing commands, editing code" not in no_tools_prompt
 
 
 # 功能：Shell 使用指引只在实际有 Shell 工具时出现。
