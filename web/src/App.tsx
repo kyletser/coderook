@@ -1240,7 +1240,22 @@ function AppShell({
                 setPhase(textValue(event.payload.phase) || "working");
               }
               if (event.type.startsWith("queue.message_")) {
+                if (event.type === "queue.message_removed") {
+                  const queueId = textValue(event.payload.queue_id);
+                  setQueuedMessages((current) => current.filter((item) => item.id !== queueId));
+                }
                 void loadQueue(selectedId);
+                if (
+                  event.type === "queue.message_removed"
+                  && event.payload.reason === "dispatched"
+                ) {
+                  setNotice((current) => (
+                    current === "消息已加入队列，将在当前任务结束后发送"
+                    || current === "Message queued and will be sent after the current task."
+                      ? ""
+                      : current
+                  ));
+                }
               }
               if (event.type === "extension.notification") {
                 setNotice(textValue(event.payload.message));
@@ -1258,6 +1273,9 @@ function AppShell({
               if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.outcome", "run.finished"].includes(event.type)) {
                 if (["turn.finished", "turn.completed", "turn.failed", "turn.interrupted", "run.finished"].includes(event.type)) {
                   setActiveRunKind("agent");
+                }
+                if (event.type === "run.finished") {
+                  window.setTimeout(() => void loadQueue(selectedId), 250);
                 }
                 void refreshThreads();
                 void loadThread(selectedId);
