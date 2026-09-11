@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from code_rook.cli import main as cli_main
+from code_rook.cli.commands import sessions as sessions_module
 from code_rook.cli.commands.run import _event_belongs_to_run
 from code_rook.cli.commands.sessions import (
     _display_timestamp,
@@ -213,6 +215,67 @@ def test_session_list_hides_only_unused_untitled_sessions() -> None:
     visible = _visible_sessions(sessions, include_empty=False)
     assert [item["session_id"] for item in visible] == ["used", "named"]
     assert _visible_sessions(sessions, include_empty=True) == sessions
+
+
+# 功能：验证会话列表先过滤临时空会话再应用用户指定的显示数量
+# 设计：让 Core 返回一个最新空会话和一个旧有效会话，断言 limit=1 仍展示有效项且求足量候选
+async def test_session_list_applies_limit_after_empty_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _Client:
+        # 模拟已认证连接
+        async def connect(self) -> None:
+            return None
+
+        # 保持事件循环存活直到生产代码取消
+        async def run_event_loop(self) -> None:
+            await asyncio.Event().wait()
+
+        # 返回先空后有效的会话页并记录请求上限
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {
+                "sessions": [
+                    {"session_id": "empty", "run_count": 0, "title": ""},
+                    {
+                        "session_id": "used",
+                        "run_count": 1,
+                        "title": "kept",
+                        "status": "waiting_for_input",
+                    },
+                ]
+            }
+
+        # 模拟正常关闭连接
+        async def close(self) -> None:
+            return None
+
+    class _Factory:
+        # 返回固定客户端实例
+        @staticmethod
+        def from_config(_config: CodeRookConfig) -> _Client:
+            return _Client()
+
+    monkeypatch.setattr(sessions_module, "SocketClient", _Factory)
+
+    result = await sessions_module._list_sessions(
+        CodeRookConfig(),
+        include_closed=False,
+        limit=1,
+    )
+
+    assert result == 0
+    assert calls == [("session.list", {"include_closed": False, "limit": 200})]
+    output = capsys.readouterr().out
+    assert "used" in output
+    assert "empty" not in output
 
 
 # 功能：验证 CLI 会话标题折叠换行并限制为单行摘要

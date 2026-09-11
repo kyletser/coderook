@@ -61,9 +61,10 @@ async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit:
 
     loop_task = asyncio.create_task(client.run_event_loop())
     try:
+        query_limit = limit if include_closed else 200
         result = await client.send_command(
             "session.list",
-            {"include_closed": include_closed, "limit": limit},
+            {"include_closed": include_closed, "limit": query_limit},
         )
     except IpcError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -79,7 +80,7 @@ async def _list_sessions(config: CodeRookConfig, *, include_closed: bool, limit:
     sessions: list[dict[str, Any]] = _visible_sessions(
         result.get("sessions", []),
         include_empty=include_closed,
-    )
+    )[:limit]
     if not sessions:
         print("No sessions found.")
         return 0
