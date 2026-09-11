@@ -682,6 +682,51 @@ def test_web_command_uses_welcome_workspace_for_protected_source(
     }
 
 
+# 功能：验证从源码目录执行 core start 时在加载配置前进入隔离欢迎目录
+# 设计：捕获 get_config 与启动命令的 cwd，防止手工启动 daemon 再由 Web 复用时暴露内部源码
+def test_core_start_uses_welcome_workspace_for_protected_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    config = CodeRookConfig()
+    captured: dict[str, object] = {}
+    original = Path.cwd()
+    monkeypatch.setattr(sys, "argv", ["coderook", "core", "start"])
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(
+        cli_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        lambda _self: os.chdir(welcome) or welcome,
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "get_config",
+        lambda: captured.update({"config_cwd": Path.cwd()}) or config,
+    )
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "cmd_core_start",
+        lambda passed: captured.update({"config": passed, "start_cwd": Path.cwd()}),
+    )
+    try:
+        os.chdir(source)
+        result = cli_main.main()
+    finally:
+        os.chdir(original)
+
+    assert result == 0
+    assert captured == {
+        "config_cwd": welcome,
+        "config": config,
+        "start_cwd": welcome,
+    }
+
+
 # 功能：验证带参数的 coderook 仍由原 CLI 分发器处理
 # 设计：使用无配置依赖的 --version 路径，断言旧迁移和版本命令各执行一次且不会启动 TUI
 def test_explicit_arguments_keep_cli_dispatch(

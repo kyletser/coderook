@@ -282,6 +282,76 @@ def test_ensure_core_running_can_reuse_active_workspace(
     assert Path.cwd() == active
 
 
+# 功能：验证欢迎页不会复用仍绑定 CodeRook 源码的旧 Core
+# 设计：模拟空闲旧 daemon 和一次成功重启，确认新进程继承欢迎目录而不是重新暴露内部源码
+def test_ensure_core_running_replaces_protected_source_for_welcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    monkeypatch.chdir(welcome)
+    metadata = iter(
+        [
+            {"workspace": str(source), "active_runs": 0},
+            {"workspace": str(welcome), "active_runs": 0},
+        ]
+    )
+    monkeypatch.setattr(core, "_core_metadata", lambda _config: next(metadata))
+    registry = MagicMock()
+    registry.is_welcome_workspace.side_effect = lambda path: Path(path) == welcome
+    registry.is_protected_workspace.side_effect = lambda path: Path(path) in {source, welcome}
+    monkeypatch.setattr(core, "ProjectRegistry", lambda: registry)
+    stop = MagicMock(return_value=True)
+    monkeypatch.setattr(core, "stop_core", stop)
+
+    async def port_closed(_config: CodeRookConfig) -> bool:
+        return False
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    spawn = MagicMock(return_value=proc)
+    monkeypatch.setattr(core, "_port_open", port_closed)
+    monkeypatch.setattr(core, "_spawn_core", spawn)
+    monkeypatch.setattr(core.time, "sleep", lambda _seconds: None)
+
+    assert core.ensure_core_running(CodeRookConfig(), reuse_existing=True) is True
+    stop.assert_called_once()
+    spawn.assert_called_once_with()
+    assert Path.cwd() == welcome
+
+
+# 功能：验证旧 Core 在内部源码执行任务时不会被欢迎页静默中断或复用
+# 设计：返回 active_runs=1 并监控停止调用，确认启动器明确失败且内部源码不会进入产品文件树
+def test_ensure_core_running_refuses_busy_protected_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    monkeypatch.chdir(welcome)
+    monkeypatch.setattr(
+        core,
+        "_core_metadata",
+        lambda _config: {"workspace": str(source), "active_runs": 1},
+    )
+    registry = MagicMock()
+    registry.is_welcome_workspace.side_effect = lambda path: Path(path) == welcome
+    registry.is_protected_workspace.side_effect = lambda path: Path(path) in {source, welcome}
+    monkeypatch.setattr(core, "ProjectRegistry", lambda: registry)
+    stop = MagicMock(side_effect=AssertionError("must not stop active work"))
+    monkeypatch.setattr(core, "stop_core", stop)
+
+    with pytest.raises(core.CoreLaunchError, match="busy in CodeRook's internal source"):
+        core.ensure_core_running(CodeRookConfig(), reuse_existing=True)
+
+    stop.assert_not_called()
+
+
 # 功能：验证其他 workspace 仍有活动 run 时启动器拒绝切换 daemon
 # 设计：返回 active_runs=1 并把 stop 替换为误调用失败，确保不会中断另一仓库正在执行的工作
 def test_ensure_core_running_refuses_busy_workspace_switch(
@@ -376,3 +446,30 @@ def test_core_restart_preserves_active_workspace(
     core.cmd_core_restart(CodeRookConfig())
 
     assert observed == [active.resolve()]
+
+
+# 功能：验证重启旧源码 Core 时自动迁移到隔离欢迎目录
+# 设计：让项目注册表明确标记源码与欢迎目录，直接检查重启前采用的工作目录
+def test_core_restart_does_not_adopt_protected_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    monkeypatch.setattr(
+        core,
+        "_core_metadata",
+        lambda _config: {"workspace": str(source), "active_runs": 0},
+    )
+    registry = MagicMock()
+    registry.is_protected_workspace.side_effect = lambda path: Path(path) == source
+    registry.is_welcome_workspace.side_effect = lambda path: Path(path) == welcome
+    registry.prepare_welcome_workspace.return_value = welcome
+    monkeypatch.setattr(core, "ProjectRegistry", lambda: registry)
+
+    adopted = core._adopt_restart_workspace(CodeRookConfig())
+
+    assert adopted == welcome
+    assert Path.cwd() == welcome

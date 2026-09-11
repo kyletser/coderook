@@ -58,6 +58,7 @@ def _metadata_count(metadata: dict[str, object], key: str) -> int:
 
 # 重启前进入 Core 当前项目，未运行时避免把 CodeRook 源码目录当作用户工作区
 def _adopt_restart_workspace(config: CodeRookConfig) -> Path:
+    registry = ProjectRegistry()
     metadata = _core_metadata(config)
     if metadata is not None:
         served_workspace = str(metadata.get("workspace") or "")
@@ -70,9 +71,14 @@ def _adopt_restart_workspace(config: CodeRookConfig) -> Path:
                 ) from exc
             if not workspace.is_dir():
                 raise CoreLaunchError(f"Core workspace is not a directory: {served_workspace}")
+            if (
+                registry.is_protected_workspace(workspace)
+                and not registry.is_welcome_workspace(workspace)
+            ):
+                workspace = registry.prepare_welcome_workspace()
             os.chdir(workspace)
             return workspace
-    return ProjectRegistry().enter_welcome_workspace_if_protected()
+    return registry.enter_welcome_workspace_if_protected()
 
 
 # 校验手动 Core 的 workspace；显式 env overlay 无可验身份时失败关闭
@@ -183,7 +189,23 @@ def ensure_core_running(
         )
         if env_file is None and same_workspace:
             return False
-        if env_file is None and reuse_existing:
+        registry = ProjectRegistry()
+        replace_protected_source = bool(served_workspace) and (
+            registry.is_welcome_workspace(requested_workspace)
+            and registry.is_protected_workspace(Path(served_workspace))
+            and not registry.is_welcome_workspace(Path(served_workspace))
+        )
+        active_runs = _metadata_count(metadata, "active_runs")
+        if replace_protected_source:
+            if active_runs:
+                raise CoreLaunchError(
+                    "Core is busy in CodeRook's internal source; finish or cancel "
+                    "that work before opening the product workspace"
+                )
+            if not stop_core(config):
+                raise CoreLaunchError("Could not stop the Core serving internal source")
+            restarted_existing = True
+        elif env_file is None and reuse_existing:
             if not served_workspace:
                 raise CoreLaunchError("Core did not report its active workspace")
             try:
@@ -193,15 +215,14 @@ def ensure_core_running(
                     f"Core workspace is no longer available: {served_workspace}"
                 ) from exc
             return False
-        active_runs = _metadata_count(metadata, "active_runs")
-        if active_runs:
+        if active_runs and not restarted_existing:
             scope = "this workspace" if same_workspace else "another workspace"
             raise CoreLaunchError(
                 f"Core is busy in {scope}: "
                 f"{served_workspace or '<unknown>'} ({active_runs} active run(s)); "
                 "finish or cancel that work before restarting Core"
             )
-        if env_file is None:
+        if env_file is None and not restarted_existing:
             try:
                 asyncio.run(_activate_workspace(config, requested_workspace))
             except CoreLaunchError:
@@ -209,7 +230,7 @@ def ensure_core_running(
             except (OSError, RuntimeError, ValueError) as exc:
                 raise CoreLaunchError(f"Could not switch Core workspace: {exc}") from exc
             return False
-        if not stop_core(config):
+        if not restarted_existing and not stop_core(config):
             raise CoreLaunchError(
                 f"Could not stop the Core serving {served_workspace or '<unknown>'}"
             )

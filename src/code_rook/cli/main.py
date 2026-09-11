@@ -738,6 +738,8 @@ def _run_cli() -> int:
             args.command in {"sessions", "session", "memory"}
             and redirected != before_redirect
         )
+    elif args.command == "core" and args.core_command in {"start", "restart"}:
+        ProjectRegistry().enter_welcome_workspace_if_protected()
 
     config = get_config() if args.env_file is None else get_config(env_file=args.env_file)
     setup_logging(config)
