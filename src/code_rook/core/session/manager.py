@@ -59,6 +59,7 @@ from code_rook.core.compact.protocol import estimate_messages_tokens
 from code_rook.core.config import CompactionConfig
 from code_rook.core.events.bus import EventBus
 from code_rook.core.hooks import HookManager
+from code_rook.core.input_context import augment_file_references
 from code_rook.core.interaction import FollowUpMessage, InteractionManager, UserMessageContent
 from code_rook.core.llm.retry import RetryPolicy
 from code_rook.core.llm.route_registry import RouteResolutionError
@@ -1232,11 +1233,6 @@ class SessionManager:
             attachment_text, image_blocks = await self._prepare_image_attachments(
                 image_attachments
             )
-            ledger_content = (
-                f"{content.rstrip()}\n\n{attachment_text}".strip()
-                if attachment_text
-                else content
-            )
             expanded_input = content
             if content.startswith("/"):
                 try:
@@ -1244,13 +1240,20 @@ class SessionManager:
                         self._expand_native_skill(sid, content)
                         if expand_prompt_templates else content
                     )
-                    ledger_content = (
-                        f"{expanded_input}\n\n{attachment_text}"
-                        if attachment_text else expanded_input
-                    )
                 except (SkillError, OSError) as exc:
                     raise HandlerError(INVALID_PARAMS, str(exc)) from exc
                 display_content = display_content or content
+            if shell_request is None:
+                expanded_input = augment_file_references(
+                    expanded_input,
+                    display_content or content,
+                    self._workspace,
+                )
+            ledger_content = (
+                f"{expanded_input.rstrip()}\n\n{attachment_text}".strip()
+                if attachment_text
+                else expanded_input
+            )
 
             assert run_id is not None
             if self._hooks is not None:

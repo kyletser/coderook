@@ -371,6 +371,44 @@ async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path
     assert messages[1]["role"] == "assistant"
 
 
+# 功能：验证 Web 等薄客户端只提交 @文件 标记时 Core 会把有界文件内容注入模型输入
+# 设计：分别捕获 Runner goal 与用户可见正文，确认模型获得内容而界面仍保留简洁原始消息
+async def test_send_message_expands_visible_file_reference_in_core(tmp_path: Path) -> None:
+    class _CaptureRunner(_Runner):
+        # 初始化 Runner 捕获的最终模型目标
+        def __init__(self) -> None:
+            self.goal = ""
+
+        # 捕获 Core 完成文件引用扩展后的目标并复用成功结果
+        async def run_and_capture(self, goal: str, **kwargs: object) -> RunOutcome:
+            self.goal = goal
+            return await super().run_and_capture(goal, **kwargs)  # type: ignore[arg-type]
+
+    (tmp_path / "calculator.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n",
+        encoding="utf-8",
+    )
+    runner = _CaptureRunner()
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: runner,
+        EventBus(),
+        workspace=tmp_path,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat")
+
+    await manager.send_message(
+        session.id,
+        "检查 @calculator.py",
+        display_content="检查 @calculator.py",
+    )
+
+    assert '<file path="calculator.py" truncated="false">' in runner.goal
+    assert "return a + b" in runner.goal
+    assert store.read_messages(session.id)[0]["content"] == runner.goal
+
+
 # 功能：验证内建稳定 Preset 升级后历史会话会自动迁移并继续执行
 # 设计：写入旧摘要后通过真实 SessionManager 发送消息，捕获 Runner 所见摘要并检查迁移事件
 async def test_send_message_migrates_stable_preset_digest(tmp_path: Path) -> None:

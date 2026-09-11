@@ -187,6 +187,8 @@ def augment_file_references(
     *,
     explicit_references: Iterable[str] | None = None,
 ) -> str:
+    if "User-selected workspace file excerpts follow." in content:
+        return content
     references = (
         list(explicit_references)
         if explicit_references is not None

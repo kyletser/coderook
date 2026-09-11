@@ -73,10 +73,10 @@ describe("Web task submission", () => {
     ])).toBe("agent");
   });
 
-  it("adds only selected file references still present in the composer", () => {
+  it("leaves selected file references in the visible request for Core expansion", () => {
     const content = modelContentFor("检查 @src/app.py", ["src/app.py", "src/old.py"]);
 
-    expect(content).toContain('["src/app.py"]');
+    expect(content).toBe("检查 @src/app.py");
     expect(content).not.toContain("src/old.py");
   });
 

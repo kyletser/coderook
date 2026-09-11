@@ -756,14 +756,8 @@ export function followUpUsesQueue(runKind: RunKind, queueMode: boolean, content:
   return runKind === "user_shell" || queueMode || isUserShell(content);
 }
 
-export function modelContentFor(visibleContent: string, fileReferences: string[]): string {
-  if (isUserShell(visibleContent)) return visibleContent;
-  const base = visibleContent;
-  const selected = fileReferences
-    .filter((path) => visibleContent.includes(`@${path}`))
-    .slice(0, 8);
-  if (!selected.length) return base;
-  return `${base}\n\nBounded file references selected by the user: ${JSON.stringify(selected)}. Read only the ranges needed for this task; do not inject entire files by default.`;
+export function modelContentFor(visibleContent: string, _fileReferences: string[]): string {
+  return visibleContent;
 }
 
 export function approvedPlanModelContent(originalRequest: string): string {
