@@ -55,7 +55,11 @@ from code_rook.cli.commands.trace import cmd_trace
 from code_rook.cli.commands.version import cmd_version
 from code_rook.cli.commands.web import cmd_web
 from code_rook.core.config import get_config
-from code_rook.core.input_context import augment_file_references
+from code_rook.core.input_context import (
+    augment_file_references,
+    extract_file_reference_tokens,
+    resolve_file_references,
+)
 from code_rook.core.llm.credentials import CredentialStoreError
 from code_rook.core.llm.route_store import RouteStore
 from code_rook.core.llm.routes import list_route_presets
@@ -66,6 +70,7 @@ from code_rook.core.state_migration import migrate_legacy_state
 
 _PROVIDER_PRESET_CHOICES = tuple(route.id for route in list_route_presets())
 _MODEL_TOOL_NAMES = frozenset({"read", "bash", "edit", "write"})
+_IMAGE_REFERENCE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
 _TOP_LEVEL_COMMANDS = frozenset({
     "ping", "web", "configure", "config", "config-status", "migrate-project-state",
     "doctor", "provider", "model", "skills", "memory", "cancel", "chat", "sessions",
@@ -113,6 +118,37 @@ def _merge_piped_input(message: str, piped_input: str) -> str:
     if not message:
         return piped_input
     return f"{message}\n\nInput provided through stdin:\n{piped_input}"
+
+
+# 解析命令行 @文件，将图片作为附件、其余文件作为有界文本上下文
+def _prepare_file_referenced_input(
+    content: str,
+    workspace: Path,
+    *,
+    standalone_references: list[str] | None = None,
+) -> tuple[str, list[Path]]:
+    references = list(standalone_references or [])
+    references.extend(extract_file_reference_tokens(content))
+    resolved = resolve_file_references(workspace, dict.fromkeys(references))
+    images = [
+        workspace / reference
+        for reference in resolved
+        if Path(reference).suffix.casefold() in _IMAGE_REFERENCE_SUFFIXES
+    ]
+    text_references = [
+        reference
+        for reference in resolved
+        if Path(reference).suffix.casefold() not in _IMAGE_REFERENCE_SUFFIXES
+    ]
+    return (
+        augment_file_references(
+            content,
+            content,
+            workspace,
+            explicit_references=text_references,
+        ),
+        images[:8],
+    )
 
 
 # 为单次模型覆盖补齐活动 route，避免仅有模型 ID 时由 Core 猜测 Provider
@@ -256,15 +292,14 @@ def _run_cli() -> int:
         goal = _merge_piped_input(visible_goal, piped_input)
         if not goal:
             quick.error("a task or piped input is required")
-        goal = augment_file_references(
+        goal, image_paths = _prepare_file_referenced_input(
             goal,
-            visible_goal,
             Path.cwd(),
-            explicit_references=(
+            standalone_references=[
                 value[1:]
                 for value in quick_args.message
                 if value.startswith("@") and len(value) > 1
-            ),
+            ],
         )
         migrate_legacy_state()
         config = (
@@ -283,6 +318,7 @@ def _run_cli() -> int:
             model_tools=quick_args.tools,
             output_format="text",
             final_only=True,
+            image_paths=image_paths,
             session_mode="one_shot" if quick_args.no_session else "chat",
             session_name=quick_args.name or "",
             delete_session_after=quick_args.no_session,
@@ -962,8 +998,9 @@ def _run_cli() -> int:
             requested_route = _resolve_requested_route(args.route, args.model)
         except ValueError as exc:
             parser.error(str(exc))
+        goal, image_paths = _prepare_file_referenced_input(args.goal, Path.cwd())
         cmd_run(
-            augment_file_references(args.goal, args.goal, Path.cwd()),
+            goal,
             config,
             display_content=args.goal,
             permission_mode=args.permission_mode.replace("-", "_"),
@@ -972,6 +1009,7 @@ def _run_cli() -> int:
             output_format=args.output_format,
             event_filters=args.event_filter,
             include_partial=args.include_partial,
+            image_paths=image_paths,
             session_name=args.name or "",
             delete_session_after=args.no_session,
             resume_session_id=args.resume,

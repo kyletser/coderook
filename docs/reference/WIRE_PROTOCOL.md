@@ -219,9 +219,54 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
 | `question_mode` | `string` | no |
 | `question_timeout_s` | `number | null` | no |
 | `preset_answers` | `array` | no |
+| `attachments` | `array` | no |
 
 ```json
 {
+  "$defs": {
+    "ImageArtifactInput": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "media_type": {
+          "pattern": "^image/(png|jpeg|webp|gif)$",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "size": {
+          "exclusiveMinimum": 0,
+          "maximum": 2097152,
+          "title": "Size",
+          "type": "integer"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Height",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "media_type",
+        "size",
+        "width",
+        "height"
+      ],
+      "title": "ImageArtifactInput",
+      "type": "object"
+    }
+  },
   "properties": {
     "type": {
       "const": "agent.run",
@@ -398,6 +443,14 @@ All commands are sent as JSON-RPC 2.0 requests. The JSON-RPC `method` selects th
       },
       "maxItems": 100,
       "title": "Preset Answers",
+      "type": "array"
+    },
+    "attachments": {
+      "items": {
+        "$ref": "#/$defs/ImageArtifactInput"
+      },
+      "maxItems": 8,
+      "title": "Attachments",
       "type": "array"
     }
   },

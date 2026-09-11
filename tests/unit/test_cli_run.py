@@ -1,4 +1,6 @@
-from code_rook.cli.commands.run import _delete_transient_session
+from pathlib import Path
+
+from code_rook.cli.commands.run import _delete_transient_session, _stage_image_paths
 from code_rook.core.transport.socket_client import IpcError
 
 
@@ -26,3 +28,22 @@ async def test_delete_transient_session_retries_busy_state() -> None:
 
     assert result is None
     assert client.calls == 3
+
+
+# 功能：验证命令行图片被写入当前工作区 ArtifactStore 并生成完整附件元数据。
+# 设计：构造带有效尺寸头的最小 PNG，避免依赖 Pillow 或真实 Provider。
+async def test_stage_image_paths_creates_replayable_attachment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    image = tmp_path / "screen.png"
+    image.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (2).to_bytes(4, "big") + (3).to_bytes(4, "big")
+    )
+    monkeypatch.chdir(tmp_path)
+
+    attachments = await _stage_image_paths([image])
+
+    assert len(attachments) == 1
+    assert attachments[0].media_type == "image/png"
+    assert (tmp_path / ".coderook" / "artifacts" / attachments[0].sha256).is_file()

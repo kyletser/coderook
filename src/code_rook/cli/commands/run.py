@@ -5,8 +5,10 @@ import fnmatch
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Any, Literal
 
+from code_rook.core.artifacts import ArtifactStore, ImageArtifactInput, inspect_image
 from code_rook.core.config import CodeRookConfig
 from code_rook.core.headless import HeadlessEnvelope, HeadlessRunResult
 from code_rook.core.transport.auth import IpcTokenError
@@ -18,6 +20,30 @@ OutputFormat = Literal["text", "json", "stream-json"]
 _TERMINAL_TURN_STATUSES = {"completed", "failed", "interrupted"}
 _PARTIAL_EVENT_TYPES = {"llm.token", "llm.reasoning"}
 _SESSION_BUSY = -32012
+
+
+# 将命令行引用的本地图片写入工作区 ArtifactStore 并生成可验证附件元数据
+async def _stage_image_paths(paths: list[Path]) -> list[ImageArtifactInput]:
+    if len(paths) > 8:
+        raise ValueError("at most 8 image attachments are allowed")
+    store = ArtifactStore(Path.cwd() / ".coderook" / "artifacts")
+    attachments: list[ImageArtifactInput] = []
+    for path in paths:
+        data = await asyncio.to_thread(path.read_bytes)
+        if not data or len(data) > 2 * 1024 * 1024:
+            raise ValueError(f"image must contain between 1 byte and 2 MiB: {path}")
+        metadata = inspect_image(data)
+        reference = await store.put(data, media_type=metadata.media_type)
+        attachments.append(
+            ImageArtifactInput(
+                sha256=reference.sha256,
+                media_type=metadata.media_type,
+                size=reference.size,
+                width=metadata.width,
+                height=metadata.height,
+            )
+        )
+    return attachments
 
 
 # 等待 run 的会话锁释放后删除显式临时会话，只重试已知的 busy 竞态。
@@ -227,6 +253,7 @@ async def _run_async(
     event_filters: list[str] | None = None,
     include_partial: bool = False,
     final_only: bool = False,
+    image_paths: list[Path] | None = None,
     session_mode: str = "one_shot",
     session_name: str = "",
     delete_session_after: bool = False,
@@ -304,6 +331,7 @@ async def _run_async(
     started_session_id = ""
 
     try:
+        attachments = await _stage_image_paths(image_paths or [])
         if continue_recent and resume_session_id is None and fork_session_id is None:
             listed = await client.send_command(
                 "session.list",
@@ -358,6 +386,7 @@ async def _run_async(
                 "question_mode": question_mode,
                 "question_timeout_s": question_timeout_s,
                 "preset_answers": preset_answers or [],
+                "attachments": [item.model_dump(mode="json") for item in attachments],
             },
         )
         run_id = str(started["run_id"])
@@ -387,7 +416,7 @@ async def _run_async(
             if _event_belongs_to_run(buffered, run_id):
                 await _process_owned_event(buffered)
         early_events.clear()
-    except IpcError as e:
+    except (IpcError, OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         loop_task.cancel()
         await client.close()
@@ -476,6 +505,7 @@ def cmd_run(
     event_filters: list[str] | None = None,
     include_partial: bool = False,
     final_only: bool = False,
+    image_paths: list[Path] | None = None,
     session_mode: str = "one_shot",
     session_name: str = "",
     delete_session_after: bool = False,
@@ -502,6 +532,7 @@ def cmd_run(
                 event_filters=event_filters,
                 include_partial=include_partial,
                 final_only=final_only,
+                image_paths=image_paths,
                 session_mode=session_mode,
                 session_name=session_name,
                 delete_session_after=delete_session_after,

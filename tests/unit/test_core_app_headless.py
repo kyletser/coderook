@@ -11,6 +11,7 @@ import pytest
 
 from code_rook.core import app as core_app_module
 from code_rook.core.app import CoreApp
+from code_rook.core.artifacts import ImageArtifactInput
 from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
@@ -339,6 +340,13 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     created_titles: list[str] = []
     created_modes: list[str] = []
     displayed_messages: list[str | None] = []
+    image = ImageArtifactInput(
+        sha256="a" * 64,
+        media_type="image/png",
+        size=24,
+        width=2,
+        height=3,
+    )
     session = Session("sess-headless", "one_shot", "active", "", "t", "t")
 
     class _Sessions:
@@ -360,12 +368,14 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             self,
             session_id: str,
             content: str,
+            attachments: list[ImageArtifactInput],
             *,
             source: str,
         ) -> tuple[str, list[Any]]:
             assert session_id == session.id
             assert source == "rpc"
-            return content, []
+            assert attachments == [image]
+            return content, attachments
 
         # 模拟会话可接受新 turn 的同步前置校验
         async def preflight_turn_start(self, session_id: str, run_id: str) -> None:
@@ -383,7 +393,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             display_content: str | None = None,
             model_tools: list[str] | None = None,
         ) -> str:
-            assert attachments == []
+            assert attachments == [image]
             assert input_processed is True
             displayed_messages.append(display_content)
             assert model_tools == ["read"]
@@ -418,6 +428,7 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
         "session_name": "认证修复",
         "route_id": "route-explicit",
         "model": "model-explicit",
+        "attachments": [image.model_dump(mode="json")],
     })
     await asyncio.wait_for(checked.wait(), timeout=1)
     await asyncio.sleep(0)

@@ -43,6 +43,22 @@ def test_headless_run_event_ownership_filter() -> None:
     assert _event_belongs_to_run({"type": "core.status"}, "run-1")
 
 
+# 功能：验证命令行内联 @引用把普通文件注入文本、把图片分离为多模态附件。
+# 设计：同时引用大小写不同的图片后缀与文本文件，锁定两类输入不会重复或混淆。
+def test_prepare_file_referenced_input_separates_images(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("REFERENCE_TEXT", encoding="utf-8")
+    (tmp_path / "screen.PNG").write_bytes(b"image-placeholder")
+
+    content, images = cli_main._prepare_file_referenced_input(
+        "比较 @notes.txt 和 @screen.PNG",
+        tmp_path,
+    )
+
+    assert "REFERENCE_TEXT" in content
+    assert '<file path="screen.PNG"' not in content
+    assert images == [tmp_path / "screen.PNG"]
+
+
 # 功能：验证 CLI 在 Windows 管道场景主动把 stdout 和 stderr 切换为 UTF-8
 # 设计：用记录 reconfigure 参数的最小流替换系统流，直接验证两个输出通道采用同一稳定编码
 def test_cli_configures_utf8_stdio(monkeypatch) -> None:
@@ -248,6 +264,7 @@ def test_print_shorthand_runs_native_headless_agent(monkeypatch) -> None:
         "model_tools": None,
         "output_format": "text",
         "final_only": True,
+        "image_paths": [],
         "session_mode": "chat",
         "session_name": "",
         "delete_session_after": False,

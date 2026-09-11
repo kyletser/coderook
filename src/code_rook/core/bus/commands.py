@@ -105,6 +105,7 @@ class AgentRunCommand(BaseModel):
     question_mode: Literal["fail_fast", "timeout", "preset"] = "fail_fast"
     question_timeout_s: float | None = Field(default=None, gt=0, le=3600)
     preset_answers: list[str] = Field(default_factory=list, max_length=100)
+    attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     # 校验 headless 提问策略所需参数并拒绝无效组合

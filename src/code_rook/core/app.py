@@ -1145,7 +1145,12 @@ class CoreApp:
                 answers=tuple(cmd.preset_answers),
             ),
         )
-        processed = await self._sessions.process_input(session.id, cmd.goal, source="rpc")
+        processed = await self._sessions.process_input(
+            session.id,
+            cmd.goal,
+            cmd.attachments,
+            source="rpc",
+        )
         if processed is None:
             self._permission_manager.clear_session_mode(session.id)
             self._interaction_manager.clear_question_policy(session.id)
