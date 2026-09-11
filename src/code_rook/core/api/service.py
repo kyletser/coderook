@@ -654,11 +654,12 @@ class RuntimeApiService:
     async def fork_thread(
         self, thread_id: str, *, title: str = "", leaf_seq: int | None = None
     ) -> dict[str, object]:
-        session = await self._sessions.fork(thread_id, title, leaf_seq=leaf_seq)
         editor_text = ""
         if leaf_seq is not None:
-            navigation = await self._sessions.navigate_tree(session.id, leaf_seq)
-            editor_text = str(navigation.get("editor_text", ""))
+            target = await self._sessions.navigation_target(thread_id, leaf_seq)
+            leaf_seq = int(target["leaf_seq"])
+            editor_text = str(target.get("editor_text", ""))
+        session = await self._sessions.fork(thread_id, title, leaf_seq=leaf_seq)
         thread = await self._runtime.get_thread(session.id)
         return {**thread.model_dump(mode="json"), "editor_text": editor_text}
 

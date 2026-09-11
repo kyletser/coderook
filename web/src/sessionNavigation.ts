@@ -3,7 +3,14 @@ import type { RuntimeEvent, TurnItem } from "./types";
 export interface NavigationProjection {
   thread_id: string;
   ledger_seq: number;
-  messages: Array<{ role: string; content: unknown }>;
+  messages: Array<{
+    role: string;
+    content?: unknown;
+    command?: string;
+    output?: string;
+    status?: string;
+    exclude_from_context?: boolean;
+  }>;
   excluded_turn_ids: string[];
 }
 
@@ -16,6 +23,25 @@ export function navigationTimeline(
   const excluded = new Set(navigation.excluded_turn_ids);
   const history: TurnItem[] = [];
   for (const message of navigation.messages) {
+    if (message.role === "bashExecution") {
+      const toolCallId = `history-shell:${navigation.ledger_seq}:${history.length}`;
+      const command = String(message.command || "");
+      history.push({
+        id: `${toolCallId}:request`, turn_id: "", kind: "message",
+        payload: { role: "user", content: `${message.exclude_from_context ? "!!" : "!"}${command}` },
+        created_at: "",
+      });
+      history.push({
+        id: `${toolCallId}:call`, turn_id: "", kind: "tool_call", tool_call_id: toolCallId,
+        payload: { tool_name: "Bash", params: { command } }, created_at: "",
+      });
+      history.push({
+        id: `${toolCallId}:result`, turn_id: "", kind: "tool_result", tool_call_id: toolCallId,
+        payload: { output: String(message.output || ""), is_error: message.status !== "success" },
+        created_at: "",
+      });
+      continue;
+    }
     const blocks = Array.isArray(message.content) ? message.content : [{ type: "text", text: message.content }];
     for (const block of blocks) {
       if (!block || typeof block !== "object") continue;

@@ -3100,6 +3100,14 @@ class SessionManager:
         self._get_session(sid)
         return self._store.session_tree(sid)
 
+    # 只读解析会话分叉点，供 Fork 在写入新会话前确定真实叶节点。
+    async def navigation_target(self, sid: str, target_seq: int) -> dict[str, Any]:
+        sid = await self.resolve_session_reference(sid)
+        self._get_session(sid)
+        if self._locks[sid].locked():
+            raise HandlerError(SESSION_BUSY, "wait for the active turn before navigating history")
+        return self._store.navigation_target(sid, target_seq)
+
     # 切换同一会话的上下文路径，不执行任务也不回滚工作区文件。
     async def navigate_tree(
         self, sid: str, target_seq: int, *, summarize: bool = False, focus: str = "",

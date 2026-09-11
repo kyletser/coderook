@@ -610,10 +610,8 @@ class SessionStore:
 
         return collect_branch_entries(self._read_rows(sid), target_seq)
 
-    # 按 Pi 语义导航：用户消息回到父节点并送回输入框，其他节点直接作为叶节点。
-    def navigate_tree(
-        self, sid: str, target_seq: int, *, summary: str = "", label: str = "",
-    ) -> dict[str, Any]:
+    # 只读解析导航目标，用户消息返回其父节点和待回填文本。
+    def navigation_target(self, sid: str, target_seq: int) -> dict[str, Any]:
         from code_rook.core.agent_runtime.session_tree import entry_parents
 
         with self._ledger_lock(sid):
@@ -621,27 +619,45 @@ class SessionStore:
             parents = entry_parents(rows)
             if target_seq not in parents:
                 raise ValueError("session entry does not exist")
-            row = next(row for line, row in rows if int(row.get("ledger_seq", line)) == target_seq)
+            row = next(
+                row
+                for line, row in rows
+                if int(row.get("ledger_seq", line)) == target_seq
+            )
             payload = row.get("payload", row)
             content = payload.get("content", "")
             is_user = payload.get("role") == "user" and (
                 isinstance(content, str)
-                or isinstance(content, list) and not any(
+                or isinstance(content, list)
+                and not any(
                     isinstance(block, dict) and block.get("type") == "tool_result"
                     for block in content
                 )
             )
-            editor_text = ""
-            leaf_seq = target_seq
-            if is_user:
-                leaf_seq = parents[target_seq] or 0
-                editor_text = content if isinstance(content, str) else "\n".join(
-                    block.get("text", "") for block in content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
+            if not is_user:
+                return {"target_seq": target_seq, "leaf_seq": target_seq, "editor_text": ""}
+            editor_text = content if isinstance(content, str) else "\n".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+            return {
+                "target_seq": target_seq,
+                "leaf_seq": parents[target_seq] or 0,
+                "editor_text": editor_text,
+            }
+
+    # 按 Pi 语义导航：用户消息回到父节点并送回输入框，其他节点直接作为叶节点。
+    def navigate_tree(
+        self, sid: str, target_seq: int, *, summary: str = "", label: str = "",
+    ) -> dict[str, Any]:
+        with self._ledger_lock(sid):
+            target = self.navigation_target(sid, target_seq)
+            leaf_seq = int(target["leaf_seq"])
             sequence = self.select_branch(sid, leaf_seq, summary=summary, label=label)
             return {"target_seq": target_seq, "leaf_seq": leaf_seq,
-                    "ledger_seq": sequence, "editor_text": editor_text, "label": label}
+                    "ledger_seq": sequence, "editor_text": target["editor_text"],
+                    "label": label}
 
     # 返回最后导航时的固定历史起点，后续 Turn 仍由实时事件独立呈现。
     def navigation_projection(self, sid: str) -> dict[str, Any] | None:
@@ -658,7 +674,7 @@ class SessionStore:
             }
             return {
                 "thread_id": sid, "ledger_seq": sequence,
-                "messages": self.derive_messages(sid, leaf_seq=sequence),
+                "messages": self.derive_messages(sid, leaf_seq=sequence, display=True),
                 "excluded_turn_ids": sorted(previous_runs),
             }
         return None

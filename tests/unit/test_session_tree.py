@@ -22,6 +22,36 @@ def test_navigation_projection_stays_fixed_after_new_turn(tmp_path: Path) -> Non
     assert [message["content"] for message in projection["messages"]] == ["Question", "Answer"]
 
 
+# 功能：分支历史投影保留直接 Shell 的展示角色，不把执行记录伪装成用户模型消息。
+# 设计：追加真实 shell 完成事件后选择该节点，重开存储并核对展示投影的结构化字段。
+def test_navigation_projection_preserves_shell_display(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    event = store.append_session_event(
+        "sess-shell",
+        event_type="user.shell_completed",
+        turn_id="run-shell",
+        payload={
+            "command": "echo visible",
+            "output": "visible",
+            "status": "success",
+            "exclude_from_context": False,
+        },
+    )
+    store.select_branch("sess-shell", event.seq)
+
+    projection = SessionStore(tmp_path).navigation_projection("sess-shell")
+
+    assert projection is not None
+    assert projection["messages"] == [{
+        "role": "bashExecution",
+        "command": "echo visible",
+        "output": "visible",
+        "status": "success",
+        "exclude_from_context": False,
+        "run_id": "run-shell",
+    }]
+
+
 # 功能：选中用户消息回填输入框，根节点导航不删除其他历史分支。
 # 设计：使用真实追加日志切到空根并重新回答，再重开原路径校验完整消息。
 def test_navigate_user_message_and_restore_branch(tmp_path: Path) -> None:

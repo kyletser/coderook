@@ -33,12 +33,14 @@ async def test_workspace_file_search_ranks_name_prefix_before_path_substring(
     assert result["truncated"] is True
 
 
-# 功能：Web 从用户消息新建分支时返回原文草稿，并把新会话定位到该消息之前
-# 设计：用最小异步 facade 替身验证 fork 后必经正式树导航，避免复制两套分支解析逻辑
+# 功能：Web 从用户消息新建分支时返回原文草稿，并只写入一次已解析的分支选择
+# 设计：用最小异步 facade 替身先解析源节点再 Fork，防止在新会话重复导航和追加事件
 async def test_web_fork_returns_editable_user_message() -> None:
     sessions = MagicMock()
     sessions.fork = AsyncMock(return_value=SimpleNamespace(id="forked"))
-    sessions.navigate_tree = AsyncMock(return_value={"editor_text": "修改这个问题"})
+    sessions.navigation_target = AsyncMock(return_value={
+        "leaf_seq": 36, "editor_text": "修改这个问题",
+    })
     thread = MagicMock()
     thread.model_dump.return_value = {"id": "forked", "title": "Task (fork)"}
     runtime = MagicMock()
@@ -47,8 +49,8 @@ async def test_web_fork_returns_editable_user_message() -> None:
 
     result = await service.fork_thread("source", leaf_seq=42)
 
-    sessions.fork.assert_awaited_once_with("source", "", leaf_seq=42)
-    sessions.navigate_tree.assert_awaited_once_with("forked", 42)
+    sessions.navigation_target.assert_awaited_once_with("source", 42)
+    sessions.fork.assert_awaited_once_with("source", "", leaf_seq=36)
     assert result["editor_text"] == "修改这个问题"
     assert result["id"] == "forked"
 

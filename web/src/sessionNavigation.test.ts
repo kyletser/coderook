@@ -21,3 +21,20 @@ it("reconstructs the chosen path while excluding old runs and retaining new work
   expect(JSON.stringify(result.items)).not.toContain("private");
   expect(navigationTimeline(null, items, events)).toEqual({ items, events });
 });
+
+it("renders inherited direct shell history as a command and tool result", () => {
+  const navigation: NavigationProjection = {
+    thread_id: "s", ledger_seq: 9, excluded_turn_ids: [],
+    messages: [{
+      role: "bashExecution", command: "echo visible", output: "visible",
+      status: "success", exclude_from_context: false,
+    }],
+  };
+
+  const result = navigationTimeline(navigation, [], []);
+
+  expect(result.items.map(item => item.kind)).toEqual(["message", "tool_call", "tool_result"]);
+  expect(result.items[0].payload.content).toBe("!echo visible");
+  expect(result.items[1].payload).toEqual({ tool_name: "Bash", params: { command: "echo visible" } });
+  expect(result.items[2].payload).toEqual({ output: "visible", is_error: false });
+});
