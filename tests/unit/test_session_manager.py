@@ -1536,6 +1536,35 @@ async def test_session_model_selection_is_isolated_and_persistent(tmp_path: Path
     assert store.read_meta(forked.id).model == "model-a"
 
 
+# 功能：会话上下文按当前模型返回真实图片能力而不是 Provider 默认标签
+# 设计：同一路由从视觉模型切到纯文本模型，直接核对前端消费的 context_info 可选字段
+async def test_session_context_tracks_selected_model_image_capability(
+    tmp_path: Path,
+) -> None:
+    route_store = RouteStore(tmp_path / "routes.json")
+    route_store.add(get_route_preset("aliyun"), activate=True)
+    registry = RouteRegistry(
+        LlmConfig(),
+        route_store=route_store,
+        credential_store=CredentialStore(
+            tmp_path / "credentials.json",
+            env_overlay={"DASHSCOPE_API_KEY": "test-key"},
+        ),
+    )
+    store = SessionStore(tmp_path / "sessions")
+    manager = SessionManager(
+        store,
+        lambda: _Runner(),
+        EventBus(),
+        route_registry=registry,
+    )  # type: ignore[arg-type]
+    session = await manager.create("chat", "images")
+
+    assert manager.context_info(session.id)["supports_images"] is True
+    await manager.set_model(session.id, "aliyun", "qwen-plus")
+    assert manager.context_info(session.id)["supports_images"] is False
+
+
 async def test_session_lifecycle_rename_fork_export_delete(tmp_path: Path) -> None:
     events: list[object] = []
     bus = EventBus()

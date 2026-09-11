@@ -285,6 +285,19 @@ class SessionManager:
             return base
         return override.resolve(model or "", base=base)
 
+    # 返回会话当前模型冻结后的真实图片能力，配置不完整时保留未知而不阻断只读界面
+    def _session_supports_images(self, session: Session) -> bool | None:
+        host = self._extension_hosts.get(session.id)
+        try:
+            resolved = self._resolve_model_route(
+                session.route_id or None,
+                session.model or None,
+                host,
+            )
+        except (RouteResolutionError, ValueError):
+            return None
+        return resolved.route.supports_images
+
     # 用会话级思考强度覆盖已解析路由，不修改共享 Provider Catalog。
     @staticmethod
     def _apply_session_thinking(session: Session, resolved: ResolvedRoute) -> ResolvedRoute:
@@ -2883,6 +2896,7 @@ class SessionManager:
             "extension_ui": deepcopy(self._extension_ui.get(sid, {})),
             "route_id": session.route_id,
             "model": session.model,
+            "supports_images": self._session_supports_images(session),
             "thinking_level": session.thinking_level,
             "extension_providers": (
                 self._extension_hosts[sid].api.get_registered_providers()

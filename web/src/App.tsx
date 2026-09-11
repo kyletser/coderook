@@ -54,6 +54,7 @@ type ThreadContext = {
   input_commands?: InputCommand[];
   route_id?: string;
   model?: string;
+  supports_images?: boolean | null;
   thinking_level?: "off" | "low" | "medium" | "high";
   extension_providers?: ExtensionProvider[];
   extension_ui?: ExtensionUiState;
@@ -886,6 +887,7 @@ function AppShell({
   const [projectHubOpen, setProjectHubOpen] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [activeModel, setActiveModel] = useState(tr("正在读取模型…", "Loading model…"));
+  const [activeSupportsImages, setActiveSupportsImages] = useState<boolean | null>(null);
   const [sessionsReady, setSessionsReady] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
   const [hasOlderTurns, setHasOlderTurns] = useState(false);
@@ -933,6 +935,7 @@ function AppShell({
       );
       if (selectedIdRef.current === threadId) {
         setActiveModel(textValue(context.model) || tr("未配置模型", "No model configured"));
+        setActiveSupportsImages(context.supports_images ?? null);
       }
       return;
     }
@@ -940,6 +943,9 @@ function AppShell({
     const active = catalog.routes.find((route) => route.id === catalog.active_route_id);
     if (!selectedIdRef.current) {
       setActiveModel(textValue(active?.model) || tr("未配置模型", "No model configured"));
+      setActiveSupportsImages(
+        typeof active?.supports_images === "boolean" ? active.supports_images : null,
+      );
     }
   }, [preferences.locale]);
 
@@ -1065,6 +1071,7 @@ function AppShell({
       setHasOlderTurns(turnPage.length > TURN_PAGE_SIZE);
       setContextTokens(Number(loadedContext.estimated_tokens || 0));
       setActiveModel(textValue(loadedContext.model) || tr("未配置模型", "No model configured"));
+      setActiveSupportsImages(loadedContext.supports_images ?? null);
       setNavigation(loadedContext.navigation || null);
       setInputCommands([
             { name: "reload", description: tr("重新加载扩展、模板与 Skills", "Reload extensions, templates and Skills"), kind: "builtin" },
@@ -1371,6 +1378,14 @@ function AppShell({
         });
         setNotice(tr("纠偏消息已送达当前任务", "Steer message sent to the active task."));
       } else {
+        if (attachments.length > 0 && activeSupportsImages === false) {
+          setError(tr(
+            `当前模型 ${activeModel} 不支持图片。附件和输入已保留，请切换到支持图片的模型。`,
+            `The current model ${activeModel} does not support images. Your attachments and draft were preserved; switch to an image-capable model.`,
+          ));
+          setDrawer("models");
+          return;
+        }
         let provider = isUserShell(content)
           ? null : await request<ProviderCatalog>("/v1/providers");
         if (provider && !provider.readiness.local_ready) {
@@ -2010,7 +2025,13 @@ function AppShell({
             <div className="composer-tools">
               <button type="button" className="context-button" onClick={() => setDrawer("files")} title={tr("添加文件上下文", "Add file context")}><Icon name="plus" size={16} /></button>
               <label className="mode-select"><select aria-label={tr("运行模式", "Run mode")} value={mode} onChange={(event) => setMode(event.target.value as RunMode)}><option value="act">{tr("执行", "Act")}</option><option value="plan">{tr("规划", "Plan")}</option><option value="review">{tr("审查", "Review")}</option></select></label>
-              <label className="attach-button" title={tr("添加图片", "Attach images")}><Icon name="image" size={15} /><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
+              <label
+                className={`attach-button ${activeSupportsImages === false ? "disabled" : ""}`}
+                title={activeSupportsImages === false
+                  ? tr(`当前模型 ${activeModel} 不支持图片`, `The current model ${activeModel} does not support images`)
+                  : tr("添加图片", "Attach images")}
+                aria-disabled={activeSupportsImages === false}
+              ><Icon name="image" size={15} /><input type="file" disabled={activeSupportsImages === false} accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => { void attachImages(event.target.files); event.target.value = ""; }} /></label>
               {activeTurn && <button type="button" className={`queue-toggle ${queueMode || activeRunKind === "user_shell" ? "active" : ""}`} disabled={activeRunKind === "user_shell"} onClick={() => setQueueMode((current) => !current)}>{activeRunKind === "user_shell" || queueMode ? tr(`排队 ${pendingQueueCount}`, `Queue ${pendingQueueCount}`) : tr("纠偏", "Steer")}</button>}
             </div>
             <div className="composer-meta">

@@ -449,6 +449,7 @@ body { background: #f1f1ee; color: var(--text); }
 .context-button, .attach-button, .queue-toggle { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: #74756f; font-size: 10.5px; }
 .context-button { width: 30px; padding: 0; border: 1px solid #e1e1dd; border-radius: 50%; }
 .context-button:hover, .attach-button:hover, .queue-toggle:hover { color: #292a2f; background: #f0f0ec; }
+.attach-button.disabled, .attach-button.disabled:hover { color: #b8b8b2; background: transparent; cursor: not-allowed; opacity: .65; }
 .queue-toggle.active { color: #3f3db4; background: #eeeeff; }
 .mode-select { position: relative; display: inline-flex; align-items: center; }
 .mode-select::after { content: ""; width: 5px; height: 5px; margin-left: -14px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; pointer-events: none; transform: translateY(-2px) rotate(45deg); }
