@@ -39,7 +39,7 @@ _THREAD_EVENTS = re.compile(r"/v1/threads/([^/]+)/events")
 _THREAD_QUEUE = re.compile(r"/v1/threads/([^/]+)/queue")
 _THREAD_QUEUE_ITEM = re.compile(r"/v1/threads/([^/]+)/queue/([^/]+)(?:/(retry))?")
 _THREAD_ACTION = re.compile(
-    r"/v1/threads/([^/]+)/(fork|export|context|tree|navigate|reload|compact|command|model|thinking)"
+    r"/v1/threads/([^/]+)/(fork|export|context|tree|navigate|reload|compact|command|model|thinking|authority)"
 )
 _THREAD_PLAN = re.compile(r"/v1/threads/([^/]+)/turns/([^/]+)/plan")
 _THREAD_CHECKPOINT = re.compile(
@@ -585,6 +585,21 @@ class HttpApiServer:
                 raise ValueError("thinking_level must be off, low, medium, or high")
             return HTTPStatus.OK, await self._service.set_thread_thinking(
                 match.group(1), str(thinking_level),
+            )
+        if match and match.group(2) == "authority" and request.method == "GET":
+            return HTTPStatus.OK, await self._dispatch_control(
+                "session.get_authority", {"session_id": match.group(1)}
+            )
+        if match and match.group(2) == "authority" and request.method == "PATCH":
+            workspace_trust = _json_object(request.body).get("workspace_trust")
+            if workspace_trust not in {"trusted", "untrusted"}:
+                raise ValueError("workspace_trust must be trusted or untrusted")
+            return HTTPStatus.OK, await self._dispatch_control(
+                "session.set_authority",
+                {
+                    "session_id": match.group(1),
+                    "workspace_trust": workspace_trust,
+                },
             )
         queue_match = _THREAD_QUEUE.fullmatch(path)
         if queue_match and request.method == "GET":

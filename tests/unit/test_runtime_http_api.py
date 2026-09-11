@@ -614,6 +614,56 @@ async def test_agent_delivery_settings_http_route(tmp_path: Path) -> None:
         await server.stop()
 
 
+# 功能：验证 Web 可以读取并切换当前会话的工作区信任状态
+# 设计：通过真实 HTTP 路由调用记录型 typed dispatcher，核对会话 ID 与受限 trust 枚举不会漂移
+async def test_session_authority_http_route(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    # 记录 Web 权限路由下发的 typed Core 命令
+    async def dispatch(command: str, params: dict[str, Any]) -> dict[str, object]:
+        calls.append((command, params))
+        trust = params.get("workspace_trust", "untrusted")
+        return {"snapshot": {"workspace_trust": trust}}
+
+    service = _FakeRuntimeApi(tmp_path)
+    server = HttpApiServer(
+        "127.0.0.1",
+        0,
+        "test-token",
+        service,  # type: ignore[arg-type]
+        control_dispatcher=dispatch,
+    )
+    host, port = await server.start()
+    try:
+        async with httpx.AsyncClient(
+            base_url=f"http://{host}:{port}",
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            current = await client.get("/v1/threads/thread-1/authority")
+            updated = await client.patch(
+                "/v1/threads/thread-1/authority",
+                json={"workspace_trust": "trusted"},
+            )
+            invalid = await client.patch(
+                "/v1/threads/thread-1/authority",
+                json={"workspace_trust": "always"},
+            )
+        assert current.status_code == 200
+        assert current.json()["snapshot"]["workspace_trust"] == "untrusted"
+        assert updated.status_code == 200
+        assert updated.json()["snapshot"]["workspace_trust"] == "trusted"
+        assert invalid.status_code == 400
+        assert calls == [
+            ("session.get_authority", {"session_id": "thread-1"}),
+            (
+                "session.set_authority",
+                {"session_id": "thread-1", "workspace_trust": "trusted"},
+            ),
+        ]
+    finally:
+        await server.stop()
+
+
 # 功能：验证 Provider Doctor 校验失败通过 HTTP 422 返回脱敏结构而不是通用 500
 # 设计：让 fake service 抛出真实 ConfigurationValidationError，并检查前端恢复所需的分类与上游状态码
 async def test_http_provider_validation_failure_is_actionable(tmp_path: Path) -> None:

@@ -691,6 +691,8 @@ class CoreApp:
             "memory.settings.set": self._memory_settings_set_handler,
             "agent.settings.get": self._agent_settings_get_handler,
             "agent.settings.set": self._agent_settings_set_handler,
+            "session.get_authority": self._session_get_authority_handler,
+            "session.set_authority": self._session_set_authority_handler,
         }
         handler = handlers.get(command)
         if handler is None:

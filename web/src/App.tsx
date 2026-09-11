@@ -2105,6 +2105,7 @@ function AppShell({
             setDrawer(null);
             void loadThread(threadId);
           }}
+          onAuthorityChange={(threadId) => loadThread(threadId)}
           onClose={() => setDrawer(null)}
           onReference={(path) => {
             setComposer((current) => `${current}${current ? " " : ""}@${path} `);
@@ -2634,6 +2635,7 @@ function DrawerPanel({
   initialFile,
   onFork,
   onNavigate,
+  onAuthorityChange,
   onClose,
   onReference,
   onError,
@@ -2644,6 +2646,7 @@ function DrawerPanel({
   initialFile: string;
   onFork(thread: ThreadRecord, editorText: string): void;
   onNavigate(threadId: string, editorText: string): void;
+  onAuthorityChange(threadId: string): Promise<void>;
   onClose(): void;
   onReference(path: string): void;
   onError(value: string): void;
@@ -2654,7 +2657,7 @@ function DrawerPanel({
       {drawer === "files" && <FilesPanel initialFile={initialFile} onReference={onReference} onError={onError} />}
       {drawer === "changes" && <ChangesPanel threadId={threadId} onError={onError} />}
       {drawer === "models" && <ModelsPanel threadId={threadId} onError={onError} />}
-      {drawer === "advanced" && <AdvancedPanel threadId={threadId} onError={onError} />}
+      {drawer === "advanced" && <AdvancedPanel threadId={threadId} onAuthorityChange={onAuthorityChange} onError={onError} />}
       {drawer === "history" && <SessionTreePanel threadId={threadId} tr={tr} onFork={onFork} onNavigate={onNavigate} onError={onError} />}
     </aside>
   );
@@ -2946,7 +2949,7 @@ function ModelsPanel({ threadId, onError }: { threadId: string; onError(value: s
   </div>;
 }
 
-function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
+function AdvancedPanel({ threadId, onAuthorityChange, onError }: { threadId: string; onAuthorityChange(threadId: string): Promise<void>; onError(value: string): void }): ReactElement {
   const dialog = useProductDialog();
   const preferences = useInterfacePreferences();
   const [tab, setTab] = useState<"interface" | "goals" | "workers" | "skills" | "mcp" | "memory">("interface");
@@ -2957,6 +2960,14 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const endpoint = tab === "interface" ? "/v1/agent/settings" : tab === "goals" ? `/v1/goals?thread_id=${encodeURIComponent(threadId)}` : tab === "workers" ? `/v1/workers?thread_id=${encodeURIComponent(threadId)}` : tab === "skills" ? "/v1/skills" : tab === "mcp" ? "/v1/mcp" : "/v1/memories";
   const load = useCallback(() => {
     if ((tab === "goals" || tab === "workers") && !threadId) { setData({}); return Promise.resolve(); }
+    if (tab === "interface") {
+      return Promise.all([
+        request<Record<string, unknown>>(endpoint),
+        threadId
+          ? request<Record<string, unknown>>(`/v1/threads/${encodeURIComponent(threadId)}/authority`)
+          : Promise.resolve({}),
+      ]).then(([settings, authority]) => setData({ ...settings, authority })).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
+    }
     return request<Record<string, unknown>>(endpoint).then(setData).catch((reason: unknown) => onError(reason instanceof Error ? reason.message : String(reason)));
   }, [endpoint, onError, tab, threadId]);
   useEffect(() => { void load(); }, [load]);
@@ -2971,6 +2982,8 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
   const memories = (data.memories || []) as Array<Record<string, unknown>>;
   const memorySettings = (data.settings || {}) as Record<string, unknown>;
   const deliverySettings = (data.settings || {}) as Record<string, unknown>;
+  const authority = (data.authority || {}) as Record<string, unknown>;
+  const authoritySnapshot = (authority.snapshot || {}) as Record<string, unknown>;
   const workerFollowup = async (workerId: string) => {
     const message = await dialog({
       title: tr("向 Worker 发送后续指令", "Send follow-up to worker"),
@@ -3116,6 +3129,17 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
       await load();
     } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
   };
+  const updateWorkspaceTrust = async () => {
+    if (!threadId) return;
+    const workspaceTrust = textValue(authoritySnapshot.workspace_trust) === "trusted" ? "untrusted" : "trusted";
+    try {
+      await request(`/v1/threads/${encodeURIComponent(threadId)}/authority`, {
+        method: "PATCH",
+        body: JSON.stringify({ workspace_trust: workspaceTrust }),
+      });
+      await Promise.all([load(), onAuthorityChange(threadId)]);
+    } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  };
   const tabLabels = {
     interface: tr("界面", "Interface"), goals: "Goals", workers: "Workers", skills: "Skills", mcp: "MCP", memory: tr("记忆", "Memory"),
   };
@@ -3123,6 +3147,7 @@ function AdvancedPanel({ threadId, onError }: { threadId: string; onError(value:
     {tab === "interface" && <div className="advanced-list interface-preferences">
       <section><div><b>{tr("界面语言", "Interface language")}</b><span className="stable">{preferences.locale}</span></div><p>{tr("仅改变 CodeRook Web 的界面文案；模型回答、日志和代码内容保持原文。", "Changes only CodeRook Web labels. Model responses, logs, and code remain unchanged.")}</p><select aria-label={tr("界面语言", "Interface language")} value={preferences.locale} onChange={(event) => preferences.setLocale(event.target.value as WebLocale)}><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></section>
       <section><div><b>{tr("显示对比度", "Display contrast")}</b><span className="stable">{preferences.theme === "light" ? tr("浅色", "Light") : tr("高对比", "High contrast")}</span></div><p>{tr("默认保持浅色产品界面；高对比模式加强文字、边框和焦点可见性。", "The default stays light. High contrast strengthens text, borders, and focus visibility.")}</p><select aria-label={tr("显示对比度", "Display contrast")} value={preferences.theme} onChange={(event) => preferences.setTheme(event.target.value as WebTheme)}><option value="light">{tr("浅色", "Light")}</option><option value="high-contrast">{tr("高对比", "High contrast")}</option></select></section>
+      <section><div><b>{tr("项目能力", "Project capabilities")}</b><span className={textValue(authoritySnapshot.workspace_trust) === "trusted" ? "stable" : "labs"}>{textValue(authoritySnapshot.workspace_trust) === "trusted" ? tr("已信任", "Trusted") : tr("未信任", "Untrusted")}</span></div><p>{threadId ? tr("信任后，当前会话可以使用项目内的 Prompt 模板、Skills 和扩展；撤销后立即隐藏。", "Trust lets this session use project prompt templates, skills, and extensions. Revoking hides them immediately.") : tr("先创建或打开一个任务，再为该会话启用项目能力。", "Create or open a task before enabling project capabilities for that session.")}</p><button disabled={!threadId} onClick={() => void updateWorkspaceTrust()}>{textValue(authoritySnapshot.workspace_trust) === "trusted" ? tr("撤销信任", "Revoke trust") : tr("信任此项目", "Trust this project")}</button></section>
       <section><div><b>{tr("纠偏消息", "Steering messages")}</b><span className="stable">{textValue(deliverySettings.steering_mode || "one-at-a-time")}</span></div><p>{tr("运行中发送的纠偏可逐条交给模型，或把当前待处理纠偏一次全部交付。", "Deliver active-run steering one message at a time, or deliver all pending steering together.")}</p><select aria-label={tr("纠偏消息交付", "Steering delivery")} value={textValue(deliverySettings.steering_mode || "one-at-a-time")} onChange={(event) => void updateDelivery("steering_mode", event.target.value)}><option value="one-at-a-time">{tr("逐条交付", "One at a time")}</option><option value="all">{tr("一次全部交付", "All together")}</option></select></section>
       <section><div><b>{tr("后续消息", "Follow-up messages")}</b><span className="stable">{textValue(deliverySettings.follow_up_mode || "one-at-a-time")}</span></div><p>{tr("当前回答结束后，可逐条处理排队消息，或把同模式消息合并交给下一次决策。", "After the current answer, process queued messages one at a time or admit all same-mode messages together.")}</p><select aria-label={tr("后续消息交付", "Follow-up delivery")} value={textValue(deliverySettings.follow_up_mode || "one-at-a-time")} onChange={(event) => void updateDelivery("follow_up_mode", event.target.value)}><option value="one-at-a-time">{tr("逐条交付", "One at a time")}</option><option value="all">{tr("一次全部交付", "All together")}</option></select></section>
     </div>}
