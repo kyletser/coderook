@@ -348,6 +348,23 @@ async def test_default_model_led_turn_has_no_synthetic_intent_card(tmp_path: Pat
     )
 
 
+# 功能：验证空格分隔的“只回答”请求不会向模型发送代码执行工具
+# 设计：通过真实 Runner 和捕获 Provider 检查最终请求，覆盖用户常用措辞的成本边界
+async def test_answer_only_with_space_hides_all_tools(tmp_path: Path) -> None:
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="OVERRIDE_OK"))
+    runner = AgentRunner(
+        _config(),
+        provider=provider,
+        workspace_root=tmp_path,
+        runs_dir=tmp_path / "runs",
+    )
+
+    outcome = await runner.run_and_capture("只回答 OVERRIDE_OK，不调用工具。")
+
+    assert outcome.status == "success"
+    assert provider.tool_schemas == []
+
+
 async def _run(
     goal: str = "test goal",
     *,

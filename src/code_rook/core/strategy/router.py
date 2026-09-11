@@ -82,7 +82,8 @@ _LONG_RE = re.compile(
     r"complete all|migration|resume)"
 )
 _ANSWER_ONLY_RE = re.compile(
-    r"(?i)^\s*(?:只回答(?:问题)?|直接回答(?:问题)?|just\s+answer|answer\s+only)\s*[：:]"
+    r"(?i)^\s*(?:只回答(?:问题)?|直接回答(?:问题)?|just\s+answer|answer\s+only)"
+    r"(?:\s*[：:]\s*|\s+)"
 )
 _FILE_RE = re.compile(
     r"(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.@+()-]+(?:[\\/][A-Za-z0-9_.@+()-]+)*\.[A-Za-z0-9]{1,10}"

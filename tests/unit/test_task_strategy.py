@@ -73,7 +73,13 @@ async def test_hybrid_router_skips_model_for_clear_shell_risk() -> None:
 # 设计：覆盖模型身份和能力询问的真实表达，避免措辞变化再次误入规划流程
 @pytest.mark.parametrize(
     "goal",
-    ["你是什么模型", "具体型号呢", "你能干什么", "你有什么功能"],
+    [
+        "你是什么模型",
+        "具体型号呢",
+        "你能干什么",
+        "你有什么功能",
+        "只回答 OVERRIDE_OK，不调用工具。",
+    ],
 )
 def test_conversation_question_routes_to_direct_answer_without_tools(goal: str) -> None:
     profile = TaskStrategyRouter().classify_rules(goal)
