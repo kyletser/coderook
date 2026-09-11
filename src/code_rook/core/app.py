@@ -3251,7 +3251,20 @@ def run() -> None:
         type=Path,
         help="Explicit environment file; repository .env files are never loaded automatically",
     )
+    parser.add_argument(
+        "--workspace",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
+    if args.workspace is not None:
+        try:
+            workspace = args.workspace.expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise SystemExit(f"Core workspace is unavailable: {args.workspace}") from exc
+        if not workspace.is_dir():
+            raise SystemExit(f"Core workspace is not a directory: {workspace}")
+        os.chdir(workspace)
     try:
         state_layout = prepare_user_state_layout()
     except StatePathSecurityError as exc:

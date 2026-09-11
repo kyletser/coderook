@@ -17,6 +17,40 @@ def test_pid_exists_detects_current_process_and_missing_pid() -> None:
     assert not core._pid_exists(2_147_483_647)
 
 
+# 功能：验证后台 Core 启动器不把用户项目目录保留为 Windows 进程工作目录。
+# 设计：捕获 Popen 参数，确认项目通过显式参数传递且启动器驻留在用户状态目录。
+def test_spawn_core_detaches_process_cwd_from_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(core, "_PID_FILE", state / "coderook-core.pid")
+    captured: dict[str, object] = {}
+    proc = MagicMock(pid=4321)
+
+    # 捕获命令与启动选项而不派生真实后台进程
+    def popen(command: list[str], **kwargs: object) -> MagicMock:
+        captured["command"] = command
+        captured.update(kwargs)
+        return proc
+
+    monkeypatch.setattr(core.subprocess, "Popen", popen)
+
+    assert core._spawn_core() is proc
+    assert captured["cwd"] == state.resolve()
+    assert captured["command"] == [
+        core.sys.executable,
+        "-m",
+        "code_rook.core",
+        "--workspace",
+        str(workspace.resolve()),
+    ]
+    assert (state / "coderook-core.pid").read_text(encoding="utf-8") == "4321"
+
+
 # 功能：验证虚拟环境启动器 PID 失效后仍能从 daemon 锁文件恢复真实进程号
 # 设计：让启动 PID 指向已退出进程、锁文件指向存活进程，覆盖 Windows 启动器转交子进程场景
 def test_running_pid_falls_back_to_daemon_lock(

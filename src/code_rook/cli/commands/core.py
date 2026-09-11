@@ -141,7 +141,16 @@ async def _activate_workspace(config: CodeRookConfig, workspace: Path) -> None:
 
 # 启动后台 Core 并显式转发用户选择的环境文件，返回进程对象供就绪等待
 def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
-    command = [sys.executable, "-m", "code_rook.core"]
+    workspace = Path.cwd().resolve()
+    launch_root = _PID_FILE.parent.resolve()
+    launch_root.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "code_rook.core",
+        "--workspace",
+        str(workspace),
+    ]
     if env_file is not None:
         command.extend(["--env-file", str(env_file.expanduser().resolve())])
     if os.name == "nt":
@@ -151,6 +160,7 @@ def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            cwd=launch_root,
             creationflags=(
                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 | getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -163,9 +173,9 @@ def _spawn_core(env_file: Path | None = None) -> subprocess.Popen[bytes]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            cwd=launch_root,
             start_new_session=True,
         )
-    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     return proc
 
