@@ -262,6 +262,24 @@ def test_new_flag_launches_tui(monkeypatch) -> None:
     assert launched == [["coderook", "--new"]]
 
 
+# 功能：顶层 --provider 参数直接进入 TUI 并保留后续模型与任务参数
+# 设计：捕获委托前后的完整 argv，防止 Provider 别名只在打印和 run 子命令生效
+def test_provider_flag_launches_tui(monkeypatch: pytest.MonkeyPatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "--provider", "aliyun", "--model", "qwen3.8-flash", "检查项目"],
+    )
+    monkeypatch.setattr(tui_main, "main", lambda: launched.append(list(sys.argv)))
+
+    cli_main.main()
+
+    assert launched == [[
+        "coderook", "--provider", "aliyun", "--model", "qwen3.8-flash", "检查项目",
+    ]]
+
+
 # 功能：验证显式 coderook tui 别名移除子命令后完整委托原 TUI 参数解析器
 # 设计：捕获 TUI 看到的 argv，确保显式别名不改变 --continue 等既有启动语义
 def test_explicit_tui_alias_launches_tui(monkeypatch) -> None:

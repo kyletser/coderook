@@ -283,7 +283,7 @@ def _run_cli() -> int:
         "-c", "-r", "-n", "-t", "-nt", "--continue", "--new", "--resume", "--session",
         "--fork",
         "--replay", "--name", "--tools", "--no-tools", "--no-auto-core", "--thinking",
-        "--route", "--model",
+        "--route", "--provider", "--model",
     }
     tui_probe = list(sys.argv[1:])
     if tui_probe[:1] == ["--env-file"] and len(tui_probe) >= 2:
