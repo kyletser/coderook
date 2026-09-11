@@ -1088,15 +1088,22 @@ class SessionManager:
         model_tools: Sequence[str] | None = None,
         system_prompt_override: str | None = None,
         system_prompt_append: str = "",
+        start_signal: asyncio.Future[None] | None = None,
     ) -> str:
-        if not input_processed:
-            processed = await self.process_input(sid, content, attachments, source=input_source)
-            if processed is None:
-                return ""
-            content, attachments = processed
-        resolved_run_id = run_id or new_run_id()
-        await self.preflight_turn_start(sid, resolved_run_id)
+        startup_error: BaseException | None = None
+        resolved_run_id: str | None = None
         try:
+            if not input_processed:
+                processed = await self.process_input(
+                    sid, content, attachments, source=input_source
+                )
+                if processed is None:
+                    if start_signal is not None and not start_signal.done():
+                        start_signal.set_result(None)
+                    return ""
+                content, attachments = processed
+            resolved_run_id = run_id or new_run_id()
+            await self.preflight_turn_start(sid, resolved_run_id)
             async with self._workspace_mutation_guard.turn():
                 return await self._send_message(
                     sid,
@@ -1110,11 +1117,21 @@ class SessionManager:
                     model_tools=model_tools,
                     system_prompt_override=system_prompt_override,
                     system_prompt_append=system_prompt_append,
+                    start_signal=start_signal,
                 )
+        except BaseException as exc:
+            startup_error = exc
+            raise
         finally:
-            async with self._turn_reservation_lock:
-                if self._turn_reservations.get(sid) == resolved_run_id:
-                    self._turn_reservations.pop(sid, None)
+            if resolved_run_id is not None:
+                async with self._turn_reservation_lock:
+                    if self._turn_reservations.get(sid) == resolved_run_id:
+                        self._turn_reservations.pop(sid, None)
+            if start_signal is not None and not start_signal.done():
+                if startup_error is None:
+                    start_signal.set_result(None)
+                else:
+                    start_signal.set_exception(startup_error)
 
     # 追加 thread 并启动一次 agent run
     async def _send_message(
@@ -1131,6 +1148,7 @@ class SessionManager:
         model_tools: Sequence[str] | None = None,
         system_prompt_override: str | None = None,
         system_prompt_append: str = "",
+        start_signal: asyncio.Future[None] | None = None,
     ) -> str:
         await self._ensure_runtime_sessions()
         session = self._get_session(sid)
@@ -1537,6 +1555,8 @@ class SessionManager:
                         )
                     )
                 persistence_ready.set()
+                if start_signal is not None and not start_signal.done():
+                    start_signal.set_result(None)
                 outcome = await runner_task
             except asyncio.CancelledError:
                 if not runner_task.done():

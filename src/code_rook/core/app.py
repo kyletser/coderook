@@ -1102,13 +1102,14 @@ class CoreApp:
             )
         )
 
-    # 启动一次 agent run：异步创建 AgentRunner 并立即返回 run_id
+    # 启动一次 agent run：确认 Turn 已持久化后再向客户端返回 run_id
     async def _agent_run_handler(self, params: dict[str, Any]) -> AgentRunResult:
         assert self._sessions is not None
         assert self._permission_manager is not None
         cmd = AgentRunCommand.model_validate(params)
         display_content = cmd.display_content or cmd.goal
         inferred_title = display_content.strip().splitlines()[0][:40]
+        created_session = False
         if cmd.resume_session_id is not None:
             session = await self._sessions.resume(cmd.resume_session_id)
             if cmd.session_name:
@@ -1123,50 +1124,78 @@ class CoreApp:
                 mode=cmd.session_mode,
                 title=cmd.session_name or inferred_title,
             )
-        if cmd.route_id is not None:
-            session = await self._sessions.set_model(
+            created_session = True
+        run_task: asyncio.Task[Any] | None = None
+        try:
+            if cmd.route_id is not None:
+                session = await self._sessions.set_model(
+                    session.id,
+                    cmd.route_id,
+                    cmd.model or "",
+                )
+            if cmd.thinking_level is not None:
+                session = await self._sessions.set_thinking(session.id, cmd.thinking_level)
+            run_id = new_run_id()
+            self._permission_manager.set_session_mode(
                 session.id,
-                cmd.route_id,
-                cmd.model or "",
+                cmd.permission_mode,
+                allow_tools=cmd.allow_tools,
             )
-        if cmd.thinking_level is not None:
-            session = await self._sessions.set_thinking(session.id, cmd.thinking_level)
-        run_id = new_run_id()
-        self._permission_manager.set_session_mode(
-            session.id,
-            cmd.permission_mode,
-            allow_tools=cmd.allow_tools,
-        )
-        self._interaction_manager.set_question_policy(
-            session.id,
-            HeadlessQuestionPolicy(
-                mode=cmd.question_mode,
-                timeout_s=cmd.question_timeout_s,
-                answers=tuple(cmd.preset_answers),
-            ),
-        )
-        processed = await self._sessions.process_input(
-            session.id,
-            cmd.goal,
-            cmd.attachments,
-            source="rpc",
-        )
-        if processed is None:
+            self._interaction_manager.set_question_policy(
+                session.id,
+                HeadlessQuestionPolicy(
+                    mode=cmd.question_mode,
+                    timeout_s=cmd.question_timeout_s,
+                    answers=tuple(cmd.preset_answers),
+                ),
+            )
+            processed = await self._sessions.process_input(
+                session.id,
+                cmd.goal,
+                cmd.attachments,
+                source="rpc",
+            )
+            if processed is None:
+                self._permission_manager.clear_session_mode(session.id)
+                self._interaction_manager.clear_question_policy(session.id)
+                return AgentRunResult(run_id="", session_id=session.id, handled=True)
+            content, attachments = processed
+            await self._sessions.preflight_turn_start(session.id, run_id)
+            start_signal: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            run_task = asyncio.create_task(
+                self._sessions.send_message(
+                    session.id,
+                    content,
+                    run_id=run_id,
+                    attachments=attachments,
+                    input_processed=True,
+                    display_content=cmd.display_content,
+                    model_tools=cmd.tools,
+                    system_prompt_override=cmd.system_prompt,
+                    system_prompt_append=cmd.append_system_prompt,
+                    start_signal=start_signal,
+                )
+            )
+            self._running_runs.add(run_task)
+            ready, _pending = await asyncio.wait(
+                (start_signal, run_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if start_signal in ready:
+                await start_signal
+            else:
+                await run_task
+        except BaseException:
+            if run_task is not None:
+                if not run_task.done():
+                    run_task.cancel()
+                await asyncio.gather(run_task, return_exceptions=True)
+                self._running_runs.discard(run_task)
             self._permission_manager.clear_session_mode(session.id)
             self._interaction_manager.clear_question_policy(session.id)
-            return AgentRunResult(run_id="", session_id=session.id, handled=True)
-        content, attachments = processed
-        await self._sessions.preflight_turn_start(session.id, run_id)
-        run_task = asyncio.create_task(
-            self._sessions.send_message(
-                session.id, content, run_id=run_id, attachments=attachments, input_processed=True,
-                display_content=cmd.display_content,
-                model_tools=cmd.tools,
-                system_prompt_override=cmd.system_prompt,
-                system_prompt_append=cmd.append_system_prompt,
-            )
-        )
-        self._running_runs.add(run_task)
+            if created_session and not session.run_ids:
+                await self._sessions.delete(session.id)
+            raise
 
         # 回收 headless run 并消费异常，避免客户端收到启动成功后后台失败完全静默
         def _cleanup(completed: asyncio.Task[Any]) -> None:

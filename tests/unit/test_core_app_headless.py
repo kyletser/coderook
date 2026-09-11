@@ -395,12 +395,15 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
             model_tools: list[str] | None = None,
             system_prompt_override: str | None = None,
             system_prompt_append: str = "",
+            start_signal: asyncio.Future[None] | None = None,
         ) -> str:
             assert attachments == [image]
             assert input_processed is True
             displayed_messages.append(display_content)
             assert model_tools == ["read"]
             system_prompts.append((system_prompt_override, system_prompt_append))
+            if start_signal is not None:
+                start_signal.set_result(None)
 
             # 拒绝测试期间意外进入交互审批入口
             async def emit(_event: dict[str, Any]) -> None:
@@ -448,6 +451,69 @@ async def test_agent_run_handler_scopes_and_cleans_headless_mode() -> None:
     assert system_prompts == [
         ("You are a release reviewer.", "Only report verified facts.")
     ]
+    assert session.id not in manager._session_modes  # type: ignore[attr-defined]
+    assert app._running_runs == set()  # type: ignore[attr-defined]
+
+
+# 功能：验证 headless Turn 在持久化前失败时立即返回原始错误且不留下空会话。
+# 设计：用启动信号模拟模型能力校验失败，锁定 IPC 不误报成功、不永久等待和新会话清理。
+async def test_agent_run_handler_propagates_startup_failure_and_deletes_empty_session() -> None:
+    manager = PermissionManager()
+    session = Session("sess-startup-fail", "one_shot", "active", "", "t", "t")
+    deleted: list[str] = []
+
+    class _Sessions:
+        # 创建本次 headless 请求独占的空会话。
+        async def create(self, mode: str, title: str = "") -> Session:
+            assert mode == "one_shot"
+            assert title == "inspect image"
+            return session
+
+        # 模拟扩展未拦截的原始输入。
+        async def process_input(
+            self,
+            session_id: str,
+            content: str,
+            attachments: list[ImageArtifactInput],
+            *,
+            source: str,
+        ) -> tuple[str, list[ImageArtifactInput]]:
+            assert session_id == session.id
+            assert source == "rpc"
+            return content, attachments
+
+        # 模拟同步前置校验通过，错误发生在后续 Turn 准备阶段。
+        async def preflight_turn_start(self, session_id: str, run_id: str) -> None:
+            assert session_id == session.id
+            assert run_id
+
+        # 在真实启动边界前返回模型能力错误，并通过信号同步通知 handler。
+        async def send_message(
+            self,
+            _session_id: str,
+            _content: str,
+            **kwargs: Any,
+        ) -> str:
+            error = HandlerError(-32602, "selected Turn route does not support images")
+            signal = kwargs["start_signal"]
+            signal.set_exception(error)
+            raise error
+
+        # 记录新建空会话已被回收。
+        async def delete(self, session_id: str) -> None:
+            deleted.append(session_id)
+
+    app = CoreApp()
+    app._sessions = _Sessions()  # type: ignore[assignment]
+    app._permission_manager = manager  # type: ignore[attr-defined]
+
+    with pytest.raises(HandlerError, match="does not support images"):
+        await asyncio.wait_for(
+            app._agent_run_handler({"goal": "inspect image"}),  # type: ignore[attr-defined]
+            timeout=1,
+        )
+
+    assert deleted == [session.id]
     assert session.id not in manager._session_modes  # type: ignore[attr-defined]
     assert app._running_runs == set()  # type: ignore[attr-defined]
 
