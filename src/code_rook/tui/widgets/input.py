@@ -567,6 +567,9 @@ class ChatTextArea(TextArea):
     class RestoreQueued(Message):
         pass
 
+    class CancelRequested(Message):
+        pass
+
     class ImagePasted(Message):
         # 初始化图片粘贴消息并携带已解析的绝对路径
         def __init__(self, path: Path) -> None:
@@ -750,6 +753,11 @@ class ChatTextArea(TextArea):
                 else:
                     self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
+        if key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.CancelRequested())
+            return
         if key == "up" and popup is None and (not self.text or self._history_index is not None):
             event.stop()
             event.prevent_default()

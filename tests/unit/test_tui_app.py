@@ -1906,6 +1906,33 @@ async def test_ctrl_c_without_selection_cancels(
         assert app.cancel_count == 1
 
 
+# 功能：验证 Esc 单次中断活动任务而不经过 Ctrl+C 的二次确认
+# 设计：在真实 Textual 按键分发中挂载活动 run，并用最小取消实现记录调度结果
+async def test_escape_immediately_cancels_active_run() -> None:
+    cancelled: list[str] = []
+
+    class CancelHarness(CodeRookTuiApp):
+        # 挂载输入框但不连接真实 Core
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+        # 记录 Esc 经正式 action 调度的 run，不连接真实 Core
+        async def _do_cancel_run(self, run_id: str) -> None:
+            cancelled.append(run_id)
+
+    app = CancelHarness("127.0.0.1", 9999)
+    async with app.run_test(size=(80, 20)) as pilot:
+        app._client = object()  # type: ignore[assignment]
+        app._active_run_id = "run-escape"
+        app._busy = True
+        app.query_one("#prompt", ChatTextArea).focus()
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert cancelled == ["run-escape"]
+        assert app._cancel_requested is True
+
+
 # 功能：验证 Ctrl+Shift+C 在没有拖选文本时复制最近一条完整回复
 # 设计：挂载真实 TUI、替换系统剪贴板后端并设置最后回复，覆盖选择失败时的可靠降级路径
 async def test_copy_shortcut_falls_back_to_last_response(

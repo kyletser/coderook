@@ -158,6 +158,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     TITLE = "CodeRook"
     BINDINGS = [
         Binding("ctrl+c", "copy_or_cancel", "copy / cancel", show=False),
+        Binding("escape", "abort_run", "cancel run", show=False),
         Binding("ctrl+shift+c", "copy_selection", "copy selection", show=False),
         Binding("ctrl+p", "command_palette", "command palette", show=False, priority=True),
         Binding("ctrl+l", "model_picker", "model picker", show=False, priority=True),
@@ -1258,6 +1259,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         )
         self.run_worker(self._do_cancel_run(run_id), name="cancel_run", exclusive=False)
 
+    # Esc 单次中断活动任务；弹窗与审批组件会先消费自己的 Esc 事件。
+    async def action_abort_run(self) -> None:
+        if self._active_run_id is None or not self._busy:
+            return
+        self._cancel_armed = True
+        await self.action_cancel_run()
+
     # 同时写入 Textual OSC 52 和 Windows 系统剪贴板，兼容不同终端
     def _write_clipboard(self, text: str) -> bool:
         if not text:
@@ -1309,6 +1317,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("↑ / ↓", tr("help.history", self._locale)),
             ("Tab", tr("help.mode", self._locale)),
             ("Shift+Tab", tr("help.permission", self._locale)),
+            ("Esc", tr("help.abort", self._locale)),
             ("Ctrl+C", tr("help.cancel", self._locale)),
             ("Ctrl+Shift+C", tr("help.copy", self._locale)),
             ("Ctrl+End", tr("help.scroll", self._locale)),
@@ -1693,6 +1702,13 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             name="restore_queued_messages",
             exclusive=False,
         )
+
+    # 输入框 Esc 请求立即中断当前活动任务。
+    async def on_chat_text_area_cancel_requested(
+        self,
+        _event: ChatTextArea.CancelRequested,
+    ) -> None:
+        await self.action_abort_run()
 
     # 删除 Core 中已成功取回的队列项，并按原顺序回填文本与附件
     async def _restore_queued_messages(self) -> None:
