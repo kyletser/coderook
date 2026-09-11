@@ -65,6 +65,19 @@ def test_qwen38_flash_pricing_has_auditable_builtin_quote() -> None:
     assert versioned is not None and versioned.effective_date == "2026-08-27"
 
 
+# 功能：验证 qwen-plus 的当前非思考 128K 档不再显示未知成本
+# 设计：核对内置美元换算单价、版本后缀匹配和独立生效日期，保证真实 Aliyun 会话可持久估算
+def test_qwen_plus_pricing_has_auditable_builtin_quote() -> None:
+    quote = resolve_pricing_quote("qwen-plus")
+
+    assert quote is not None
+    assert quote.pricing == ModelPricing(0.113, 0.282)
+    assert quote.source == "builtin"
+    assert quote.effective_date == "2026-09-11"
+    versioned = resolve_pricing_quote("qwen-plus-2025-12-01")
+    assert versioned is not None and versioned.pricing == quote.pricing
+
+
 # 功能：验证成本估算覆盖输入、输出与缓存读写四类用量
 # 设计：用整数 token 数乘单价手工核算期望值，避免浮点意外
 def test_estimate_cost_all_components() -> None:

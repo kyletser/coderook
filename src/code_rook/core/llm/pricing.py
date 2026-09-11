@@ -11,6 +11,7 @@ _DEFAULT_PRICING_PATH = "~/.coderook/pricing.toml"
 _BUILTIN_PRICING_EFFECTIVE_DATE = "2026-08-18"
 _BUILTIN_PRICING_EFFECTIVE_DATES = {
     "qwen3.8-flash": "2026-08-27",
+    "qwen-plus": "2026-09-11",
 }
 
 
@@ -41,6 +42,8 @@ _BUILTIN_PRICING: dict[str, ModelPricing] = {
     "gpt-5.5": ModelPricing(1.25, 10.0),
     # Alibaba Cloud 标准实时推理美元价；地区或促销差异可由 pricing.toml 覆盖
     "qwen3.8-flash": ModelPricing(0.113, 0.382, 0.014, 0.177),
+    # 北京/全球非思考 0-128K 档，沿用同目录报价的 7.08 CNY/USD 换算口径
+    "qwen-plus": ModelPricing(0.113, 0.282),
     "deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0028),
     "deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.003625),
 }
