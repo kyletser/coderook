@@ -109,6 +109,8 @@ referrer 禁止与 frame-ancestors 禁止；Web 入口拒绝非 loopback API bin
 在线。SessionManager 接受显式 workspace 并只重建该目录的会话，因此切回项目会恢复其原会话而不会
 混入其他项目。活动 run 会阻止切换，以维持单一活动工作区不变量。新建空白项目默认落到
 `~/CodeRookProjects/`；登记已有目录不复制、不移动文件，忘记项目记录也不删除磁盘内容。
+`core/authority/trust_store.py` 将用户明确授予的工作区信任按规范化绝对路径写入用户级
+`workspace-trust.json`；新会话与 Core 重启复用该决定，其他项目不继承，活动 Turn 仍使用已冻结快照。
 
 从可编辑源码仓库无参数启动 Web 时，CLI 先切换到 `~/.coderook/welcome-workspace`。该目录只承载
 未选择项目的欢迎页，不注册为项目，也不开放文件、变更或任务入口。当前运行的 CodeRook 源码根、

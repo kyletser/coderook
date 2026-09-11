@@ -4,7 +4,7 @@ import asyncio
 import datetime
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
@@ -16,6 +16,7 @@ from code_rook.core.authority import (
     AuthorityProfile,
     AuthoritySnapshot,
     ToolAction,
+    WorkspaceTrust,
     detect_sandbox_capability,
     evaluate_action,
 )
@@ -177,6 +178,25 @@ class PermissionManager:
                 self._persistent_always,
                 self._policy_file,
                 authority_profile=profile,
+            )
+
+    # 设置当前工作区的新会话信任默认值
+    def set_default_workspace_trust(self, trust: WorkspaceTrust) -> None:
+        self._default_authority = self._default_authority.model_copy(
+            update={"workspace_trust": trust}
+        )
+
+    # 将工作区信任决定同步到指定会话，但不改动活动 Turn 的冻结快照
+    def set_workspace_trust_for_sessions(
+        self,
+        trust: WorkspaceTrust,
+        session_ids: Iterable[str],
+    ) -> None:
+        self.set_default_workspace_trust(trust)
+        for session_id in session_ids:
+            current = self.get_authority_snapshot(session_id)
+            self._session_authorities[session_id] = current.model_copy(
+                update={"workspace_trust": trust}
             )
 
     # 设置从下一 turn 开始使用的 session authority 快照

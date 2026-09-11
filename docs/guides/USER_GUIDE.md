@@ -424,6 +424,9 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | 扩展 | `/skills`、`/mcp`、`/memory`、`/artifacts`、`/workers`、`/jobs` |
 | Labs/高级 | `/preset tool-program`、`/workflow`、`/hooks` |
 
+`/trust grant` 与 `/trust revoke` 按当前工作区持久保存到用户状态目录，并立即作用于该项目的后续
+Turn 和新会话；切换到其他项目不会继承这一决定，活动 Turn 的冻结权限也不会被中途改变。
+
 `/theme auto|dark|light|high-contrast` 可即时切换主题；高对比度会强化固定顶栏与状态栏，主题切换不
 改变当前会话、权限或运行状态。
 
@@ -715,7 +718,8 @@ allow-list 仍不能绕过 authority、危险命令规则、工作区边界、Wi
 
 用户级状态位于 `~/.coderook/`：
 
-- `config.toml`、`routes.json`、credentials fallback、`policy.toml`、`ipc-token`、`api-token`；
+- `config.toml`、`routes.json`、credentials fallback、`policy.toml`、`workspace-trust.json`、
+  `ipc-token`、`api-token`；
 - `sessions/`、`goals/`、`runtime.db`、`fleet.db`、`workflow.db`；
 - `traces/`、日志和升级备份。
 

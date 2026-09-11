@@ -18,6 +18,7 @@ from code_rook.core.authority import (
     RuntimeMode,
     ToolAction,
     WorkspaceTrust,
+    WorkspaceTrustStore,
 )
 from code_rook.core.bus.envelope import HandlerError
 from code_rook.core.bus.events import PlanResolvedEvent, VerificationCompletedEvent
@@ -600,7 +601,13 @@ async def test_session_queue_handler_forwards_model_tools() -> None:
 
 # 功能：验证会话 authority 更新只替换 mode/profile，并可由查询命令原样读回
 # 设计：预置收窄的 action scope 后直接调用 Core handler，确保权限切换不会隐式扩大能力
-async def test_session_authority_handlers_preserve_scope() -> None:
+async def test_session_authority_handlers_preserve_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
     manager = PermissionManager()
     session = Session("sess-authority", "chat", "active", "", "t", "t")
     original = manager.get_authority_snapshot(session.id).model_copy(
@@ -619,9 +626,16 @@ async def test_session_authority_handlers_preserve_scope() -> None:
             assert session_id == session.id
             return False
 
+        # 返回当前工作区会话，供项目级信任决定同步
+        def session_ids(self) -> tuple[str, ...]:
+            return (session.id,)
+
     app = CoreApp()
     app._sessions = _Sessions()  # type: ignore[assignment]
     app._permission_manager = manager  # type: ignore[attr-defined]
+    app._workspace_trust_store = WorkspaceTrustStore(  # type: ignore[attr-defined]
+        tmp_path / "state" / "workspace-trust.json"
+    )
 
     updated = await app._session_set_authority_handler(  # type: ignore[attr-defined]
         {
@@ -646,6 +660,12 @@ async def test_session_authority_handlers_preserve_scope() -> None:
     assert trust_only.snapshot.workspace_trust == WorkspaceTrust.TRUSTED
     assert trust_only.snapshot.mode == RuntimeMode.PLAN
     assert trust_only.snapshot.profile == AuthorityProfile.AUTO_REVIEW
+    assert manager.get_authority_snapshot("new-session").workspace_trust == (
+        WorkspaceTrust.TRUSTED
+    )
+    assert WorkspaceTrustStore(
+        tmp_path / "state" / "workspace-trust.json"
+    ).get(workspace) == WorkspaceTrust.TRUSTED
 
 
 # 功能：验证运行中的 turn 不能通过协议静默改变 authority 快照

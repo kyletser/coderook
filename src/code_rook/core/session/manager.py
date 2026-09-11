@@ -2979,6 +2979,10 @@ class SessionManager:
     def get_session(self, sid: str) -> Session:
         return self._get_session(sid)
 
+    # 返回当前工作区内已恢复的全部会话标识
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(self._sessions)
+
     # 返回最近更新的 session 元数据，供 CLI/TUI 选择历史会话
     async def list_sessions(
         self,

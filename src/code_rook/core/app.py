@@ -31,7 +31,12 @@ from code_rook.core.api.auth import load_or_create_api_token
 from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.artifacts.store import scan_referenced_artifact_shas
 from code_rook.core.audit import AuditHealth, AuditIncident
-from code_rook.core.authority import RuntimeMode, ToolAction, WorkspaceTrust
+from code_rook.core.authority import (
+    RuntimeMode,
+    ToolAction,
+    WorkspaceTrust,
+    WorkspaceTrustStore,
+)
 from code_rook.core.authority.sandbox import detect_sandbox_capability
 from code_rook.core.background import BackgroundJobRegistry
 from code_rook.core.bus.commands import (
@@ -407,6 +412,7 @@ class CoreApp:
         self._state_layout: UserStateLayout | None = None
         self._agent_settings_store: AgentDeliverySettingsStore | None = None
         self._session_store: SessionStore | None = None
+        self._workspace_trust_store: WorkspaceTrustStore | None = None
         self._workspace_switch_lock = asyncio.Lock()
         self._project_registry = ProjectRegistry()
 
@@ -856,6 +862,12 @@ class CoreApp:
         assert self._permission_manager is not None
         assert self._route_registry is not None
         boundary = WorkspaceBoundary(workspace)
+        saved_trust = (
+            self._workspace_trust_store.get(boundary.root)
+            if self._workspace_trust_store is not None
+            else WorkspaceTrust.UNTRUSTED
+        )
+        self._permission_manager.set_default_workspace_trust(saved_trust)
         self._capability_scope = CapabilityScope(workspace=str(boundary.root))
         self._artifact_store = ArtifactStore(
             boundary.root / ".coderook" / "artifacts"
@@ -994,6 +1006,10 @@ class CoreApp:
             compaction_config=self._config.compaction,
             summary_retry_policy=self._config.llm.retry,
             shutdown_requester=self._request_extension_shutdown,
+        )
+        self._permission_manager.set_workspace_trust_for_sessions(
+            saved_trust,
+            self._sessions.session_ids(),
         )
         self._worker_controller = WorkerController(
             registry=self._subagent_registry,
@@ -1829,6 +1845,17 @@ class CoreApp:
             changes["profile"] = cmd.profile
         if cmd.workspace_trust is not None:
             changes["workspace_trust"] = cmd.workspace_trust
+            if self._workspace_trust_store is not None:
+                await asyncio.to_thread(
+                    self._workspace_trust_store.set,
+                    Path.cwd(),
+                    cmd.workspace_trust,
+                )
+            self._permission_manager.set_workspace_trust_for_sessions(
+                cmd.workspace_trust,
+                self._sessions.session_ids(),
+            )
+            current = self._permission_manager.get_authority_snapshot(cmd.session_id)
         updated = current.model_copy(update=changes)
         self._permission_manager.set_authority_snapshot(cmd.session_id, updated)
         return SessionAuthorityResult(snapshot=updated)
@@ -3029,6 +3056,9 @@ class CoreApp:
             ) from None
         self._state_layout = state_layout
         self._project_registry = ProjectRegistry(state_layout.root)
+        self._workspace_trust_store = WorkspaceTrustStore(
+            state_layout.root / "workspace-trust.json"
+        )
         if not self._project_registry.is_protected_workspace(Path.cwd()):
             self._project_registry.register(Path.cwd(), kind="existing")
 
