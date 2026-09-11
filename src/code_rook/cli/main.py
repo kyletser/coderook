@@ -254,7 +254,7 @@ def _run_cli() -> int:
             help="Start a new session",
         )
         session_choice.add_argument(
-            "-r", "--resume",
+            "-r", "--resume", "--session",
             metavar="SESSION_ID",
             help="Resume a saved session",
         )
@@ -573,7 +573,7 @@ def _run_cli() -> int:
     cancel_parser.add_argument("run_id", help="Active run ID")
     chat_parser = subparsers.add_parser("chat", help="Start or resume a chat session")
     chat_parser.add_argument(
-        "-r", "--resume", metavar="SESSION_ID", help="Resume a saved session"
+        "-r", "--resume", "--session", metavar="SESSION_ID", help="Resume a saved session"
     )
 
     sessions_parser = subparsers.add_parser("sessions", help="List saved sessions")
@@ -671,7 +671,7 @@ def _run_cli() -> int:
     )
     run_session = run_parser.add_mutually_exclusive_group()
     run_session.add_argument(
-        "--resume",
+        "--resume", "--session",
         metavar="SESSION_ID",
         help="Append this goal to an existing resumable chat session",
     )
