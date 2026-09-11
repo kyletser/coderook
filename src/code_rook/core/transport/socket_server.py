@@ -148,6 +148,8 @@ class SocketServer:
                 command_tasks,
                 connection_closed,
             )
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            logger.debug("IPC client connection closed unexpectedly: %s", peer)
         finally:
             connection_closed.set()
             self._active_writers.discard(writer)

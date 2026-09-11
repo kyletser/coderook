@@ -4,6 +4,7 @@ import asyncio
 import json
 import socket
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -52,6 +53,21 @@ async def test_broadcaster_unsubscribe_called_on_disconnect() -> None:
         await asyncio.wait_for(unsubscribed.wait(), timeout=2.0)
     finally:
         await server.stop()
+
+
+# 功能：验证 Windows 客户端重置连接时服务端完成清理且不向事件循环泄漏异常
+# 设计：让 StreamReader.readline 精确抛出 ConnectionResetError，直接覆盖真实日志中的 client_connected_cb 失败路径
+async def test_connection_reset_is_handled_as_disconnect() -> None:
+    reader = MagicMock(spec=asyncio.StreamReader)
+    reader.readline = AsyncMock(side_effect=ConnectionResetError("connection reset"))
+    writer = MagicMock(spec=asyncio.StreamWriter)
+    writer.get_extra_info.return_value = ("127.0.0.1", 43123)
+    server = SocketServer("127.0.0.1", _free_port())
+
+    await server._handle_connection(reader, writer)
+
+    writer.close.assert_called_once_with()
+    assert writer not in server._active_writers
 
 
 # 功能：验证断线清理完成后才结束的命令不能遗留该 writer 新建的订阅
