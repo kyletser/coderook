@@ -140,6 +140,12 @@ class RuntimeApiService:
         snapshot = self._configuration_snapshot()
         return {"presets": presets, **snapshot}
 
+    # 在创建任务前刷新活动 Provider 的真实可用性，并返回最新脱敏目录
+    async def refresh_provider_readiness(self) -> dict[str, object]:
+        configuration = self._require_configuration()
+        await configuration.probe_readiness()
+        return await self.provider_catalog()
+
     # 返回当前路由的脱敏配置投影，凭据只暴露来源和是否就绪
     def _configuration_snapshot(self) -> dict[str, object]:
         if self._configuration is None:

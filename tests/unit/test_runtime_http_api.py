@@ -79,11 +79,17 @@ class _FakeRuntimeApi:
         self.thinking_selection: tuple[str, str] | None = None
         self.session_import: tuple[str, str, str] | None = None
         self.compaction_focus: tuple[str, str] | None = None
+        self.readiness_refreshed = False
 
     @property
     # 返回 Web bootstrap 响应中使用的受限测试工作区
     def workspace_root(self) -> str:
         return self.thread.workspace
+
+    @property
+    # 返回 fake API 是否关闭，保持 SSE 生命周期与真实 RuntimeApiService 一致
+    def closed(self) -> bool:
+        return False
 
     # 返回内存 thread 列表
     async def list_threads(self) -> list[ThreadRecord]:
@@ -123,6 +129,16 @@ class _FakeRuntimeApi:
     ) -> dict[str, object]:
         self.thinking_selection = (thread_id, thinking_level)
         return {"thread_id": thread_id, "thinking_level": thinking_level}
+
+    # 模拟 Web 在任务提交前刷新 Provider readiness
+    async def refresh_provider_readiness(self) -> dict[str, object]:
+        self.readiness_refreshed = True
+        return {
+            "active_route_id": "aliyun",
+            "routes": [],
+            "presets": [],
+            "readiness": {"status": "provider_verified", "local_ready": True},
+        }
 
     # 模拟 Web 手动压缩并记录用户要求保留的重点
     async def compact_thread(
@@ -589,6 +605,24 @@ async def test_http_provider_validation_failure_is_actionable(tmp_path: Path) ->
             "message": "declared tool capability probe failed",
             "provider_status": 400,
         }
+    finally:
+        await server.stop()
+
+
+# 功能：验证 Web 可通过独立端点在创建 Turn 前刷新 Provider readiness
+# 设计：经真实 HTTP POST 调用 fake service，固定端点语义且确保没有误走 route 激活分支
+async def test_http_refreshes_provider_readiness(tmp_path: Path) -> None:
+    server, service, base_url = await _start_server(tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            headers={"Authorization": "Bearer test-token"},
+        ) as client:
+            response = await client.post("/v1/providers/readiness")
+
+        assert response.status_code == 200
+        assert response.json()["readiness"]["local_ready"] is True
+        assert service.readiness_refreshed is True
     finally:
         await server.stop()
 

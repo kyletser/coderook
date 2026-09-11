@@ -11,6 +11,7 @@ import {
   isSimpleProductQuestion,
   modelContentFor,
   parentWorkspacePath,
+  providerFormDefaults,
   preferredThreadId,
   resolveWebLocale,
   resolveWebTheme,
@@ -232,6 +233,27 @@ describe("Web task submission", () => {
     expect(isSimpleProductQuestion("你能做什么？")).toBe(true);
     expect(isSimpleProductQuestion("What model are you? ")).toBe(true);
     expect(isSimpleProductQuestion("Fix the model router tests")).toBe(false);
+  });
+
+  it("defaults the model form to the active configured provider", () => {
+    const catalog = {
+      active_route_id: "aliyun",
+      readiness: { status: "provider_unverified", local_ready: false, reason: "stale" },
+      routes: [{ id: "aliyun", catalog_id: "aliyun", model: "qwen3.8-flash" }],
+      presets: [
+        { id: "deepseek", name: "DeepSeek", description: "", base_url: "", models: ["deepseek-chat"], credential_required: true, local: false, capabilities: {} },
+        { id: "aliyun", name: "Aliyun", description: "", base_url: "", models: ["qwen3.8-flash"], credential_required: true, local: false, capabilities: {} },
+      ],
+    };
+
+    expect(providerFormDefaults(catalog)).toEqual({
+      presetId: "aliyun",
+      model: "qwen3.8-flash",
+    });
+    expect(providerFormDefaults(catalog, "python-extension", "custom-model")).toEqual({
+      presetId: "aliyun",
+      model: "qwen3.8-flash",
+    });
   });
 
   it("keeps file and task entry points closed in the neutral welcome workspace", () => {

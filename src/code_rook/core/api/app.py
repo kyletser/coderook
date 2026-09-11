@@ -746,6 +746,8 @@ class HttpApiServer:
             )
         if request.method == "GET" and path == "/v1/providers":
             return HTTPStatus.OK, await self._service.provider_catalog()
+        if request.method == "POST" and path == "/v1/providers/readiness":
+            return HTTPStatus.OK, await self._service.refresh_provider_readiness()
         if request.method == "POST" and path == "/v1/providers":
             return HTTPStatus.CREATED, await self._service.save_provider(
                 _json_object(request.body)

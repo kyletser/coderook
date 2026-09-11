@@ -309,11 +309,31 @@ function readinessReason(value: unknown): string {
   const labels: Record<string, [string, string]> = {
     "the remote route has credentials but has not passed a basic Doctor probe": ["已保存凭据，但当前路由尚未通过 Doctor 验证。", "Credentials are saved, but this route has not passed Doctor."],
     "the active route Doctor receipt is missing or stale": ["当前路由的 Doctor 验证已缺失或过期。", "The active route's Doctor result is missing or stale."],
+    "the saved Doctor receipt does not match this route and model": ["当前路由或模型已变化，需要重新验证。", "The route or model changed and needs to be verified again."],
     "no provider route is configured": ["尚未配置可用的模型路由。", "No model route is configured."],
+    "no active provider route is configured": ["尚未配置可用的模型路由。", "No model route is configured."],
     "the active route credential is missing": ["当前路由缺少 API Key。", "The active route is missing its API key."],
+    "the active route has no resolvable credential": ["当前路由缺少 API Key。", "The active route is missing its API key."],
   };
   const label = labels[reason];
   return label ? tr(label[0], label[1]) : reason;
+}
+
+// 根据当前会话或活动路由初始化模型配置表单，避免误展示无关 Provider
+export function providerFormDefaults(
+  catalog: ProviderCatalog,
+  sessionRoute = "",
+  sessionModel = "",
+): { presetId: string; model: string } {
+  const sessionCatalogRoute = catalog.routes.find((item) => textValue(item.id) === sessionRoute);
+  const route = sessionCatalogRoute
+    || catalog.routes.find((item) => textValue(item.id) === catalog.active_route_id);
+  const presetId = textValue(route?.catalog_id) || catalog.presets[0]?.id || "";
+  const preset = catalog.presets.find((item) => item.id === presetId);
+  return {
+    presetId,
+    model: (sessionCatalogRoute ? sessionModel : "") || textValue(route?.model) || preset?.models[0] || "",
+  };
 }
 
 function fileBase64(file: File): Promise<string> {
@@ -1275,12 +1295,17 @@ function AppShell({
         });
         setNotice(tr("纠偏消息已送达当前任务", "Steer message sent to the active task."));
       } else {
-        const provider = isUserShell(content)
+        let provider = isUserShell(content)
           ? null : await request<ProviderCatalog>("/v1/providers");
         if (provider && !provider.readiness.local_ready) {
-          setDrawer("models");
-          setNotice(tr("先完成模型配置，当前输入已为你保留", "Configure a model first. Your draft has been preserved."));
-          return;
+          provider = await request<ProviderCatalog>("/v1/providers/readiness", {
+            method: "POST",
+          });
+          if (!provider.readiness.local_ready) {
+            setDrawer("models");
+            setNotice(tr("先完成模型配置，当前输入已为你保留", "Configure a model first. Your draft has been preserved."));
+            return;
+          }
         }
         const threadId = selectedId || (await createThread());
         const started = await request<TurnRecord & { handled?: boolean }>(
@@ -2562,7 +2587,7 @@ function ChangesPanel({ threadId, onError }: { threadId: string; onError(value: 
 function ModelsPanel({ threadId, onError }: { threadId: string; onError(value: string): void }): ReactElement {
   const dialog = useProductDialog();
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
-  const [presetId, setPresetId] = useState("deepseek");
+  const [presetId, setPresetId] = useState("");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
@@ -2576,14 +2601,13 @@ function ModelsPanel({ threadId, onError }: { threadId: string; onError(value: s
     try {
       const value = await request<ProviderCatalog>("/v1/providers");
       setCatalog(value);
-      const preset = value.presets[0];
-      if (preset) {
-        setPresetId((current) => current || preset.id);
-        setModel((current) => current || preset.models[0] || "");
-      }
+      let selectedRoute = "";
+      let selectedModel = "";
       if (threadId) {
         const context = await request<ThreadContext>(`/v1/threads/${encodeURIComponent(threadId)}/context`);
         const providers = context.extension_providers || [];
+        selectedRoute = context.route_id || "";
+        selectedModel = context.model || "";
         setExtensionProviders(providers);
         setSessionRoute(context.route_id || "");
         setSessionModel(context.model || "");
@@ -2602,6 +2626,9 @@ function ModelsPanel({ threadId, onError }: { threadId: string; onError(value: s
         setSessionRoute("");
         setSessionModel("");
       }
+      const defaults = providerFormDefaults(value, selectedRoute, selectedModel);
+      setPresetId((current) => current || defaults.presetId);
+      setModel((current) => current || defaults.model);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
     }

@@ -51,3 +51,38 @@ async def test_web_fork_returns_editable_user_message() -> None:
     sessions.navigate_tree.assert_awaited_once_with("forked", 42)
     assert result["editor_text"] == "修改这个问题"
     assert result["id"] == "forked"
+
+
+# 功能：Web 提交前可以刷新过期 Provider 收据并拿到最新 readiness
+# 设计：注入最小配置服务，断言刷新只调用一次统一探测且响应来自刷新后的目录快照
+async def test_web_refreshes_provider_readiness_before_turn() -> None:
+    configuration = MagicMock()
+    configuration.probe_readiness = AsyncMock()
+    readiness = MagicMock()
+    readiness.model_dump.return_value = {
+        "status": "provider_verified",
+        "local_ready": True,
+        "reason": "verified",
+    }
+    configuration.snapshot.return_value = SimpleNamespace(
+        active_route_id="aliyun",
+        routes=(),
+        credential_sources={},
+        readiness=readiness,
+        route_issues=(),
+    )
+    service = RuntimeApiService(
+        MagicMock(),
+        MagicMock(),
+        configuration=configuration,
+    )
+
+    result = await service.refresh_provider_readiness()
+
+    configuration.probe_readiness.assert_awaited_once_with()
+    assert result["active_route_id"] == "aliyun"
+    assert result["readiness"] == {
+        "status": "provider_verified",
+        "local_ready": True,
+        "reason": "verified",
+    }
