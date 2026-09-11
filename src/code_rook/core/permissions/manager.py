@@ -65,6 +65,32 @@ _WORKSPACE_EDIT_PERMISSION_KEYS = frozenset(
     }
 )
 
+_HEADLESS_TOOL_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"read", "read_file", "File.read"}),
+    frozenset({"write", "write_file", "File.write"}),
+    frozenset({"edit", "edit_file", "apply_patch", "File.edit", "File.patch"}),
+    frozenset({"bash", "Bash.run", "Run.run"}),
+)
+_HEADLESS_TOOL_ALIAS_INDEX: dict[str, frozenset[str]] = {
+    alias.casefold(): group
+    for group in _HEADLESS_TOOL_ALIAS_GROUPS
+    for alias in group
+}
+
+
+# 将公开 Action 名、旧工具名和当前简化工具名扩展为同一显式授权集合
+def _expand_headless_tool_aliases(allow_tools: list[str] | None) -> frozenset[str]:
+    expanded: set[str] = set()
+    for raw_name in allow_tools or []:
+        name = raw_name.strip()
+        if not name:
+            continue
+        expanded.add(name)
+        expanded.update(_HEADLESS_TOOL_ALIAS_INDEX.get(name.casefold(), ()))
+    return frozenset(expanded)
+
+
+# 返回当前 UTC 时间，供权限事件和审批记录使用
 def _now() -> str:
     return datetime.datetime.now(UTC).isoformat()
 
@@ -218,7 +244,7 @@ class PermissionManager:
             return
         self._session_modes[session_id] = _SessionPermissionMode(
             mode=mode,
-            allow_tools=frozenset(allow_tools or []),
+            allow_tools=_expand_headless_tool_aliases(allow_tools),
         )
 
     def clear_session_mode(self, session_id: str) -> None:

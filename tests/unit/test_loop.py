@@ -767,6 +767,40 @@ async def test_permission_denied_mutation_is_not_reported_as_success() -> None:
     assert ctx.result == "需要权限后才能完成修改。"
 
 
+# 功能：验证同时需要 Shell 的修改任务被拒绝后仍以失败结束
+# 设计：将任务风险设为 shell 并保留 mutation_intent，覆盖风险等级覆盖修改意图时曾出现的假成功
+async def test_permission_denied_shell_mutation_is_not_reported_as_success() -> None:
+    provider = _MockProvider(
+        [
+            LlmResponse(
+                stop_reason="tool_use",
+                tool_calls=[_tc("denied_edit", {}, "d1")],
+            ),
+            LlmResponse(stop_reason="end_turn", text="命令和修改权限被拒绝。"),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(_PermissionDeniedMutationTool())
+    loop = AgentLoop(  # type: ignore[arg-type]
+        provider,
+        registry,
+        EventBus(),
+        request_metadata={
+            "task_profile": {
+                "risk": "shell",
+                "signals": ["mutation_intent", "shell_intent"],
+            }
+        },
+    )
+    ctx = _ctx()
+
+    await loop.run(ctx)
+
+    assert ctx.status == "failed"
+    assert ctx.reason == "permission_denied"
+    assert ctx.result == "命令和修改权限被拒绝。"
+
+
 # 功能：act 阶段因 permission_required 提前终止时为后续工具补合成 tool_result
 # 设计：同批两个工具，首个返回 permission_required；断言 run 失败且第二个 tool_use 也有配对结果，无孤儿
 async def test_aborted_act_phase_fills_skipped_tool_results() -> None:

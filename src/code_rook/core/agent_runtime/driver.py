@@ -478,9 +478,18 @@ async def execute_context(runtime: AgentLoop, context: ExecutionContext) -> None
                 if block.get("type") == "text"
             )
             task_profile = runtime._request_metadata.get("task_profile", {})
+            task_signals = (
+                task_profile.get("signals", [])
+                if isinstance(task_profile, dict)
+                else []
+            )
             mutating_task = (
                 isinstance(task_profile, dict)
-                and task_profile.get("risk") in {"mutate", "write"}
+                and (
+                    task_profile.get("risk") in {"mutate", "write"}
+                    or "mutation_intent" in task_signals
+                    or "output_write_intent" in task_signals
+                )
             )
             if mutating_task and permission_denied_mutation and not successful_mutation:
                 context.mark_failed("permission_denied")

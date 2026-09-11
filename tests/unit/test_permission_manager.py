@@ -222,6 +222,46 @@ async def test_headless_allow_list_explicitly_allows_windows_shell() -> None:
     assert (allowed, decision) == (True, "headless_allow_list")
 
 
+# 功能：验证文档公开的 Action 名可以授权当前简化工具名
+# 设计：用 File.write 与 Bash.run 配置 allow-list，再分别检查 write 和 Windows bash 的真实权限决策
+async def test_headless_allow_list_expands_public_action_names() -> None:
+    mgr = _make_manager()
+    mgr.set_session_mode(
+        "headless",
+        "allow_list",
+        allow_tools=["File.write", "Bash.run"],
+    )
+    mgr._session_authorities["headless"] = AuthoritySnapshot(
+        mode=RuntimeMode.ACT,
+        profile=AuthorityProfile.AUTO_REVIEW,
+        workspace_trust=WorkspaceTrust.TRUSTED,
+        sandbox=SandboxCapability(
+            kind="windows_none",
+            available=False,
+            reason="test",
+        ),
+    )
+    _, emitter = await _collect_emitted()
+
+    write_allowed, write_decision = await mgr.check_and_wait(
+        tool_use_id="write",
+        tool_name="write",
+        params={"path": "x.py", "content": "value = 1\n"},
+        session_id="headless",
+        event_emitter=emitter,
+    )
+    bash_allowed, bash_decision = await mgr.check_and_wait(
+        tool_use_id="bash",
+        tool_name="bash",
+        params={"command": "python -m pytest test_x.py -q"},
+        session_id="headless",
+        event_emitter=emitter,
+    )
+
+    assert (write_allowed, write_decision) == (True, "headless_allow_list")
+    assert (bash_allowed, bash_decision) == (True, "headless_allow_list")
+
+
 async def test_headless_modes_preserve_default_allow_tools() -> None:
     mgr = _make_manager()
     mgr.set_session_mode("headless", "deny")
