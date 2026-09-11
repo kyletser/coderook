@@ -2949,6 +2949,36 @@ def test_session_ready_notice_describes_context_source() -> None:
     assert "sess-2" not in output
 
 
+# 功能：验证恢复视图只重建历史，不提前插入第二条会话恢复提示
+# 设计：先调用真实视图准备函数再追加统一摘要，断言时间线仅出现一次恢复文案且不泄露内部 Session ID
+async def test_prepare_session_view_does_not_duplicate_resume_notice() -> None:
+    class SessionViewHarness(CodeRookTuiApp):
+        # 跳过真实 Core 连接，仅挂载恢复视图需要的控件
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    app = SessionViewHarness("127.0.0.1", 9999)
+    app._locale = "en-US"
+    async with app.run_test(size=(90, 20)) as pilot:
+        await app._prepare_session_view(
+            "sess-private",
+            [],
+            resume=True,
+            title="Fix login",
+        )
+        app._show_session_ready("resumed", "sess-private", "Fix login", 0)
+        await pilot.pause()
+
+        output = "\n".join(
+            str(widget.content)
+            for widget in app.query("#log-view Static")
+            if isinstance(widget, Static)
+        )
+        assert output.count("Session resumed") == 1
+        assert "Fix login" in output
+        assert "sess-private" not in output
+
+
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式
 # 设计：在真实 CodeRookTuiApp 输入部分命令并发送 Tab，防止全局 Mode 快捷键破坏既有单次提交交互
 async def test_tab_keeps_slash_completion_priority() -> None:

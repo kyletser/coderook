@@ -4472,16 +4472,24 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             "session.get_history",
             {"session_id": session_id},
         )
+        raw_messages = history.get("display_messages")
+        if not isinstance(raw_messages, list):
+            raw_messages = history.get("messages", [])
+        history_messages = raw_messages if isinstance(raw_messages, list) else []
         state = await self._connection.activate_session(
             session_id,
             lambda: self._prepare_session_view(
                 session_id,
-                history.get("display_messages")
-                if isinstance(history.get("display_messages"), list)
-                else history.get("messages", []),
+                history_messages,
                 resume=resume,
                 title=title,
             ),
+        )
+        self._show_session_ready(
+            "resumed" if resume else "created",
+            session_id,
+            title or "",
+            len(history_messages),
         )
         await self._apply_initial_model_selection(session_id)
         if self._initial_thinking_level is not None and not self._initial_thinking_applied:
@@ -4577,14 +4585,6 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         self._pending_image_attachments = []
         self._refresh_attachment_strip()
         self._reset_cost_state()
-        action = "resumed" if resume else "created"
-        label = tr(f"app.session.{action}", self._locale)
-        self._append(
-            Static(
-                f"[bold cyan]{label}[/bold cyan]  [dim]{session_id}[/dim]",
-                classes="log-line",
-            )
-        )
         history_messages = messages if isinstance(messages, list) else []
         self._append_history(history_messages)
         self._resume_deferred_run_results(session_id)
