@@ -750,6 +750,21 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if self._client is None:
             title = tr("shell.banner_connecting_title", self._locale)
             suggestions = ()
+        elif not self._workspace_has_user_content():
+            title = "CodeRook 已就绪" if self._locale == "zh-CN" else "CodeRook is ready"
+            suggestions = (
+                (
+                    "根据我的描述创建项目骨架",
+                    "创建 README.md 并整理项目目标",
+                    "初始化基础测试和开发配置",
+                )
+                if self._locale == "zh-CN"
+                else (
+                    "Create a project skeleton from my description",
+                    "Create README.md and organize the project goals",
+                    "Set up basic tests and development configuration",
+                )
+            )
         elif self._locale == "zh-CN":
             title = "CodeRook 已就绪"
             suggestions = (
@@ -767,6 +782,23 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         lines = [f"[bold cyan]{title}[/bold cyan]", f"[dim]{hint}[/dim]"]
         lines.extend(f"  [cyan]›[/cyan] {escape(item)}" for item in suggestions)
         return "\n".join(lines)
+
+    # 判断工作区除 CodeRook 与常见缓存目录外是否已有用户内容
+    def _workspace_has_user_content(self) -> bool:
+        ignored = {
+            ".coderook",
+            ".git",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+        }
+        try:
+            return any(entry.name not in ignored for entry in self._workspace.iterdir())
+        except OSError:
+            return True
 
     # 刷新仍在时间线中的启动卡，使连接状态与输入框保持一致
     def _refresh_banner(self) -> None:

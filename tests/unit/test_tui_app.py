@@ -1408,6 +1408,7 @@ def test_workspace_banner_tracks_core_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    (tmp_path / "main.py").write_text("print('ready')\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     app = CodeRookTuiApp("127.0.0.1", 9999, locale="zh-CN")
 
@@ -1419,6 +1420,24 @@ def test_workspace_banner_tracks_core_connection(
     assert "已就绪" not in connecting
     assert "CodeRook 已就绪" in ready
     assert "解释这个仓库" in ready
+
+
+# 功能：验证空白项目启动卡推荐创建内容而不是审查不存在的代码
+# 设计：工作区仅创建内部状态目录，再渲染已连接中文启动卡锁定空项目的三个起步动作
+def test_empty_workspace_banner_offers_project_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / ".coderook").mkdir()
+    monkeypatch.chdir(tmp_path)
+    app = CodeRookTuiApp("127.0.0.1", 9999, locale="zh-CN")
+    app._client = object()  # type: ignore[assignment]
+
+    banner = render(app._render_banner()).plain
+
+    assert "根据我的描述创建项目骨架" in banner
+    assert "创建 README.md" in banner
+    assert "解释这个仓库" not in banner
 
 
 # 功能：验证 TUI /skills install 先展示 preview，追加 --yes 后才写入项目目录

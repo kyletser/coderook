@@ -73,6 +73,7 @@ type ProjectCatalog = {
   active_workspace: string;
   default_projects_root: string;
 };
+type WelcomeSuggestion = { title: string; detail: string; prompt: string };
 type DirectoryListing = {
   path: string;
   parent: string | null;
@@ -135,6 +136,29 @@ function initialWebLocale(): WebLocale {
 
 export function resolveWebTheme(value: string | null | undefined): WebTheme {
   return value === "high-contrast" ? "high-contrast" : "light";
+}
+
+export function welcomeSuggestions(empty: boolean, locale: WebLocale): WelcomeSuggestion[] {
+  if (empty) {
+    return locale === "en-US" ? [
+      { title: "Create a project", detail: "Describe the product and generate a practical starter structure", prompt: "Create a project skeleton from my description" },
+      { title: "Define the project", detail: "Create a README and turn the idea into concrete goals", prompt: "Create README.md and help me define the project goals" },
+      { title: "Set up development", detail: "Add basic tests and development configuration", prompt: "Set up basic tests and development configuration for this project" },
+    ] : [
+      { title: "创建项目", detail: "描述产品目标并生成可运行的基础结构", prompt: "根据我的描述创建项目骨架" },
+      { title: "定义项目", detail: "创建 README，把想法整理成明确目标", prompt: "创建 README.md，并帮我整理项目目标" },
+      { title: "搭建开发环境", detail: "加入基础测试和开发配置", prompt: "为这个项目初始化基础测试和开发配置" },
+    ];
+  }
+  return locale === "en-US" ? [
+    { title: "Understand the codebase", detail: "Map the architecture, modules, and key data flows", prompt: "Explain this repository's core architecture and data flow" },
+    { title: "Review current changes", detail: "Inspect risks, defects, and verification gaps", prompt: "Review the current changes and identify the most likely defects" },
+    { title: "Fix failing tests", detail: "Locate the issue, edit the code, and verify again", prompt: "Run the most relevant tests and fix any failures" },
+  ] : [
+    { title: "理解代码库", detail: "梳理架构、模块与关键数据流", prompt: "解释这个仓库的核心架构和数据流" },
+    { title: "审查当前改动", detail: "检查风险、缺陷与验证缺口", prompt: "检查当前改动，找出最可能的缺陷" },
+    { title: "修复测试失败", detail: "定位问题、修改代码并重新验证", prompt: "运行最相关的测试并修复失败" },
+  ];
 }
 
 function initialWebTheme(): WebTheme {
@@ -949,6 +973,7 @@ function AppShell({
   const [composerCaret, setComposerCaret] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<WorkspaceEntry[]>([]);
   const [fileSuggestionIndex, setFileSuggestionIndex] = useState(0);
+  const [workspaceEmpty, setWorkspaceEmpty] = useState(false);
   const cursors = useRef<Record<string, number>>({});
   const eventCache = useRef<Record<string, RuntimeEvent[]>>({});
   const threadLoadVersions = useRef<Record<string, number>>({});
@@ -1063,6 +1088,18 @@ function AppShell({
   useEffect(() => {
     void refreshActiveModel().catch(() => setActiveModel(tr("模型状态未知", "Model status unavailable")));
   }, [drawer, refreshActiveModel, selectedId]);
+
+  useEffect(() => {
+    if (!projectSelected) {
+      setWorkspaceEmpty(false);
+      return;
+    }
+    const controller = new AbortController();
+    request<{ entries: WorkspaceEntry[] }>("/v1/workspace/files?path=.&limit=1", { signal: controller.signal })
+      .then((result) => setWorkspaceEmpty(result.entries.length === 0))
+      .catch(() => setWorkspaceEmpty(false));
+    return () => controller.abort();
+  }, [projectSelected, workspace]);
 
   useEffect(() => {
     if (!fileMention || fileReferences.length >= 8) {
@@ -1954,9 +1991,7 @@ function AppShell({
               <h1>{projectSelected ? tr("今天想完成什么？", "What would you like to accomplish?") : tr("选择一个项目开始", "Choose a project to get started")}</h1>
               <p>{projectSelected ? tr("描述一个目标。CodeRook 会理解代码、执行修改、运行验证，并留下可审查和可恢复的结果。", "Describe a goal. CodeRook will understand the code, make changes, run checks, and leave a reviewable, recoverable result.") : tr("创建一个新的空白项目，或者打开电脑上已有的项目文件夹。CodeRook 只会把选中的目录作为工作区。", "Create a blank project or open an existing folder on this computer. CodeRook uses only the selected directory as its workspace.")}</p>
               {!projectSelected ? <div className="welcome-project-action"><button className="primary" onClick={() => setProjectHubOpen(true)}><Icon name="plus" size={15} />{tr("选择或新建项目", "Choose or create project")}</button></div> : <div className="suggestions">
-                <button onClick={() => setComposer(tr("解释这个仓库的核心架构和数据流", "Explain this repository's core architecture and data flow"))}><span><b>{tr("理解代码库", "Understand the codebase")}</b><small>{tr("梳理架构、模块与关键数据流", "Map the architecture, modules, and key data flows")}</small></span><Icon name="arrow" size={16} /></button>
-                <button onClick={() => setComposer(tr("检查当前改动，找出最可能的缺陷", "Review the current changes and identify the most likely defects"))}><span><b>{tr("审查当前改动", "Review current changes")}</b><small>{tr("检查风险、缺陷与验证缺口", "Inspect risks, defects, and verification gaps")}</small></span><Icon name="arrow" size={16} /></button>
-                <button onClick={() => setComposer(tr("运行最相关的测试并修复失败", "Run the most relevant tests and fix any failures"))}><span><b>{tr("修复测试失败", "Fix failing tests")}</b><small>{tr("定位问题、修改代码并重新验证", "Locate the issue, edit the code, and verify again")}</small></span><Icon name="arrow" size={16} /></button>
+                {welcomeSuggestions(workspaceEmpty, preferences.locale).map((suggestion) => <button key={suggestion.title} onClick={() => setComposer(suggestion.prompt)}><span><b>{suggestion.title}</b><small>{suggestion.detail}</small></span><Icon name="arrow" size={16} /></button>)}
               </div>}
             </div>
           )}

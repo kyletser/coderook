@@ -29,10 +29,20 @@ import {
   verificationHasFailure,
   workspaceHasUserProject,
   workspacePathIsDirectoryError,
+  welcomeSuggestions,
 } from "./App";
 import type { RuntimeEvent, ThreadRecord } from "./types";
 
 describe("Web task submission", () => {
+  it("offers creation tasks for an empty project instead of repository review", () => {
+    const empty = welcomeSuggestions(true, "zh-CN");
+    const existing = welcomeSuggestions(false, "en-US");
+
+    expect(empty.map((item) => item.title)).toEqual(["创建项目", "定义项目", "搭建开发环境"]);
+    expect(empty.every((item) => !item.prompt.includes("当前改动"))).toBe(true);
+    expect(existing.map((item) => item.title)).toContain("Understand the codebase");
+  });
+
   it("continues an approved plan with the original request", () => {
     const content = approvedPlanModelContent("修复登录失败并运行测试");
 
