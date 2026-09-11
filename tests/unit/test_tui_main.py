@@ -340,7 +340,7 @@ def test_tui_main_passes_initial_model_selection(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["coderook-tui", "--route", "route-a", "--model", "model-b"],
+        ["coderook-tui", "--provider", "route-a", "--model", "model-b"],
     )
     monkeypatch.setattr(tui_main, "get_config", lambda: config)
     monkeypatch.setattr(tui_main, "RouteStore", lambda: route_store)

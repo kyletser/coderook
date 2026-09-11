@@ -298,7 +298,9 @@ def _run_cli() -> int:
     )
     print_mode = "--print" in tui_probe or "-p" in tui_probe or noninteractive_quick
     if print_mode:
-        ProjectRegistry().enter_welcome_workspace_if_protected()
+        before_redirect = Path.cwd().resolve()
+        redirected = ProjectRegistry().enter_welcome_workspace_if_protected()
+        reuse_active_workspace = redirected != before_redirect
         quick = argparse.ArgumentParser(
             prog="coderook --print",
             description="Run one coding task and print the final answer",
@@ -335,8 +337,14 @@ def _run_cli() -> int:
             action="store_true",
             help="Run without keeping the session in history",
         )
-        quick.add_argument("--route", help="Provider route for this task")
-        quick.add_argument("--model", help="Model override for this task")
+        quick.add_argument(
+            "--route", "--provider", dest="route",
+            help="Configured Provider route for this task",
+        )
+        quick.add_argument(
+            "--model",
+            help="Model ID, or configured route/model shorthand",
+        )
         quick.add_argument(
             "-n", "--name", type=_session_name,
             help="Set the saved session name",
@@ -395,7 +403,14 @@ def _run_cli() -> int:
             else get_config(env_file=quick_args.env_file)
         )
         setup_logging(config)
-        ensure_core_running(config, env_file=quick_args.env_file)
+        if reuse_active_workspace:
+            ensure_core_running(
+                config,
+                env_file=quick_args.env_file,
+                reuse_existing=True,
+            )
+        else:
+            ensure_core_running(config, env_file=quick_args.env_file)
         cmd_run(
             goal,
             config,
@@ -484,8 +499,14 @@ def _run_cli() -> int:
         "-nt", "--no-tools", action="store_true",
         help="Disable all model tool calls in the TUI",
     )
-    interactive.add_argument("--route", help="Provider route for the opened session")
-    interactive.add_argument("--model", help="Model override for the opened session")
+    interactive.add_argument(
+        "--route", "--provider", dest="route",
+        help="Configured Provider route for the opened session",
+    )
+    interactive.add_argument(
+        "--model",
+        help="Model ID, or configured route/model shorthand",
+    )
     interactive.add_argument(
         "--thinking", choices=("off", "low", "medium", "high"),
         help="Thinking level for the opened session",
@@ -774,8 +795,14 @@ def _run_cli() -> int:
         choices=("off", "low", "medium", "high"),
         help="Set the thinking level for this session",
     )
-    run_parser.add_argument("--route", help="Provider route for this run")
-    run_parser.add_argument("--model", help="Model override for this run")
+    run_parser.add_argument(
+        "--route", "--provider", dest="route",
+        help="Configured Provider route for this run",
+    )
+    run_parser.add_argument(
+        "--model",
+        help="Model ID, or configured route/model shorthand",
+    )
     run_parser.add_argument(
         "--system-prompt",
         help="Replace the default agent role prompt for this task",
@@ -876,10 +903,7 @@ def _run_cli() -> int:
     elif args.command in {"run", "review", "chat", "sessions", "session", "memory"}:
         before_redirect = Path.cwd().resolve()
         redirected = ProjectRegistry().enter_welcome_workspace_if_protected()
-        reuse_active_workspace = (
-            args.command in {"sessions", "session", "memory"}
-            and redirected != before_redirect
-        )
+        reuse_active_workspace = redirected != before_redirect
     elif args.command == "core" and args.core_command in {"start", "restart"}:
         ProjectRegistry().enter_welcome_workspace_if_protected()
 

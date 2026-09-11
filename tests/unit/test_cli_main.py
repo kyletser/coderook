@@ -522,7 +522,13 @@ def test_print_shorthand_sets_session_name(monkeypatch) -> None:
     config = CodeRookConfig()
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        sys, "argv", ["coderook", "-p", "-n", "认证修复", "检查登录逻辑"]
+        sys,
+        "argv",
+        [
+            "coderook", "-p", "-n", "认证修复",
+            "--provider", "aliyun", "--model", "qwen3.8-flash",
+            "检查登录逻辑",
+        ],
     )
     monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
     monkeypatch.setattr(cli_main, "get_config", lambda: config)
@@ -538,6 +544,78 @@ def test_print_shorthand_sets_session_name(monkeypatch) -> None:
 
     assert captured["session_name"] == "认证修复"
     assert captured["goal"] == "检查登录逻辑"
+    assert captured["route_id"] == "aliyun"
+    assert captured["model"] == "qwen3.8-flash"
+
+
+# 功能：从受保护源码目录执行打印任务时复用 Core 已绑定的用户项目
+# 设计：让项目重定向真实改变 cwd，并断言启动器采用 reuse_existing，避免把欢迎区当成可注册项目
+def test_print_from_protected_source_reuses_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    config = CodeRookConfig()
+    ensure = MagicMock()
+    original = Path.cwd()
+    monkeypatch.setattr(sys, "argv", ["coderook", "-p", "--no-tools", "hello"])
+    monkeypatch.setattr(
+        cli_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        lambda _self: os.chdir(welcome) or welcome,
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", ensure)
+    monkeypatch.setattr(cli_main, "cmd_run", lambda *_args, **_kwargs: None)
+    try:
+        os.chdir(source)
+        assert cli_main.main() == 0
+    finally:
+        os.chdir(original)
+
+    ensure.assert_called_once_with(config, env_file=None, reuse_existing=True)
+
+
+# 功能：从受保护源码目录执行 run 子命令时同样复用当前用户项目
+# 设计：走完整子命令解析并捕获 Core 启动参数，防止修复只覆盖快捷打印入口
+def test_run_from_protected_source_reuses_active_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    welcome = tmp_path / "welcome"
+    source.mkdir()
+    welcome.mkdir()
+    config = CodeRookConfig()
+    ensure = MagicMock()
+    original = Path.cwd()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["coderook", "run", "--goal", "hello", "--no-tools"],
+    )
+    monkeypatch.setattr(
+        cli_main.ProjectRegistry,
+        "enter_welcome_workspace_if_protected",
+        lambda _self: os.chdir(welcome) or welcome,
+    )
+    monkeypatch.setattr(cli_main, "migrate_legacy_state", lambda: None)
+    monkeypatch.setattr(cli_main, "get_config", lambda: config)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda _config: None)
+    monkeypatch.setattr(cli_main, "ensure_core_running", ensure)
+    monkeypatch.setattr(cli_main, "cmd_run", lambda *_args, **_kwargs: None)
+    try:
+        os.chdir(source)
+        assert cli_main.main() == 0
+    finally:
+        os.chdir(original)
+
+    ensure.assert_called_once_with(config, env_file=None, reuse_existing=True)
 
 
 # 功能：已配置的 route/model 简写会拆成独立 Route 与模型覆盖

@@ -259,8 +259,14 @@ def main() -> None:
         choices=("off", "low", "medium", "high"),
         help="Set the thinking level for the opened session",
     )
-    parser.add_argument("--route", help="Provider route for the opened session")
-    parser.add_argument("--model", help="Model override for the opened session")
+    parser.add_argument(
+        "--route", "--provider", dest="route",
+        help="Configured Provider route for the opened session",
+    )
+    parser.add_argument(
+        "--model",
+        help="Model ID, or configured route/model shorthand",
+    )
     parser.add_argument(
         "-n", "--name", type=_session_name,
         help="Set the opened session name",
