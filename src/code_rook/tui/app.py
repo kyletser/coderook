@@ -57,7 +57,7 @@ from code_rook.core.skills.manager import (
 from code_rook.core.transport.auth import read_ipc_token
 from code_rook.core.transport.socket_client import IpcError, SocketClient
 from code_rook.tui import ipc_actions
-from code_rook.tui.clipboard import copy_to_windows_clipboard
+from code_rook.tui.clipboard import copy_to_windows_clipboard, read_clipboard_image
 from code_rook.tui.commands import (
     command_category,
     command_palette_direct,
@@ -165,6 +165,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         Binding("ctrl+t", "cycle_thinking", "cycle thinking", show=False, priority=True),
         Binding("ctrl+o", "toggle_details", "toggle details", show=False, priority=True),
         Binding("ctrl+g", "external_editor", "external editor", show=False, priority=True),
+        Binding("alt+v", "paste_image", "paste image", show=False, priority=True),
         Binding(
             "ctrl+end",
             "scroll_log_end",
@@ -1298,6 +1299,17 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
         if not self._copy_selected_text():
             self._copy_last_response()
 
+    # 从系统剪贴板直接附加截图；Windows 使用 Alt+V，避免占用终端的普通文本粘贴
+    def action_paste_image(self) -> None:
+        if len(self._pending_image_attachments) >= 8:
+            self.notify(tr("attachments.limit", self._locale), severity="warning")
+            return
+        self.run_worker(
+            self._stage_clipboard_image(),
+            name="stage_clipboard_image",
+            exclusive=False,
+        )
+
     # 打开当前 route 的模型选择器，忙碌时保持本轮冻结配置不变
     def action_model_picker(self) -> None:
         self._open_model_picker()
@@ -1327,6 +1339,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             ("Ctrl+T", tr("help.thinking", self._locale)),
             ("Ctrl+O", tr("help.details", self._locale)),
             ("Ctrl+G", tr("help.editor", self._locale)),
+            ("Alt+V", tr("help.paste_image", self._locale)),
             ("Alt+Enter", tr("help.follow_up", self._locale)),
             ("Alt+↑", tr("help.dequeue", self._locale)),
             ("Ctrl+Q", tr("help.quit", self._locale)),
@@ -1784,6 +1797,25 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
     async def _stage_pasted_image(self, path: Path) -> None:
         try:
             data = await asyncio.to_thread(path.read_bytes)
+        except OSError as exc:
+            self._show_safe_error("attachment", exc)
+            return
+        await self._stage_image_bytes(data, source_name=path.name)
+
+    # 读取系统剪贴板中的截图并沿用普通图片附件的验证、存储和展示链路
+    async def _stage_clipboard_image(self) -> None:
+        data = await asyncio.to_thread(read_clipboard_image)
+        if data is None:
+            self.notify(tr("attachments.clipboard_empty", self._locale), severity="warning")
+            return
+        await self._stage_image_bytes(
+            data,
+            source_name=tr("attachments.clipboard_source", self._locale),
+        )
+
+    # 校验图片数据、写入内容寻址 Artifact，并将引用加入当前消息附件
+    async def _stage_image_bytes(self, data: bytes, *, source_name: str) -> None:
+        try:
             if len(data) > 2 * 1024 * 1024:
                 raise ValueError(tr("attachments.too_large", self._locale))
             metadata = inspect_image(data)
@@ -1819,7 +1851,7 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
                     )
                 )
                 + "[/cyan] "
-                + f"[dim]{escape(path.name)} · {escape(metadata.media_type)}[/dim]",
+                + f"[dim]{escape(source_name)} · {escape(metadata.media_type)}[/dim]",
                 classes="log-line",
             )
         )

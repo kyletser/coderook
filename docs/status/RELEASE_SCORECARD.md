@@ -118,7 +118,8 @@ Actions 当前按维护者要求关闭，因此不存在同一 SHA 的远端 req
 - 域名级 Shell 出站白名单没有可接受的 OS 强制后端，当前 fail closed。
 - Labs 默认关闭；即使启用，其 UX/恢复语义也不属于稳定合同。
 - Labs Workflow 图、协议状态值、日志正文和 Provider/Skill/MCP 动态文本不翻译。
-- TUI 图片入口主要接收本地图片路径，不保证所有终端都能读取剪贴板原始位图。
+- TUI 支持 `Alt+V` 读取系统剪贴板截图，并保留图片路径粘贴入口；Linux 是否可读原始位图仍取决于
+  系统提供的 Wayland/X11 剪贴板后端。
 - Python/TypeScript Diagnostics 与大型 monorepo 索引仍缺跨真实项目性能/可靠性报告。
 - VS Code 不发布 Marketplace，也不阻塞 v1。
 - 当前没有 dependency-review required job；远端 Actions、ruleset 与包渠道必须由 GitHub/API 和真实安装

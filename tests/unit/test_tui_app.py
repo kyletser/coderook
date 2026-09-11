@@ -13,6 +13,7 @@ from textual.containers import ScrollableContainer
 from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
+from code_rook.core.artifacts import ArtifactStore
 from code_rook.core.authority import RuntimeMode
 from code_rook.core.llm.credentials import CredentialStore
 from code_rook.core.llm.doctor import ProviderDoctorCheck, ProviderDoctorResult
@@ -2977,6 +2978,42 @@ async def test_prepare_session_view_does_not_duplicate_resume_notice() -> None:
         assert output.count("Session resumed") == 1
         assert "Fix login" in output
         assert "sess-private" not in output
+
+
+# 功能：验证剪贴板截图沿用附件 Artifact 链路并进入当前消息
+# 设计：注入最小 PNG 和临时 ArtifactStore，直接调用异步入口核对附件元数据与帮助快捷键
+async def test_clipboard_image_is_staged_as_message_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde"
+    )
+
+    class ClipboardHarness(CodeRookTuiApp):
+        # 跳过真实 Core 连接，仅挂载附件展示所需控件
+        def on_mount(self) -> None:
+            self.query_one("#prompt", ChatTextArea).focus()
+
+    monkeypatch.setattr(tui_app_module, "read_clipboard_image", lambda: png)
+    app = ClipboardHarness("127.0.0.1", 9999)
+    app._artifact_store = ArtifactStore(tmp_path / "artifacts")
+    async with app.run_test(size=(90, 20)) as pilot:
+        await app._stage_clipboard_image()
+        await pilot.pause()
+
+        assert app._pending_image_attachments == [
+            {
+                "sha256": app._pending_image_attachments[0]["sha256"],
+                "media_type": "image/png",
+                "size": len(png),
+                "width": 1,
+                "height": 1,
+            }
+        ]
+        assert any(binding.action == "paste_image" for binding in app.BINDINGS)
 
 
 # 功能：验证斜杠补全弹出时 Tab 仍优先完成命令而不是切换工作模式

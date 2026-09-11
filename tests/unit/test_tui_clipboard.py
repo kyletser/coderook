@@ -3,7 +3,9 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from PIL import Image
 
+from code_rook.core.artifacts import inspect_image
 from code_rook.tui import clipboard
 
 
@@ -42,3 +44,22 @@ def test_windows_clipboard_skips_other_platforms(
     )
 
     assert not clipboard.copy_to_windows_clipboard("text")
+
+
+# 功能：验证系统剪贴板中的原生位图会转换成 Agent 可附加的 PNG 数据
+# 设计：用 Pillow 图片替换真实系统剪贴板，核对输出格式和尺寸而不修改开发机剪贴板
+def test_read_clipboard_image_encodes_native_bitmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        clipboard.ImageGrab,
+        "grabclipboard",
+        lambda: Image.new("RGB", (13, 7), color="navy"),
+    )
+
+    data = clipboard.read_clipboard_image()
+
+    assert data is not None
+    metadata = inspect_image(data)
+    assert metadata.media_type == "image/png"
+    assert (metadata.width, metadata.height) == (13, 7)

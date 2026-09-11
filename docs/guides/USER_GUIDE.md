@@ -409,6 +409,7 @@ Labs `Workflow` 图仍保留部分中英混合的技术标签；协议状态值�
 | `Ctrl+T` | 循环思考强度 `off → low → medium → high` |
 | `Ctrl+O` | 展开或收起推理、工具步骤与完整输出 |
 | `Ctrl+G` | 在 `$VISUAL`/`$EDITOR` 中编辑当前输入；Windows 未配置时使用记事本 |
+| `Alt+V` | 从系统剪贴板直接附加截图；普通 `Ctrl+V` 仍用于粘贴文本 |
 | `Ctrl+Q` | 退出 TUI；会话和 Core 状态不会被删除 |
 
 常用命令：
@@ -444,11 +445,12 @@ Agent 运行时提交普通文本默认作为 steer；使用 `queue:` 或
 可读区块。JSON 保留模型可重放正文，适合归档和再次导入。该命令不接受自定义输出路径。
 `/import <文件>` 可把 CodeRook JSON 导出或 Pi JSONL 的当前活动分支导入为本工作区中的新会话；导入后
 使用当前 CodeRook Provider、权限和工具配置继续，不复制来源运行时状态。
-粘贴本地图片路径后，TUI 验证格式和尺寸，写入 ArtifactStore，并随下一条消息交付；composer
+按 `Alt+V` 可直接读取系统剪贴板截图；粘贴本地图片路径仍作为通用入口。TUI 验证格式和尺寸，
+写入 ArtifactStore，并随下一条消息交付；composer
 上方附件条持续显示序号、尺寸和短 hash。发送前可用 `/attachments remove N` 或
 `/attachments clear` 管理附件；发送失败会恢复附件。图片附件会以结构化块保存在本地 transcript，
 用于后续请求和会话恢复，包括图片 base64；因此会增加本地历史大小及压缩前的模型输入成本。
-当前不保证读取所有终端的剪贴板位图。
+操作系统缺少可用剪贴板图片后端时，`Alt+V` 会明确提示没有可附加图片，仍可粘贴图片文件路径。
 
 ### 会话隔离与重连
 
