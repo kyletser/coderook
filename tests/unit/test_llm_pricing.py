@@ -11,6 +11,7 @@ from code_rook.core.llm.pricing import (
     format_cost,
     get_pricing,
     load_pricing_overrides,
+    resolve_pricing_quote,
 )
 
 
@@ -49,6 +50,19 @@ def test_deepseek_v4_pricing_uses_current_catalog_ids() -> None:
     assert flash == ModelPricing(0.14, 0.28, 0.0028)
     assert pro == ModelPricing(0.435, 0.87, 0.003625)
     assert get_pricing("retired-model") is None
+
+
+# 功能：验证当前阿里云主模型能生成输入、输出和缓存成本而非显示 unknown
+# 设计：同时核对内置单价与独立生效日期，保证 Receipt 能解释这次估算依据
+def test_qwen38_flash_pricing_has_auditable_builtin_quote() -> None:
+    quote = resolve_pricing_quote("qwen3.8-flash")
+
+    assert quote is not None
+    assert quote.pricing == ModelPricing(0.113, 0.382, 0.014, 0.177)
+    assert quote.source == "builtin"
+    assert quote.effective_date == "2026-08-27"
+    versioned = resolve_pricing_quote("qwen3.8-flash-20260827")
+    assert versioned is not None and versioned.effective_date == "2026-08-27"
 
 
 # 功能：验证成本估算覆盖输入、输出与缓存读写四类用量
@@ -200,7 +214,7 @@ async def test_tui_marks_unpriced_usage_as_unknown_cost() -> None:
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
             "context_pct": 0.1,
-            "model": "qwen3.8-flash",
+            "model": "custom-unpriced-model",
         })
         await pilot.pause()
 

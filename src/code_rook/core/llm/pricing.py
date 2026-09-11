@@ -9,6 +9,9 @@ from pathlib import Path
 # 用户级单价覆盖文件路径，测试或高级用户可通过环境变量重定向
 _DEFAULT_PRICING_PATH = "~/.coderook/pricing.toml"
 _BUILTIN_PRICING_EFFECTIVE_DATE = "2026-08-18"
+_BUILTIN_PRICING_EFFECTIVE_DATES = {
+    "qwen3.8-flash": "2026-08-27",
+}
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,8 @@ _BUILTIN_PRICING: dict[str, ModelPricing] = {
     "gpt-5.6": ModelPricing(1.25, 10.0),
     "gpt-5.6-mini": ModelPricing(0.25, 2.0),
     "gpt-5.5": ModelPricing(1.25, 10.0),
+    # Alibaba Cloud 标准实时推理美元价；地区或促销差异可由 pricing.toml 覆盖
+    "qwen3.8-flash": ModelPricing(0.113, 0.382, 0.014, 0.177),
     "deepseek-v4-flash": ModelPricing(0.14, 0.28, 0.0028),
     "deepseek-v4-pro": ModelPricing(0.435, 0.87, 0.003625),
 }
@@ -77,13 +82,13 @@ def load_pricing_overrides(path: Path | None = None) -> dict[str, ModelPricing]:
     return overrides
 
 
-# 在指定价格表中按精确名称或带合法版本分隔符的最长前缀查找模型单价
-def _match_pricing(table: dict[str, ModelPricing], model: str) -> ModelPricing | None:
+# 在指定价格表中按精确名称或带合法版本分隔符的最长前缀查找模型键
+def _match_pricing_key(table: dict[str, ModelPricing], model: str) -> str | None:
     name = model.strip()
     if not name:
         return None
     if name in table:
-        return table[name]
+        return name
     candidates = [
         key
         for key in table
@@ -93,7 +98,13 @@ def _match_pricing(table: dict[str, ModelPricing], model: str) -> ModelPricing |
     ]
     if not candidates:
         return None
-    return table[max(candidates, key=len)]
+    return max(candidates, key=len)
+
+
+# 返回指定价格表中与模型名称匹配的单价
+def _match_pricing(table: dict[str, ModelPricing], model: str) -> ModelPricing | None:
+    key = _match_pricing_key(table, model)
+    return table[key] if key is not None else None
 
 
 # 返回单价查找结果：用户覆盖优先于内置，其次按最长前缀匹配日期后缀
@@ -122,13 +133,16 @@ def resolve_pricing_quote(
             source=str(override_path),
             effective_date=modified.isoformat(),
         )
-    builtin = _match_pricing(_BUILTIN_PRICING, model)
-    if builtin is None:
+    builtin_key = _match_pricing_key(_BUILTIN_PRICING, model)
+    if builtin_key is None:
         return None
     return PricingQuote(
-        pricing=builtin,
+        pricing=_BUILTIN_PRICING[builtin_key],
         source="builtin",
-        effective_date=_BUILTIN_PRICING_EFFECTIVE_DATE,
+        effective_date=_BUILTIN_PRICING_EFFECTIVE_DATES.get(
+            builtin_key,
+            _BUILTIN_PRICING_EFFECTIVE_DATE,
+        ),
     )
 
 
