@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -217,6 +217,13 @@ def _apply_v7(connection: sqlite3.Connection) -> None:
     )
 
 
+# 保存每条排队消息自己的模型工具选择，避免跨 Turn 派发时恢复默认工具集
+def _apply_v8(connection: sqlite3.Connection) -> None:
+    _add_column_if_missing(
+        connection, "runtime_message_queue", "tools_json", "TEXT DEFAULT NULL",
+    )
+
+
 # 将 runtime 数据库迁移到当前 schema 版本
 def migrate_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,3 +261,7 @@ def migrate_database(path: Path) -> None:
         if version == 6:
             _apply_v7(connection)
             connection.execute("PRAGMA user_version = 7")
+            version = 7
+        if version == 7:
+            _apply_v8(connection)
+            connection.execute("PRAGMA user_version = 8")

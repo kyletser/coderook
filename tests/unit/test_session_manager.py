@@ -277,23 +277,26 @@ async def test_durable_queue_defers_transient_session_busy(
     )
     session = await manager.create("chat")
     attempts = 0
+    captured_tools: list[list[str] | None] = []
 
     # 首次模拟另一前端抢先持有会话，随后允许同一队列记录继续
     async def send_after_busy(*_args: object, **kwargs: object) -> str:
         nonlocal attempts
         attempts += 1
+        captured_tools.append(kwargs.get("model_tools"))
         if attempts == 1:
             raise HandlerError(SESSION_BUSY, "session busy")
         return str(kwargs["run_id"])
 
     monkeypatch.setattr(manager, "send_message", send_after_busy)
-    await manager.queue_message(session.id, "continue")
+    await manager.queue_message(session.id, "continue", model_tools=["read"])
     for _ in range(100):
         if not await manager.list_queued_messages(session.id):
             break
         await asyncio.sleep(0.01)
 
     assert attempts == 2
+    assert captured_tools == [["read"], ["read"]]
     assert await manager.list_queued_messages(session.id) == []
     events = await runtime.list_events(session.id, after_seq=0, limit=100)
     assert any(event.type == "queue.message_deferred" for event in events)

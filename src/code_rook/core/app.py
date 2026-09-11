@@ -1719,6 +1719,7 @@ class CoreApp:
             display_content=cmd.display_content,
             runtime_mode=cmd.runtime_mode,
             attachments=cmd.attachments,
+            model_tools=cmd.tools,
         )
         return SessionQueueMessageResult(message=message, handled=message is None)
 

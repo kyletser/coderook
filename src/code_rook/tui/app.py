@@ -4566,16 +4566,16 @@ class CodeRookTuiApp(App[ModelSwitch | ConfigSwitch | None]):
             self._restore_unsent_draft(display_content, tr("app.draft.reconnected", self._locale))
             return
         try:
-            result = await self._client.send_command(
-                "session.queue_message",
-                {
-                    "session_id": self._session_id,
-                    "content": content,
-                    "display_content": display_content,
-                    "runtime_mode": runtime_mode.value,
-                    "attachments": attachments,
-                },
-            )
+            params: dict[str, object] = {
+                "session_id": self._session_id,
+                "content": content,
+                "display_content": display_content,
+                "runtime_mode": runtime_mode.value,
+                "attachments": attachments,
+            }
+            if self._initial_model_tools is not None:
+                params["tools"] = self._initial_model_tools
+            result = await self._client.send_command("session.queue_message", params)
             message = result.get("message", {})
             if result.get("handled"):
                 self.notify("输入已由扩展处理" if self._locale == "zh-CN" else

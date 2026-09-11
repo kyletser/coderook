@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from code_rook.core.artifacts import ImageArtifactInput
 from code_rook.core.authority.models import (
@@ -154,8 +154,22 @@ class QueuedMessageRecord(BaseModel):
     mode: RuntimeMode = RuntimeMode.ACT
     expand_prompt_templates: bool = True
     attachments: list[ImageArtifactInput] = Field(default_factory=list, max_length=8)
+    tools: list[str] | None = None
     status: Literal["queued", "dispatching", "blocked"] = "queued"
     error: str = ""
     created_at: datetime
     updated_at: datetime
     schema_version: Literal[1] = 1
+
+    # 拒绝持久队列中未知或重复的原生工具名
+    @field_validator("tools")
+    @classmethod
+    def _validate_tools(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        allowed = {"read", "bash", "edit", "write"}
+        if any(tool not in allowed for tool in value):
+            raise ValueError("queued message contains an unknown model tool")
+        if len(value) != len(set(value)):
+            raise ValueError("queued message contains duplicate model tools")
+        return value

@@ -221,6 +221,7 @@ def _event_from_row(row: sqlite3.Row) -> RuntimeEventRecord:
 def _queued_message_from_row(row: sqlite3.Row) -> QueuedMessageRecord:
     _require_current_record_schema(row["schema_version"], "queued message")
     attachments = _IMAGE_ATTACHMENTS.validate_python(json.loads(row["attachments_json"]))
+    tools_json = row["tools_json"]
     return QueuedMessageRecord(
         id=row["id"],
         thread_id=row["thread_id"],
@@ -229,6 +230,7 @@ def _queued_message_from_row(row: sqlite3.Row) -> QueuedMessageRecord:
         mode=row["mode"],
         expand_prompt_templates=bool(row["expand_prompt_templates"]),
         attachments=attachments,
+        tools=json.loads(tools_json) if tools_json is not None else None,
         status=row["status"],
         error=row["error"],
         created_at=_load_datetime(row["created_at"]),
@@ -381,8 +383,8 @@ class RuntimeStore:
                     INSERT INTO runtime_message_queue (
                         id, thread_id, content, display_content, mode,
                         attachments_json, status, error, created_at, updated_at,
-                        schema_version, expand_prompt_templates
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        schema_version, expand_prompt_templates, tools_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -402,6 +404,11 @@ class RuntimeStore:
                         _dump_datetime(record.updated_at),
                         record.schema_version,
                         int(record.expand_prompt_templates),
+                        (
+                            json.dumps(record.tools, ensure_ascii=False, separators=(",", ":"))
+                            if record.tools is not None
+                            else None
+                        ),
                     ),
                 )
         except sqlite3.IntegrityError as exc:

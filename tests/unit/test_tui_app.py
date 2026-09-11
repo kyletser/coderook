@@ -3001,6 +3001,48 @@ async def test_send_failure_restores_draft_and_attachments() -> None:
     assert "connection closed" not in rendered
 
 
+# 功能：验证 TUI 排队后续输入时保留启动时选择的模型工具集
+# 设计：直接调用队列 worker 并捕获 fake IPC 参数，覆盖空列表不能被误当成未配置的边界
+async def test_queue_message_preserves_initial_model_tools() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeClient:
+        # 记录持久队列命令并返回最小成功记录
+        async def send_command(
+            self,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            calls.append((method, params))
+            return {"message": {"id": "queue-1"}}
+
+    app = CodeRookTuiApp("127.0.0.1", 9999, initial_model_tools=[])
+    app._client = _FakeClient()  # type: ignore[assignment]
+    app._session_id = "sess-tools"
+    app._append = lambda _widget: None  # type: ignore[method-assign]
+
+    async def refreshed() -> None:
+        return None
+
+    app._refresh_message_queue = refreshed  # type: ignore[method-assign]
+
+    await app._do_queue_message("answer only", "answer only", RuntimeMode.ACT, [])
+
+    assert calls == [
+        (
+            "session.queue_message",
+            {
+                "session_id": "sess-tools",
+                "content": "answer only",
+                "display_content": "answer only",
+                "runtime_mode": "act",
+                "attachments": [],
+                "tools": [],
+            },
+        )
+    ]
+
+
 # 功能：验证运行中纠偏发送失败时恢复纠偏草稿且不终止原 run
 # 设计：复用失败 IPC 边界并保持 busy，断言用户可直接再次按 Enter 而不会丢失纠偏内容
 async def test_steer_failure_restores_draft_without_ending_run() -> None:

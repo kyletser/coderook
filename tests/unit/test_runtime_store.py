@@ -14,6 +14,9 @@ from code_rook.core.runtime.migrations import (
     _apply_v2,
     _apply_v3,
     _apply_v4,
+    _apply_v5,
+    _apply_v6,
+    _apply_v7,
 )
 from code_rook.core.runtime.models import (
     QueuedMessageRecord,
@@ -78,8 +81,9 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 # 功能：验证消息队列跨数据库重开、领取、中断恢复、重试与删除保持同一记录
 # 设计：用真实 SQLite 顺序走完整状态机，证明 Web/TUI 不依赖各自进程内存保存后续消息
 @pytest.mark.parametrize("expand", [True, False])
+@pytest.mark.parametrize("tools", [None, [], ["read", "bash"]])
 def test_durable_message_queue_survives_restart_and_requires_retry(
-    tmp_path: Path, expand: bool,
+    tmp_path: Path, expand: bool, tools: list[str] | None,
 ) -> None:
     path = tmp_path / "runtime.db"
     store = RuntimeStore(path)
@@ -99,6 +103,7 @@ def test_durable_message_queue_survives_restart_and_requires_retry(
         content="internal prompt",
         display_content="继续修复",
         expand_prompt_templates=expand,
+        tools=tools,
         created_at=now,
         updated_at=now,
     )
@@ -125,6 +130,43 @@ def test_durable_message_queue_survives_restart_and_requires_retry(
     assert reopened.list_queued_messages("thread-queue")[0].status == "queued"
     reopened.delete_queued_message("thread-queue", "queue-1")
     assert reopened.list_queued_messages("thread-queue") == []
+
+
+# 功能：验证 v7 消息队列升级后获得可选工具选择列且旧记录保持默认工具语义
+# 设计：直接构造无 tools_json 的 v7 数据库与队列记录，再由 RuntimeStore 执行单步幂等迁移
+def test_v8_migration_adds_queued_message_tools(tmp_path: Path) -> None:
+    path = tmp_path / "runtime-v7.db"
+    now = _now().isoformat()
+    connection = sqlite3.connect(path)
+    for migration in (_apply_v1, _apply_v2, _apply_v3, _apply_v4, _apply_v5, _apply_v6, _apply_v7):
+        migration(connection)
+    connection.execute("PRAGMA user_version = 7")
+    connection.execute(
+        """
+        INSERT INTO runtime_threads (
+            id, title, workspace, status, default_route_id,
+            created_at, updated_at, schema_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("thread-v7", "legacy queue", str(tmp_path), "idle", None, now, now, 1),
+    )
+    connection.execute(
+        """
+        INSERT INTO runtime_message_queue (
+            id, thread_id, content, display_content, mode, attachments_json,
+            status, error, created_at, updated_at, schema_version, expand_prompt_templates
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("queue-v7", "thread-v7", "next", "next", "act", "[]", "queued", "", now, now, 1, 1),
+    )
+    connection.commit()
+    connection.close()
+
+    store = RuntimeStore(path)
+    record = store.list_queued_messages("thread-v7")[0]
+
+    assert store.schema_version() == CURRENT_SCHEMA_VERSION
+    assert record.tools is None
 
 
 # 功能：验证长会话 Turn 分页返回游标前紧邻记录且维持正序

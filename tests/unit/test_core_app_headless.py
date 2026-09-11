@@ -465,6 +465,33 @@ async def test_session_send_handler_forwards_model_tools() -> None:
     assert captured == [["read"], [], None]
 
 
+# 功能：验证交互会话的排队消息将工具选择传入持久队列
+# 设计：用最小会话服务捕获 handler 参数，锁定跨 Turn 派发前不丢失显式空列表语义
+async def test_session_queue_handler_forwards_model_tools() -> None:
+    captured: list[list[str] | None] = []
+
+    class _Sessions:
+        # 捕获排队消息携带的工具选择并模拟扩展已处理输入
+        async def queue_message(
+            self,
+            _session_id: str,
+            _content: str,
+            **kwargs: Any,
+        ) -> None:
+            captured.append(kwargs.get("model_tools"))
+            return None
+
+    app = CoreApp()
+    app._sessions = _Sessions()  # type: ignore[assignment]
+
+    result = await app._session_queue_message_handler(  # type: ignore[attr-defined]
+        {"session_id": "sess-tools", "content": "answer", "tools": []}
+    )
+
+    assert result.handled is True
+    assert captured == [[]]
+
+
 # 功能：验证会话 authority 更新只替换 mode/profile，并可由查询命令原样读回
 # 设计：预置收窄的 action scope 后直接调用 Core handler，确保权限切换不会隐式扩大能力
 async def test_session_authority_handlers_preserve_scope() -> None:

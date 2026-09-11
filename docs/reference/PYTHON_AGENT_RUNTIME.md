@@ -638,7 +638,10 @@ restored on the next Core start; TOML values remain the initial defaults before 
 user choice exists.
 Plain-text follow-ups in the current mode are claimed from the durable queue
 by the native loop after the current answer, one at a time. They keep the same
-run and context. Queue removal follows transcript persistence. Image follow-ups
+run and context. An explicit per-task tool selection is stored with each queued
+message; if it differs from the active run, the message starts a new Turn with
+that exact selection instead of inheriting or restoring another tool catalog.
+Queue removal follows transcript persistence. Image follow-ups
 use the same loop and retain structured image blocks in the conversation.
 Queue admission callbacks live in the Python driver, never inside model messages
 or native-loop event snapshots. Explicit cancellation retains unconsumed steering

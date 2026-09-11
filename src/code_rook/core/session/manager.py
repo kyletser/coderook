@@ -891,6 +891,7 @@ class SessionManager:
         runtime_mode: RuntimeMode = RuntimeMode.ACT,
         attachments: list[ImageArtifactInput] | None = None,
         display_content: str | None = None,
+        model_tools: Sequence[str] | None = None,
         expand_prompt_templates: bool = True,
         input_processed: bool = False,
         input_source: Literal["interactive", "rpc", "extension"] = "interactive",
@@ -920,6 +921,7 @@ class SessionManager:
             mode=runtime_mode,
             expand_prompt_templates=expand_prompt_templates,
             attachments=attachments or [],
+            tools=list(model_tools) if model_tools is not None else None,
             created_at=now,
             updated_at=now,
         )
@@ -1031,6 +1033,7 @@ class SessionManager:
                     display_content=record.display_content,
                     expand_prompt_templates=record.expand_prompt_templates,
                     input_processed=True,
+                    model_tools=record.tools,
                 )
             except HandlerError as exc:
                 if exc.code == SESSION_BUSY:
@@ -1322,7 +1325,10 @@ class SessionManager:
                 record = await runtime.claim_next_queued_message(sid, datetime.now(UTC))
                 if record is None:
                     return []
-                if record.mode != runtime_mode or (
+                current_model_tools = (
+                    list(model_tools) if model_tools is not None else None
+                )
+                if record.mode != runtime_mode or record.tools != current_model_tools or (
                     record.expand_prompt_templates and parse_user_shell(record.content) is not None
                 ):
                     await runtime.defer_queued_message(record, datetime.now(UTC))

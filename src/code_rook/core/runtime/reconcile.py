@@ -121,6 +121,8 @@ _RUNTIME_SCHEMA_MANIFEST = {
             "display_content",
             "mode",
             "attachments_json",
+            "expand_prompt_templates",
+            "tools_json",
             "status",
             "error",
             "created_at",

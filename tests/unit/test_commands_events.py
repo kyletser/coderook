@@ -41,6 +41,7 @@ from code_rook.core.bus.commands import (
     SessionForkCommand,
     SessionGetAuthorityCommand,
     SessionListCommand,
+    SessionQueueMessageCommand,
     SessionRenameCommand,
     SessionResumeCommand,
     SessionRewindCommand,
@@ -108,6 +109,26 @@ def test_turn_inspect_and_context_budget_protocol() -> None:
     assert ContextBudgetEvent.model_validate_json(
         budget.model_dump_json()
     ).tool_schema_tokens == 300
+
+
+# 功能：验证持久后续消息协议区分默认、禁用和显式工具选择
+# 设计：分别做 JSON 往返与非法名称校验，防止队列跨 Turn 后扩大模型可见工具集
+def test_session_queue_message_tools_roundtrip() -> None:
+    default = SessionQueueMessageCommand(session_id="sess-1", content="continue")
+    disabled = SessionQueueMessageCommand(
+        session_id="sess-1", content="answer only", tools=[],
+    )
+    selected = SessionQueueMessageCommand(
+        session_id="sess-1", content="inspect", tools=["read"],
+    )
+
+    assert SessionQueueMessageCommand.model_validate_json(default.model_dump_json()).tools is None
+    assert SessionQueueMessageCommand.model_validate_json(disabled.model_dump_json()).tools == []
+    assert SessionQueueMessageCommand.model_validate_json(selected.model_dump_json()).tools == [
+        "read"
+    ]
+    with pytest.raises(ValidationError):
+        SessionQueueMessageCommand(session_id="sess-1", content="bad", tools=["run"])  # type: ignore[list-item]
 
 
 # 功能：Worker 控制中心命令保留事件游标、followup 与显式确认的 review 契约
