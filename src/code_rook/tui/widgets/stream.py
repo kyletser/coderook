@@ -474,10 +474,13 @@ class ToolCallBlock(Widget):
             self.remove_class("expanded")
             return
         if expanded:
-            self.query_one(".detail-content", Static).update(self._detail_text())
             self.add_class("expanded")
         else:
             self.remove_class("expanded")
+        if not self.children:
+            return
+        if expanded:
+            self.query_one(".detail-content", Static).update(self._detail_text())
         self.query_one(".summary", Static).update(self._summary())
 
     # 点击已完成工具行时切换完整详情

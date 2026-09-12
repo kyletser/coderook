@@ -2406,6 +2406,7 @@ def test_tool_call_started_and_finished() -> None:
 async def test_tool_block_fast_completion_expands_full_result() -> None:
     block = ToolCallBlock("bash", {"command": "test"})
     block.set_result("one\ntwo\nthree\nfour", 12)
+    block.set_expanded(False)
 
     class ToolHarness(App[None]):
         # 挂载待完成的工具调用块
