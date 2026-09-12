@@ -1,10 +1,11 @@
 # Changelog
 
-本项目采用 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 结构。当前包版本为
-`0.2.0b1`（对应产品候选名 `0.2.0-beta.1`），但仓库尚未创建 Git tag 或公开 Release；
-稳定版前公共接口仍可能变化。
+本项目采用 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 结构。当前预发布版本为
+`0.2.0-beta.1`（Python 包版本 `0.2.0b1`）；稳定版前公共接口仍可能变化。
 
 ## [Unreleased]
+
+## [0.2.0-beta.1] - 2026-09-12
 
 ### Added
 
@@ -71,4 +72,5 @@
 - Benchmark `--help` 的百分号格式化错误。
 - Windows 事件回放、wheel 冷启动和 Git racy-clean 相关竞态。
 
-[Unreleased]: https://github.com/kyletser/coderook/commits/main
+[Unreleased]: https://github.com/kyletser/coderook/compare/v0.2.0-beta.1...HEAD
+[0.2.0-beta.1]: https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1

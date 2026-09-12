@@ -701,6 +701,7 @@ class ChatTextArea(TextArea):
             query = self.text[1:] if self.text.startswith("/") else ""
             if (
                 isinstance(popup, SlashCompleteWidget)
+                and not any(char.isspace() for char in self.text)
                 and popup.has_selection()
                 and not popup.has_exact_match(query)
             ):

@@ -8,7 +8,7 @@
 
 CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经进入候选代码。本文只区分当前代码事实和
 仍需外部执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本为
-`0.2.0b1`（产品候选名 `0.2.0-beta.1`），未创建相应 tag 或 `v1.0.0` tag。
+`0.2.0b1`（产品候选名 `0.2.0-beta.1`）；该公开 Beta 不等于 `v1.0.0` 候选或稳定版本。
 
 ## 1. 当前代码事实
 
@@ -107,9 +107,9 @@ Actions 当前按维护者要求关闭，因此不存在同一 SHA 的远端 req
 | Goal 产品验收 | 完成、预算耗尽、暂停、取消、重启恢复与证据不足场景 | **代码路径已实现；缺最终候选端到端证据** |
 | Agent Control 产品验收 | session 隔离、Worktree、Diff/Review/验证/apply、冲突 fail closed | **代码路径已实现；缺最终跨平台冲突矩阵** |
 | TUI 产品验收 | 80×24、100×30、140×40；中英文；成功/失败/取消完整闭环 | **稳定界面代码已对齐；人工与自动产品矩阵未完成** |
-| 三平台安装 | 五个 portable、PyPI、安装脚本、Homebrew/Scoop 渠道 smoke | **workflow 已准备，真实发行/渠道未发布** |
+| 三平台安装 | 五个 portable、PyPI、安装脚本、Homebrew/Scoop 渠道 smoke | **Beta 可提供 GitHub 下载；PyPI 与稳定渠道仍须独立验证** |
 | 首次用户成功 | 10 名新用户至少 8 名在 10 分钟内独立完成有效任务 | **未开展** |
-| 公开发行与供应链 | tag、GitHub Release、PyPI、GHCR、SBOM、checksum、provenance、签名 | **均未产生真实发行证据** |
+| 公开发行与供应链 | tag、GitHub Release、PyPI、GHCR、SBOM、checksum、provenance、签名 | **Beta GitHub Release 不替代完整 v1 供应链门禁** |
 | 跨发布升级 | 两个真实 tag 之间升级、备份恢复与回滚 | **未运行** |
 
 ## 4. 已知边界

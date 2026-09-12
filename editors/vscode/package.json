@@ -2,7 +2,7 @@
   "name": "coderook-vscode",
   "displayName": "CodeRook",
   "description": "Minimal CodeRook runtime client for VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "publisher": "coderook",
   "repository": {
     "type": "git",

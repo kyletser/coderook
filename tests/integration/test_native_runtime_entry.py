@@ -265,6 +265,7 @@ async def test_extension_command_in_complete_tui(
         assert prompt is not None
         prompt.text = "/greet keyboard"
         prompt.focus()
+        await pilot.pause()
         await pilot.press("enter")
         async with asyncio.timeout(10):
             while not any("Hello: keyboard" in str(widget.render())
