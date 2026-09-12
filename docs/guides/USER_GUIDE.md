@@ -1,16 +1,30 @@
 # CodeRook 使用说明
 
-**适用基线**：`0.2.0-beta.1` 候选版
+**适用基线**：[公开 Beta `0.2.0-beta.1`](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1)
 
 **主要入口**：`coderook`
 
 **产品界面**：TUI 与本地 Web；CLI 用于脚本、诊断和无人值守任务
 
 CodeRook 是本地优先的 Coding Agent。它可以理解仓库、规划与修改代码、运行验证、保留可恢复会话，
-并通过事件、Diff、Turn Receipt 和结果卡说明一次执行到底发生了什么。当前尚未发布 PyPI 或 GitHub
-Release；本文先以源码安装为准。发布状态只以[发布评分卡](../status/RELEASE_SCORECARD.md)为准。
+并通过事件、Diff、Turn Receipt 和结果卡说明一次执行到底发生了什么。GitHub Release 已提供公开 Beta
+wheel 与源码包；PyPI、自包含多平台包和稳定版尚未发布。发布状态只以
+[发布评分卡](../status/RELEASE_SCORECARD.md)为准。
 
 ## 1. 安装与首次启动
+
+### 安装公开 Beta
+
+需要 Python 3.12 和 [`uv`](https://docs.astral.sh/uv/)：
+
+```bash
+uv tool install "https://github.com/kyletser/coderook/releases/download/v0.2.0-beta.1/coderook-0.2.0b1-py3-none-any.whl"
+coderook
+# 或启动本地 Web
+coderook web
+```
+
+当前 Beta 尚未发布到 PyPI，因此 `uvx coderook` 和 `uv tool install coderook` 暂不可用。
 
 ### 网络重试与重复操作提醒
 
@@ -130,6 +144,8 @@ def setup(api):
 ```
 
 覆盖只作用于加载该扩展的会话，已有模型能力与用户凭据保持不变。
+
+### 从源码启动
 
 需要 Python 3.12、Git 和 [`uv`](https://docs.astral.sh/uv/)：
 
@@ -734,10 +750,11 @@ CodeRook 默认不发送产品遥测。使用远端模型、MCP、Web 或 shell 
 
 ## 10. 分发状态
 
-当前公开使用方式是源码安装。Tag workflow 已准备 PyPI Trusted Publishing、五个自包含平台 archive、
-GHCR、checksum、SBOM、provenance 与签名，但这些真实资产尚未产生。
+公开 [v0.2.0-beta.1 GitHub Release](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1)
+提供 wheel、sdist、`SHA256SUMS`、发行清单和发行契约，并已通过公开 URL 安装验证。PyPI、五个平台
+自包含 archive、GHCR、SBOM、provenance 与签名尚未产生；仓库级 GitHub Actions 当前仍关闭。
 
-未来 GitHub Release 会附带 Homebrew formula 和 Scoop manifest 文件；仓库目前没有外部 tap 或 bucket，
+未来完整 GitHub Release 可附带 Homebrew formula 和 Scoop manifest 文件；仓库目前没有外部 tap 或 bucket，
 因此不能写成 `brew install coderook` 或 `scoop install coderook` 已可用。详见
 [发行说明](../operations/RELEASING.md)。
 

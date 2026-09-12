@@ -4,9 +4,9 @@
 
 [中文快速开始](docs/zh-CN/README.md) · [中文使用说明](docs/guides/USER_GUIDE.md) · [Architecture](docs/reference/FUNCTIONAL_ARCHITECTURE.md) · [Release status](docs/status/RELEASE_SCORECARD.md)
 
-> **Status: 0.2.0-beta.1 candidate / v1.0.0 NO-GO.** CodeRook is installable from source today.
-> Public packages, cross-platform release artifacts, real-model benchmark results, and the v1 tag
-> have not been published. See the scorecard before relying on it for production work.
+> **Status: [0.2.0-beta.1 public beta](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1) / v1.0.0 NO-GO.**
+> The GitHub Release provides a verified wheel and source archive. PyPI, self-contained
+> cross-platform packages, container images, and the stable v1 tag are not published yet.
 
 CodeRook is a TUI-and-Web coding agent built around one persistent local daemon. It can inspect a
 repository, plan changes, edit files, run verification, preserve sessions across reconnects, and
@@ -23,10 +23,22 @@ does not require an account with a hosted CodeRook service and sends no default 
   interruption, incomplete model output, content filtering, transport failure, unavailable
   verification, changed files, route/model, usage, and receipts.
 - **Provider-independent.** The shared catalog covers DeepSeek, OpenAI, Anthropic, Gemini,
-  Kimi/Moonshot, OpenRouter, SiliconFlow, Ollama, and LM Studio, plus custom OpenAI Chat,
+  Kimi/Moonshot, OpenRouter, SiliconFlow, Alibaba Cloud Bailian, Ollama, and LM Studio, plus custom OpenAI Chat,
   OpenAI Responses, and Anthropic Messages routes.
 
-## Quick start from source
+## Quick start
+
+Install the public beta from its immutable GitHub Release (Python 3.12 and
+[uv](https://docs.astral.sh/uv/) required):
+
+```bash
+uv tool install "https://github.com/kyletser/coderook/releases/download/v0.2.0-beta.1/coderook-0.2.0b1-py3-none-any.whl"
+coderook
+# or
+coderook web
+```
+
+### Run from source
 
 Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), and Git.
 
@@ -199,10 +211,14 @@ may still change before v1.
 
 ## Installation and release artifacts
 
-There is no public CodeRook PyPI or GitHub Release at the time of this baseline. Source install is
-the supported way to evaluate the project.
+The public [v0.2.0-beta.1 GitHub prerelease](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1)
+contains the Python wheel, source archive, `SHA256SUMS`, `release-manifest.json`, and
+`release-contract.json`. The release wheel was downloaded from its public URL and passed
+`coderook --version` after publication. PyPI is not enabled yet, so `uvx coderook` and
+`uv tool install coderook` are not supported install commands for this beta.
 
-The tag-driven release workflow is prepared to build:
+The tag workflow is checked in but repository-level GitHub Actions are currently disabled. Once
+enabled, it is prepared to build the remaining distribution channels:
 
 - PyPI wheel/sdist through Trusted Publishing;
 - self-contained Windows x64, Linux x64/arm64, and macOS x64/arm64 archives;
@@ -210,7 +226,7 @@ The tag-driven release workflow is prepared to build:
 - Homebrew formula and Scoop manifest files attached to the GitHub Release.
 
 The repository does **not** currently publish or maintain an external Homebrew tap or Scoop
-bucket. A generated formula/manifest in a future Release asset is not equivalent to
+bucket. A generated formula/manifest in a future full Release asset is not equivalent to
 `brew install` or `scoop install` availability. See [Releasing](docs/operations/RELEASING.md).
 
 ## Architecture

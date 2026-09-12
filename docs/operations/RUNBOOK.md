@@ -62,7 +62,7 @@ uv run coderook config-status
 ```
 
 共享 Catalog 支持 DeepSeek、OpenAI、Anthropic、Gemini、Kimi/Moonshot、OpenRouter、SiliconFlow、
-Ollama 和 LM Studio，并允许自定义 OpenAI Chat、OpenAI Responses 与 Anthropic Messages route。
+阿里云百炼、Ollama 和 LM Studio，并允许自定义 OpenAI Chat、OpenAI Responses 与 Anthropic Messages route。
 API key 使用隐藏输入，优先保存到系统 keyring；没有可用 keyring 时降级到
 `~/.coderook/credentials.json`。TUI 缺少配置时仍直接进入主界面，并提示输入 `/config`；首次提交
 任务前 readiness 不通过会保留草稿且不创建 run。
@@ -161,8 +161,9 @@ uv run coderook doctor bundle --output coderook-diagnostics.zip --yes
 `doctor all` 即使 route 或 runtime 文件损坏也会在 `errors` 中报告对应 section。
 `doctor runtime --json` 是严格只读检查，不创建、移动或重写状态；报告分别列出 `backup_status`、
 `provider_catalog_status`、`credential_store_status` 和 `route_catalog_status`，并包含事件 gap、外键、
-投影漂移及隔离记录。当前 SQLite `PRAGMA user_version` 为 4，而 Thread/Turn/Item/Event/Facade 的逐行
-schema 仍为 1；未来数据库或逐行 schema 都失败关闭，不会伪装成旧记录。
+投影漂移及隔离记录。当前 SQLite `PRAGMA user_version` 为 8，而 Thread/Turn/Item/Event/Facade 的逐行
+schema 仍为 1；v6-v8 保存持久消息队列、模板展开与逐消息工具选择。未来数据库或逐行 schema 都失败
+关闭，不会伪装成旧记录。
 
 显式 `runtime --repair` 可隔离已通过文件身份复核的坏 Session/Goal/Task 元数据、升级受支持的旧 Runtime
 schema、补建缺失投影并修复 event counter，同时写入 no-follow repair journal。它不会修补 event gap、
@@ -172,7 +173,14 @@ schema、补建缺失投影并修复 event counter，同时写入 no-follow repa
 
 ## 分发入口
 
-当前没有已发布 PyPI 或 GitHub Release，源码安装仍是公开入口。维护者可构建候选自包含包：
+公开 Beta 可直接安装 GitHub Release wheel：
+
+```bash
+uv tool install "https://github.com/kyletser/coderook/releases/download/v0.2.0-beta.1/coderook-0.2.0b1-py3-none-any.whl"
+coderook --version
+```
+
+PyPI 与自包含包尚未发布。维护者可按目标平台构建候选自包含包：
 
 ```bash
 uv run python scripts/build_portable.py --target windows-x86_64
@@ -185,8 +193,9 @@ uv run python scripts/build_portable.py --target macos-arm64
 每条命令只能在与 target 匹配的 OS/CPU host 上执行；构建器会在删除或写入输出前检查宿主并失败
 关闭，不支持把当前解释器伪装成交叉编译 runtime。五个 target 由对应 GitHub runner 分别构建。
 
-未来 Release 中的 `scripts/install-release.ps1` 与 `scripts/install.sh` 会下载版本化 archive 并校验
-`SHA256SUMS`。Homebrew formula 和 Scoop manifest 只作为 Release asset 生成；当前没有外部 tap/bucket，
+包含 portable archive 的完整 Release 才能使用 `scripts/install-release.ps1` 与 `scripts/install.sh` 下载
+版本化 archive 并校验 `SHA256SUMS`；首个 Beta 不满足这一条件。Homebrew formula 和 Scoop manifest
+只作为 Release asset 生成；当前没有外部 tap/bucket，
 不能把它们写成包管理器已上线。容器使用 `Dockerfile` 或
 `docker compose -f deploy/docker-compose.example.yml up --build`。Runtime API 始终校验 Bearer token：
 非空 `CODEROOK_API_TOKEN` 优先；空或纯空白值按未配置处理，不能关闭鉴权。未配置时 Core 以

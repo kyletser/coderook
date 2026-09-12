@@ -1,9 +1,8 @@
 # CodeRook 升级、备份与回滚
 
-CodeRook 当前尚未发布到 PyPI 或 GitHub Releases，本指南首先适用于源码检出、本地构建 wheel 和
-候选 portable archive。
-出现公开版本后，安装来源与升级兼容性仍以
-[发布评分卡](../status/RELEASE_SCORECARD.md)为准；没有完成跨版本 fixture 的版本不得宣称无损升级已经验证。
+CodeRook 已发布 GitHub Beta `v0.2.0-beta.1`，但尚未发布到 PyPI，也没有公开 portable archive。
+安装来源与升级兼容性以[发布评分卡](../status/RELEASE_SCORECARD.md)为准；没有完成跨版本 fixture 的版本
+不得宣称无损升级已经验证。
 
 ## 升级前先备份
 
@@ -55,15 +54,25 @@ Session、Goal 或 Task 元数据移到相邻 `_quarantine/`，并在 `quarantin
 原因；只读 `coderook doctor runtime --json` 只报告，不移动文件。已隔离记录继续计入报告，原内容不会
 被猜测修复，恢复仍应从升级前备份进行。
 
-当前 SQLite `PRAGMA user_version` 为 4；v4 为 `runtime_session_facades` 增加逐行
-`schema_version`。数据库版本与公开记录版本不是同一概念：Thread、Turn、Item、Event 和 Facade 的当前
+当前 SQLite `PRAGMA user_version` 为 8；v4 为 `runtime_session_facades` 增加逐行
+`schema_version`，v5 修正早期 Runtime Event 版本，v6-v8 增加持久消息队列、模板展开与逐消息工具选择。
+数据库版本与公开记录版本不是同一概念：Thread、Turn、Item、Event 和 Facade 的当前
 逐行 schema 仍为 1。Doctor 对未来数据库版本或未来逐行版本失败关闭，不把它们降级成旧记录，也不允许
 repair 覆盖。`credentials.json` 当前文档版本为 2；v1 文件仍可读取并在下一次受管写入时升级，未来
 版本、未知字段、损坏 JSON 或不安全路径均保留原文件并失败关闭。
 
 ## 执行升级
 
-先记录当前版本，然后使用原来的安装方式升级。源码检出使用：
+先记录当前版本，然后使用原来的安装方式升级。GitHub Beta wheel 使用：
+
+```bash
+uv tool install --force "https://github.com/kyletser/coderook/releases/download/v0.2.0-beta.1/coderook-0.2.0b1-py3-none-any.whl"
+coderook --version
+coderook config-status
+coderook ping
+```
+
+源码检出使用：
 
 ```bash
 uv run coderook --version
@@ -74,7 +83,7 @@ uv run coderook ping
 ```
 
 本地 wheel 安装应重新构建并显式安装该 wheel。升级过程中不要同时运行两个版本的 daemon；客户端与
-daemon 的 wire protocol 必须来自同一安装版本。公开包发布并在评分卡登记后才可使用
+daemon 的 wire protocol 必须来自同一安装版本。PyPI 尚未发布，不能使用
 `python -m pip install --upgrade coderook`。Homebrew formula 与 Scoop manifest 当前只计划作为
 Release asset；外部 tap/bucket 尚未发布，不能作为升级来源。
 
@@ -114,7 +123,7 @@ uv run python scripts/run_upgrade_preflight.py \
 `sessions/` 和数据库文件，不要把新旧版本文件混合覆盖。
 
 ```bash
-python -m pip install "coderook==<previous-version>"
+uv tool install --force "<previous GitHub Release wheel URL>"
 coderook --version
 coderook config-status
 coderook ping

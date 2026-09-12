@@ -1,7 +1,20 @@
 # CodeRook 中文快速开始
 
-> 当前仍是未发布 Beta 候选，`v1.0.0` 评分卡为 NO-GO。源码安装可用于试用，但公开安装包和真实模型
-> Benchmark 尚未发布。
+> 当前公开版本为 [0.2.0-beta.1](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1)，
+> `v1.0.0` 评分卡仍为 NO-GO。GitHub Release 已提供 wheel 与源码包；PyPI、自包含多平台包和稳定版尚未发布。
+
+## 安装公开 Beta
+
+需要 Python 3.12 和 [`uv`](https://docs.astral.sh/uv/)：
+
+```bash
+uv tool install "https://github.com/kyletser/coderook/releases/download/v0.2.0-beta.1/coderook-0.2.0b1-py3-none-any.whl"
+coderook
+# 或
+coderook web
+```
+
+当前版本尚未发布到 PyPI，不能使用 `uvx coderook` 或 `uv tool install coderook`。
 
 ## 从源码启动
 

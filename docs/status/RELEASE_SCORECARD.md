@@ -1,6 +1,6 @@
 # CodeRook 发布评分卡
 
-**更新时间**：2026-09-07
+**更新时间**：2026-09-12
 
 **代码锚点**：本文件所在 Git commit；检出后用 `git rev-parse HEAD` 获取精确 SHA
 
@@ -8,7 +8,8 @@
 
 CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经进入候选代码。本文只区分当前代码事实和
 仍需外部执行的证据门禁；workflow、测试、适配器或发布脚本存在，都不等于相应门禁已经通过。包版本为
-`0.2.0b1`（产品候选名 `0.2.0-beta.1`）；该公开 Beta 不等于 `v1.0.0` 候选或稳定版本。
+`0.2.0b1`（产品候选名 `0.2.0-beta.1`）；[GitHub 公开 Beta](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1)
+已经发布，但不等于 `v1.0.0` 候选或稳定版本。
 
 ## 1. 当前代码事实
 
@@ -16,7 +17,7 @@ CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经�
   `CODEROOK_CONFIG`，并作为只读 credential overlay 供 Core、TUI/CLI Provider/Doctor 和 WebSearch
   共用；进程环境优先，凭据不经 IPC。无法证明已运行 daemon 使用同一 overlay 时 fail closed。
 - Provider Catalog 统一 DeepSeek、OpenAI、Anthropic、Gemini、Kimi/Moonshot、OpenRouter、
-  SiliconFlow、Ollama 与 LM Studio，并支持三个自定义 wire format；readiness 在创建 run 前阻止不可用
+  SiliconFlow、阿里云百炼、Ollama 与 LM Studio，并支持三个自定义 wire format；readiness 在创建 run 前阻止不可用
   route，Doctor 通过后才原子提交配置。前置备份与迁移收据是独立完整性证据；完成收据配空 Catalog、
   收据冲突/损坏或首次迁移半提交均失败关闭，Route 写入会在收据失败时回滚原字节。
 - 外部 Runtime API 对包括 loopback 在内的所有请求强制 Bearer；空/纯空白环境值不能关闭鉴权。未配置时
@@ -71,7 +72,7 @@ CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经�
 - Capability Kernel 已实际承载 workspace 级 Provider/MCP/Hooks/Worker Backend 和 session 级 Tool
   Registry；文本、工具成功与权限拒绝三个 keyless Golden Replay 固定验证重开后的 Ledger 顺序和模型
   消息投影。
-- Runtime SQLite 当前数据库 schema 为 v6，公开 Thread/Turn/Item/Event/Facade 逐行 schema 仍为 1；
+- Runtime SQLite 当前数据库 schema 为 v8，公开 Thread/Turn/Item/Event/Facade 逐行 schema 仍为 1；
   未来数据库/逐行版本和外键损坏失败关闭。Runtime Doctor 严格区分只读 inspect 与显式 repair，并分别
   报告备份、迁移收据、fallback credential 和 Route Catalog 状态；repair 不猜测损坏内容。
 - `feature_flags` 把 Goal、基础子 Agent、Skills、MCP Tools、Memory 和 Change Center 标为 stable；Tool Program、ACP Worker backend、Fleet、
@@ -79,8 +80,9 @@ CodeRook Web、持久消息队列、长会话分页和非空会话恢复已经�
   仅 `CODEROOK_LABS=1` 激活；关闭时不加载 Hook，也不暴露或恢复 Workflow/Fleet 控制面。
 - 日常自动化收敛为一个 10 分钟目标的 Ubuntu required job。安全、恢复、MCP、分发与真实模型矩阵只由
   `workflow_dispatch` 或 release tag 触发，没有 cron/nightly push matrix。
-- release workflow 已准备 PyPI Trusted Publishing、五个平台 archive、GHCR、SBOM、checksum、
-  provenance 与签名；Homebrew/Scoop 目前只是待生成的 Release asset，不是已经上线的 tap/bucket。
+- `v0.2.0-beta.1` 已手工发布 wheel、sdist、checksum、manifest 和 contract，并完成公开 URL 安装验证；
+  release workflow 仍只准备了 PyPI、五个平台 archive、GHCR、SBOM、provenance 与签名，未实际运行。
+  Homebrew/Scoop 不是已经上线的 tap/bucket。
 
 ## 2. 当前验证边界
 
@@ -107,9 +109,9 @@ Actions 当前按维护者要求关闭，因此不存在同一 SHA 的远端 req
 | Goal 产品验收 | 完成、预算耗尽、暂停、取消、重启恢复与证据不足场景 | **代码路径已实现；缺最终候选端到端证据** |
 | Agent Control 产品验收 | session 隔离、Worktree、Diff/Review/验证/apply、冲突 fail closed | **代码路径已实现；缺最终跨平台冲突矩阵** |
 | TUI 产品验收 | 80×24、100×30、140×40；中英文；成功/失败/取消完整闭环 | **稳定界面代码已对齐；人工与自动产品矩阵未完成** |
-| 三平台安装 | 五个 portable、PyPI、安装脚本、Homebrew/Scoop 渠道 smoke | **Beta 可提供 GitHub 下载；PyPI 与稳定渠道仍须独立验证** |
+| 三平台安装 | 五个 portable、PyPI、安装脚本、Homebrew/Scoop 渠道 smoke | **GitHub Beta wheel 已公开下载并完成安装 smoke；PyPI、portable 与稳定渠道未发布** |
 | 首次用户成功 | 10 名新用户至少 8 名在 10 分钟内独立完成有效任务 | **未开展** |
-| 公开发行与供应链 | tag、GitHub Release、PyPI、GHCR、SBOM、checksum、provenance、签名 | **Beta GitHub Release 不替代完整 v1 供应链门禁** |
+| 公开发行与供应链 | tag、GitHub Release、PyPI、GHCR、SBOM、checksum、provenance、签名 | **Beta tag/Release/checksum/manifest/contract 已产生；PyPI、GHCR、SBOM、provenance 与签名未产生** |
 | 跨发布升级 | 两个真实 tag 之间升级、备份恢复与回滚 | **未运行** |
 
 ## 4. 已知边界

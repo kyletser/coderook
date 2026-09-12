@@ -170,7 +170,7 @@ Plan 模式的结果在 `run.finished` 后发布持久 `plan.ready`。`plan.resp
 
 Route 描述 provider kind、URL、模型、凭据引用、上下文窗口和能力。TUI 与 CLI 共用 Provider
 Catalog；内置项为 DeepSeek、OpenAI、Anthropic、Gemini、Kimi/Moonshot、OpenRouter、SiliconFlow、
-Ollama 和 LM Studio。自定义 route 可选 `openai_chat`、`openai_responses` 或
+阿里云百炼、Ollama 和 LM Studio。自定义 route 可选 `openai_chat`、`openai_responses` 或
 `anthropic_messages`。Ollama/LM Studio 是仅允许 loopback 探测的免密 route。
 
 每条 Route 保存明确的 `env:`、`keyring:`、`file:` 或 `none:` 凭据引用，解析时只访问该来源。
@@ -320,8 +320,9 @@ Runtime/TUI 只消费新的模型上下文投影。
 继续保留为恢复证据。模型投影会临时裁掉孤立 tool use，恢复协调器则据原始调用区分只读可重跑与
 修改/命令状态未知，避免为了满足 wire format 先删除最重要的中断证据。
 
-Runtime SQLite 当前 `PRAGMA user_version` 为 4；v4 为 `runtime_session_facades` 增加逐行
-`schema_version`。数据库版本和公开记录版本彼此独立：Thread、Turn、Item、Event、Facade 当前逐行
+Runtime SQLite 当前 `PRAGMA user_version` 为 8；v4 为 `runtime_session_facades` 增加逐行
+`schema_version`，v5 修正早期 Runtime Event 版本，v6-v8 增加持久消息队列、模板展开与逐消息工具选择。
+数据库版本和公开记录版本彼此独立：Thread、Turn、Item、Event、Facade 当前逐行
 schema 仍为 1。只读 Doctor 不迁移数据库；未来数据库版本、未来逐行版本和外键损坏均失败关闭，显式
 repair 也不会把它们降级或覆盖。
 

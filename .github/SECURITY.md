@@ -8,7 +8,7 @@ MCP server、Skill、Hook 和外部网页视为不受信任输入。
 | 版本 | 安全支持 |
 |---|---|
 | `main` | 接受修复，不保证稳定 API |
-| GitHub Releases | 当前尚无公开版本 |
+| [`v0.2.0-beta.1`](https://github.com/kyletser/coderook/releases/tag/v0.2.0-beta.1) | 公开 Beta，接受安全修复，不承诺稳定 API 或固定 SLA |
 
 在发布评分卡达到 GO 之前，CodeRook 不宣称生产就绪或适用于多租户环境。
 

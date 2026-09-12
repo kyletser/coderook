@@ -1,15 +1,15 @@
 # CodeRook Roadmap
 
 Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据缺口见
-[功能架构](../reference/FUNCTIONAL_ARCHITECTURE.md)和[发布评分卡](RELEASE_SCORECARD.md)。项目仍是
-`0.2.0-beta.1` 候选工作树，不能把代码路径、workflow 或测试 fixture 写成公开发行成绩。
+[功能架构](../reference/FUNCTIONAL_ARCHITECTURE.md)和[发布评分卡](RELEASE_SCORECARD.md)。项目已发布
+`0.2.0-beta.1` GitHub Beta，但不能把代码路径、workflow 或测试 fixture 写成尚未取得的外部成绩。
 
-## Now：稳定当前 Beta 候选
+## Now：稳定当前公开 Beta
 
 - 完成最终 P0/P1 清零审计，重点复核显式 credential overlay、跨 session 事件/审批、Worker handoff、
   Goal 预算、审计降级和进程树取消。
-- 在每次推送前从头连续运行完整本地门禁。仓库级 GitHub Actions 当前按维护者要求关闭；准备公开预发行
-  时只恢复单个 `Required Ubuntu gate` 并绑定同一候选 commit，不恢复 cron/nightly 或三平台 push matrix。
+- 在每次推送前从头连续运行完整本地门禁。仓库级 GitHub Actions 当前按维护者要求关闭；下一次自动化
+  发行前只恢复单个 `Required Ubuntu gate` 并绑定同一候选 commit，不恢复 cron/nightly 或三平台 push matrix。
 - 运行 80×24、100×30、140×40 三种尺寸与中英文产品矩阵，覆盖 onboarding、Provider、权限、结果卡、
   Change Center、rewind、session 切换、Goal、Worker 与附件；修复后重新跑完整矩阵。
 - 对 Web 的 1280×720、1920×1080 和 390×844 做中英文人工验收，覆盖直接登录、SSE 重连、
@@ -23,7 +23,8 @@ Roadmap 只记录当前代码尚未完成的结果；已有能力与精确证据
 - 对两个不同 wire format 各重复两次，保留四份原始报告与聚合结果，不挑最好一次。
 - 用官方 harness 产出 Aider Polyglot 固定切片和 SWE-bench 小规模判分 artifact。
 - 手动运行同一候选 commit 的三平台安全负例、100 次强杀恢复、MCP 和五平台分发矩阵。
-- 验证 PyPI Trusted Publishing、GitHub Release、GHCR、SBOM、checksum、provenance 与签名；外部
+- 在首个手工 GitHub Beta 已验证 wheel、checksum、manifest 和 contract 的基础上，继续验证 PyPI Trusted
+  Publishing、自动 GitHub Release、GHCR、SBOM、provenance 与签名；外部
   Homebrew tap/Scoop bucket 真正发布前，继续只把生成文件称为 Release asset。
 - 在两个真实 tag 之间完成升级、备份恢复与回滚验收。
 - 完成 10 名新用户首次成功测试，达到至少 8 名在 10 分钟内无需指导完成有效任务。
