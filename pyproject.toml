@@ -44,7 +44,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "keyring>=25.0",
     "pathspec>=0.12",
-    "unidiff>=0.7,<0.8",
+    "unidiff>=0.7,<1.1",
     "PyYAML>=6.0,<7",      # 提示词模板 YAML 元数据，与正文参数替换分离
 ]
 
